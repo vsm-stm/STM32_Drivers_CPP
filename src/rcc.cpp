@@ -68,10 +68,12 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 		{
 			sys_clk = VCO_in/PLLCfgr.PLL_P;
 		}
+#ifdef STM32F446xx		
 		if(ClkSrc == SystemClockSource::PLL_R)
 		{
 			sys_clk = VCO_in/PLLCfgr.PLL_R;
 		}
+#endif
 		if(sys_clk > SYS_CLK_LIMIT)
 			return SYS_ERROR;
 
@@ -87,8 +89,10 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 								 PLLCfgr.PLL_M << RCC_PLLCFGR_PLLM_Pos |
 								 PLLCfgr.PLL_N << RCC_PLLCFGR_PLLN_Pos |
 								 ((PLLCfgr.PLL_P >> 1) - 1) << RCC_PLLCFGR_PLLP_Pos |
-								 PLLCfgr.PLL_Q << RCC_PLLCFGR_PLLQ_Pos |
-								 PLLCfgr.PLL_R << RCC_PLLCFGR_PLLR_Pos;
+								 PLLCfgr.PLL_Q << RCC_PLLCFGR_PLLQ_Pos;
+#ifdef STM32F446xx	
+		RCC->PLLCFGR |= PLLCfgr.PLL_R << RCC_PLLCFGR_PLLR_Pos;
+#endif
 
 		RCC->CR |= RCC_CR_PLLON;// PLL Disable
 		tickStart = System_F4::GetTick();

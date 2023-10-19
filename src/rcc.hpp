@@ -15,9 +15,11 @@
 #define CLOCKSWITCH_TIMEOUT_VALUE	5000U /* 5 s */
 
 /* @todo: add #ifdef for different controllers */
+#if defined(STM32F446xx) || defined(STM32F429xx)
 #define SYS_CLK_LIMIT		180000000 
 #define APB1_CLK_LIMIT		45000000
 #define APB2_CLK_LIMIT		90000000
+#endif
 
 
 
@@ -54,8 +56,10 @@ class ClockSystem
 	{
 		HSI = RCC_CFGR_SW_HSI, /* interal clock source*/
 		HSE = RCC_CFGR_SW_HSE,
-		PLL_P = RCC_CFGR_SW_PLL,
-		PLL_R = RCC_CFGR_SW_PLLR
+		PLL_P = RCC_CFGR_SW_PLL
+#ifdef STM32F446xx		
+		,PLL_R = RCC_CFGR_SW_PLLR
+#endif
 	};
 
 	/**************************************************************************************************
