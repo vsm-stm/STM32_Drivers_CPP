@@ -83,3 +83,8 @@ void System_F4::Delay_ms(uint32_t delay)
 
 	}	
 }
+
+extern "C" void SysTick_Handler(void)
+{
+	System_F4::TickIncrease();
+}

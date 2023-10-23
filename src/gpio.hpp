@@ -90,7 +90,12 @@ public:
 
 	inline bool GetLevel_BB()
 	{
-		return BB_RD(&PORT->IDR,pin);
+		return BIT_BB(&PORT->IDR, pin);
+	};
+
+	inline void SetLevel(uint32_t lvl_int)
+	{
+		BIT_BB(&PORT->ODR, pin) = lvl_int;
 	};
 
 	inline void SetLevel(LVL lvl)
@@ -98,14 +103,23 @@ public:
 		PORT->BSRR |= ((lvl == LVL::HIGH) ? GPIO_BSRR_BS0 : GPIO_BSRR_BR0) << pin;
 	};
 
+	inline void SetLevel_BB(uint32_t lvl_int)
+	{
+		BIT_BB(&PORT->ODR, pin) = lvl_int;
+	}
 	inline void SetLevel_BB(LVL lvl)
 	{
-		BB_WR(&PORT->ODR, pin, static_cast<uint8_t>(lvl));
+		BIT_BB(&PORT->ODR, pin) = static_cast<uint8_t>(lvl);
 	};
 
 	inline void TogglePin()
 	{
 		PORT->ODR ^= 0x1 << pin;
+	};
+
+	inline void TogglePin_BB()
+	{
+		BIT_BB(&PORT->ODR, pin) ^= 1;
 	};
 
 	~PIN()

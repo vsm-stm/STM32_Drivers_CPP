@@ -72,21 +72,5 @@ SYS_StatusTypeDef USART::HardwareSetup()
 	USARTx->CR2 = 0;
 	USARTx->CR3 = 0;
 
-	if(DMA_Sx_TX != NULL)
-	{
-		USARTx->CR3 |= USART_CR3_DMAT;
-
-		dma_tx_id = (reinterpret_cast<uint32_t>(DMA_Sx_TX) & (DMA2_BASE - DMA1_BASE)) + 1;
-		dma_tx_sx_id = 0;
-
-		if(dma_tx_id == 1)
-			RCC->AHB1ENR |= RCC_AHB1ENR_DMA1EN;
-		else
-			RCC->AHB1ENR |= RCC_AHB1ENR_DMA2EN;
-
-		
-	}
-
-
 	return SYS_OK;
 }
