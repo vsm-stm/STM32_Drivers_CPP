@@ -77,7 +77,6 @@ public:
 			PORT(port),
 			pin(pn)
 	{
-
 	}
 
 	SYS_StatusTypeDef SetUp(TYPE type);
