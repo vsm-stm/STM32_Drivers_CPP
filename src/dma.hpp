@@ -38,6 +38,7 @@ public:
 		OFF = 0,
 		EN = DMA_SxCR_CIRC
 	};
+	
 	enum class IRQ
 	{
 		NO = 0,

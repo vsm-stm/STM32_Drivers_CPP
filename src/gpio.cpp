@@ -12,8 +12,8 @@ SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type, uint8_t af)
 	uint8_t otype = (static_cast<uint8_t>(type) & 0x1 << output_type_pos) >> output_type_pos;
 
 	uint32_t gpio_id = (reinterpret_cast<uint32_t>(PORT) - GPIOA_BASE)/(GPIOB_BASE - GPIOA_BASE);
-	if(!(RCC->AHB1ENR & (RCC_AHB1ENR_GPIOAEN + gpio_id)))
-		RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN + gpio_id);
+	if(!(RCC->AHB1ENR & (RCC_AHB1ENR_GPIOAEN << gpio_id)))
+		RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN << gpio_id);
 	
 	PORT->MODER 	&= ~(3 << (pin*2));
 	PORT->PUPDR 	&= ~(1 <<  pin);

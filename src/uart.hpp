@@ -6,25 +6,20 @@
 #include <rcc.hpp>
 #include <gpio.hpp>
 
-
-
 class USART
 {
 
 public:
 	USART_TypeDef *USARTx;
 	uint32_t BaudRate;
-	uint32_t irq_en;
 
 	enum class IRQ
 	{
-		NO  = 0,
 		TXE = USART_CR1_TXEIE,
 		RXNE = USART_CR1_RXNEIE,
 		TC = USART_CR1_TCIE,
 		IDLE = USART_CR1_IDLEIE
 	};
-
 
 	typedef struct 
 	{
@@ -32,7 +27,7 @@ public:
 		uint32_t BaudRate;
 		PIN TX;
 		PIN RX;
-	}define;
+	}def;
 
 	explicit USART(	USART_TypeDef *USARTx,
 					uint32_t BaudRate,
@@ -46,37 +41,56 @@ public:
 		HardwareSetup();
 	}
 
-	explicit USART(define def) :
-			USARTx(def.USARTx),
-			BaudRate(def.BaudRate),
-			_TX(std::make_unique<PIN>(def.TX)),
-			_RX(std::make_unique<PIN>(def.RX))
+	void Enable_IRQ(IRQ irq)
 	{
-		HardwareSetup();
+		USARTx->CR1 |= static_cast<uint32_t>(irq);
+
+		if(!(NVIC_GetEnableIRQ(IRQ_vector)))
+		{
+			NVIC_EnableIRQ(IRQ_vector);
+		}
 	}
 
-    USART()                         = delete;
-    USART(USART const &)            = default;
-    USART(USART &&)                 = default;
-    USART &operator=(USART const &) = default;
-    USART &operator=(USART &&)      = default;
+	void Disable_IRQ(IRQ irq)
+	{
+		USARTx->CR1 &= ~(static_cast<uint32_t>(irq));
+		if(!(USARTx->CR1 & (USART_CR1_TXEIE | USART_CR1_TCIE | USART_CR1_RXNEIE | USART_CR1_IDLEIE)))
+		{
+			NVIC_DisableIRQ(IRQ_vector);
+		}
+	}
+
+	void Enable_DMA()
+	{
+		USARTx->CR3 |= USART_CR3_DMAR | USART_CR3_DMAT;
+	}
+
+	void Disable_DMA()
+	{
+		USARTx->CR3 &= ~(USART_CR3_DMAR | USART_CR3_DMAT);
+	}
+
+	USART()							= delete;
+	USART(USART const &)			= default;
+	USART(USART &&)					= default;
+	USART &operator=(USART const &)	= default;
+	USART &operator=(USART &&)		= default;
 	~USART()
 	{
 		USARTx->CR1 = 0;
+		USARTx->CR2 = 0;
+		USARTx->CR3 = 0;
 	};
 
 private:
-	 std::unique_ptr<PIN> _TX{};
-	 std::unique_ptr<PIN> _RX{};
-	 PIN TXX{};
-	 PIN RXX{};
+	std::unique_ptr<PIN> _TX{};
+	std::unique_ptr<PIN> _RX{};
+
+	IRQn_Type IRQ_vector;
 
 	SYS_StatusTypeDef HardwareSetup();
 	
 };
-
-
-
 
 
 
