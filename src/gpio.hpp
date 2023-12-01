@@ -48,16 +48,16 @@ public:
 
 	enum class TYPE
 	{
-		INPUT_NO_Pull		= ((uint8_t)MODE::INPUT | (uint8_t)PULL::NO_Pull),
-		INPUT_PullUp		= ((uint8_t)MODE::INPUT | (uint8_t)PULL::PullUP),
-		INPUT_PullDown		= ((uint8_t)MODE::INPUT | (uint8_t)PULL::PullDown),
-		OUTPUT_PushPull		= ((uint8_t)MODE::OUTPUT | (uint8_t)OUTPUT_TYPE::PushPull),
-		OUTPUT_OD			= ((uint8_t)MODE::OUTPUT | (uint8_t)OUTPUT_TYPE::OpenDrain),
-		OUTPUT_OD_PulUp		= ((uint8_t)MODE::OUTPUT | (uint8_t)OUTPUT_TYPE::OpenDrain | (uint8_t)PULL::PullUP),
-		AF_PushPull			= ((uint8_t)MODE::AF | (uint8_t)OUTPUT_TYPE::PushPull),
-		AF_OD				= ((uint8_t)MODE::AF | (uint8_t)OUTPUT_TYPE::OpenDrain),
-		AF_OD_PulUp			= ((uint8_t)MODE::AF | (uint8_t)OUTPUT_TYPE::OpenDrain | (uint8_t)PULL::PullUP),
-		ANALOG				= ((uint8_t)MODE::ANALOG)
+		INPUT_NO_Pull		= (static_cast<uint8_t>(MODE::INPUT)	| static_cast<uint8_t>(PULL::NO_Pull)),
+		INPUT_PullUp		= (static_cast<uint8_t>(MODE::INPUT)	| static_cast<uint8_t>(PULL::PullUP)),
+		INPUT_PullDown		= (static_cast<uint8_t>(MODE::INPUT)	| static_cast<uint8_t>(PULL::PullDown)),
+		OUTPUT_PushPull		= (static_cast<uint8_t>(MODE::OUTPUT)	| static_cast<uint8_t>(OUTPUT_TYPE::PushPull)),
+		OUTPUT_OD			= (static_cast<uint8_t>(MODE::OUTPUT)	| static_cast<uint8_t>(OUTPUT_TYPE::OpenDrain)),
+		OUTPUT_OD_PulUp		= (static_cast<uint8_t>(MODE::OUTPUT)	| static_cast<uint8_t>(OUTPUT_TYPE::OpenDrain)	| static_cast<uint8_t>(PULL::PullUP)),
+		AF_PushPull			= (static_cast<uint8_t>(MODE::AF)		| static_cast<uint8_t>(OUTPUT_TYPE::PushPull)),
+		AF_OD				= (static_cast<uint8_t>(MODE::AF)		| static_cast<uint8_t>(OUTPUT_TYPE::OpenDrain)),
+		AF_OD_PulUp			= (static_cast<uint8_t>(MODE::AF)		| static_cast<uint8_t>(OUTPUT_TYPE::OpenDrain)	| static_cast<uint8_t>(PULL::PullUP)),
+		ANALOG				= (static_cast<uint8_t>(MODE::ANALOG)	)
 	};
 
 	enum class LVL
@@ -90,7 +90,7 @@ public:
 
 	inline bool GetLevel_BB()
 	{
-		return BIT_BB(&PORT->IDR, pin);
+ 		return BIT_BB(&PORT->IDR, pin);
 	};
 
 	inline void SetLevel(uint32_t lvl_int)

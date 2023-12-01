@@ -3,6 +3,7 @@
 
 #include <system_f4.hpp>
 #include <rcc.hpp>
+#include <vector>
 
 
 class DMA_Sx
@@ -15,7 +16,7 @@ public:
 	{
 		Per_To_Mem = 0,
 		Mem_To_Per = DMA_SxCR_DIR_0,
-		Mem_To_Mem = DMA_SxCR_DIR_1,
+		Mem_To_Mem = DMA_SxCR_DIR_1
 	};
 	enum class PSIZE
 	{
@@ -38,6 +39,19 @@ public:
 		OFF = 0,
 		EN = DMA_SxCR_CIRC
 	};
+
+	enum class TYPE
+	{
+		Per_To_Mem = 0,
+		Mem_To_Per = DMA_SxCR_DIR_0,
+		Mem_To_Mem = DMA_SxCR_DIR_1,
+		Size_Byte = 0,
+		Size_HWord = DMA_SxCR_PSIZE_0,
+		Soze_Word = DMA_SxCR_PSIZE_1,
+		MINC = DMA_SxCR_MINC,
+		PINC = DMA_SxCR_PINC,
+		CIRC = DMA_SxCR_CIRC,
+	};
 	
 	enum class IRQ
 	{
@@ -53,12 +67,7 @@ public:
 		DMA_TypeDef *dma;
 		DMA_Stream_TypeDef *dma_sx;
 		uint32_t channel;
-		DIR dir;
-		PSIZE psize;
-		MINC minc;
-		PINC pinc;
-		CIRC circ;
-		IRQ irq;
+		TYPE settings;
 	};
 
 	DMA_TypeDef *DMA_controller;
