@@ -1,12 +1,13 @@
 #include <rcc.hpp>
 #include <system_f4.hpp>
 
-//uint32_t ClockSystem::SystemCoreClock{SystemCoreClock};
-uint32_t ClockSystem::APB1BusClock{APB1BusClock};
-uint32_t ClockSystem::APB2BusClock{APB2BusClock};
-uint32_t ClockSystem::TIMxAPB1Clock{TIMxAPB1Clock};
-uint32_t ClockSystem::TIMxAPB2Clock{TIMxAPB2Clock};
-uint32_t ClockSystem::HSESrcClk{HSESrcClk};
+uint32_t ClockSystem::SystemCoreClock{HSI_Clock};
+uint32_t ClockSystem::APB1BusClock{HSI_Clock};
+uint32_t ClockSystem::APB2BusClock{HSI_Clock};
+uint32_t ClockSystem::TIMxAPB1Clock{HSI_Clock};
+uint32_t ClockSystem::TIMxAPB2Clock{HSI_Clock};
+uint32_t ClockSystem::HSESrcClk{0};
+
 
 SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, BusDividers BusDiv, PLL_CFGR PLLCfgr)
 {

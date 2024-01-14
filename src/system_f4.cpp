@@ -9,6 +9,7 @@
  *
  *************************************************************************************************/
 #include "system_f4.hpp"
+#include <rcc.hpp>
 
 uint32_t Tick;
 
@@ -27,7 +28,8 @@ SYS_StatusTypeDef System_F4::Init()
 				  FLASH_ACR_DCEN |
 				  FLASH_ACR_PRFTEN;
 
-	if(System_F4::InitTicks() > 0)
+	ClockSystem::SystemCoreClock = HSI_Clock;
+	if(InitTicks() > 0)
 		return SYS_ERROR;
 
 	return SYS_OK;
@@ -44,7 +46,7 @@ SYS_StatusTypeDef System_F4::InitTicks()
 	// 	Ticks_base = 10000;
 	// else
 	// 	Ticks_base = 1000;
-	if(SysTick_Config(SystemCoreClock/TICK_BASE) > 0)
+	if(SysTick_Config(ClockSystem::SystemCoreClock/TICK_BASE) > 0)
 		return SYS_ERROR;
 
 	return SYS_OK;

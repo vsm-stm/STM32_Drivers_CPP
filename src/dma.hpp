@@ -3,56 +3,25 @@
 
 #include <system_f4.hpp>
 #include <rcc.hpp>
-#include <vector>
 
 
 class DMA_Sx
 {
-private:
-	/* data */
 public:
 
 	enum class DIR
 	{
-		Per_To_Mem = 0,
-		Mem_To_Per = DMA_SxCR_DIR_0,
-		Mem_To_Mem = DMA_SxCR_DIR_1
+		From_Per = 0,
+		To_Per,
+		Mem_To_Mem
 	};
-	enum class PSIZE
+	enum class SIZE
 	{
-		BYTE = 0,
-		Half_WORD = DMA_SxCR_PSIZE_0,
-		WORD = DMA_SxCR_PSIZE_1,
-	};
-	enum class MINC
-	{
-		OFF = 0,
-		EN = DMA_SxCR_MINC
-	};
-	enum class PINC
-	{
-		OFF = 0,
-		EN = DMA_SxCR_PINC
-	};
-	enum class CIRC
-	{
-		OFF = 0,
-		EN = DMA_SxCR_CIRC
+		Byte = 0,
+		Half_Word,
+		Word
 	};
 
-	enum class TYPE
-	{
-		Per_To_Mem = 0,
-		Mem_To_Per = DMA_SxCR_DIR_0,
-		Mem_To_Mem = DMA_SxCR_DIR_1,
-		Size_Byte = 0,
-		Size_HWord = DMA_SxCR_PSIZE_0,
-		Soze_Word = DMA_SxCR_PSIZE_1,
-		MINC = DMA_SxCR_MINC,
-		PINC = DMA_SxCR_PINC,
-		CIRC = DMA_SxCR_CIRC,
-	};
-	
 	enum class IRQ
 	{
 		NO = 0,
@@ -62,33 +31,106 @@ public:
 		DME = DMA_SxCR_DMEIE
 	};
 
-	struct StreamSettings
+	enum class Per_Type
 	{
-		DMA_TypeDef *dma;
-		DMA_Stream_TypeDef *dma_sx;
-		uint32_t channel;
-		TYPE settings;
+		usart = 0,
+		spi,
+		i2c
 	};
 
-	DMA_TypeDef *DMA_controller;
+	struct StreamSettings
+	{
+		DMA_Stream_TypeDef *dma_sx;
+		uint32_t channel;
+		uint32_t per_addr;
+		Per_Type type;
+		DIR dir;
+		SIZE size;
+	};
+
 	DMA_Stream_TypeDef *DMA_Stream_X;
 	
-	DMA_Sx(StreamSettings setup) :
-			DMA_controller(setup.dma),
-			DMA_Stream_X(setup.dma_sx)
+	explicit DMA_Sx(StreamSettings setup) :
+			DMA_Stream_X(setup.dma_sx),
+			_direction(setup.dir),
+			_channel(setup.channel),
+			_paddr(setup.per_addr),
+			_per_type(setup.type),
+			_size(setup.size)
 	{
-		
-	}
+	};
 
+	explicit DMA_Sx(DMA_Stream_TypeDef *dma_sx,
+		   uint32_t channel,
+		   uint32_t per_addr,
+		   Per_Type type,
+		   DIR dir,
+		   SIZE size) :
+			DMA_Stream_X(dma_sx),
+			_direction(dir),
+			_channel(channel),
+			_paddr(per_addr),
+			_per_type(type),
+			_size(size)
+	{
+	};
 
+	explicit DMA_Sx(DMA_Stream_TypeDef *dma_sx,
+		   uint32_t channel,
+		   uint32_t per_addr,
+		   Per_Type type,
+		   DIR dir) :
+			DMA_Stream_X(dma_sx),
+			_direction(dir),
+			_channel(channel),
+			_paddr(per_addr),
+			_per_type(type)
+	{
+		_size = SIZE::Byte;
+	};
 
+	SYS_StatusTypeDef SetUp();
+	SYS_StatusTypeDef SetMemAddr(uint32_t addr);
 
+	void ClearFlags()
+	{
+		*DMA_CFR = (DMA_LISR_TCIF0 << cfr_offset) |
+				   (DMA_LISR_HTIF0 << cfr_offset);
+	};
 
+	void Enable_MINC()
+	{
+		DMA_Stream_X->CR |= DMA_SxCR_MINC;
+	};
 
+	void Disable_MINC()
+	{
+		DMA_Stream_X->CR &= ~DMA_SxCR_MINC;
+	};
+
+	void Enable_Stream()
+	{
+		DMA_Stream_X->CR |= DMA_SxCR_EN;
+	};
+
+	void Disable_Stream()
+	{
+		DMA_Stream_X->CR &= ~DMA_SxCR_EN;
+	};
+
+private:
+	DMA_TypeDef *DMA_controller;
+	uint32_t *DMA_CFR;
+	uint32_t cfr_offset;
+	DIR _direction;
+	uint32_t _channel;
+	uint32_t _paddr;
+	Per_Type _per_type;
+	SIZE _size;
+
+	
+	IRQn_Type IRQ_vector;
 
 };
-
-
-
 
 #endif

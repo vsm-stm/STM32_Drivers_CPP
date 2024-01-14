@@ -31,15 +31,38 @@ public:
 
 	explicit USART(	USART_TypeDef *USARTx,
 					uint32_t BaudRate,
-					std::unique_ptr<PIN> TX,
-					std::unique_ptr<PIN> RX) :
+					PIN TX,
+					PIN RX) :
 			USARTx(USARTx),
 			BaudRate(BaudRate),
-			_TX(std::move(TX)),
-			_RX(std::move(RX))
+			_TX(TX),
+			_RX(RX)
 	{
-		HardwareSetup();
+
 	}
+
+	explicit USART(def defs) :
+			USARTx(defs.USARTx),
+			BaudRate(defs.BaudRate),
+			_TX(defs.TX),
+			_RX(defs.RX)
+	{
+
+	}
+
+	USART()							= delete;
+	USART(USART const &)			= default;
+	USART(USART &&)					= default;
+	USART &operator=(USART const &)	= default;
+	USART &operator=(USART &&)		= default;
+	~USART()
+	{
+		USARTx->CR1 = 0;
+		USARTx->CR2 = 0;
+		USARTx->CR3 = 0;
+	};
+
+	SYS_StatusTypeDef SetUp();
 
 	void Enable_IRQ(IRQ irq)
 	{
@@ -60,35 +83,26 @@ public:
 		}
 	}
 
-	void Enable_DMA()
+	inline void Enable_DMA()
 	{
 		USARTx->CR3 |= USART_CR3_DMAR | USART_CR3_DMAT;
 	}
 
-	void Disable_DMA()
+	inline void Disable_DMA()
 	{
 		USARTx->CR3 &= ~(USART_CR3_DMAR | USART_CR3_DMAT);
 	}
 
-	USART()							= delete;
-	USART(USART const &)			= default;
-	USART(USART &&)					= default;
-	USART &operator=(USART const &)	= default;
-	USART &operator=(USART &&)		= default;
-	~USART()
+	inline void ClearFlags()
 	{
-		USARTx->CR1 = 0;
-		USARTx->CR2 = 0;
-		USARTx->CR3 = 0;
-	};
+		USARTx->SR = 0;
+	}
 
 private:
-	std::unique_ptr<PIN> _TX{};
-	std::unique_ptr<PIN> _RX{};
+	PIN _TX{};
+	PIN _RX{};
 
 	IRQn_Type IRQ_vector;
-
-	SYS_StatusTypeDef HardwareSetup();
 	
 };
 

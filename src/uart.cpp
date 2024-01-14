@@ -1,7 +1,7 @@
 #include "uart.hpp"
 
 
-SYS_StatusTypeDef USART::HardwareSetup()
+SYS_StatusTypeDef USART::SetUp()
 {
 	uint32_t af, bus_clk;
 
@@ -64,19 +64,21 @@ SYS_StatusTypeDef USART::HardwareSetup()
 
 	USARTx->CR1 = USART_CR1_UE;
 
-	if(_TX != NULL)
+	if(_TX.PORT != NULL)
 	{
-		_TX->SetUp(PIN::TYPE::AF_PushPull, af);
+		_TX.SetUp(PIN::TYPE::AF_PushPull, af);
 		USARTx->CR1 |= USART_CR1_TE;
 	}
-	if(_RX != NULL)
+	if(_RX.PORT != NULL)
 	{
-		_RX->SetUp(PIN::TYPE::AF_PushPull, af);	
+		_RX.SetUp(PIN::TYPE::AF_PushPull, af);	
 		USARTx->CR1 |= USART_CR1_RE;
 	}
 
 	USARTx->CR2 = 0;
 	USARTx->CR3 = 0;
+
+	USARTx->SR = 0;
 
 	return SYS_OK;
 }
