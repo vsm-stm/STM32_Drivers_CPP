@@ -91,11 +91,13 @@ public:
 
 	SYS_StatusTypeDef SetUp();
 	SYS_StatusTypeDef SetMemAddr(uint32_t addr);
+	SYS_StatusTypeDef SetMemAddr(uint32_t addr, uint16_t size);
 
 	void ClearFlags()
 	{
 		*DMA_CFR = (DMA_LISR_TCIF0 << cfr_offset) |
-				   (DMA_LISR_HTIF0 << cfr_offset);
+				   (DMA_LISR_HTIF0 << cfr_offset) |
+				   (DMA_LISR_TEIF0 << cfr_offset);
 	};
 
 	void Enable_MINC()

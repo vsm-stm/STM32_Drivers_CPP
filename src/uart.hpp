@@ -29,12 +29,12 @@ public:
 		PIN RX;
 	}def;
 
-	explicit USART(	USART_TypeDef *USARTx,
-					uint32_t BaudRate,
+	explicit USART(	USART_TypeDef *usartx,
+					uint32_t baudrate,
 					PIN TX,
 					PIN RX) :
-			USARTx(USARTx),
-			BaudRate(BaudRate),
+			USARTx(usartx),
+			BaudRate(baudrate),
 			_TX(TX),
 			_RX(RX)
 	{
@@ -102,6 +102,7 @@ private:
 	PIN _TX{};
 	PIN _RX{};
 
+	uint32_t af, bus_clk;
 	IRQn_Type IRQ_vector;
 	
 };

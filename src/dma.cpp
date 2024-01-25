@@ -171,3 +171,13 @@ SYS_StatusTypeDef DMA_Sx::SetMemAddr(uint32_t addr)
 
 	return SYS_OK;
 }
+
+SYS_StatusTypeDef DMA_Sx::SetMemAddr(uint32_t addr, uint16_t size)
+{
+	if(size == 0)
+		return SYS_ERROR;
+	
+	DMA_Stream_X->NDTR = size;
+
+	return SetMemAddr(addr);
+}
