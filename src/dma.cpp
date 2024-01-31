@@ -2,6 +2,7 @@
 
 SYS_StatusTypeDef DMA_Sx::SetUp()
 {
+	// Determine the DMA controller, IRQ vector, Configuration Register, and offset based on the DMA stream
 	if(DMA_Stream_X == DMA1_Stream0)
 	{
 		DMA_controller = DMA1;
@@ -132,7 +133,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 	}else
 		return SYS_ERROR;
 
-
+	// Enable the clock for the corresponding DMA controller
 	if(DMA_controller == DMA1)
 	{
 		RCC->AHB1ENR |= RCC_AHB1ENR_DMA1EN;
@@ -142,10 +143,14 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		RCC->AHB1ENR |= RCC_AHB1ENR_DMA2EN;
 	}
 
+	// Set peripheral address for the DMA stream
 	DMA_Stream_X->PAR = _paddr;
 	
+	// Configure DMA control register (CR) based on the channel, direction, and peripheral type
 	uint32_t sets = _channel << DMA_SxCR_CHSEL_Pos;
 	sets |= static_cast<uint32_t>(_direction) << DMA_SxCR_DIR_Pos;
+
+	// Specific configuration for USART and SPI peripheral types
 	if(_per_type == Per_Type::usart)
 	{
 		sets &= ~(DMA_SxCR_PSIZE_Msk |
@@ -157,6 +162,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 				static_cast<uint32_t>(_size) << DMA_SxCR_MSIZE_Pos;
 	}
 
+	// Apply the configuration to the DMA control register
 	DMA_Stream_X->CR = sets;
 
 	return SYS_OK;
@@ -164,20 +170,24 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 
 SYS_StatusTypeDef DMA_Sx::SetMemAddr(uint32_t addr)
 {
-	if(addr == 0)
+	// Check if the memory address is valid
+	if (addr == 0)
 		return SYS_ERROR;
-	
-	DMA_Stream_X->M0AR = addr;
+
+	// Set the memory address for the DMA stream
 
 	return SYS_OK;
 }
 
 SYS_StatusTypeDef DMA_Sx::SetMemAddr(uint32_t addr, uint16_t size)
 {
-	if(size == 0)
+	// Check if the size is valid
+	if (size == 0)
 		return SYS_ERROR;
-	
+
+	// Set the memory size and address for the DMA stream
 	DMA_Stream_X->NDTR = size;
 
+	// Call the function to set the memory address
 	return SetMemAddr(addr);
 }

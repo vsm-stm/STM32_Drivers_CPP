@@ -1,70 +1,79 @@
 #include "uart.hpp"
 
-
+/**
+ * @brief Set up the USART configuration.
+ * @return The status of the setup operation.
+ */
 SYS_StatusTypeDef USART::SetUp()
 {
-	if(USARTx == USART1)
+	// Check the USARTx pointer and configure corresponding parameters
+	if (USARTx == USART1)
 	{
 		RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
 		bus_clk = ClockSystem::APB2BusClock;
 		IRQ_vector = USART1_IRQn;
 		af = 7;
-	} else
-	if(USARTx == USART2)
+	}
+	else if (USARTx == USART2)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 		bus_clk = ClockSystem::APB1BusClock;
 		IRQ_vector = USART2_IRQn;
 		af = 7;
-	} else
-	if(USARTx == USART3)
+	}
+	else if (USARTx == USART3)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_USART3EN;
 		bus_clk = ClockSystem::APB1BusClock;
 		IRQ_vector = USART3_IRQn;
 		af = 7;
-	} else
-	if(USARTx == UART4)
+	}
+	else if (USARTx == UART4)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_UART4EN;
 		bus_clk = ClockSystem::APB1BusClock;
 		IRQ_vector = UART4_IRQn;
 		af = 8;
-	} else
-	if(USARTx == UART5)
+	}
+	else if (USARTx == UART5)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_UART5EN;
 		bus_clk = ClockSystem::APB1BusClock;
 		IRQ_vector = UART5_IRQn;
 		af = 8;
-	} else
-	if(USARTx == USART6)
+	}
+	else if (USARTx == USART6)
 	{
 		RCC->APB2ENR |= RCC_APB2ENR_USART6EN;
 		bus_clk = ClockSystem::APB2BusClock;
 		IRQ_vector = USART6_IRQn;
 		af = 8;
-	} else
+	}
+	else
 		return SYS_ERROR;
 
-	USARTx->BRR = bus_clk/BaudRate;
+	// Set the Baud Rate
+	USARTx->BRR = bus_clk / BaudRate;
 
+	// Enable USART and configure TX and RX pins if available
 	USARTx->CR1 = USART_CR1_UE;
 
-	if(_TX.PORT != NULL)
+	if (_TX.PORT != NULL)
 	{
 		_TX.SetUp(PIN::TYPE::AF_PushPull, af);
 		USARTx->CR1 |= USART_CR1_TE;
 	}
-	if(_RX.PORT != NULL)
+	if (_RX.PORT != NULL)
 	{
-		_RX.SetUp(PIN::TYPE::AF_PushPull, af);	
+		_RX.SetUp(PIN::TYPE::AF_PushPull, af);
 		USARTx->CR1 |= USART_CR1_RE;
 	}
 
+	// Clear and configure CR2 and CR3 registers
 	USARTx->CR2 = 0;
 	USARTx->CR3 = 0;
 
+	// Clear status register
 	USARTx->SR = 0;
 
 	return SYS_OK;

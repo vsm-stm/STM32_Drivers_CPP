@@ -1,4 +1,6 @@
 #include <tim.hpp>
+// #include <gpio.hpp>
+
 
 SYS_StatusTypeDef TIM::SetUp()
 {
@@ -102,6 +104,23 @@ SYS_StatusTypeDef TIM::SetUp()
 	}else
 		return SYS_ERROR;
 
+	if (CH1_pin.PORT != nullptr)
+	{
+		CH1_pin.SetUp(PIN::TYPE::AF_PushPull, af);
+	}
+	if (CH2_pin.PORT != nullptr)
+	{
+		CH2_pin.SetUp(PIN::TYPE::AF_PushPull, af);
+	}
+	if (CH3_pin.PORT != nullptr)
+	{
+		CH3_pin.SetUp(PIN::TYPE::AF_PushPull, af);
+	}
+	if (CH4_pin.PORT != nullptr)
+	{
+		CH4_pin.SetUp(PIN::TYPE::AF_PushPull, af);
+	}
+
 	return SYS_OK;
 }
 
@@ -111,6 +130,11 @@ SYS_StatusTypeDef TIM::StartPeriodicIRQ(uint32_t freq)
 	if((freq == 0)
 	|| (freq > 1000)) //todo for high freq
 		return SYS_ERROR;
+
+	SYS_StatusTypeDef setup_status = SetUp();
+
+	if(setup_status != SYS_OK)
+		return setup_status;
 	
 	TIMx->PSC = bus_clk/10000 - 1;
 	TIMx->ARR = 10000/freq - 1;
@@ -121,6 +145,49 @@ SYS_StatusTypeDef TIM::StartPeriodicIRQ(uint32_t freq)
 
 	TIMx->CR1 = TIM_CR1_CEN;
 	return SYS_OK;
+}
+
+SYS_StatusTypeDef TIM::SetupGenPulses(uint32_t freq, TIM_Channel ch1, uint32_t ch1_width, TIM_Channel ch2, uint32_t ch2_width)
+{
+	if((freq == 0)
+	|| (freq > 1000)
+	|| (CH1_pin.PORT == nullptr)
+	|| (CH2_pin.PORT == nullptr)) //todo for high freq
+		return SYS_ERROR;
+
+	SYS_StatusTypeDef setup_status = SetUp();
+
+	if(setup_status != SYS_OK)
+		return setup_status;
+
+	TIMx->ARR = 99;
+	TIMx->PSC = bus_clk/((TIMx->ARR+1) * freq * 2) - 1;
+	TIMx->CCR1 = ch1_width;
+	TIMx->CCR2 = ch2_width;
+	TIMx->BDTR = TIM_BDTR_MOE;
+	TIMx->DIER = TIM_DIER_UIE;
+	TIMx->CCER = TIM_CCER_CC1E |
+				 TIM_CCER_CC1NE |
+				 TIM_CCER_CC2E  |
+				 TIM_CCER_CC2NE;
+	TIMx->CCMR1 = TIM_CCMR1_OC1M_0 |
+				  TIM_CCMR1_OC1M_1 | // toggle mode
+				  TIM_CCMR1_OC2M_0 |
+				  TIM_CCMR1_OC2M_1 ; // toggle mode
+
+	NVIC_EnableIRQ(IRQ_vector);
+	// TIMx->CR1 |= TIM_CR1_CEN;
+
+	return SYS_OK;
+}
+
+void TIM::GenPulses_IRQ()
+{
+	ClearFlags();
+	if(--_pulses == 0)
+		TIMx->CR1 &= ~TIM_CR1_CEN;
+
+	// TIMx->CNT = 0;
 }
 
 
