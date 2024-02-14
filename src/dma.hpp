@@ -33,11 +33,10 @@ public:
 	 */
 	enum class IRQ
 	{
-		NO, 	///< No interrupt
-		TC, 	///< Transfer Complete interrupt
-		HTC,	///< Half Transfer Complete interrupt
-		TE, 	///< Transfer Error interrupt
-		DME 	///< Direct Mode Error interrupt
+		TC = DMA_SxCR_TCIE, 	///< Transfer Complete interrupt
+		HTC = DMA_SxCR_HTIE,	///< Half Transfer Complete interrupt
+		TE = DMA_SxCR_TEIE, 	///< Transfer Error interrupt
+		DME = DMA_SxCR_DMEIE 	///< Direct Mode Error interrupt
 	};
 
 	/**
@@ -47,7 +46,8 @@ public:
 	{
 		usart,	///< Peripheral type: USART
 		spi,	///< Peripheral type: SPI
-		i2c 	///< Peripheral type: I2C
+		i2c, 	///< Peripheral type: I2C
+		adc		///< Peripheral type: ADC
 	};
 
 	/**
@@ -140,41 +140,76 @@ public:
 					(DMA_LISR_TEIF0 << cfr_offset);
 	};
 
+	bool GetTC_Flag()
+	{ return ((*DMA_SR & (DMA_LISR_TCIF0_Msk << cfr_offset)) >> cfr_offset);};
+
+	/**
+	 * @brief Enable the specified USART IRQ.
+	 * @param irq The IRQ to enable.
+	 */
+	void Enable_IRQ(IRQ irq)
+	{
+		DMA_Stream_X->CR |= static_cast<uint32_t>(irq);
+
+		if (!(NVIC_GetEnableIRQ(IRQ_vector)))
+		{
+			NVIC_EnableIRQ(IRQ_vector);
+		}
+	}
+
+	/**
+	 * @brief Disable the specified USART IRQ.
+	 * @param irq The IRQ to disable.
+	 */
+	void Disable_IRQ(IRQ irq)
+	{
+		DMA_Stream_X->CR &= ~(static_cast<uint32_t>(irq));
+		if (!(DMA_Stream_X->CR & (DMA_SxCR_TCIE | DMA_SxCR_HTIE)))
+		{
+			NVIC_DisableIRQ(IRQ_vector);
+		}
+	}
+
 	/**
 	 * @brief Function to enable Memory Increment Mode.
 	 */
 	void Enable_MINC()
-	{
-		DMA_Stream_X->CR |= DMA_SxCR_MINC;
-	};
+	{	DMA_Stream_X->CR |= DMA_SxCR_MINC;};
 
 	/**
 	 * @brief Function to disable Memory Increment Mode.
 	 */
 	void Disable_MINC()
-	{
-		DMA_Stream_X->CR &= ~DMA_SxCR_MINC;
-	};
+	{	DMA_Stream_X->CR &= ~DMA_SxCR_MINC;};
+
+	/**
+	 * @brief Function to enable Circular Mode.
+	 */
+	void Enable_CIRC()
+	{	DMA_Stream_X->CR |= DMA_SxCR_CIRC;};
+
+	/**
+	 * @brief Function to disable Circular Mode.
+	 */
+	void Disable_CIRC()
+	{	DMA_Stream_X->CR &= ~DMA_SxCR_CIRC;};
 
 	/**
 	 * @brief Function to enable the DMA stream.
 	 */
 	void Enable_Stream()
-	{
-		DMA_Stream_X->CR |= DMA_SxCR_EN;
-	};
+	{	DMA_Stream_X->CR |= DMA_SxCR_EN;};
 
 	/**
 	 * @brief Function to disable the DMA stream.
 	 */
 	void Disable_Stream()
-	{
-		DMA_Stream_X->CR &= ~DMA_SxCR_EN;
-	};
+	{	DMA_Stream_X->CR &= ~DMA_SxCR_EN;};
 
 private:
 	DMA_TypeDef *DMA_controller;	///< Pointer to the DMA controller
-	uint32_t *DMA_CFR;				///< Pointer to the DMA Configuration Register
+	uint32_t *DMA_CFR;				///< Pointer to the DMA CLear Flags Register
+	uint32_t *DMA_SR;				///< Pointer to the DMA Status Flags Register
 	uint32_t cfr_offset;			///< Offset for the Configuration Register
 	DIR _direction;					///< Data transfer direction
 	uint32_t _channel;				///< DMA channel number

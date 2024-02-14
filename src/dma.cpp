@@ -9,6 +9,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA1_Stream0_IRQn;
 
 		DMA_CFR = (uint32_t*)&(DMA1->LIFCR);
+		DMA_SR = (uint32_t*)&(DMA1->LISR);
 		cfr_offset = 0;
 	}else
 	if(DMA_Stream_X == DMA1_Stream1)
@@ -17,6 +18,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA1_Stream1_IRQn;
 
 		DMA_CFR = (uint32_t*)&(DMA1->LIFCR);
+		DMA_SR = (uint32_t*)&(DMA1->LISR);
 		cfr_offset = 6;
 	}else
 	if(DMA_Stream_X == DMA1_Stream2)
@@ -25,6 +27,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA1_Stream2_IRQn;
 		
 		DMA_CFR = (uint32_t*)&(DMA1->LIFCR);
+		DMA_SR = (uint32_t*)&(DMA1->LISR);
 		cfr_offset = 16;
 	}else
 	if(DMA_Stream_X == DMA1_Stream3)
@@ -33,6 +36,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA1_Stream3_IRQn;
 		
 		DMA_CFR = (uint32_t*)&(DMA1->LIFCR);
+		DMA_SR = (uint32_t*)&(DMA1->LISR);
 		cfr_offset = 22;
 	}else
 	if(DMA_Stream_X == DMA1_Stream4)
@@ -41,6 +45,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA1_Stream4_IRQn;
 
 		DMA_CFR = (uint32_t*)&(DMA1->HIFCR);
+		DMA_SR = (uint32_t*)&(DMA1->HISR);
 		cfr_offset = 0;
 	}else
 	if(DMA_Stream_X == DMA1_Stream5)
@@ -49,6 +54,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA1_Stream5_IRQn;
 
 		DMA_CFR = (uint32_t*)&(DMA1->HIFCR);
+		DMA_SR = (uint32_t*)&(DMA1->HISR);
 		cfr_offset = 6;
 	}else
 	if(DMA_Stream_X == DMA1_Stream6)
@@ -57,6 +63,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA1_Stream6_IRQn;
 		
 		DMA_CFR = (uint32_t*)&(DMA1->HIFCR);
+		DMA_SR = (uint32_t*)&(DMA1->HISR);
 		cfr_offset = 16;
 	}else
 	if(DMA_Stream_X == DMA1_Stream7)
@@ -65,6 +72,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA1_Stream7_IRQn;
 		
 		DMA_CFR = (uint32_t*)&(DMA1->HIFCR);
+		DMA_SR = (uint32_t*)&(DMA1->HISR);
 		cfr_offset = 22;
 	}else
 	if(DMA_Stream_X == DMA2_Stream0)
@@ -73,6 +81,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA2_Stream0_IRQn;
 
 		DMA_CFR = (uint32_t*)&(DMA2->LIFCR);
+		DMA_SR = (uint32_t*)&(DMA2->LISR);
 		cfr_offset = 0;
 	}else
 	if(DMA_Stream_X == DMA2_Stream1)
@@ -81,6 +90,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA2_Stream1_IRQn;
 
 		DMA_CFR = (uint32_t*)&(DMA2->LIFCR);
+		DMA_SR = (uint32_t*)&(DMA2->LISR);
 		cfr_offset = 6;
 	}else
 	if(DMA_Stream_X == DMA2_Stream2)
@@ -89,6 +99,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA2_Stream2_IRQn;
 		
 		DMA_CFR = (uint32_t*)&(DMA2->LIFCR);
+		DMA_SR = (uint32_t*)&(DMA2->LISR);
 		cfr_offset = 16;
 	}else
 	if(DMA_Stream_X == DMA2_Stream3)
@@ -97,6 +108,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA2_Stream3_IRQn;
 		
 		DMA_CFR = (uint32_t*)&(DMA2->LIFCR);
+		DMA_SR = (uint32_t*)&(DMA2->LISR);
 		cfr_offset = 22;
 	}else
 	if(DMA_Stream_X == DMA2_Stream4)
@@ -105,6 +117,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA2_Stream4_IRQn;
 
 		DMA_CFR = (uint32_t*)&(DMA2->HIFCR);
+		DMA_SR = (uint32_t*)&(DMA2->HISR);
 		cfr_offset = 0;
 	}else
 	if(DMA_Stream_X == DMA2_Stream5)
@@ -113,6 +126,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA2_Stream5_IRQn;
 
 		DMA_CFR = (uint32_t*)&(DMA2->HIFCR);
+		DMA_SR = (uint32_t*)&(DMA2->HISR);
 		cfr_offset = 6;
 	}else
 	if(DMA_Stream_X == DMA2_Stream6)
@@ -121,6 +135,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA2_Stream6_IRQn;
 		
 		DMA_CFR = (uint32_t*)&(DMA2->HIFCR);
+		DMA_SR = (uint32_t*)&(DMA2->HISR);
 		cfr_offset = 16;
 	}else
 	if(DMA_Stream_X == DMA2_Stream7)
@@ -129,6 +144,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		IRQ_vector = DMA2_Stream7_IRQn;
 		
 		DMA_CFR = (uint32_t*)&(DMA2->HIFCR);
+		DMA_SR = (uint32_t*)&(DMA2->HISR);
 		cfr_offset = 22;
 	}else
 		return SYS_ERROR;
@@ -156,7 +172,8 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 		sets &= ~(DMA_SxCR_PSIZE_Msk |
 				  DMA_SxCR_MSIZE_Msk);
 	}else
-	if(_per_type == Per_Type::spi)
+	if((_per_type == Per_Type::spi)
+	|| (_per_type == Per_Type::adc))
 	{
 		sets |= static_cast<uint32_t>(_size) << DMA_SxCR_PSIZE_Pos |
 				static_cast<uint32_t>(_size) << DMA_SxCR_MSIZE_Pos;
@@ -175,6 +192,7 @@ SYS_StatusTypeDef DMA_Sx::SetMemAddr(uint32_t addr)
 		return SYS_ERROR;
 
 	// Set the memory address for the DMA stream
+	DMA_Stream_X->M0AR = addr;
 
 	return SYS_OK;
 }

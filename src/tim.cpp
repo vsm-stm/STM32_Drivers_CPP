@@ -2,7 +2,7 @@
 // #include <gpio.hpp>
 
 
-SYS_StatusTypeDef TIM::SetUp()
+SYS_StatusTypeDef TIM::SetHard()
 {
 	if(TIMx == TIM1)
 	{
@@ -104,34 +104,17 @@ SYS_StatusTypeDef TIM::SetUp()
 	}else
 		return SYS_ERROR;
 
-	if (CH1_pin.PORT != nullptr)
-	{
-		CH1_pin.SetUp(PIN::TYPE::AF_PushPull, af);
-	}
-	if (CH2_pin.PORT != nullptr)
-	{
-		CH2_pin.SetUp(PIN::TYPE::AF_PushPull, af);
-	}
-	if (CH3_pin.PORT != nullptr)
-	{
-		CH3_pin.SetUp(PIN::TYPE::AF_PushPull, af);
-	}
-	if (CH4_pin.PORT != nullptr)
-	{
-		CH4_pin.SetUp(PIN::TYPE::AF_PushPull, af);
-	}
-
 	return SYS_OK;
 }
 
 /* freq in Hz*/
-SYS_StatusTypeDef TIM::StartPeriodicIRQ(uint32_t freq)
+SYS_StatusTypeDef TIM_PeriodicIRQ::SetUp(uint32_t freq)
 {
 	if((freq == 0)
 	|| (freq > 1000)) //todo for high freq
 		return SYS_ERROR;
 
-	SYS_StatusTypeDef setup_status = SetUp();
+	SYS_StatusTypeDef setup_status = SetHard();
 
 	if(setup_status != SYS_OK)
 		return setup_status;
@@ -143,51 +126,88 @@ SYS_StatusTypeDef TIM::StartPeriodicIRQ(uint32_t freq)
 
 	NVIC_EnableIRQ(IRQ_vector);
 
-	TIMx->CR1 = TIM_CR1_CEN;
+	// TIMx->CR1 = TIM_CR1_CEN;
 	return SYS_OK;
 }
 
-SYS_StatusTypeDef TIM::SetupGenPulses(uint32_t freq, TIM_Channel ch1, uint32_t ch1_width, TIM_Channel ch2, uint32_t ch2_width)
+
+SYS_StatusTypeDef TIM_EncoderGenerator::SetUp(uint32_t freq, uint32_t period, uint32_t ch1_width, uint32_t ch2_width)
 {
 	if((freq == 0)
 	|| (freq > 1000)
-	|| (CH1_pin.PORT == nullptr)
-	|| (CH2_pin.PORT == nullptr)) //todo for high freq
+	|| (A.pin.PORT == nullptr)
+	|| (B.pin.PORT == nullptr))
 		return SYS_ERROR;
 
-	SYS_StatusTypeDef setup_status = SetUp();
+	SYS_StatusTypeDef setup_status = SetHard();
 
 	if(setup_status != SYS_OK)
 		return setup_status;
 
-	TIMx->ARR = 99;
+	A.pin.SetUp(PIN::TYPE::AF_PushPull, af);
+	B.pin.SetUp(PIN::TYPE::AF_PushPull, af);
+
+	uint32_t ccr_offset = &TIMx->CCR2 - &TIMx->CCR1;
+
+	uint32_t* ccr_A = const_cast<uint32_t*>(&TIMx->CCR1 + ccr_offset * line_A_offset);
+	uint32_t* ccr_B = const_cast<uint32_t*>(&TIMx->CCR1 + ccr_offset * line_B_offset);
+
+	uint32_t* ccrmr_A = const_cast<uint32_t*>(&TIMx->CCMR1 + 32 * ((line_A_offset & 2) >> 1));
+	uint32_t* ccrmr_B = const_cast<uint32_t*>(&TIMx->CCMR1 + 32 * ((line_B_offset & 2) >> 1));
+
+
+	TIMx->ARR = period;
 	TIMx->PSC = bus_clk/((TIMx->ARR+1) * freq * 2) - 1;
-	TIMx->CCR1 = ch1_width;
-	TIMx->CCR2 = ch2_width;
+	*ccr_A = ch1_width;
+	*ccr_B = ch2_width;
 	TIMx->BDTR = TIM_BDTR_MOE;
 	TIMx->DIER = TIM_DIER_UIE;
-	TIMx->CCER = TIM_CCER_CC1E |
-				 TIM_CCER_CC1NE |
-				 TIM_CCER_CC2E  |
-				 TIM_CCER_CC2NE;
-	TIMx->CCMR1 = TIM_CCMR1_OC1M_0 |
-				  TIM_CCMR1_OC1M_1 | // toggle mode
-				  TIM_CCMR1_OC2M_0 |
-				  TIM_CCMR1_OC2M_1 ; // toggle mode
+	TIMx->CCER = TIM_CCER_CC1E << ((TIM_CCER_CC2E_Pos - TIM_CCER_CC1E_Pos) * line_A_offset) |
+				 TIM_CCER_CC1E << ((TIM_CCER_CC2E_Pos - TIM_CCER_CC1E_Pos) * line_B_offset);
+	
+	*ccrmr_A = 0;
+	*ccrmr_B = 0;
+	*ccrmr_A |= 3 << (TIM_CCMR1_OC1M_Pos + 8*(line_A_offset & 1)); // toggle mode
+	*ccrmr_B |= 3 << (TIM_CCMR1_OC1M_Pos + 8*(line_B_offset & 1)); // toggle mode
 
 	NVIC_EnableIRQ(IRQ_vector);
-	// TIMx->CR1 |= TIM_CR1_CEN;
 
 	return SYS_OK;
 }
 
-void TIM::GenPulses_IRQ()
+void TIM_EncoderGenerator::GenPulses_IRQ()
 {
 	ClearFlags();
 	if(--_pulses == 0)
 		TIMx->CR1 &= ~TIM_CR1_CEN;
-
-	// TIMx->CNT = 0;
 }
 
+SYS_StatusTypeDef TIM_PulseMeasure::SetUp(uint32_t max_freq)
+{
+	if((max_freq > 1000000)
+	|| (line_offset > 1)
+	|| (Input.pin.PORT == nullptr))
+		return SYS_ERROR;
+
+	SYS_StatusTypeDef setup_status = SetHard();
+	if(setup_status != SYS_OK)
+		return setup_status;
+
+	Input.pin.SetUp(PIN::TYPE::AF_PushPull, af);
+
+	TIMx->PSC = bus_clk/max_freq - 1;
+	TIMx->ARR = 0xFFFF;
+	TIMx->CCMR1 = 0b01 << line_offset*TIM_CCMR1_CC2S_Pos |
+				  0b10 << !line_offset*TIM_CCMR1_CC2S_Pos;
+
+	TIMx->SMCR = (0b101 + line_offset)  << TIM_SMCR_TS_Pos | // Filtered Timer Input 1/2
+				  0b100 << TIM_SMCR_SMS_Pos; // Reset Mode - Rising edge of the selected trigger input (TRGI) reinitializes the counter and generates an update of the registers
+	TIMx->CCER  = TIM_CCER_CC1P |
+				  TIM_CCER_CC1E |
+				  TIM_CCER_CC2E;
+	
+	TIMx->CR1 = TIM_CR1_CEN;
+
+	return SYS_OK;
+}
 

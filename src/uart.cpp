@@ -13,8 +13,8 @@ SYS_StatusTypeDef USART::SetUp()
 		bus_clk = ClockSystem::APB2BusClock;
 		IRQ_vector = USART1_IRQn;
 		af = 7;
-	}
-	else if (USARTx == USART2)
+	}else
+	if (USARTx == USART2)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 		bus_clk = ClockSystem::APB1BusClock;
