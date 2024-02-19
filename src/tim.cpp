@@ -235,6 +235,8 @@ SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
 	{
 		arr_off+=10;
 		TIMx->ARR = 99*arr_off;
+		if(TIMx->ARR > 0xFFFF)
+			return SYS_ERROR;
 	}
 	
 	TIMx->PSC = bus_clk/((TIMx->ARR+1) * freq) - 1;
