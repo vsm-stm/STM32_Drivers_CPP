@@ -164,6 +164,7 @@ private:
 		uint32_t* ccmr; 
 	} line_ch[4];
 	
+	uint32_t arr_off = 1;
 	
 };
 

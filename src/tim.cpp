@@ -231,6 +231,12 @@ SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
 	uint32_t cce_offset = TIM_CCER_CC2E_Pos - TIM_CCER_CC1E_Pos;
 
 	TIMx->ARR = 99;
+	while((bus_clk/((TIMx->ARR+1) * freq) - 1) > 0xFFFF)
+	{
+		arr_off+=10;
+		TIMx->ARR = 99*arr_off;
+	}
+	
 	TIMx->PSC = bus_clk/((TIMx->ARR+1) * freq) - 1;
 	TIMx->BDTR = TIM_BDTR_MOE;
 	TIMx->CCER = 0;
@@ -261,5 +267,5 @@ void TIM_PWM::SetLine_Width(uint32_t line, uint32_t width)
 	|| (line_ch[line].ccr ==0))
 		return;
 
-	*line_ch[line].ccr = width;
+	*line_ch[line].ccr = width*arr_off;
 }
