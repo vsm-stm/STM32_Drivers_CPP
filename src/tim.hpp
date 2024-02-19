@@ -28,6 +28,12 @@ public:
 		CHANNEL_4
 	};
 
+	struct line
+	{
+		PIN pin;
+		TIM_Channel channel;
+	};
+
 	inline void ClearFlags()
 	{
 		TIMx->SR &= ~TIM_SR_UIF;
@@ -36,8 +42,6 @@ public:
 
 class TIM_PeriodicIRQ : public TIM
 {
-private:
-
 public:
 	TIM_PeriodicIRQ(TIM_TypeDef *timx) : TIM(timx){};
 
@@ -58,12 +62,6 @@ class TIM_EncoderGenerator : public TIM
 {
 
 public:
-	struct line
-	{
-		PIN pin;
-		TIM_Channel channel;
-	};
-
 	TIM_EncoderGenerator(TIM_TypeDef *timx, struct line _A, struct line _B) :
 		TIM(timx), 
 		A(_A), 
@@ -77,8 +75,6 @@ public:
 
 	void GenPulse(int32_t pulses)
 	{
-		pulses = pulses;
-
 		if(pulses > 0)
 		{
 			TIMx->CCER &= ~TIM_CCER_CC1P;
@@ -108,12 +104,6 @@ private:
 class TIM_PulseMeasure : public TIM
 {
 public:
-	struct line
-	{
-		PIN pin;
-		TIM_Channel channel;
-	};
-
 	SYS_StatusTypeDef SetUp(uint32_t max_freq);
 
 
@@ -142,6 +132,40 @@ private:
 	uint32_t line_offset;
 };
 
+class TIM_PWM : public TIM
+{
+public:
+	TIM_PWM(TIM_TypeDef *timx, struct line ch1, struct line ch2, struct line ch3, struct line ch4) :
+		TIM(timx)
+	{
+		line_ch[0].line = ch1;
+		line_ch[1].line = ch2;
+		line_ch[2].line = ch3;
+		line_ch[3].line = ch4;
+
+		line_ch[0].offset = static_cast<uint32_t>(ch1.channel);
+		line_ch[1].offset = static_cast<uint32_t>(ch2.channel);
+		line_ch[2].offset = static_cast<uint32_t>(ch3.channel);
+		line_ch[3].offset = static_cast<uint32_t>(ch4.channel);
+	};
+	~TIM_PWM(){};
+
+	SYS_StatusTypeDef SetUp(uint32_t freq);
+
+	void SetLine_Width(uint32_t line, uint32_t width);
+
+private:
+	struct _channel
+	{
+		struct line line;
+		uint32_t offset;
+
+		uint32_t* ccr;
+		uint32_t* ccmr; 
+	} line_ch[4];
+	
+	
+};
 
 
 

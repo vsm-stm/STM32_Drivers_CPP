@@ -165,8 +165,8 @@ SYS_StatusTypeDef TIM_EncoderGenerator::SetUp(uint32_t freq, uint32_t period, ui
 	TIMx->CCER = TIM_CCER_CC1E << ((TIM_CCER_CC2E_Pos - TIM_CCER_CC1E_Pos) * line_A_offset) |
 				 TIM_CCER_CC1E << ((TIM_CCER_CC2E_Pos - TIM_CCER_CC1E_Pos) * line_B_offset);
 	
-	*ccrmr_A = 0;
-	*ccrmr_B = 0;
+	TIMx->CCMR1 = 0;
+	TIMx->CCMR2 = 0;
 	*ccrmr_A |= 3 << (TIM_CCMR1_OC1M_Pos + 8*(line_A_offset & 1)); // toggle mode
 	*ccrmr_B |= 3 << (TIM_CCMR1_OC1M_Pos + 8*(line_B_offset & 1)); // toggle mode
 
@@ -211,3 +211,55 @@ SYS_StatusTypeDef TIM_PulseMeasure::SetUp(uint32_t max_freq)
 	return SYS_OK;
 }
 
+SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
+{
+	if((freq == 0)
+	|| (freq > 10000)
+	|| ((line_ch[0].line.pin.PORT == nullptr)
+	 && (line_ch[1].line.pin.PORT == nullptr)
+	 && (line_ch[2].line.pin.PORT == nullptr)
+	 && (line_ch[3].line.pin.PORT == nullptr)))
+		return SYS_ERROR;
+
+	SYS_StatusTypeDef setup_status = SetHard();
+
+	if(setup_status != SYS_OK)
+		return setup_status;
+
+	uint32_t ccr_offset = (&TIMx->CCR2 - &TIMx->CCR1);
+	uint32_t ccmr_offset = &TIMx->CCMR2 - &TIMx->CCMR1;
+	uint32_t cce_offset = TIM_CCER_CC2E_Pos - TIM_CCER_CC1E_Pos;
+
+	TIMx->ARR = 99;
+	TIMx->PSC = bus_clk/((TIMx->ARR+1) * freq) - 1;
+	TIMx->BDTR = TIM_BDTR_MOE;
+	TIMx->CCER = 0;
+	TIMx->CCMR1 = 0;
+	TIMx->CCMR2 = 0;
+
+	for(uint32_t i = 0; i < 4; i++)
+	{
+		if(line_ch[i].line.pin.PORT != nullptr)
+		{
+			line_ch[i].line.pin.SetUp(PIN::TYPE::AF_PushPull, af);
+			line_ch[i].ccr = const_cast<uint32_t*>(&TIMx->CCR1 + ccr_offset * line_ch[i].offset);
+			line_ch[i].ccmr = const_cast<uint32_t*>(&TIMx->CCMR1 + ccmr_offset * ((line_ch[i].offset & 2) >> 1));
+
+			TIMx->CCER |= TIM_CCER_CC1E << ((cce_offset) * line_ch[i].offset);
+			*line_ch[i].ccmr |= 6 << (TIM_CCMR1_OC1M_Pos + 8*(line_ch[i].offset & 1)); // PWM mode 1
+		}
+	}
+
+	TIMx->CR1 |= TIM_CR1_CEN;
+	return SYS_OK;
+}
+
+void TIM_PWM::SetLine_Width(uint32_t line, uint32_t width)
+{
+	if((line > 3)
+	|| (width > 100)
+	|| (line_ch[line].ccr ==0))
+		return;
+
+	*line_ch[line].ccr = width;
+}
