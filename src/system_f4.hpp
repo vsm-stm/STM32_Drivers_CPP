@@ -9,7 +9,10 @@
 #define SYSTEM_F4_H_
 
 #include <stdint.h>
-#include "stm32f4xx.h"
+extern "C"
+{
+	 #include "stm32f4xx.h"
+}
 
 #define TICK_BASE 1000
 

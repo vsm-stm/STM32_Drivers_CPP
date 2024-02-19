@@ -2,7 +2,6 @@
 #define GPIO_H_
 
 #include <system_f4.hpp>
-#include "stm32f4xx.h"
 
 /**
  * @brief Class representing a GPIO pin with configurable parameters.

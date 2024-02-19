@@ -1,7 +1,6 @@
 #ifndef RCC_H_
 #define RCC_H_
 
-#include "stm32f4xx.h"
 #include <stdint.h>
 #include <system_f4.hpp>
 

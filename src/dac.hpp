@@ -7,9 +7,6 @@
 
 class DAC_Module
 {
-private:
-	PIN _CH1{};
-	PIN _CH2{};
 public:
 	DAC_TypeDef *DACx;
 
@@ -31,6 +28,10 @@ public:
 	{
 		DAC->DHR12R2 = data;
 	};
+
+private:
+	PIN _CH1{};
+	PIN _CH2{};
 };
 
 
