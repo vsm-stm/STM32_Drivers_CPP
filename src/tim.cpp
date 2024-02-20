@@ -107,20 +107,39 @@ SYS_StatusTypeDef TIM::SetHard()
 	return SYS_OK;
 }
 
+SYS_StatusTypeDef TIM::SetFreq(uint32_t freq)
+{
+	uint32_t pcs = 0, arr = 0;
+
+	do
+	{
+		arr += 10;
+
+		if(arr > 0xFFFF)
+			return SYS_ERROR;
+
+		pcs = bus_clk/((arr+1) * freq *2) - 1;
+
+	} while (pcs > 0xFFFF);	
+	
+	TIMx->ARR = arr;
+	TIMx->PSC = pcs;
+
+	return SYS_OK;
+}
+
 /* freq in Hz*/
 SYS_StatusTypeDef TIM_PeriodicIRQ::SetUp(uint32_t freq)
 {
-	if((freq == 0)
-	|| (freq > 1000)) //todo for high freq
-		return SYS_ERROR;
-
 	SYS_StatusTypeDef setup_status = SetHard();
 
 	if(setup_status != SYS_OK)
 		return setup_status;
 	
-	TIMx->PSC = bus_clk/10000 - 1;
-	TIMx->ARR = 10000/freq - 1;
+	setup_status = SetFreq(freq);
+	if(setup_status != SYS_OK)
+		return setup_status;
+
 	TIMx->DIER = TIM_DIER_UIE;
 	TIMx->SR = 0;
 
@@ -215,10 +234,10 @@ SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
 {
 	if((freq == 0)
 	|| (freq > 10000)
-	|| ((line_ch[0].line.pin.PORT == nullptr)
-	 && (line_ch[1].line.pin.PORT == nullptr)
-	 && (line_ch[2].line.pin.PORT == nullptr)
-	 && (line_ch[3].line.pin.PORT == nullptr)))
+	|| ((CH1.PORT == nullptr)
+	 && (CH2.PORT == nullptr)
+	 && (CH3.PORT == nullptr)
+	 && (CH4.PORT == nullptr)))
 		return SYS_ERROR;
 
 	SYS_StatusTypeDef setup_status = SetHard();
@@ -226,48 +245,65 @@ SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
 	if(setup_status != SYS_OK)
 		return setup_status;
 
-	uint32_t ccr_offset = (&TIMx->CCR2 - &TIMx->CCR1);
-	uint32_t ccmr_offset = &TIMx->CCMR2 - &TIMx->CCMR1;
-	uint32_t cce_offset = TIM_CCER_CC2E_Pos - TIM_CCER_CC1E_Pos;
+	uint32_t pcs = 0, arr = 0;
+	arr_off = -9;
 
-	TIMx->ARR = 99;
-	while((bus_clk/((TIMx->ARR+1) * freq) - 1) > 0xFFFF)
+	do
 	{
 		arr_off+=10;
-		TIMx->ARR = 99*arr_off;
-		if(TIMx->ARR > 0xFFFF)
+		arr = 99*arr_off;
+
+		if(arr > 0xFFFF)
 			return SYS_ERROR;
-	}
+
+		pcs = bus_clk/((arr+1) * freq) - 1;
+
+	} while (pcs > 0xFFFF);	
 	
-	TIMx->PSC = bus_clk/((TIMx->ARR+1) * freq) - 1;
+	TIMx->ARR = arr;
+	TIMx->PSC = pcs;
+	
 	TIMx->BDTR = TIM_BDTR_MOE;
 	TIMx->CCER = 0;
 	TIMx->CCMR1 = 0;
 	TIMx->CCMR2 = 0;
 
-	for(uint32_t i = 0; i < 4; i++)
+	if(CH1.PORT != nullptr)
 	{
-		if(line_ch[i].line.pin.PORT != nullptr)
-		{
-			line_ch[i].line.pin.SetUp(PIN::TYPE::AF_PushPull, af);
-			line_ch[i].ccr = const_cast<uint32_t*>(&TIMx->CCR1 + ccr_offset * line_ch[i].offset);
-			line_ch[i].ccmr = const_cast<uint32_t*>(&TIMx->CCMR1 + ccmr_offset * ((line_ch[i].offset & 2) >> 1));
-
-			TIMx->CCER |= TIM_CCER_CC1E << ((cce_offset) * line_ch[i].offset);
-			*line_ch[i].ccmr |= 6 << (TIM_CCMR1_OC1M_Pos + 8*(line_ch[i].offset & 1)); // PWM mode 1
-		}
+		CH1.SetUp(PIN::TYPE::AF_PushPull, af);
+		TIMx->CCER |= TIM_CCER_CC1E;
+		TIMx->CCMR1 |= 6 << TIM_CCMR1_OC1M_Pos;
 	}
+	if(CH2.PORT != nullptr)
+	{
+		CH2.SetUp(PIN::TYPE::AF_PushPull, af);
+		TIMx->CCER |= TIM_CCER_CC2E;
+		TIMx->CCMR1 |= 6 << TIM_CCMR1_OC2M_Pos;
+	}
+	if(CH3.PORT != nullptr)
+	{
+		CH3.SetUp(PIN::TYPE::AF_PushPull, af);
+		TIMx->CCER |= TIM_CCER_CC3E;
+		TIMx->CCMR2 |= 6 << TIM_CCMR2_OC3M_Pos;
+	}
+	if(CH4.PORT != nullptr)
+	{
+		CH4.SetUp(PIN::TYPE::AF_PushPull, af);
+		TIMx->CCER |= TIM_CCER_CC4E;
+		TIMx->CCMR2 |= 6 << TIM_CCMR2_OC4M_Pos;
+	}
+
 
 	TIMx->CR1 |= TIM_CR1_CEN;
 	return SYS_OK;
 }
 
-void TIM_PWM::SetLine_Width(uint32_t line, uint32_t width)
+void TIM_PWM::SetCCR(TIM_Channel ch, uint32_t width)
 {
-	if((line > 3)
-	|| (width > 100)
-	|| (line_ch[line].ccr ==0))
+	if(width > 100)
 		return;
 
-	*line_ch[line].ccr = width*arr_off;
+	uint32_t ccr_off = &TIMx->CCR2 - &TIMx->CCR1;
+	uint32_t *ccr = const_cast<uint32_t*>(&TIMx->CCR1 + ccr_off * static_cast<uint32_t>(ch));
+	*ccr = width * arr_off;
 }

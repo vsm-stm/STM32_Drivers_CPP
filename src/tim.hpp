@@ -12,7 +12,7 @@ protected:
 	uint32_t bus_clk;
 	uint32_t af;
 
-	SYS_StatusTypeDef SetHard();
+	
 public:
 	TIM_TypeDef *TIMx;
 
@@ -34,10 +34,46 @@ public:
 		TIM_Channel channel;
 	};
 
+	enum class IRQ
+	{
+		UE = TIM_DIER_UIE,		
+		CC1E = TIM_DIER_CC1IE,	
+		CC2E = TIM_DIER_CC2IE,	
+		CC3E = TIM_DIER_CC3IE,	
+		CC4E = TIM_DIER_CC4IE
+	};
+
+	SYS_StatusTypeDef SetHard();
+	SYS_StatusTypeDef SetFreq(uint32_t freq);
+
+	void Enable_IRQ(IRQ irq)
+	{
+		TIMx->DIER |= static_cast<uint32_t>(irq);
+
+		if (!(NVIC_GetEnableIRQ(IRQ_vector)))
+		{
+			NVIC_EnableIRQ(IRQ_vector);
+		}
+	}
+
+	void Disable_IRQ(IRQ irq)
+	{
+		TIMx->DIER &= ~(static_cast<uint32_t>(irq));
+		if (!(TIMx->DIER & (TIM_DIER_UIE | TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE | TIM_DIER_CC4IE)))
+		{
+			NVIC_DisableIRQ(IRQ_vector);
+		}
+	}
+
 	inline void ClearFlags()
 	{
-		TIMx->SR &= ~TIM_SR_UIF;
-	};	
+		TIMx->SR &= ~(TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF | TIM_SR_CC4IF);
+	};
+
+	inline void Enable_TRIG(void)
+	{
+		TIMx->CR2 |= 2 << TIM_CR2_MMS_Pos;
+	}
 };
 
 class TIM_PeriodicIRQ : public TIM
@@ -135,37 +171,25 @@ private:
 class TIM_PWM : public TIM
 {
 public:
-	TIM_PWM(TIM_TypeDef *timx, struct line ch1, struct line ch2, struct line ch3, struct line ch4) :
-		TIM(timx)
-	{
-		line_ch[0].line = ch1;
-		line_ch[1].line = ch2;
-		line_ch[2].line = ch3;
-		line_ch[3].line = ch4;
-
-		line_ch[0].offset = static_cast<uint32_t>(ch1.channel);
-		line_ch[1].offset = static_cast<uint32_t>(ch2.channel);
-		line_ch[2].offset = static_cast<uint32_t>(ch3.channel);
-		line_ch[3].offset = static_cast<uint32_t>(ch4.channel);
-	};
+	TIM_PWM(TIM_TypeDef *timx, PIN _ch1, PIN _ch2, PIN _ch3, PIN _ch4) :
+		TIM(timx),
+		CH1(_ch1),
+		CH2(_ch2),
+		CH3(_ch3),
+		CH4(_ch4)
+	{};
 	~TIM_PWM(){};
 
 	SYS_StatusTypeDef SetUp(uint32_t freq);
-
-	void SetLine_Width(uint32_t line, uint32_t width);
+	void SetCCR(TIM_Channel ch, uint32_t width);
 
 private:
-	struct _channel
-	{
-		struct line line;
-		uint32_t offset;
-
-		uint32_t* ccr;
-		uint32_t* ccmr; 
-	} line_ch[4];
+	PIN CH1{};
+	PIN CH2{};
+	PIN CH3{};
+	PIN CH4{};
 	
-	uint32_t arr_off = 1;
-	
+	int32_t arr_off = 1;
 };
 
 
