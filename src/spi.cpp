@@ -29,7 +29,9 @@ SYS_StatusTypeDef SPI::SetHard()
 		bus_clk = ClockSystem::APB1BusClock;
 		IRQ_vector = SPI3_IRQn;
 		af = 6;
-	}else
+	}
+#if defined(STM32F446xx) || defined(STM32F429xx)
+	else
 	if (SPIx == SPI4)
 	{
 		RCC->APB2ENR |= RCC_APB2ENR_SPI4EN;
@@ -39,6 +41,7 @@ SYS_StatusTypeDef SPI::SetHard()
 		IRQ_vector = SPI4_IRQn;
 		af = 5;
 	}
+#endif
 	else return SYS_ERROR;
 
 	if (_CLK.PORT != NULL)
