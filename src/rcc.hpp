@@ -1,7 +1,6 @@
 #ifndef RCC_H_
 #define RCC_H_
 
-#include <stdint.h>
 #include <system_f4.hpp>
 
 #define HSI_Clock	16000000UL
