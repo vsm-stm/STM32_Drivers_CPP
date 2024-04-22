@@ -136,7 +136,7 @@ SYS_StatusTypeDef TIM_PeriodicIRQ::SetUp(uint32_t freq)
 	if(setup_status != SYS_OK)
 		return setup_status;
 	
-	setup_status = SetFreq(freq);
+	setup_status = SetFreq(freq/2);
 	if(setup_status != SYS_OK)
 		return setup_status;
 

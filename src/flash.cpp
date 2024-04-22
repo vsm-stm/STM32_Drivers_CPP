@@ -1,10 +1,16 @@
 #include <flash.hpp>
 #include <string.h>
 
+bool flash_access_enabled = false;
+
 void flash_base::Enable_access()
 {
-	FLASH->KEYR = 0x45670123;               //Enable access to FLASH
-	FLASH->KEYR = 0xCDEF89AB;
+	if(!flash_access_enabled)
+	{
+		FLASH->KEYR = 0x45670123;               //Enable access to FLASH
+		FLASH->KEYR = 0xCDEF89AB;
+		flash_access_enabled = 1;
+	}
 };
 
 uint32_t flash_base::ready()

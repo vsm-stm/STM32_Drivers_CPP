@@ -1,15 +1,49 @@
 #ifndef SPI_HPP_
 #define SPI_HPP_
 
-#include <memory>
 #include <system_f4.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
+#include <memory>
 
 class SPI
 {
 public:
 	SPI_TypeDef *SPIx;
+
+	enum class Master_sel
+	{
+		Slave = 0,
+		Master = SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_MSTR
+	};
+
+	enum class Data_frame_format
+	{
+		Byte = 0,
+		Half_Word = SPI_CR1_DFF
+	};
+
+	enum class Frame_Format
+	{
+		MSB = 0,
+		LSB = SPI_CR1_LSBFIRST
+	};
+
+	enum class TYPE
+	{
+		RX = 0,
+		TX = 0,
+		TXRX
+	};
+
+	enum class cPolPha
+	{
+		None = 0,
+		cPha = SPI_CR1_CPHA,
+		cPol = SPI_CR1_CPOL,
+		cPolPha = SPI_CR1_CPHA | SPI_CR1_CPOL
+	};
+
 
 	enum class IRQ
 	{
@@ -18,11 +52,12 @@ public:
 		ERR = SPI_CR2_ERRIE
 	};
 
-	explicit SPI(SPI_TypeDef *spix, PIN CLK, PIN MOSI, PIN MISO) :
+	explicit SPI(SPI_TypeDef *spix, PIN _CLK, PIN _MOSI, PIN _MISO, PIN _SS) :
 		SPIx(spix),
-		_CLK(CLK),
-		_MOSI(MOSI),
-		_MISO(MISO)
+		CLK(_CLK),
+		MOSI(_MOSI),
+		MISO(_MISO),
+		SS(_SS)
 	{
 	}
 
@@ -32,6 +67,13 @@ public:
 	SPI &operator=(SPI const &) = default;
 	SPI &operator=(SPI &&) = default;
 	~SPI(){};
+
+	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type)
+	{
+		return SetUp(mstr, type, Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, 0);
+	};
+
+	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
 
 	void Enable()
 	{
@@ -91,9 +133,10 @@ public:
 	}
 
 protected:
-	PIN _CLK{};
-	PIN _MOSI{};
-	PIN _MISO{};
+	PIN CLK{};
+	PIN MOSI{};
+	PIN MISO{};
+	PIN SS{};
 
 	uint32_t af, bus_clk;
 	IRQn_Type IRQ_vector;
@@ -109,8 +152,17 @@ public:
 
 	SYS_StatusTypeDef SetUp();
 
-	SPI_Slave_TX(SPI_TypeDef *spix, PIN CLK, PIN MISO) : SPI(spix, CLK, PIN(0,0), MISO){};
+	SPI_Slave_TX(SPI_TypeDef *spix, PIN CLK, PIN MISO) : SPI(spix, CLK, {}, MISO, {}){};
 	~SPI_Slave_TX(){};
+};
+
+class SPI_Master : public SPI
+{
+private:
+
+public:
+	SPI_Master(SPI_TypeDef *spix, PIN CLK, PIN MOSI, PIN MISO) : SPI(spix, CLK, MOSI, MISO, {}){};
+	~SPI_Master(){};
 };
 
 

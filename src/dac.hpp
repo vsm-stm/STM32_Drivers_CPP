@@ -31,6 +31,8 @@ public:
 
 	inline void SetValue(uint32_t data)
 	{
+		if(data > 0xFFF)
+			return;
 		*data_out = data;
 	};
 private:

@@ -74,14 +74,6 @@ public:
 	{
 		TIMx->CR2 |= 2 << TIM_CR2_MMS_Pos;
 	}
-};
-
-class TIM_PeriodicIRQ : public TIM
-{
-public:
-	TIM_PeriodicIRQ(TIM_TypeDef *timx) : TIM(timx){};
-
-	SYS_StatusTypeDef SetUp(uint32_t freq);
 
 	inline void Start()
 	{
@@ -92,6 +84,14 @@ public:
 	{
 		TIMx->CR1 &= ~TIM_CR1_CEN;
 	};
+};
+
+class TIM_PeriodicIRQ : public TIM
+{
+public:
+	TIM_PeriodicIRQ(TIM_TypeDef *timx) : TIM(timx){};
+
+	SYS_StatusTypeDef SetUp(uint32_t freq);
 };
 
 class TIM_EncoderGenerator : public TIM

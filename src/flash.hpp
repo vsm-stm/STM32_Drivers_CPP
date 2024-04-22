@@ -41,10 +41,15 @@ public:
 		data(_data),
 		size(sz)
 	{
-		Enable_access();
-		find_offset();
+
 	};
 	~flash_data(){};
+
+	void SetUp()
+	{
+		Enable_access();
+		find_offset();
+	}
 
 	Data_Status read_data();
 	void write_data();

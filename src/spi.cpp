@@ -44,17 +44,43 @@ SYS_StatusTypeDef SPI::SetHard()
 #endif
 	else return SYS_ERROR;
 
-	if (_CLK.PORT != NULL)
+	if (CLK.PORT != NULL)
 	{
-		_CLK.SetUp(PIN::TYPE::AF_OD, af);
+		CLK.SetUp(PIN::TYPE::AF_PushPull, af);
 	}
-	if (_MOSI.PORT != NULL)
+	if (MOSI.PORT != NULL)
 	{
-		_MOSI.SetUp(PIN::TYPE::AF_PushPull, af);
+		MOSI.SetUp(PIN::TYPE::AF_PushPull, af);
 	}
-	if (_MISO.PORT != NULL)
+	if (MISO.PORT != NULL)
 	{
-		_MISO.SetUp(PIN::TYPE::AF_PushPull, af);
+		MISO.SetUp(PIN::TYPE::AF_OD, af);
+	}
+
+	if (SS.PORT != NULL)
+	{
+		SS.SetUp(PIN::TYPE::OUTPUT_PushPull);
+	}
+
+	return SYS_OK;
+}
+
+SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br)
+{
+	SYS_StatusTypeDef setup_status = SetHard();
+
+	if(setup_status != SYS_OK)
+		return setup_status;
+
+	SPIx->CR1 =	static_cast<uint32_t>(mstr) |
+				static_cast<uint32_t>(dff) |
+				static_cast<uint32_t>(ff) |
+				static_cast<uint32_t>(cpolpha) |
+				br << SPI_CR1_BR_Pos;
+
+	if(type == TYPE::RX)
+	{
+		SPIx->CR1 |= SPI_CR1_RXONLY;
 	}
 
 	return SYS_OK;
