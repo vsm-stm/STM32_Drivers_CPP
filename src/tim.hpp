@@ -98,10 +98,10 @@ class TIM_EncoderGenerator : public TIM
 {
 
 public:
-	TIM_EncoderGenerator(TIM_TypeDef *timx, struct line _A, struct line _B) :
+	TIM_EncoderGenerator(TIM_TypeDef *timx, struct line _a, struct line _b) :
 		TIM(timx), 
-		A(_A), 
-		B(_B)
+		A(_a), 
+		B(_b)
 	{
 		line_A_offset = static_cast<uint32_t>(A.channel);
 		line_B_offset = static_cast<uint32_t>(B.channel);
