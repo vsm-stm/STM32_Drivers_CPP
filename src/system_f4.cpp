@@ -86,6 +86,15 @@ void System_F4::Delay_ms(uint32_t delay)
 	}	
 }
 
+uint32_t System_F4::trace(uint8_t *ptr, uint32_t len)
+{
+	for (uint32_t DataIdx = 0; DataIdx < len; DataIdx++)
+	{
+		ITM_SendChar(*ptr++);
+	}
+	return len;
+}
+
 extern "C" void SysTick_Handler(void)
 {
 	System_F4::TickIncrease();

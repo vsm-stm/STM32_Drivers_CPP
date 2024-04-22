@@ -34,6 +34,7 @@ public:
 	static void TickIncrease();
 	static uint32_t GetTick();
 	static void Delay_ms(uint32_t delay);
+	static uint32_t trace(uint8_t *ptr, uint32_t len);
 };
 
 __attribute__ ((always_inline)) static inline uint32_t BB_RD(volatile uint32_t * addr, uint8_t bitnum) 
