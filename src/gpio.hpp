@@ -1,7 +1,11 @@
 #ifndef GPIO_H_
 #define GPIO_H_
 
+#if defined(STM32F4)
 #include <system_f4.hpp>
+#elif defined(STM32F7)
+#include <system_f7.hpp>
+#endif
 
 /**
  * @brief Class representing a GPIO pin with configurable parameters.
@@ -133,6 +137,7 @@ public:
 		return ((PORT->IDR & (0x1 << pin)) >> pin);
 	};
 
+#if defined(STM32F4)
 	/**
 	 * @brief Get the logic level of the pin using bit-banding.
 	 * @return The logic level of the pin.
@@ -150,6 +155,7 @@ public:
 	{
 		BIT_BB(&PORT->ODR, pin) = lvl_int;
 	};
+#endif
 
 	/**
 	 * @brief Set the logic level of the pin using the specified enum.
@@ -160,6 +166,7 @@ public:
 		PORT->BSRR |= ((lvl == LVL::HIGH) ? GPIO_BSRR_BS0 : GPIO_BSRR_BR0) << pin;
 	};
 
+#if defined(STM32F4)
 	/**
 	 * @brief Set the logic level of the pin using bit-banding.
 	 * @param lvl_int The logic level as an integer.
@@ -177,7 +184,7 @@ public:
 	{
 		BIT_BB(&PORT->ODR, pin) = static_cast<uint8_t>(lvl);
 	};
-
+#endif
 	/**
 	 * @brief Toggle the logic level of the pin.
 	 */
@@ -186,6 +193,7 @@ public:
 		PORT->ODR ^= 0x1 << pin;
 	};
 
+#if defined(STM32F4)
 	/**
 	 * @brief Toggle the logic level of the pin using bit-banding.
 	 */
@@ -193,6 +201,7 @@ public:
 	{
 		BIT_BB(&PORT->ODR, pin) ^= 1;
 	};
+#endif
 
 	/**
 	 * @brief Destructor for the PIN class.

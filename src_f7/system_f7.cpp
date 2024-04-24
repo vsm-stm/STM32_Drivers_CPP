@@ -1,0 +1,106 @@
+/**************************************************************************************************
+ * @file system_f4.c
+ * @author Vlasov Serge
+ * @brief
+ * @version 1.0
+ * @date 18.09.2023
+ *
+ * @copyright Copyright (c) 2022
+ *
+ *************************************************************************************************/
+#include "system_f7.hpp"
+#include <rcc.hpp>
+
+uint32_t Tick;
+
+/**************************************************************************************************
+ * @brief Init system main features - FPU, FLASH, Systick.
+ * @return SYS_OK
+ * @return SYS_ERROR
+ *************************************************************************************************/
+SYS_StatusTypeDef System_F4::Init()
+{
+	#if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
+		SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2));  /* set CP10 and CP11 Full Access */
+	#endif
+
+	FLASH->ACR |= 
+#if defined(STM32F4)
+				  FLASH_ACR_ICEN |					/* Instruction cache reset */
+				  FLASH_ACR_DCEN |					/* Data cache enable */
+#elif defined(STM32F7)
+				  FLASH_ACR_ARTEN |					/* Adaptive real-time memory accelerator */
+#endif
+				  FLASH_ACR_PRFTEN;					/* Prefetch enable */
+
+	ClockSystem::SystemCoreClock = HSI_Clock;
+	if(InitTicks() > 0)
+		return SYS_ERROR;
+
+	return SYS_OK;
+}
+
+/**************************************************************************************************
+ * @brief Init systick timer
+ * @return SYS_OK
+ * @return SYS_ERROR
+ *************************************************************************************************/
+SYS_StatusTypeDef System_F4::InitTicks()
+{
+	// if(SystemCoreClock >= 100000000)
+	// 	Ticks_base = 10000;
+	// else
+	// 	Ticks_base = 1000;
+	if(SysTick_Config(ClockSystem::SystemCoreClock/TICK_BASE) > 0)
+		return SYS_ERROR;
+
+	return SYS_OK;
+}
+
+/**************************************************************************************************
+ * @brief Increase tick
+ *************************************************************************************************/
+void System_F4::TickIncrease()
+{
+	Tick++;
+};
+
+uint32_t System_F4::GetTick()
+{
+	return Tick;
+}
+
+
+/**************************************************************************************************
+ * @brief Make delay in ms
+ * @param delay value in ms
+ *************************************************************************************************/
+void System_F4::Delay_ms(uint32_t delay)
+{
+	uint32_t tick_start = GetTick();
+	uint32_t wait = delay;
+	
+	if(wait < 0xFFFFFFFF)
+	{
+		wait+= (1000/TICK_BASE);
+	}
+
+	while((GetTick() - tick_start) < wait)
+	{
+
+	}	
+}
+
+uint32_t System_F4::SWOTrace(uint8_t *ptr, uint32_t len)
+{
+	for (uint32_t DataIdx = 0; DataIdx < len; DataIdx++)
+	{
+		ITM_SendChar(*ptr++);
+	}
+	return len;
+}
+
+extern "C" void SysTick_Handler(void)
+{
+	System_F4::TickIncrease();
+}

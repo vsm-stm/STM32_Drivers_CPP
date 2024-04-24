@@ -1,7 +1,11 @@
 #ifndef SPI_HPP_
 #define SPI_HPP_
 
+#if defined(STM32F4)
 #include <system_f4.hpp>
+#elif defined(STM32F7)
+#include <system_f7.hpp>
+#endif
 #include <rcc.hpp>
 #include <gpio.hpp>
 #include <memory>
@@ -17,10 +21,15 @@ public:
 		Master = SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_MSTR
 	};
 
+
 	enum class Data_frame_format
 	{
 		Byte = 0,
+		#if defined(STM32F4)
 		Half_Word = SPI_CR1_DFF
+		#elif defined(STM32F7)
+		Half_Word = 0b111;
+		#endif
 	};
 
 	enum class Frame_Format

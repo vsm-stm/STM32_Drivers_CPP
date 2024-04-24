@@ -24,7 +24,7 @@ static const flash_map_typedef flash_map [sector_count] = {
 	{0x080A0000UL, 0x3FFFF},	// 128Kbytes
 	{0x080C0000UL, 0x3FFFF},	// 128Kbytes
 	{0x080E0000UL, 0x3FFFF}};	// 128Kbytes
-#elif defined(STM32F446RE)
+#elif defined(STM32F446RE) || defined(STM32F722RE)
 #define sector_count 8
 static const flash_map_typedef flash_map [sector_count] = {
 	{0x08000000UL, 0x3FFF},		// 16Kbytes
@@ -35,7 +35,6 @@ static const flash_map_typedef flash_map [sector_count] = {
 	{0x08020000UL, 0x3FFFF},	// 128Kbytes
 	{0x08040000UL, 0x3FFFF},	// 128Kbytes
 	{0x08060000UL, 0x3FFFF}};	// 128Kbytes
-
 #else
 #error "No flash map for this chip"
 #endif

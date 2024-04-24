@@ -1,7 +1,11 @@
 #ifndef DAC_HPP_
 #define DAC_HPP_
 
+#if defined(STM32F4)
 #include <system_f4.hpp>
+#elif defined(STM32F7)
+#include <system_f7.hpp>
+#endif
 #include <rcc.hpp>
 #include <gpio.hpp>
 

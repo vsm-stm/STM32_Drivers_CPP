@@ -1,7 +1,11 @@
 #ifndef RCC_H_
 #define RCC_H_
 
+#if defined(STM32F4)
 #include <system_f4.hpp>
+#elif defined(STM32F7)
+#include <system_f7.hpp>
+#endif
 
 #define HSI_Clock	16000000UL
 
@@ -21,6 +25,10 @@
 #define SYS_CLK_LIMIT		168000000 
 #define APB1_CLK_LIMIT		42000000
 #define APB2_CLK_LIMIT		84000000
+#elif defined(STM32F722xx)
+#define SYS_CLK_LIMIT		216000000 
+#define APB1_CLK_LIMIT		54000000
+#define APB2_CLK_LIMIT		108000000
 #endif
 
 class ClockSystem

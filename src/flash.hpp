@@ -1,7 +1,11 @@
 #ifndef FLASH_HPP_
 #define FLASH_HPP_
 
+#if defined(STM32F4)
 #include <system_f4.hpp>
+#elif defined(STM32F7)
+#include <system_f7.hpp>
+#endif
 #include <flash_maps.h>
 
 class flash_base
