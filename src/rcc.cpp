@@ -1,11 +1,11 @@
 #include <rcc.hpp>
 
 
-uint32_t ClockSystem::SystemCoreClock{HSI_Clock};
-uint32_t ClockSystem::APB1BusClock{HSI_Clock};
-uint32_t ClockSystem::APB2BusClock{HSI_Clock};
-uint32_t ClockSystem::TIMxAPB1Clock{HSI_Clock};
-uint32_t ClockSystem::TIMxAPB2Clock{HSI_Clock};
+uint32_t System::SystemCoreClock{HSI_Clock};
+uint32_t System::APB1BusClock{HSI_Clock};
+uint32_t System::APB2BusClock{HSI_Clock};
+uint32_t System::TIMxAPB1Clock{HSI_Clock};
+uint32_t System::TIMxAPB2Clock{HSI_Clock};
 uint32_t ClockSystem::HSESrcClk{0};
 
 
@@ -22,10 +22,10 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 			return SYS_ERROR;
 		
 		RCC->CR |= RCC_CR_HSEON;// HSE Enable
-		tickStart = System_F4::GetTick();
+		tickStart = System::GetTick();
 		while (!(RCC->CR & RCC_CR_HSERDY))
 		{
-			if((System_F4::GetTick() - tickStart) > HSE_TIMEOUT_VALUE)
+			if((System::GetTick() - tickStart) > HSE_TIMEOUT_VALUE)
 				return SYS_TIMEOUT;
 		};
 		HSESrcClk = HSE_Clk;
@@ -78,11 +78,11 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 		if(sys_clk > SYS_CLK_LIMIT)
 			return SYS_ERROR;
 
-		tickStart = System_F4::GetTick();
+		tickStart = System::GetTick();
 		RCC->CR &= ~RCC_CR_PLLON;// PLL Disable
 		while ((RCC->CR & RCC_CR_PLLON)) 
 		{
-			if((System_F4::GetTick() - tickStart) > PLL_TIMEOUT_VALUE)
+			if((System::GetTick() - tickStart) > PLL_TIMEOUT_VALUE)
 				return SYS_TIMEOUT;
 		};
 
@@ -96,10 +96,10 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 #endif
 
 		RCC->CR |= RCC_CR_PLLON;// PLL Disable
-		tickStart = System_F4::GetTick();
+		tickStart = System::GetTick();
 		while (!(RCC->CR & RCC_CR_PLLON))
 		{
-			if((System_F4::GetTick() - tickStart) > PLL_TIMEOUT_VALUE)
+			if((System::GetTick() - tickStart) > PLL_TIMEOUT_VALUE)
 				return SYS_TIMEOUT;
 		};
 	}
@@ -159,10 +159,10 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 				 (uint32_t)BusDiv.APB2_div;
 
 	RCC->CFGR |= RCC_CFGR_SW_PLL;         // PLL -> SYSCKLK
-	tickStart = System_F4::GetTick();
+	tickStart = System::GetTick();
 	while (!(RCC->CFGR & RCC_CFGR_SWS))
 	{
-		if((System_F4::GetTick() - tickStart) > CLOCKSWITCH_TIMEOUT_VALUE)
+		if((System::GetTick() - tickStart) > CLOCKSWITCH_TIMEOUT_VALUE)
 			return SYS_TIMEOUT;
 	}// wait PLL used as system clock
 
@@ -179,13 +179,13 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 	else
 		APB2_Pre = (1 << (((RCC->CFGR & RCC_CFGR_PPRE2) >> RCC_CFGR_PPRE2_Pos) - 3));
 
-	SystemCoreClock = sys_clk/AHB_Pre;
-	APB1BusClock = SystemCoreClock/APB1_Pre;
-	APB2BusClock = SystemCoreClock/APB2_Pre;
-	TIMxAPB1Clock = (APB1_Pre == 1) ? (APB1BusClock) : (APB1BusClock * 2);
-	TIMxAPB2Clock = (APB2_Pre == 1) ? (APB2BusClock) : (APB2BusClock * 2);
+	System::SystemCoreClock = sys_clk/AHB_Pre;
+	System::APB1BusClock = SystemCoreClock/APB1_Pre;
+	System::APB2BusClock = SystemCoreClock/APB2_Pre;
+	System::TIMxAPB1Clock = (APB1_Pre == 1) ? (System::APB1BusClock) : (System::APB1BusClock * 2);
+	System::TIMxAPB2Clock = (APB2_Pre == 1) ? (System::APB2BusClock) : (System::APB2BusClock * 2);
 
-	System_F4::InitTicks();
+	System::InitTicks();
 
 	return SYS_OK;
 

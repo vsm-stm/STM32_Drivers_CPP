@@ -1,11 +1,7 @@
 #ifndef SPI_HPP_
 #define SPI_HPP_
 
-#if defined(STM32F4)
-#include <system_f4.hpp>
-#elif defined(STM32F7)
-#include <system_f7.hpp>
-#endif
+#include <system.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
 #include <memory>
@@ -28,7 +24,7 @@ public:
 		#if defined(STM32F4)
 		Half_Word = SPI_CR1_DFF
 		#elif defined(STM32F7)
-		Half_Word = 0b111;
+		Half_Word = 0b111
 		#endif
 	};
 

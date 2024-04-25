@@ -1,5 +1,5 @@
 #include "uart.hpp"
-
+#include <stdio.h>
 /**
  * @brief Set up the USART configuration.
  * @return The status of the setup operation.
@@ -10,42 +10,42 @@ SYS_StatusTypeDef USART::SetUp()
 	if (USARTx == USART1)
 	{
 		RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
-		bus_clk = ClockSystem::APB2BusClock;
+		bus_clk = System::APB2BusClock;
 		IRQ_vector = USART1_IRQn;
 		af = 7;
 	}else
 	if (USARTx == USART2)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = USART2_IRQn;
 		af = 7;
 	}
 	else if (USARTx == USART3)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_USART3EN;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = USART3_IRQn;
 		af = 7;
 	}
 	else if (USARTx == UART4)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_UART4EN;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = UART4_IRQn;
 		af = 8;
 	}
 	else if (USARTx == UART5)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_UART5EN;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = UART5_IRQn;
 		af = 8;
 	}
 	else if (USARTx == USART6)
 	{
 		RCC->APB2ENR |= RCC_APB2ENR_USART6EN;
-		bus_clk = ClockSystem::APB2BusClock;
+		bus_clk = System::APB2BusClock;
 		IRQ_vector = USART6_IRQn;
 		af = 8;
 	}
@@ -73,8 +73,11 @@ SYS_StatusTypeDef USART::SetUp()
 	USARTx->CR2 = 0;
 	USARTx->CR3 = 0;
 
-	// Clear status register
-	USARTx->SR = 0;
+#if defined(STM32F4)
+	ClearFlags();
+#elif defined(STM32F7)
+	ClearFlags(0xFFFF);
+#endif
 
 	return SYS_OK;
 }

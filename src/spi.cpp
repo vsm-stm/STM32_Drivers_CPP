@@ -8,7 +8,7 @@ SYS_StatusTypeDef SPI::SetHard()
 		RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
 		RCC->APB2RSTR |= RCC_APB2RSTR_SPI1RST;
 		RCC->APB2RSTR &= ~RCC_APB2RSTR_SPI1RST;
-		bus_clk = ClockSystem::APB2BusClock;
+		bus_clk = System::APB2BusClock;
 		IRQ_vector = SPI1_IRQn;
 		af = 5;
 	}else
@@ -17,7 +17,7 @@ SYS_StatusTypeDef SPI::SetHard()
 		RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
 		RCC->APB1RSTR |= RCC_APB1RSTR_SPI2RST;
 		RCC->APB1RSTR &= ~RCC_APB1RSTR_SPI2RST;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = SPI2_IRQn;
 		af = 5;
 	}else
@@ -26,7 +26,7 @@ SYS_StatusTypeDef SPI::SetHard()
 		RCC->APB1ENR |= RCC_APB1ENR_SPI3EN;
 		RCC->APB1RSTR |= RCC_APB1RSTR_SPI3RST;
 		RCC->APB1RSTR &= ~RCC_APB1RSTR_SPI3RST;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = SPI3_IRQn;
 		af = 6;
 	}

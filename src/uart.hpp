@@ -1,12 +1,7 @@
 #ifndef UART_H_
 #define UART_H_
 
-#include <memory>
-#if defined(STM32F4)
-#include <system_f4.hpp>
-#elif defined(STM32F7)
-#include <system_f7.hpp>
-#endif
+#include <system.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
 
@@ -133,6 +128,7 @@ public:
 		USARTx->CR3 &= ~(USART_CR3_DMAR | USART_CR3_DMAT);
 	}
 
+#if defined(STM32F4)
 	/**
 	 * @brief Clear all USART flags.
 	 */
@@ -140,6 +136,15 @@ public:
 	{
 		USARTx->SR = 0;
 	}
+#elif defined(STM32F7)
+	/**
+	 * @brief Clear all USART flags.
+	 */
+	inline void ClearFlags(uint32_t flag)
+	{
+		USARTx->ICR = flag;
+	}
+#endif
 
 	/**
 	 * @brief Set the baud rate for USART.

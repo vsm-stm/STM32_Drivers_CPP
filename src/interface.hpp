@@ -3,9 +3,6 @@
 
 #if defined(STM32F4)
 #include <system_f4.hpp>
-#elif defined(STM32F7)
-#include <system_f7.hpp>
-#endif
 #include <dma.hpp>
 #include <uart.hpp>
 
@@ -272,5 +269,6 @@ void Interface<tx_buffer_size,rx_buffer_size>::Recieve()
 
 	StartReceiver();
 }
+#endif
 
 #endif /* INTERFACE_HPP_ */
