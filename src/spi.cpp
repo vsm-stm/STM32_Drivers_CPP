@@ -37,7 +37,7 @@ SYS_StatusTypeDef SPI::SetHard()
 		RCC->APB2ENR |= RCC_APB2ENR_SPI4EN;
 		RCC->APB2RSTR |= RCC_APB2RSTR_SPI4RST;
 		RCC->APB2RSTR &= ~RCC_APB2RSTR_SPI4RST;
-		bus_clk = ClockSystem::APB2BusClock;
+		bus_clk = System::APB2BusClock;
 		IRQ_vector = SPI4_IRQn;
 		af = 5;
 	}

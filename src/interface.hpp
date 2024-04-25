@@ -2,7 +2,7 @@
 #define INTERFACE_HPP_
 
 #if defined(STM32F4)
-#include <system_f4.hpp>
+#include <system.hpp>
 #include <dma.hpp>
 #include <uart.hpp>
 
