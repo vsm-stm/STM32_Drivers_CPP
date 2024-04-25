@@ -1,11 +1,6 @@
 #include <rcc.hpp>
 
 
-uint32_t System::SystemCoreClock{HSI_Clock};
-uint32_t System::APB1BusClock{HSI_Clock};
-uint32_t System::APB2BusClock{HSI_Clock};
-uint32_t System::TIMxAPB1Clock{HSI_Clock};
-uint32_t System::TIMxAPB2Clock{HSI_Clock};
 uint32_t ClockSystem::HSESrcClk{0};
 
 

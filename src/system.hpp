@@ -56,14 +56,15 @@ public:
 	 ***************************************************************************************************/
 	static uint32_t TIMxAPB2Clock;
 
-	static SystemInitStatus_TypeDef SystemInitStatus;
-
 	static SYS_StatusTypeDef Init();
 	static SYS_StatusTypeDef InitTicks();
 	static void TickIncrease();
 	static uint32_t GetTick();
 	static void Delay_ms(uint32_t delay);
 	static uint32_t SWOTrace(uint8_t *ptr, uint32_t len);
+#if defined(STM32F7)
+	static void MPU_Init();
+#endif
 };
 
 #if defined(STM32F4)
