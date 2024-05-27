@@ -28,12 +28,23 @@ public:
 	 * @param _dma_tx Pointer to DMA instance for transmit.
 	 * @param _dma_rx Pointer to DMA instance for receive.
 	 */
-	Interface(USART *_usart, DMA_Sx *_dma_tx, DMA_Sx *_dma_rx) :
-		usart(_usart),
-		dma_tx(_dma_tx),
-		dma_rx(_dma_rx)
+	Interface(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
+		usart(_usart)
 	{
 		type = interface_types::USART;
+		uint32_t ch = 4;
+		if(usart->USARTx == USART6)
+			ch = 5;
+		dma_tx = new DMA_Sx(_dma_tx, 
+					ch,
+					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
+					DMA_Sx::Per_Type::usart,
+					DMA_Sx::DIR::To_Per);
+		dma_rx = new DMA_Sx(_dma_rx, 
+					ch,
+					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
+					DMA_Sx::Per_Type::usart,
+					DMA_Sx::DIR::From_Per);
 	};
 
 	/**
