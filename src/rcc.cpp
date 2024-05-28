@@ -175,8 +175,8 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 		APB2_Pre = (1 << (((RCC->CFGR & RCC_CFGR_PPRE2) >> RCC_CFGR_PPRE2_Pos) - 3));
 
 	System::SystemCoreClock = sys_clk/AHB_Pre;
-	System::APB1BusClock = SystemCoreClock/APB1_Pre;
-	System::APB2BusClock = SystemCoreClock/APB2_Pre;
+	System::APB1BusClock = System::SystemCoreClock/APB1_Pre;
+	System::APB2BusClock = System::SystemCoreClock/APB2_Pre;
 	System::TIMxAPB1Clock = (APB1_Pre == 1) ? (System::APB1BusClock) : (System::APB1BusClock * 2);
 	System::TIMxAPB2Clock = (APB2_Pre == 1) ? (System::APB2BusClock) : (System::APB2BusClock * 2);
 
