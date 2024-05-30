@@ -73,10 +73,25 @@ public:
 	SPI &operator=(SPI &&) = default;
 	~SPI(){};
 
+	typedef struct 
+	{
+		Master_sel mstr;
+		TYPE type;
+		Data_frame_format dff;
+		Frame_Format ff;
+		cPolPha cpolpha;
+		uint8_t br;
+	}Init_struct_Typedef;
+
 	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type)
 	{
 		return SetUp(mstr, type, Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, 0);
 	};
+
+	SYS_StatusTypeDef SetUp(Init_struct_Typedef Init_struct)
+	{
+		return SetUp(Init_struct.mstr, Init_struct.type, Init_struct.dff, Init_struct.ff, Init_struct.cpolpha, Init_struct.br);
+	}
 
 	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
 
@@ -90,24 +105,20 @@ public:
 		SPIx->CR1 &= ~SPI_CR1_SPE;
 	};
 
-	void Enable_DMA_TX()
+	void DMA_TX(FunctionalState en)
 	{
-		SPIx->CR2 |= SPI_CR2_TXDMAEN;
+		if(en)
+			SPIx->CR2 |= SPI_CR2_TXDMAEN;
+		else
+			SPIx->CR2 &= ~SPI_CR2_TXDMAEN;
 	};
 
-	void Disable_DMA_TX()
+	void DMA_RX(FunctionalState en)
 	{
-		SPIx->CR2 &= ~SPI_CR2_TXDMAEN;
-	};
-
-	void Enable_DMA_RX()
-	{
-		SPIx->CR2 |= SPI_CR2_RXDMAEN;
-	};
-
-	void Disable_DMA_RX()
-	{
-		SPIx->CR2 &= ~SPI_CR2_RXDMAEN;
+		if(en)
+			SPIx->CR2 |= SPI_CR2_RXDMAEN;
+		else
+			SPIx->CR2 &= ~SPI_CR2_RXDMAEN;
 	};
 
 		/**
