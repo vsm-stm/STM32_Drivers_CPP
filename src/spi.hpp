@@ -137,6 +137,8 @@ public:
 		}
 	}
 
+	uint16_t RXTX(uint16_t data);
+
 protected:
 	PIN CLK{};
 	PIN MOSI{};

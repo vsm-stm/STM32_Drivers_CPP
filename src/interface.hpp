@@ -152,11 +152,11 @@ template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
 void Interface<tx_buffer_size,rx_buffer_size>::Init()
 {
 	usart->SetUp();
-	usart->Enable_DMA();
+	usart->DMA(ENABLE);
 	dma_tx->SetUp();
-	dma_tx->Enable_MINC();
+	dma_tx->MINC(ENABLE);
 	dma_rx->SetUp();
-	dma_rx->Enable_MINC();
+	dma_rx->MINC(ENABLE);
 };
 
 /**

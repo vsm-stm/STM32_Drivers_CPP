@@ -112,20 +112,12 @@ public:
 		}
 	}
 
-	/**
-	 * @brief Enable DMA for USART.
-	 */
-	inline void Enable_DMA()
+	inline void DMA(FunctionalState en)
 	{
-		USARTx->CR3 |= USART_CR3_DMAR | USART_CR3_DMAT;
-	}
-
-	/**
-	 * @brief Disable DMA for USART.
-	 */
-	inline void Disable_DMA()
-	{
-		USARTx->CR3 &= ~(USART_CR3_DMAR | USART_CR3_DMAT);
+		if(en)
+			USARTx->CR3 |=   USART_CR3_DMAR | USART_CR3_DMAT;
+		else
+			USARTx->CR3 &= ~(USART_CR3_DMAR | USART_CR3_DMAT);
 	}
 
 #if defined(STM32F4)

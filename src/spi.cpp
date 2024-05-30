@@ -83,7 +83,24 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, 
 		SPIx->CR1 |= SPI_CR1_RXONLY;
 	}
 
+	SS.SetLevel(1);
+
 	return SYS_OK;
+}
+
+uint16_t SPI::RXTX(uint16_t data)
+{
+	uint16_t recv = 0;
+	SS.SetLevel(0);
+	SPIx->CR1 |= SPI_CR1_SPE;
+	SPIx->DR = data;
+	while(!(SPIx->SR & SPI_SR_RXNE));
+	recv = SPIx->DR;
+	while(SPIx->SR & SPI_SR_BSY);
+	SPIx->CR1 &= ~SPI_CR1_SPE;
+	SS.SetLevel(1);
+	
+	return recv;
 }
 
 SYS_StatusTypeDef SPI_Slave_TX::SetUp()

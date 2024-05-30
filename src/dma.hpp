@@ -170,29 +170,20 @@ public:
 		}
 	}
 
-	/**
-	 * @brief Function to enable Memory Increment Mode.
-	 */
-	void Enable_MINC()
-	{	DMA_Stream_X->CR |= DMA_SxCR_MINC;};
+	void MINC(FunctionalState en)
+	{	if(en)
+			DMA_Stream_X->CR |=  DMA_SxCR_MINC;
+		else
+			DMA_Stream_X->CR &= ~DMA_SxCR_MINC;
+	};
 
-	/**
-	 * @brief Function to disable Memory Increment Mode.
-	 */
-	void Disable_MINC()
-	{	DMA_Stream_X->CR &= ~DMA_SxCR_MINC;};
-
-	/**
-	 * @brief Function to enable Circular Mode.
-	 */
-	void Enable_CIRC()
-	{	DMA_Stream_X->CR |= DMA_SxCR_CIRC;};
-
-	/**
-	 * @brief Function to disable Circular Mode.
-	 */
-	void Disable_CIRC()
-	{	DMA_Stream_X->CR &= ~DMA_SxCR_CIRC;};
+	void CIRC(FunctionalState en)
+	{
+		if(en)
+			DMA_Stream_X->CR |=  DMA_SxCR_CIRC;
+		else
+			DMA_Stream_X->CR &= ~DMA_SxCR_CIRC;
+	};
 
 	/**
 	 * @brief Function to enable the DMA stream.
