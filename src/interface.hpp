@@ -125,14 +125,26 @@ public:
 
 	void IRQHandler(void);
 
-	void RXTX(uint8_t *tx_data, uint16_t len);
+	void Send_Receive(uint8_t *tx_data, uint16_t len);
+	
+	void Send(uint8_t *tx_data, uint16_t len);
+
+	void Receive(uint16_t len);
 
 private:
 	SPI *spi;
 	SPI::Init_struct_Typedef spi_init_data;
 
-	void StartTranssmit();
+	typedef enum
+	{
+		none,
+		RXTX,
+		TX,
+		RX
+	}RXTX_Type;
 	
+	RXTX_Type curr_rxtx = RXTX_Type::none;
+	void StartTranssmit(RXTX_Type rxtx);
 
 
 };

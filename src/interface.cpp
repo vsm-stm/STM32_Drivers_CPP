@@ -205,7 +205,7 @@ void Interface_SPI::Init()
 	SetUpDMA();
 };
 
-void Interface_SPI::RXTX(uint8_t *tx_data, uint16_t len)
+void Interface_SPI::Send_Receive(uint8_t *tx_data, uint16_t len)
 {
 	tx_data_typedef tx_tmp;
 	tx_tmp.data_ptr = new uint8_t[len];
@@ -220,34 +220,82 @@ void Interface_SPI::RXTX(uint8_t *tx_data, uint16_t len)
 
 	if(tx.size() == 1)
 	{
-		StartTranssmit();
+		StartTranssmit(RXTX_Type::RXTX);
 	}
 }
 
-void Interface_SPI::StartTranssmit()
+void Interface_SPI::Send(uint8_t *tx_data, uint16_t len)
 {
-	if(tx.size()>0)
+	tx_data_typedef tx_tmp;
+	tx_tmp.data_ptr = new uint8_t[len];
+	memcpy(tx_tmp.data_ptr, tx_data, len);
+	tx_tmp.len = len;
+	tx.push_back(tx_tmp);
+
+	if(tx.size() == 1)
 	{
-		
+		StartTranssmit(RXTX_Type::TX);
+	}
+}
+
+void Interface_SPI::Receive(uint16_t len)
+{
+	tx_data_typedef tx_tmp;
+	tx_tmp.data_ptr = new uint8_t[1];
+	memcpy(tx_tmp.data_ptr, 1, len);
+	tx_tmp.len = len;
+	tx.push_back(tx_tmp);
+
+	rx_data_typedef rx_tmp;
+	rx_tmp.data_ptr = new uint8_t[len];
+	rx_tmp.len = len;
+	rx.push_back(rx_tmp);
+
+	if(tx.size() == 1)
+	{
+		StartTranssmit(RXTX_Type::RXTX);
+	}
+}
+
+void Interface_SPI::StartTranssmit(RXTX_Type rxtx)
+{
+	curr_rxtx = rxtx;
+	if((rxtx == RXTX_Type::RXTX)
+	|| (rxtx == RXTX_Type::TX))
+	{
+		if(tx.size() == 0)
+			return;
 		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().data_ptr);
 		dma_tx->DMA_Stream_X->NDTR = tx.front().len;
+	}
+	if((rxtx == RXTX_Type::RXTX)
+	|| (rxtx == RXTX_Type::RX))
+	{
+		if(rx.size() == 0)
+			return;
 		dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(rx.back().data_ptr);
 		dma_rx->DMA_Stream_X->NDTR = rx.back().len;
+	}
+
+	if(rxtx == RXTX_Type::TX)
 		dma_tx->Enable_IRQ(DMA_Sx::IRQ::TC);
+	else
+		dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
 
-		dma_tx->ClearFlags();
-		dma_rx->ClearFlags();
+	dma_tx->ClearFlags();
+	dma_rx->ClearFlags();
 
-		spi->SlaveSelect(ENABLE);
+	spi->SlaveSelect(ENABLE);
 
-		spi->DMA_TX(ENABLE);
-		spi->DMA_RX(ENABLE);
+	spi->DMA_TX(ENABLE);
+	spi->DMA_RX(ENABLE);
 
-		dma_tx->Enable_Stream();
+	dma_tx->Enable_Stream();
+	if(rxtx != RXTX_Type::TX)
 		dma_rx->Enable_Stream();
 
-		spi->Enable();
-	}
+	spi->Enable();
+
 }
 
 void Interface_SPI::IRQHandler(void)
@@ -268,6 +316,4 @@ void Interface_SPI::IRQHandler(void)
 	}
 
 	dma_rx->Disable_IRQ(DMA_Sx::IRQ::TC);
-
-	spi;
 }
