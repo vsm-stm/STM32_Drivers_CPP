@@ -1,9 +1,16 @@
 #include <interface.hpp>
+void Interface::SetUpDMA()
+{
+	dma_tx->SetUp();
+	dma_tx->MINC(ENABLE);
+	dma_rx->SetUp();
+	dma_rx->MINC(ENABLE);
+}
 
 Interface_USART::Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
 		Interface(),
 		usart(_usart)
-	{
+{
 		uint32_t ch = 4;
 		if(usart->USARTx == USART6)
 			ch = 5;
@@ -17,7 +24,7 @@ Interface_USART::Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA
 					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
 					DMA_Sx::Per_Type::usart,
 					DMA_Sx::DIR::From_Per);
-	};
+};
 
 /**
  * @brief Send data over the interface.
@@ -70,21 +77,9 @@ void Interface_USART::Recieve(uint16_t len)
  */
 void Interface_USART::Init()
 {
-	// if(type == interface_types::USART)
-	// {
 	usart->SetUp();
 	usart->DMA(ENABLE);
-	// }
-	// else if(type == interface_types::SPI)
-	// {
-	// 	spi->SetUp(spi_init_data);
-	// 	spi->DMA_TX(ENABLE);
-	// 	spi->DMA_RX(ENABLE);		
-	// }
-	dma_tx->SetUp();
-	dma_tx->MINC(ENABLE);
-	dma_rx->SetUp();
-	dma_rx->MINC(ENABLE);
+	SetUpDMA();
 };
 
 /**
@@ -143,7 +138,7 @@ void Interface_USART::StartTranssmit()
 {
 	if(tx.size()>0)
 	{
-		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.begin()->data_ptr);
+		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().data_ptr);
 		dma_tx->DMA_Stream_X->NDTR = tx.front().len;
 		usart->ClearFlags();
 		usart->Enable_IRQ(USART::IRQ::TC);
@@ -200,3 +195,69 @@ Interface_SPI::Interface_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA
 					DMA_Sx::Per_Type::spi,
 					DMA_Sx::DIR::From_Per);
 	};
+
+void Interface_SPI::Init()
+{
+	spi->SetUp(spi_init_data);
+	spi->DMA_TX(ENABLE);
+	spi->DMA_RX(ENABLE);
+
+	SetUpDMA();
+};
+
+void Interface_SPI::RXTX(uint8_t *tx_data, uint16_t len)
+{
+	tx_data_typedef tx_tmp;
+	tx_tmp.data_ptr = new uint8_t[len];
+	memcpy(tx_tmp.data_ptr, tx_data, len);
+	tx_tmp.len = len;
+	tx.push_back(tx_tmp);
+
+	rx_data_typedef rx_tmp;
+	rx_tmp.data_ptr = new uint8_t[len];
+	rx_tmp.len = len;
+	rx.push_back(rx_tmp);
+
+	if(tx.size() == 1)
+	{
+		StartTranssmit();
+	}
+}
+
+void Interface_SPI::StartTranssmit()
+{
+	if(tx.size()>0)
+	{
+		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().data_ptr);
+		dma_tx->DMA_Stream_X->NDTR = tx.front().len;
+		dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(rx.back().data_ptr);
+		dma_rx->DMA_Stream_X->NDTR = rx.back().len;
+		dma_tx->Enable_IRQ(DMA_Sx::IRQ::TC);
+
+		dma_tx->ClearFlags();
+		dma_rx->ClearFlags();
+
+		spi->DMA_TX(ENABLE);
+		spi->DMA_RX(ENABLE);
+
+		dma_tx->Enable_Stream();
+		dma_rx->Enable_Stream();
+
+		spi->Enable();
+	}
+}
+
+void Interface_SPI::IRQHandler(void)
+{
+	spi->Disable();
+	spi->DMA_TX(DISABLE);
+	spi->DMA_RX(DISABLE);
+
+	if(tx.size() != 0)
+	{
+		delete tx.front().data_ptr;
+		tx.erase(tx.begin());
+	}
+
+	dma_rx->Disable_IRQ(DMA_Sx::IRQ::TC);
+}

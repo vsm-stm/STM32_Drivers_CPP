@@ -13,14 +13,6 @@
 class Interface
 {
 public:
-	/**
-	 * @brief Enumeration for different interface types.
-	 */
-	enum class interface_types
-	{
-		USART,  ///< USART interface type
-		SPI     ///< SPI interface type
-	};
 
 	Interface(){};
 
@@ -49,6 +41,8 @@ public:
 		delete rx.front().data_ptr;
 		rx.erase(rx.begin());
 	};
+
+	inline void SetUpDMA();
 
 	/**
 	 * @brief Destructor for the Interface class.
@@ -127,11 +121,18 @@ class Interface_SPI : public Interface
 public:
 	Interface_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
 
-	// RXTX(uint8_t *tx_data,)
+	void Init();
+
+	void RXTX(uint8_t *tx_data, uint16_t len);
 
 private:
 	SPI *spi;
 	SPI::Init_struct_Typedef spi_init_data;
+
+	void StartTranssmit();
+	void IRQHandler(void);
+
+
 };
 
 #endif /* #if defined(STM32F4) */
