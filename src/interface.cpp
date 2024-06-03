@@ -228,6 +228,7 @@ void Interface_SPI::StartTranssmit()
 {
 	if(tx.size()>0)
 	{
+		
 		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().data_ptr);
 		dma_tx->DMA_Stream_X->NDTR = tx.front().len;
 		dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(rx.back().data_ptr);
@@ -236,6 +237,8 @@ void Interface_SPI::StartTranssmit()
 
 		dma_tx->ClearFlags();
 		dma_rx->ClearFlags();
+
+		spi->SlaveSelect(ENABLE);
 
 		spi->DMA_TX(ENABLE);
 		spi->DMA_RX(ENABLE);
@@ -253,6 +256,11 @@ void Interface_SPI::IRQHandler(void)
 	spi->DMA_TX(DISABLE);
 	spi->DMA_RX(DISABLE);
 
+	spi->SlaveSelect(DISABLE);
+
+	dma_tx->ClearFlags();
+	dma_rx->ClearFlags();
+
 	if(tx.size() != 0)
 	{
 		delete tx.front().data_ptr;
@@ -260,4 +268,6 @@ void Interface_SPI::IRQHandler(void)
 	}
 
 	dma_rx->Disable_IRQ(DMA_Sx::IRQ::TC);
+
+	spi;
 }

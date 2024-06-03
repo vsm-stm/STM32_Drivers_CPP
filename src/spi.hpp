@@ -105,6 +105,14 @@ public:
 		SPIx->CR1 &= ~SPI_CR1_SPE;
 	};
 
+	void SlaveSelect(FunctionalState en)
+	{
+		if(en)
+			SS.SetLevel(0);
+		else
+			SS.SetLevel(1);
+	}
+
 	void DMA_TX(FunctionalState en)
 	{
 		if(en)

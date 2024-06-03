@@ -123,6 +123,8 @@ public:
 
 	void Init();
 
+	void IRQHandler(void);
+
 	void RXTX(uint8_t *tx_data, uint16_t len);
 
 private:
@@ -130,7 +132,7 @@ private:
 	SPI::Init_struct_Typedef spi_init_data;
 
 	void StartTranssmit();
-	void IRQHandler(void);
+	
 
 
 };
