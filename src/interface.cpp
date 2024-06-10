@@ -228,6 +228,7 @@ void Interface_SPI::Send(uint8_t *tx_data, uint16_t len)
 	tmp_data.len = len;
 	tmp_data.type = RXTX_Type::TX;
 	tmp_data.tx_data_ptr = new uint8_t[len];
+	tmp_data.rx_data_ptr = new uint8_t;
 	memcpy(tmp_data.tx_data_ptr, tx_data, len);
 
 	tx.push_back(tmp_data);
@@ -267,34 +268,26 @@ void Interface_SPI::StartTranssmit()
 	dma_tx->DMA_Stream_X->NDTR = tx.front().len;
 	dma_tx->MINC(ENABLE);
 
-	if(tx.front().type == RXTX_Type::TX)
-	{
-		dma_tx->Enable_IRQ(DMA_Sx::IRQ::TC);
-	}
-	else
-	{
-		dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().rx_data_ptr);
-		dma_rx->DMA_Stream_X->NDTR = tx.front().len;
-		if(tx.front().type == RXTX_Type::RX)
-			dma_tx->MINC(DISABLE);
+	dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().rx_data_ptr);
+	dma_rx->DMA_Stream_X->NDTR = tx.front().len;
+	dma_rx->MINC(ENABLE);
 
-		dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
-	}
+	if(tx.front().type == RXTX_Type::RX)
+		dma_tx->MINC(DISABLE);
+	if(tx.front().type == RXTX_Type::TX)
+		dma_rx->MINC(DISABLE);
+
+	dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
 
 	spi->SlaveSelect(ENABLE);
 
 	spi->DMA_TX(ENABLE);
+	spi->DMA_RX(ENABLE);
 
 	dma_tx->Enable_Stream();
-
-	if(tx.front().type != RXTX_Type::TX)
-	{
-		spi->DMA_RX(ENABLE);
-		dma_rx->Enable_Stream();
-	}
+	dma_rx->Enable_Stream();
 
 	spi->Enable();
-
 }
 
 void Interface_SPI::IRQHandler(void)
@@ -306,10 +299,14 @@ void Interface_SPI::IRQHandler(void)
 	spi->SlaveSelect(DISABLE);
 
 	dma_rx->Disable_IRQ(DMA_Sx::IRQ::TC);
-	dma_tx->Disable_IRQ(DMA_Sx::IRQ::TC);
 
 	if(tx.front().type != RXTX_Type::TX)
 		rx.push_back(tx.front());
+	if(tx.front().type == RXTX_Type::TX)
+	{
+		delete tx.front().rx_data_ptr;
+		delete tx.front().tx_data_ptr;
+	}
 	tx.erase(tx.begin());
 
 	if(tx.size() != 0)
