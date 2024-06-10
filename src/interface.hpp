@@ -131,6 +131,33 @@ public:
 
 	void Receive(uint16_t len);
 
+	/**
+	 * @brief Get the count of received data.
+	 * @return Count of received data.
+	 */
+	uint32_t GetRxDataCount()
+	{
+		return rx.size();
+	};
+
+	uint32_t GetFirstRxDataSize()
+	{
+		return rx.front().len;
+	};
+
+	/**
+	 * @brief Get received data.
+	 * @param data Pointer to buffer to store received data.
+	 * @param size Size of data to retrieve.
+	 */
+	void GetRxData(uint8_t* data, uint32_t size)
+	{
+		memcpy(data, rx.front().rx_data_ptr, size);
+		delete rx.front().tx_data_ptr;
+		delete rx.front().rx_data_ptr;
+		rx.erase(rx.begin());
+	};
+
 private:
 	SPI *spi;
 	SPI::Init_struct_Typedef spi_init_data;
@@ -142,10 +169,18 @@ private:
 		TX,
 		RX
 	}RXTX_Type;
-	
-	RXTX_Type curr_rxtx = RXTX_Type::none;
-	void StartTranssmit(RXTX_Type rxtx);
 
+	typedef struct _rxtx_data
+	{
+		uint8_t *tx_data_ptr;
+		uint8_t *rx_data_ptr;
+		uint16_t len;
+		RXTX_Type type;
+	}rxtx_data_typedef;
+
+	std::vector<rxtx_data_typedef> tx, rx;
+	
+	inline void StartTranssmit();
 
 };
 

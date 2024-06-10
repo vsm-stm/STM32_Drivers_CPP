@@ -207,92 +207,91 @@ void Interface_SPI::Init()
 
 void Interface_SPI::Send_Receive(uint8_t *tx_data, uint16_t len)
 {
-	tx_data_typedef tx_tmp;
-	tx_tmp.data_ptr = new uint8_t[len];
-	memcpy(tx_tmp.data_ptr, tx_data, len);
-	tx_tmp.len = len;
-	tx.push_back(tx_tmp);
+	rxtx_data_typedef tmp_data;
+	tmp_data.len = len;
+	tmp_data.type = RXTX_Type::RXTX;
+	tmp_data.tx_data_ptr = new uint8_t[len];
+	tmp_data.rx_data_ptr = new uint8_t[len];
+	memcpy(tmp_data.tx_data_ptr, tx_data, len);
 
-	rx_data_typedef rx_tmp;
-	rx_tmp.data_ptr = new uint8_t[len];
-	rx_tmp.len = len;
-	rx.push_back(rx_tmp);
+	tx.push_back(tmp_data);
 
 	if(tx.size() == 1)
 	{
-		StartTranssmit(RXTX_Type::RXTX);
+		StartTranssmit();
 	}
 }
 
 void Interface_SPI::Send(uint8_t *tx_data, uint16_t len)
 {
-	tx_data_typedef tx_tmp;
-	tx_tmp.data_ptr = new uint8_t[len];
-	memcpy(tx_tmp.data_ptr, tx_data, len);
-	tx_tmp.len = len;
-	tx.push_back(tx_tmp);
+	rxtx_data_typedef tmp_data;
+	tmp_data.len = len;
+	tmp_data.type = RXTX_Type::TX;
+	tmp_data.tx_data_ptr = new uint8_t[len];
+	memcpy(tmp_data.tx_data_ptr, tx_data, len);
+
+	tx.push_back(tmp_data);
 
 	if(tx.size() == 1)
 	{
-		StartTranssmit(RXTX_Type::TX);
+		StartTranssmit();
 	}
 }
 
 void Interface_SPI::Receive(uint16_t len)
 {
-	tx_data_typedef tx_tmp;
-	tx_tmp.data_ptr = new uint8_t[1];
-	memcpy(tx_tmp.data_ptr, 1, len);
-	tx_tmp.len = len;
-	tx.push_back(tx_tmp);
+	rxtx_data_typedef tmp_data;
+	tmp_data.len = len;
+	tmp_data.type = RXTX_Type::RX;
+	tmp_data.tx_data_ptr = new uint8_t;
+	tmp_data.rx_data_ptr = new uint8_t[len];
+	*tmp_data.tx_data_ptr = 0;
 
-	rx_data_typedef rx_tmp;
-	rx_tmp.data_ptr = new uint8_t[len];
-	rx_tmp.len = len;
-	rx.push_back(rx_tmp);
+	tx.push_back(tmp_data);
 
 	if(tx.size() == 1)
 	{
-		StartTranssmit(RXTX_Type::RXTX);
+		StartTranssmit();
 	}
 }
 
-void Interface_SPI::StartTranssmit(RXTX_Type rxtx)
+void Interface_SPI::StartTranssmit()
 {
-	curr_rxtx = rxtx;
-	if((rxtx == RXTX_Type::RXTX)
-	|| (rxtx == RXTX_Type::TX))
-	{
-		if(tx.size() == 0)
-			return;
-		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().data_ptr);
-		dma_tx->DMA_Stream_X->NDTR = tx.front().len;
-	}
-	if((rxtx == RXTX_Type::RXTX)
-	|| (rxtx == RXTX_Type::RX))
-	{
-		if(rx.size() == 0)
-			return;
-		dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(rx.back().data_ptr);
-		dma_rx->DMA_Stream_X->NDTR = rx.back().len;
-	}
-
-	if(rxtx == RXTX_Type::TX)
-		dma_tx->Enable_IRQ(DMA_Sx::IRQ::TC);
-	else
-		dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
+	if(tx.size() == 0)
+		return;
 
 	dma_tx->ClearFlags();
 	dma_rx->ClearFlags();
 
+	dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().tx_data_ptr);
+	dma_tx->DMA_Stream_X->NDTR = tx.front().len;
+	dma_tx->MINC(ENABLE);
+
+	if(tx.front().type == RXTX_Type::TX)
+	{
+		dma_tx->Enable_IRQ(DMA_Sx::IRQ::TC);
+	}
+	else
+	{
+		dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().rx_data_ptr);
+		dma_rx->DMA_Stream_X->NDTR = tx.front().len;
+		if(tx.front().type == RXTX_Type::RX)
+			dma_tx->MINC(DISABLE);
+
+		dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
+	}
+
 	spi->SlaveSelect(ENABLE);
 
 	spi->DMA_TX(ENABLE);
-	spi->DMA_RX(ENABLE);
 
 	dma_tx->Enable_Stream();
-	if(rxtx != RXTX_Type::TX)
+
+	if(tx.front().type != RXTX_Type::TX)
+	{
+		spi->DMA_RX(ENABLE);
 		dma_rx->Enable_Stream();
+	}
 
 	spi->Enable();
 
@@ -306,14 +305,16 @@ void Interface_SPI::IRQHandler(void)
 
 	spi->SlaveSelect(DISABLE);
 
-	dma_tx->ClearFlags();
-	dma_rx->ClearFlags();
+	dma_rx->Disable_IRQ(DMA_Sx::IRQ::TC);
+	dma_tx->Disable_IRQ(DMA_Sx::IRQ::TC);
+
+	if(tx.front().type != RXTX_Type::TX)
+		rx.push_back(tx.front());
+	tx.erase(tx.begin());
 
 	if(tx.size() != 0)
 	{
-		delete tx.front().data_ptr;
-		tx.erase(tx.begin());
+		StartTranssmit();
 	}
 
-	dma_rx->Disable_IRQ(DMA_Sx::IRQ::TC);
 }

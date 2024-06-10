@@ -95,17 +95,17 @@ public:
 
 	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
 
-	void Enable()
+	inline void Enable()
 	{
 		SPIx->CR1 |= SPI_CR1_SPE;
 	};
 
-	void Disable()
+	inline void Disable()
 	{
 		SPIx->CR1 &= ~SPI_CR1_SPE;
 	};
 
-	void SlaveSelect(FunctionalState en)
+	inline void SlaveSelect(FunctionalState en)
 	{
 		if(en)
 			SS.SetLevel(0);
@@ -113,7 +113,7 @@ public:
 			SS.SetLevel(1);
 	}
 
-	void DMA_TX(FunctionalState en)
+	inline void DMA_TX(FunctionalState en)
 	{
 		if(en)
 			SPIx->CR2 |= SPI_CR2_TXDMAEN;
