@@ -1,4 +1,5 @@
 #include <interface.hpp>
+
 void Interface::SetUpDMA()
 {
 	dma_tx->SetUp();
@@ -34,11 +35,15 @@ Interface_USART::Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA
 void Interface_USART::Send(uint8_t* data, uint16_t len)
 {
 	tx_data_typedef tmp;
-	tmp.data_ptr = new uint8_t[len];
-	memcpy(tmp.data_ptr, data, len);
-	tmp.len = len;
+	GPIOA->BSRR = GPIO_BSRR_BS10;
 	tx.push_back(tmp);
 
+	tx.back().data_ptr = new uint8_t[len];
+	memcpy(tx.back().data_ptr, data, len);
+	tx.back().len = len;
+	
+
+	GPIOA->BSRR = GPIO_BSRR_BR10;
 	if(tx.size() == 1)
 	{
 		StartTranssmit();
@@ -160,6 +165,9 @@ void Interface_USART::StartReceiver()
 }
 
 
+
+
+
 Interface_SPI::Interface_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
 		Interface(),
 		spi(_spi),
@@ -210,11 +218,12 @@ void Interface_SPI::Send_Receive(uint8_t *tx_data, uint16_t len)
 	rxtx_data_typedef tmp_data;
 	tmp_data.len = len;
 	tmp_data.type = RXTX_Type::RXTX;
-	tmp_data.tx_data_ptr = new uint8_t[len];
-	tmp_data.rx_data_ptr = new uint8_t[len];
-	memcpy(tmp_data.tx_data_ptr, tx_data, len);
-
+	
 	tx.push_back(tmp_data);
+
+	tx.back().tx_data_ptr = new uint8_t[len];
+	tx.back().rx_data_ptr = new uint8_t[len];
+	memcpy(tx.back().tx_data_ptr, tx_data, len);
 
 	if(tx.size() == 1)
 	{
@@ -227,9 +236,11 @@ void Interface_SPI::Send(uint8_t *tx_data, uint16_t len)
 	rxtx_data_typedef tmp_data;
 	tmp_data.len = len;
 	tmp_data.type = RXTX_Type::TX;
+
 	tmp_data.tx_data_ptr = new uint8_t[len];
-	tmp_data.rx_data_ptr = new uint8_t;
-	memcpy(tmp_data.tx_data_ptr, tx_data, len);
+	tmp_data.rx_data_ptr = new uint8_t[1];
+
+	memcpy(tmp_data.tx_data_ptr, tx_data, len);	
 
 	tx.push_back(tmp_data);
 
@@ -237,6 +248,7 @@ void Interface_SPI::Send(uint8_t *tx_data, uint16_t len)
 	{
 		StartTranssmit();
 	}
+		
 }
 
 void Interface_SPI::Receive(uint16_t len)
@@ -244,11 +256,12 @@ void Interface_SPI::Receive(uint16_t len)
 	rxtx_data_typedef tmp_data;
 	tmp_data.len = len;
 	tmp_data.type = RXTX_Type::RX;
-	tmp_data.tx_data_ptr = new uint8_t;
-	tmp_data.rx_data_ptr = new uint8_t[len];
-	*tmp_data.tx_data_ptr = 0;
 
 	tx.push_back(tmp_data);
+
+	tx.back().tx_data_ptr = new uint8_t[1];
+	tx.back().rx_data_ptr = new uint8_t[len];
+	tx.back().tx_data_ptr[0] = 0;
 
 	if(tx.size() == 1)
 	{
@@ -304,8 +317,8 @@ void Interface_SPI::IRQHandler(void)
 		rx.push_back(tx.front());
 	if(tx.front().type == RXTX_Type::TX)
 	{
-		delete tx.front().rx_data_ptr;
-		delete tx.front().tx_data_ptr;
+		delete [] rx.front().tx_data_ptr;
+		delete [] rx.front().rx_data_ptr;
 	}
 	tx.erase(tx.begin());
 

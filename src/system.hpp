@@ -82,7 +82,7 @@ __attribute__ ((always_inline)) static inline void BB_WR(volatile uint32_t * add
 	*bitptr = value;
 }
 
-#define BIT_BB(address, bit) *((uint32_t *)(PERIPH_BB_BASE + ((uint32_t)(address) - PERIPH_BASE)*32 + bit*4))\
+#define BIT_BB(address, bit) *((uint32_t *)(PERIPH_BB_BASE + ((uint32_t)(address) - PERIPH_BASE)*32 + bit*4))
 
 #endif
 
