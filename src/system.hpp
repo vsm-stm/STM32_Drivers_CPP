@@ -17,10 +17,11 @@ extern "C"
 
 typedef enum
 {
-  SYS_OK       = 0x00U,
-  SYS_ERROR    = 0x01U,
-  SYS_BUSY     = 0x02U,
-  SYS_TIMEOUT  = 0x03U
+  SYS_OK = 0x00U,
+  SYS_ERROR,
+  SYS_BUSY,
+  SYS_NO_Init,
+  SYS_TIMEOUT
 } SYS_StatusTypeDef;
 
 typedef enum
