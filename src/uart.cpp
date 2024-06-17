@@ -76,8 +76,50 @@ SYS_StatusTypeDef USART::SetUp()
 #if defined(STM32F4)
 	ClearFlags();
 #elif defined(STM32F7)
-	ClearFlags(0xFFFF);
+	ClearFlags(ISR_FLAGS::TC);
 #endif
 
 	return SYS_OK;
 }
+
+SYS_StatusTypeDef USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
+{
+	uint32_t tick_start = System::GetTick();
+
+	for(uint32_t i = 0;i<len;i++)
+	{
+		while(!(USARTx->ISR & USART_ISR_TXE))
+		{
+			if(System::GetTick() - tick_start > timeout)
+				return SYS_ERROR;
+		};
+#if defined(STM32F4)
+		USARTx->DR = data[i];
+#elif defined(STM32F7)
+		USARTx->TDR = data[i];
+#endif
+		
+	};
+	return SYS_OK;
+};
+
+SYS_StatusTypeDef USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
+{
+	uint32_t tick_start = System::GetTick();
+
+	for(uint32_t i = 0;i<len;i++)
+	{
+		while(!(USARTx->ISR & USART_ISR_RXNE))
+		{
+			if(System::GetTick() - tick_start > timeout)
+				return SYS_ERROR;
+		};
+		#if defined(STM32F4)
+			data[i] = USARTx->DR;
+		#elif defined(STM32F7)
+			data[i] = USARTx->RDR;
+		#endif
+		
+	};
+	return SYS_OK;
+};
