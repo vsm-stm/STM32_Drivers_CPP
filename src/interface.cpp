@@ -1,5 +1,6 @@
 #include <interface.hpp>
 
+#if defined(STM32F4)
 void Interface_DMA::DMA_SetUp()
 {
 	dma_tx->SetUp();
@@ -514,3 +515,5 @@ void Interface_buffer_SPI::IRQHandler(void)
 	}
 
 }
+
+#endif
