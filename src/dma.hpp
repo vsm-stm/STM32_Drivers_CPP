@@ -137,6 +137,7 @@ public:
 	{
 		*DMA_CFR =	(DMA_LISR_TCIF0 << cfr_offset) |
 					(DMA_LISR_HTIF0 << cfr_offset) |
+					(DMA_LISR_FEIF0 << cfr_offset) |
 					(DMA_LISR_TEIF0 << cfr_offset);
 	};
 

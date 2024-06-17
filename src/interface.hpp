@@ -142,6 +142,8 @@ public:
 	void Init();
 
 	void Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len);
+	void Send(uint8_t* tx_data,uint16_t data_len);
+	void Receive(uint8_t* rx_data, uint16_t data_len);
 
 	void IRQHandler();
 	bool IsDataReceived;
@@ -149,6 +151,8 @@ public:
 protected:
 	SPI *spi;
 	SPI::Init_struct_Typedef spi_init_data;
+
+	uint8_t tmp_data[1];
 
 	SYS_StatusTypeDef status;
 };
