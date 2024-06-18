@@ -1,7 +1,6 @@
 #ifndef INTERFACE_HPP_
 #define INTERFACE_HPP_
 
-#if defined(STM32F4)
 #include <system.hpp>
 #include <dma.hpp>
 #include <uart.hpp>
@@ -221,7 +220,5 @@ private:
 	inline void StartTranssmit();
 
 };
-
-#endif /* #if defined(STM32F4) */
 
 #endif /* INTERFACE_HPP_ */

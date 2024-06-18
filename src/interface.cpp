@@ -1,6 +1,5 @@
 #include <interface.hpp>
 
-#if defined(STM32F4)
 void Interface_DMA::DMA_SetUp()
 {
 	dma_tx->SetUp();
@@ -20,7 +19,11 @@ Interface_USART::Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_stream_
 	{
 		dma_tx = new DMA_Sx(_dma_stream_tx, 
 					ch,
+#if defined(STM32F4)
 					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
+#elif defined(STM32F7)
+					reinterpret_cast<uint32_t>(&usart->USARTx->TDR),
+#endif
 					DMA_Sx::Per_Type::usart,
 					DMA_Sx::DIR::To_Per);
 
@@ -31,7 +34,11 @@ Interface_USART::Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_stream_
 	{
 		dma_rx = new DMA_Sx(_dma_stream_rx, 
 					ch,
+#if defined(STM32F4)
 					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
+#elif defined(STM32F7)
+					reinterpret_cast<uint32_t>(&usart->USARTx->RDR),
+#endif
 					DMA_Sx::Per_Type::usart,
 					DMA_Sx::DIR::From_Per);
 
@@ -60,7 +67,11 @@ void Interface_USART::Send(uint8_t* data, uint16_t data_len)
 
 		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
 		dma_tx->DMA_Stream_X->NDTR = data_len;
+#if defined(STM32F4)
 		usart->ClearFlags();
+#elif defined(STM32F7)
+		usart->ClearFlags(USART::ISR_FLAGS::TC);
+#endif
 		usart->Enable_IRQ(USART::IRQ::TC);
 		dma_tx->ClearFlags();
 		dma_tx->Enable_Stream();
@@ -87,22 +98,38 @@ void Interface_USART::Receive(uint8_t* data, uint16_t data_len, bool cont)
 void Interface_USART::IRQHandler()
 {
 	// Handle Transmit Complete (TC) interrupt
+#if defined(STM32F4)
 	if((usart->USARTx->SR & USART_SR_TC)
+#elif defined(STM32F7)
+	if((usart->USARTx->ISR & USART_ISR_TC)
+#endif
 	&& (usart->USARTx->CR1 & USART_CR1_TCIE))
 	{
+#if defined(STM32F4)
 		usart->USARTx->SR &= ~USART_SR_TC;
+#elif defined(STM32F7)
+		usart->USARTx->ICR = USART_ICR_TCCF;
+#endif
 		usart->Disable_IRQ(USART::IRQ::TC);
 		status_tx = SYS_OK;
 	}
 
 	// Handle Idle Line Detected interrupt
+#if defined(STM32F4)
 	if((usart->USARTx->SR & USART_SR_IDLE)
+#elif defined(STM32F7)
+	if((usart->USARTx->ISR & USART_ISR_IDLE)
+#endif
 	&& (usart->USARTx->CR1 & USART_CR1_IDLEIE))
 	{
 		IsDataReceived = true;
 		dma_rx->Disable_Stream();
 
+#if defined(STM32F4)
 		usart->USARTx->DR;
+#elif defined(STM32F7)
+		usart->USARTx->ICR = USART_ICR_IDLECF;
+#endif
 		if(ContReceive)
 		{
 			dma_rx->ClearFlags();
@@ -179,10 +206,18 @@ void Interface_buffer_USART::Recieve(uint16_t len)
 void Interface_buffer_USART::IRQHandler(void)
 {
 	// Handle Transmit Complete (TC) interrupt
+#if defined(STM32F4)
 	if((usart->USARTx->SR & USART_SR_TC)
+#elif defined(STM32F7)
+	if((usart->USARTx->ISR & USART_ISR_TC)
+#endif
 	&& (usart->USARTx->CR1 & USART_CR1_TCIE))
 	{
+#if defined(STM32F4)
 		usart->ClearFlags();
+#elif defined(STM32F7)
+		usart->ClearFlags(USART::ISR_FLAGS::TC);
+#endif
 
 		if(tx.size() != 0)
 		{
@@ -201,12 +236,19 @@ void Interface_buffer_USART::IRQHandler(void)
 	}
 
 	// Handle Idle Line Detected interrupt
+#if defined(STM32F4)
 	if((usart->USARTx->SR & USART_SR_IDLE)
+#elif defined(STM32F7)
+	if((usart->USARTx->ISR & USART_ISR_IDLE)
+#endif
 	&& (usart->USARTx->CR1 & USART_CR1_IDLEIE))
 	{
 		dma_rx->Disable_Stream();
+#if defined(STM32F4)
 		usart->USARTx->DR;
-
+#elif defined(STM32F7)
+		usart->USARTx->ICR = USART_ICR_IDLECF;
+#endif
 		uint32_t tmp = tx.back().len;
 
 		rx.back().len -= dma_rx->DMA_Stream_X->NDTR;
@@ -231,7 +273,11 @@ void Interface_buffer_USART::StartTranssmit()
 	{
 		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().data_ptr);
 		dma_tx->DMA_Stream_X->NDTR = tx.front().len;
+#if defined(STM32F4)
 		usart->ClearFlags();
+#elif defined(STM32F7)
+		usart->ClearFlags(USART::ISR_FLAGS::TC);
+#endif
 		usart->Enable_IRQ(USART::IRQ::TC);
 		dma_tx->ClearFlags();
 		dma_tx->Enable_Stream();
@@ -291,6 +337,9 @@ void Interface_SPI::Init()
 	spi->SetUp(spi_init_data);
 	spi->DMA_TX(ENABLE);
 	spi->DMA_RX(ENABLE);
+#if defined(STM32F7)
+	spi->SPIx->CR2 |= SPI_CR2_LDMARX | SPI_CR2_LDMATX;
+#endif
 
 	DMA_SetUp();
 
@@ -327,7 +376,7 @@ void Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t da
 
 void Interface_SPI::Send(uint8_t* tx_data,uint16_t data_len)
 {
-		status = SYS_BUSY;
+	status = SYS_BUSY;
 
 	dma_tx->ClearFlags();
 	dma_rx->ClearFlags();
@@ -515,5 +564,3 @@ void Interface_buffer_SPI::IRQHandler(void)
 	}
 
 }
-
-#endif

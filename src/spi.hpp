@@ -20,12 +20,13 @@ public:
 
 	enum class Data_frame_format
 	{
+	#if defined(STM32F4)
 		Byte = 0,
-		#if defined(STM32F4)
 		Half_Word = SPI_CR1_DFF
-		#elif defined(STM32F7)
-		Half_Word = 0b111
-		#endif
+	#elif defined(STM32F7)
+		Byte = 0b111 << SPI_CR2_DS_Pos,
+		Half_Word = 0b1111 << SPI_CR2_DS_Pos
+	#endif
 	};
 
 	enum class Frame_Format
@@ -129,7 +130,7 @@ public:
 			SPIx->CR2 &= ~SPI_CR2_RXDMAEN;
 	};
 
-		/**
+	/**
 	 * @brief Enable the specified USART IRQ.
 	 * @param irq The IRQ to enable.
 	 */
@@ -156,7 +157,7 @@ public:
 		}
 	}
 
-	uint16_t RXTX(uint16_t data);
+	SYS_StatusTypeDef Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
 
 protected:
 	PIN CLK{};
@@ -169,30 +170,5 @@ protected:
 
 	SYS_StatusTypeDef SetHard();
 };
-
-class SPI_Slave_TX : public SPI
-{
-private:
-	/* data */
-public:
-
-	SYS_StatusTypeDef SetUp();
-
-	SPI_Slave_TX(SPI_TypeDef *spix, PIN CLK, PIN MISO) : SPI(spix, CLK, {}, MISO, {}){};
-	~SPI_Slave_TX(){};
-};
-
-class SPI_Master : public SPI
-{
-private:
-
-public:
-	SPI_Master(SPI_TypeDef *spix, PIN CLK, PIN MOSI, PIN MISO) : SPI(spix, CLK, MOSI, MISO, {}){};
-	~SPI_Master(){};
-};
-
-
-
-
 
 #endif /* SPI_HPP_ */

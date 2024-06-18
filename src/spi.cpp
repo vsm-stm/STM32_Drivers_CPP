@@ -73,10 +73,18 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, 
 		return setup_status;
 
 	SPIx->CR1 =	static_cast<uint32_t>(mstr) |
+	#if defined(STM32F4)
 				static_cast<uint32_t>(dff) |
+	#endif
+				
 				static_cast<uint32_t>(ff) |
 				static_cast<uint32_t>(cpolpha) |
 				br << SPI_CR1_BR_Pos;
+
+	#if defined(STM32F7)
+	SPIx->CR2 = static_cast<uint32_t>(dff);// |
+				// SPI_CR2_FRXTH;
+	#endif
 
 	if(type == TYPE::RX)
 	{
@@ -88,31 +96,48 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, 
 	return SYS_OK;
 }
 
-uint16_t SPI::RXTX(uint16_t data)
+ SYS_StatusTypeDef SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
 {
-	uint16_t recv = 0;
+	uint32_t tick_start = System::GetTick();
+
 	SS.SetLevel(0);
 	SPIx->CR1 |= SPI_CR1_SPE;
-	SPIx->DR = data;
-	while(!(SPIx->SR & SPI_SR_RXNE));
-	recv = SPIx->DR;
-	while(SPIx->SR & SPI_SR_BSY);
+	for(uint32_t i = 0;i<data_len;i++)
+	{
+		// while(!(SPIx->SR & SPI_SR_TXE))
+		// {
+		// 	if(System::GetTick() - tick_start > timeout)
+		// 		return SYS_ERROR;
+		// };
+		SPIx->DR = tx_data[i];
+		while(!(SPIx->SR & SPI_SR_RXNE))
+		{
+			if(System::GetTick() - tick_start > timeout)
+				return SYS_ERROR;
+		};
+		rx_data[i] = SPIx->DR;
+	}
+
 	SPIx->CR1 &= ~SPI_CR1_SPE;
+	while(SPIx->SR & SPI_SR_BSY)
+	{
+		if(System::GetTick() - tick_start > timeout)
+			return SYS_ERROR;
+	};
 	SS.SetLevel(1);
-	
-	return recv;
-}
-
-SYS_StatusTypeDef SPI_Slave_TX::SetUp()
-{
-	SYS_StatusTypeDef setup_status = SetHard();
-
-	if(setup_status != SYS_OK)
-		return setup_status;
-
-	SPIx->CR1 = //SPI_CR1_CPHA;// |
-				SPI_CR1_CPOL;
-	// SPIx->CR2 = SPI_CR2_TXDMAEN;
-	
 	return SYS_OK;
 }
+
+// SYS_StatusTypeDef SPI_Slave_TX::SetUp()
+// {
+// 	SYS_StatusTypeDef setup_status = SetHard();
+
+// 	if(setup_status != SYS_OK)
+// 		return setup_status;
+
+// 	SPIx->CR1 = //SPI_CR1_CPHA;// |
+// 				SPI_CR1_CPOL;
+// 	// SPIx->CR2 = SPI_CR2_TXDMAEN;
+	
+// 	return SYS_OK;
+// }
