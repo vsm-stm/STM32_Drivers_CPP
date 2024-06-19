@@ -90,7 +90,32 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 		RCC->PLLCFGR |= PLLCfgr.PLL_R << RCC_PLLCFGR_PLLR_Pos;
 #endif
 
-		RCC->CR |= RCC_CR_PLLON;// PLL Disable
+#ifdef STM32F7
+		if(sys_clk > 180000000)
+		{
+			if(PLLCfgr.PLL_ClkSrc == PLL_ClockSource::HSI)
+				PWR->CR1 &= ~(PWR_CR1_VOS_1);
+			else
+				PWR->CR1 &= ~(PWR_CR1_VOS_0);
+			PWR->CR1 |= PWR_CR1_ODEN;
+			tickStart = System::GetTick();
+			while (!(PWR->CSR1 & PWR_CSR1_ODRDY))
+			{
+				if((System::GetTick() - tickStart) > 100)
+					return SYS_TIMEOUT;
+			};
+
+			PWR->CR1 |= PWR_CR1_ODSWEN;
+			tickStart = System::GetTick();
+			while (!(PWR->CSR1 & PWR_CSR1_ODSWRDY))
+			{
+				if((System::GetTick() - tickStart) > 100)
+					return SYS_TIMEOUT;
+			};
+		}
+#endif
+
+		RCC->CR |= RCC_CR_PLLON;// PLL Enable
 		tickStart = System::GetTick();
 		while (!(RCC->CR & RCC_CR_PLLON))
 		{
