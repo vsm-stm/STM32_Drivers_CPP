@@ -102,8 +102,8 @@ static const I2C_Charac_t I2C_Charac[] =
     .sudat_min = 100,
     .lscl_min = 1300,
     .hscl_min = 600,
-    .trise = 250,
-    .tfall = 100,
+    .trise = 300,
+    .tfall = 300,
     .dnf = I2C_DIGITAL_FILTER_COEF,
   },
   [I2C_SPEED_FREQ_FAST_PLUS] =
@@ -116,8 +116,8 @@ static const I2C_Charac_t I2C_Charac[] =
     .sudat_min = 50,
     .lscl_min = 500,
     .hscl_min = 260,
-    .trise = 60,
-    .tfall = 100,
+    .trise = 120,
+    .tfall = 120,
     .dnf = I2C_DIGITAL_FILTER_COEF,
   },
 };

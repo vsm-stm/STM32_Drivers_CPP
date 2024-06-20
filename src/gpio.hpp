@@ -83,6 +83,14 @@ public:
 		ANALOG =         	(static_cast<uint8_t>(MODE::ANALOG))      ///< Analog mode
 	};
 
+	enum class OUTPUT_SPEED
+	{
+		Low  = 0b00,
+		Medium,
+		Fast,
+		High
+	};
+
 	/**
 	 * @brief Enumeration representing different logic levels.
 	 */
@@ -116,6 +124,8 @@ public:
 	 */
 	SYS_StatusTypeDef SetUp(TYPE type);
 
+	SYS_StatusTypeDef SetUp(TYPE type, OUTPUT_SPEED speed);
+
 	/**
 	 * @brief Set up the pin with the specified type and alternate function.
 	 * @param type The enumerate type of pin configuration.
@@ -123,6 +133,8 @@ public:
 	 * @return The status of the setup operation.
 	 */
 	SYS_StatusTypeDef SetUp(TYPE type, uint8_t af);
+
+	SYS_StatusTypeDef SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af);
 
 	/**
 	 * @brief Get the logic level of the pin.
