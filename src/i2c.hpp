@@ -14,6 +14,12 @@ class I2C
 public:
 	I2C_TypeDef *I2Cx;
 
+	enum class I2CMode
+	{
+		Master,
+		Slave
+	};
+
 	enum class SpeedMode
 	{
 		Standart = 0,
@@ -21,12 +27,62 @@ public:
 		FastPlus
 	};
 
-	
 
-	I2C(/* args */);
+	I2C(I2C_TypeDef *_i2c, SpeedMode _speed, PIN _scl, PIN _sda) :
+		I2Cx(_i2c),
+		SCL(_scl),
+		SDA(_sda)
+	{
+		switch (_speed)
+		{
+		case SpeedMode::Standart:
+			i2c_speed = 100000;
+			break;
+		case SpeedMode::Fast:
+			i2c_speed = 400000;
+			break;
+		case SpeedMode::FastPlus:
+			i2c_speed = 1000000;
+			break;
+		default:
+			i2c_speed = 0;
+			break;
+		};
+	};
+	I2C(I2C_TypeDef *_i2c, uint32_t _speed, PIN _scl, PIN _sda) :
+		I2Cx(_i2c),
+		SCL(_scl),
+		SDA(_sda)
+	{
+		if((_speed < 80000)
+		|| (_speed > 1200000))
+			i2c_speed = 0;
+		else
+			i2c_speed = _speed;
+	};
 	~I2C(){};
+
+	SYS_StatusTypeDef SetUp();
+
+	SYS_StatusTypeDef Send(uint8_t slave_addr, uint8_t *data, uint32_t len, uint32_t timeout);
+	SYS_StatusTypeDef Receive(uint8_t slave_addr, uint8_t *data, uint32_t len, uint32_t timeout);
+	SYS_StatusTypeDef ReceiveFromAddr(uint8_t slave_addr, uint8_t *addr, uint8_t addr_len, uint8_t *data, uint32_t len, uint32_t timeout);
+
 private:
-	/* data */
+	PIN SCL{};
+	PIN SDA{};
+
+	uint32_t i2c_speed;
+
+	uint32_t af, bus_clk;
+	IRQn_Type IRQ_vector_EV, IRQ_vector_ER;
+
+	SYS_StatusTypeDef SetHard();
+
+	void error_stop();
+	void normal_stop();
+
+	const uint32_t MAX_NBYTE_SIZE = 255;
 };
 
 

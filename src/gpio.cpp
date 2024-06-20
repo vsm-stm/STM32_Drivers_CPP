@@ -31,7 +31,7 @@ SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
 {
 	// Extract individual configuration bits from the type
 	uint8_t mode  = static_cast<uint8_t>(type) & 0x3 << mode_pos;
-	uint8_t pull  = static_cast<uint8_t>(type) & 0x3 << pull_pos;
+	uint8_t pull  = (static_cast<uint8_t>(type) & 0x3 << pull_pos) >> pull_pos;
 	uint8_t otype = (static_cast<uint8_t>(type) & 0x1 << output_type_pos) >> output_type_pos;
 
 	// Calculate the GPIO ID to enable the corresponding clock
@@ -53,7 +53,7 @@ SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
 		||  (static_cast<PIN::MODE>(mode) == PIN::MODE::AF))
 		{
 			PORT->OTYPER |= otype << pin;
-			PORT->OSPEEDR |= static_cast<uint8_t>(speed) << pin;
+			PORT->OSPEEDR |= static_cast<uint8_t>(speed) << (pin*2);
 		}
 
 		PORT->PUPDR |= pull << (pin * 2);

@@ -1,148 +1,228 @@
 #include <i2c.hpp>
 
-
-I2C::I2C(/* args */)
+SYS_StatusTypeDef I2C::SetHard()
 {
+	if((i2c_speed == 0)
+	|| (SCL.PORT == 0)
+	|| (SDA.PORT == 0))
+		return SYS_ERROR;
+
+	if(I2Cx == I2C1)
+	{
+		RCC->APB1ENR |= RCC_APB1ENR_I2C1EN;
+		RCC->APB1RSTR |= RCC_APB1RSTR_I2C1RST;
+		RCC->APB1RSTR &= ~RCC_APB1RSTR_I2C1RST;
+		bus_clk = System::APB1BusClock;
+		IRQ_vector_EV = I2C1_EV_IRQn;
+		IRQ_vector_ER = I2C1_ER_IRQn;
+	} else
+	if(I2Cx == I2C2)
+	{
+		RCC->APB1ENR |= RCC_APB1ENR_I2C2EN;
+		RCC->APB1RSTR |= RCC_APB1RSTR_I2C2RST;
+		RCC->APB1RSTR &= ~RCC_APB1RSTR_I2C2RST;
+		bus_clk = System::APB1BusClock;
+		IRQ_vector_EV = I2C2_EV_IRQn;
+		IRQ_vector_ER = I2C2_ER_IRQn;
+	} else
+	if(I2Cx == I2C3)
+	{
+		RCC->APB1ENR |= RCC_APB1ENR_I2C3EN;
+		RCC->APB1RSTR |= RCC_APB1RSTR_I2C3RST;
+		RCC->APB1RSTR &= ~RCC_APB1RSTR_I2C3RST;
+		bus_clk = System::APB1BusClock;
+		IRQ_vector_EV = I2C3_EV_IRQn;
+		IRQ_vector_ER = I2C3_ER_IRQn;
+	} else
+	{
+		return SYS_ERROR;
+	}
+
+	af = 4;
+
+	SCL.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High, af);
+	SDA.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High, af);
+
+	I2Cx->CR1 = 0;
+	uint32_t timing = I2C_GetTiming(bus_clk, i2c_speed);
+	I2Cx->TIMINGR = timing;
+	I2Cx->CR1 = I2C_CR1_PE;
+
+	return SYS_OK;
+};
+
+SYS_StatusTypeDef I2C::SetUp()
+{
+	return SetHard();
+};
+
+void I2C::error_stop()
+{
+	I2Cx->CR2 |= I2C_CR2_STOP;
+	normal_stop();
+};
+
+void I2C::normal_stop()
+{
+	while(!(I2Cx->ISR & I2C_ISR_STOPF)){};
+
+	I2Cx->ICR = I2C_ICR_STOPCF | I2C_ICR_NACKCF;
+	I2Cx->CR2 = 0;
+};
+
+SYS_StatusTypeDef I2C::Send(uint8_t slave_addr, uint8_t *data, uint32_t len, uint32_t timeout)
+{
+	uint32_t transfer_count = len / MAX_NBYTE_SIZE;
+	uint32_t current_transfer_count = 0;
+	uint32_t start = I2C_CR2_START;
+	uint32_t mode;
+	uint32_t tick_start = System::GetTick();
+
+	for(int32_t transfer = transfer_count; transfer >= 0; transfer--)
+	{
+		mode = slave_addr | start;
+		if(transfer == 0)
+		{
+			current_transfer_count = len - transfer_count*MAX_NBYTE_SIZE;
+			mode |= I2C_CR2_AUTOEND;
+		}
+		else
+		{
+			current_transfer_count = MAX_NBYTE_SIZE;
+			mode |= I2C_CR2_RELOAD;
+		}
+		mode |= current_transfer_count << I2C_CR2_NBYTES_Pos;
+		if(!start)
+			while(!(I2Cx->ISR & I2C_ISR_TCR))
+			{
+				if(System::GetTick() - tick_start > timeout)
+				{
+					error_stop();
+					return SYS_ERROR;
+				}
+			};
+		I2Cx->CR2 = mode;
+		
+		start = 0;
+		
+		for(uint8_t current_transfer = 0; current_transfer < current_transfer_count; current_transfer++)
+		{
+			while(!(I2Cx->ISR & I2C_ISR_TXIS))
+			{
+				if((I2Cx->ISR & I2C_ISR_NACKF)
+				|| (System::GetTick() - tick_start > timeout))
+				{
+					error_stop();
+					return SYS_ERROR;
+				}
+			};
+			I2Cx->TXDR = data[current_transfer + (transfer_count-transfer)*MAX_NBYTE_SIZE];
+		}
+	}
+
+	while(!(I2Cx->ISR & I2C_ISR_STOPF))
+	{
+		if(System::GetTick() - tick_start > timeout)
+		{
+			error_stop();
+			return SYS_ERROR;
+		}
+	};
+
+	I2Cx->ICR = I2C_ICR_STOPCF | I2C_ICR_NACKCF;
+	I2Cx->CR2 = 0;
+	return SYS_OK;
+};
+
+
+SYS_StatusTypeDef I2C::Receive(uint8_t slave_addr, uint8_t *data, uint32_t len, uint32_t timeout)
+{
+	uint32_t transfer_count = len / MAX_NBYTE_SIZE;
+	uint32_t current_transfer_count = 0;
+	uint32_t start = I2C_CR2_START;
+	uint32_t mode;
+	uint32_t tick_start = System::GetTick();
+
+	for(int32_t transfer = transfer_count; transfer >= 0; transfer--)
+	{
+		mode = slave_addr | start | I2C_CR2_RD_WRN;
+		if(transfer == 0)
+		{
+			current_transfer_count = len - transfer_count*MAX_NBYTE_SIZE;
+			mode |= I2C_CR2_AUTOEND;
+		}
+		else
+		{
+			current_transfer_count = MAX_NBYTE_SIZE;
+			mode |= I2C_CR2_RELOAD;
+		}
+		mode |= current_transfer_count << I2C_CR2_NBYTES_Pos;
+		I2Cx->CR2 = mode;
+		start = 0;
+		
+		for(uint8_t current_transfer = 0; current_transfer < current_transfer_count; current_transfer++)
+		{
+			while(!(I2Cx->ISR & I2C_ISR_RXNE))
+			{
+				if((I2Cx->ISR & I2C_ISR_NACKF)
+				|| (System::GetTick() - tick_start > timeout))
+				{
+					error_stop();
+					return SYS_ERROR;
+				}
+			};
+			data[current_transfer + (transfer_count-transfer)*MAX_NBYTE_SIZE] = I2Cx->RXDR;
+		}
+	}
+
+	while(!(I2Cx->ISR & I2C_ISR_STOPF))
+	{
+		if(System::GetTick() - tick_start > timeout)
+		{
+			error_stop();
+			return SYS_ERROR;
+		}
+	};
+
+	I2Cx->ICR = I2C_ICR_STOPCF | I2C_ICR_NACKCF;
+	I2Cx->CR2 = 0;
+	return SYS_OK;
 }
 
-// SYS_StatusTypeDef SPI::SetHard()
-// {
-// 	// Check the SPI pointer and configure corresponding parameters
-// 	if(SPIx == SPI1)
-// 	{
-// 		RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
-// 		RCC->APB2RSTR |= RCC_APB2RSTR_SPI1RST;
-// 		RCC->APB2RSTR &= ~RCC_APB2RSTR_SPI1RST;
-// 		bus_clk = System::APB2BusClock;
-// 		IRQ_vector = SPI1_IRQn;
-// 		af = 5;
-// 	}else
-// 	if (SPIx == SPI2)
-// 	{
-// 		RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
-// 		RCC->APB1RSTR |= RCC_APB1RSTR_SPI2RST;
-// 		RCC->APB1RSTR &= ~RCC_APB1RSTR_SPI2RST;
-// 		bus_clk = System::APB1BusClock;
-// 		IRQ_vector = SPI2_IRQn;
-// 		af = 5;
-// 	}else
-// 	if (SPIx == SPI3)
-// 	{
-// 		RCC->APB1ENR |= RCC_APB1ENR_SPI3EN;
-// 		RCC->APB1RSTR |= RCC_APB1RSTR_SPI3RST;
-// 		RCC->APB1RSTR &= ~RCC_APB1RSTR_SPI3RST;
-// 		bus_clk = System::APB1BusClock;
-// 		IRQ_vector = SPI3_IRQn;
-// 		af = 6;
-// 	}
-// #if defined(STM32F446xx) || defined(STM32F429xx)
-// 	else
-// 	if (SPIx == SPI4)
-// 	{
-// 		RCC->APB2ENR |= RCC_APB2ENR_SPI4EN;
-// 		RCC->APB2RSTR |= RCC_APB2RSTR_SPI4RST;
-// 		RCC->APB2RSTR &= ~RCC_APB2RSTR_SPI4RST;
-// 		bus_clk = System::APB2BusClock;
-// 		IRQ_vector = SPI4_IRQn;
-// 		af = 5;
-// 	}
-// #endif
-// 	else return SYS_ERROR;
+SYS_StatusTypeDef I2C::ReceiveFromAddr(uint8_t slave_addr, uint8_t *addr, uint8_t addr_len, uint8_t *data, uint32_t len, uint32_t timeout)
+{
+	if(addr_len > 4)
+		return SYS_ERROR;
 
-// 	if (CLK.PORT != NULL)
-// 	{
-// 		CLK.SetUp(PIN::TYPE::AF_PushPull, af);
-// 	}
-// 	if (MOSI.PORT != NULL)
-// 	{
-// 		MOSI.SetUp(PIN::TYPE::AF_PushPull, af);
-// 	}
-// 	if (MISO.PORT != NULL)
-// 	{
-// 		MISO.SetUp(PIN::TYPE::AF_OD, af);
-// 	}
+	uint32_t tick_start = System::GetTick();
 
-// 	if (SS.PORT != NULL)
-// 	{
-// 		SS.SetUp(PIN::TYPE::OUTPUT_PushPull);
-// 	}
+	I2Cx->CR2 = slave_addr |
+				addr_len << I2C_CR2_NBYTES_Pos |
+				I2C_CR2_START;
 
-// 	return SYS_OK;
-// }
+	for(uint8_t transfer = 0; transfer<addr_len; transfer++)
+	{
+		while(!(I2C1->ISR & I2C_ISR_TXIS))
+		{
+			if((I2Cx->ISR & I2C_ISR_NACKF)
+			|| (System::GetTick() - tick_start > timeout))
+			{
+				error_stop();
+				return SYS_ERROR;
+			}
 
-// SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br)
-// {
-// 	SYS_StatusTypeDef setup_status = SetHard();
+		};
+		I2Cx->TXDR = addr[transfer];
+	}
 
-// 	if(setup_status != SYS_OK)
-// 		return setup_status;
+	while(!(I2Cx->ISR & I2C_ISR_TC))
+	{
+		if(System::GetTick() - tick_start > timeout)
+		{
+			error_stop();
+			return SYS_ERROR;
+		}
+	};
 
-// 	SPIx->CR1 =	static_cast<uint32_t>(mstr) |
-// 	#if defined(STM32F4)
-// 				static_cast<uint32_t>(dff) |
-// 	#endif
-				
-// 				static_cast<uint32_t>(ff) |
-// 				static_cast<uint32_t>(cpolpha) |
-// 				br << SPI_CR1_BR_Pos;
-
-// 	#if defined(STM32F7)
-// 	SPIx->CR2 = static_cast<uint32_t>(dff);// |
-// 				// SPI_CR2_FRXTH;
-// 	#endif
-
-// 	if(type == TYPE::RX)
-// 	{
-// 		SPIx->CR1 |= SPI_CR1_RXONLY;
-// 	}
-
-// 	SS.SetLevel(1);
-
-// 	return SYS_OK;
-// }
-
-//  SYS_StatusTypeDef SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
-// {
-// 	uint32_t tick_start = System::GetTick();
-
-// 	SS.SetLevel(0);
-// 	SPIx->CR1 |= SPI_CR1_SPE;
-// 	for(uint32_t i = 0;i<data_len;i++)
-// 	{
-// 		// while(!(SPIx->SR & SPI_SR_TXE))
-// 		// {
-// 		// 	if(System::GetTick() - tick_start > timeout)
-// 		// 		return SYS_ERROR;
-// 		// };
-// 		SPIx->DR = tx_data[i];
-// 		while(!(SPIx->SR & SPI_SR_RXNE))
-// 		{
-// 			if(System::GetTick() - tick_start > timeout)
-// 				return SYS_ERROR;
-// 		};
-// 		rx_data[i] = SPIx->DR;
-// 	}
-
-// 	SPIx->CR1 &= ~SPI_CR1_SPE;
-// 	while(SPIx->SR & SPI_SR_BSY)
-// 	{
-// 		if(System::GetTick() - tick_start > timeout)
-// 			return SYS_ERROR;
-// 	};
-// 	SS.SetLevel(1);
-// 	return SYS_OK;
-// }
-
-// // SYS_StatusTypeDef SPI_Slave_TX::SetUp()
-// // {
-// // 	SYS_StatusTypeDef setup_status = SetHard();
-
-// // 	if(setup_status != SYS_OK)
-// // 		return setup_status;
-
-// // 	SPIx->CR1 = //SPI_CR1_CPHA;// |
-// // 				SPI_CR1_CPOL;
-// // 	// SPIx->CR2 = SPI_CR2_TXDMAEN;
-	
-// // 	return SYS_OK;
-// // }
+	return Receive(slave_addr, data, len, timeout);
+}
