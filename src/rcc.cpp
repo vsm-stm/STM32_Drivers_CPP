@@ -90,7 +90,32 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 		RCC->PLLCFGR |= PLLCfgr.PLL_R << RCC_PLLCFGR_PLLR_Pos;
 #endif
 
-		RCC->CR |= RCC_CR_PLLON;// PLL Disable
+#ifdef STM32F7
+		if(sys_clk > 180000000)
+		{
+			if(PLLCfgr.PLL_ClkSrc == PLL_ClockSource::HSI)
+				PWR->CR1 &= ~(PWR_CR1_VOS_1);
+			else
+				PWR->CR1 &= ~(PWR_CR1_VOS_0);
+			PWR->CR1 |= PWR_CR1_ODEN;
+			tickStart = System::GetTick();
+			while (!(PWR->CSR1 & PWR_CSR1_ODRDY))
+			{
+				if((System::GetTick() - tickStart) > 100)
+					return SYS_TIMEOUT;
+			};
+
+			PWR->CR1 |= PWR_CR1_ODSWEN;
+			tickStart = System::GetTick();
+			while (!(PWR->CSR1 & PWR_CSR1_ODSWRDY))
+			{
+				if((System::GetTick() - tickStart) > 100)
+					return SYS_TIMEOUT;
+			};
+		}
+#endif
+
+		RCC->CR |= RCC_CR_PLLON;// PLL Enable
 		tickStart = System::GetTick();
 		while (!(RCC->CR & RCC_CR_PLLON))
 		{
@@ -120,33 +145,12 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 	|| (sys_clk/AHB_Pre/APB2_Pre > APB2_CLK_LIMIT))
 		return SYS_ERROR;
 	
-	FLASH->ACR &= ~FLASH_ACR_LATENCY_Msk;
-	if(sys_clk < 30000000)
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_0WS;
-	}
-	else if((sys_clk >= 30000000) && (sys_clk < 60000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_1WS;
-	}
-	else if((sys_clk >= 60000000) && (sys_clk < 90000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_2WS;
-	}
-	else if((sys_clk >= 90000000) && (sys_clk < 120000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_3WS;
-	}
-	else if((sys_clk >= 120000000) && (sys_clk < 150000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_4WS;
-	}
-	else if((sys_clk >= 150000000) && (sys_clk <= 180000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_5WS;
-	}
-	else
+	uint32_t latency = sys_clk / 30000000;
+	if(latency > 9)
 		return SYS_ERROR;
+
+	FLASH->ACR &= ~FLASH_ACR_LATENCY_Msk;
+	FLASH->ACR |= latency << FLASH_ACR_LATENCY_Pos;
 
 	RCC->CFGR &= ~(RCC_CFGR_HPRE_Msk | RCC_CFGR_PPRE1_Msk | RCC_CFGR_PPRE2_Msk);
 	RCC->CFGR |= (uint32_t)BusDiv.AHB_div |
@@ -232,20 +236,20 @@ SYS_StatusTypeDef ClockSystem::Init_calc_pll(uint32_t req_freq, PLL_ClockSource 
 	BusDividers div;
 
 	div.AHB_div = AHB_Divider::DIV1;
-	if(req_freq <= 45000000)
+	if(req_freq <= APB1_CLK_LIMIT)
 	{
 		div.APB1_div = APB1_Divider::DIV1;
 		div.APB2_div = APB2_Divider::DIV1;
 	}
 	else
-	if((req_freq > 45000000)
-	&& (req_freq <=90000000))
+	if((req_freq > APB1_CLK_LIMIT)
+	&& (req_freq <=APB2_CLK_LIMIT))
 	{
 		div.APB1_div = APB1_Divider::DIV2;
 		div.APB2_div = APB2_Divider::DIV1;		
 	}
 	else
-	if(req_freq > 90000000)
+	if(req_freq > APB2_CLK_LIMIT)
 	{
 		div.APB1_div = APB1_Divider::DIV4;
 		div.APB2_div = APB2_Divider::DIV2;		

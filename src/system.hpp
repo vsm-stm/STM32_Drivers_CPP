@@ -17,10 +17,11 @@ extern "C"
 
 typedef enum
 {
-  SYS_OK       = 0x00U,
-  SYS_ERROR    = 0x01U,
-  SYS_BUSY     = 0x02U,
-  SYS_TIMEOUT  = 0x03U
+  SYS_OK = 0x00U,
+  SYS_ERROR,
+  SYS_BUSY,
+  SYS_NO_Init,
+  SYS_TIMEOUT
 } SYS_StatusTypeDef;
 
 typedef enum
@@ -82,7 +83,7 @@ __attribute__ ((always_inline)) static inline void BB_WR(volatile uint32_t * add
 	*bitptr = value;
 }
 
-#define BIT_BB(address, bit) *((uint32_t *)(PERIPH_BB_BASE + ((uint32_t)(address) - PERIPH_BASE)*32 + bit*4))\
+#define BIT_BB(address, bit) *((uint32_t *)(PERIPH_BB_BASE + ((uint32_t)(address) - PERIPH_BASE)*32 + bit*4))
 
 #endif
 

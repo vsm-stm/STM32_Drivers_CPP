@@ -8,8 +8,18 @@
 SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type)
 {
 	// Call the overloaded SetUp function with AF = 0
-	return SetUp(type, 0);
+	return SetUp(type, OUTPUT_SPEED::Low, 0);
 }
+
+SYS_StatusTypeDef PIN::SetUp(TYPE type, OUTPUT_SPEED speed)
+{
+	return SetUp(type, speed, 0);
+};
+
+SYS_StatusTypeDef PIN::SetUp(TYPE type, uint8_t af)
+{
+	return SetUp(type, OUTPUT_SPEED::Low, af);
+};
 
 /**
  * @brief Set up the GPIO pin with the specified type and alternate function.
@@ -17,7 +27,7 @@ SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type)
  * @param af The alternate function number.
  * @return The status of the setup operation.
  */
-SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type, uint8_t af)
+SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
 {
 	// Extract individual configuration bits from the type
 	uint8_t mode  = static_cast<uint8_t>(type) & 0x3 << mode_pos;
@@ -43,6 +53,7 @@ SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type, uint8_t af)
 		||  (static_cast<PIN::MODE>(mode) == PIN::MODE::AF))
 		{
 			PORT->OTYPER |= otype << pin;
+			PORT->OSPEEDR |= static_cast<uint8_t>(speed) << pin;
 		}
 
 		PORT->PUPDR |= pull << (pin * 2);

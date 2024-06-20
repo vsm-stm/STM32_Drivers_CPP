@@ -1,56 +1,107 @@
 #ifndef INTERFACE_HPP_
 #define INTERFACE_HPP_
 
-#if defined(STM32F4)
 #include <system.hpp>
 #include <dma.hpp>
 #include <uart.hpp>
+#include <spi.hpp>
+#include <gpio.hpp>
 
-#include <vector>
+#include <list>
 #include <string.h>
 
-template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
-class Interface
+class Interface_DMA
 {
 public:
+	Interface_DMA(){};
+	~Interface_DMA(){};
+	void DMA_SetUp();
+protected:
+	DMA_Sx *dma_tx;
+	DMA_Sx *dma_rx;
+};
+
+class Interface_USART : public Interface_DMA
+{
+public:
+	Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
+	~Interface_USART(){};
+
+	SYS_StatusTypeDef Init();
+
+	void Send(uint8_t* data, uint16_t data_len);
+	void Receive(uint8_t* data, uint16_t data_len);
+	void Receive(uint8_t* data, uint16_t data_len, bool cont);
+	void IRQHandler();
+	bool IsDataReceived;
+protected:
+	USART *usart;
+	
+	SYS_StatusTypeDef status_tx, status_rx;
+	
+	bool ContReceive;
+};
+
+class Interface_buffer
+{
+public:
+	Interface_buffer(){};
+	~Interface_buffer(){};
+
 	/**
-	 * @brief Enumeration for different interface types.
+	 * @brief Get the count of received data.
+	 * @return Count of received data.
 	 */
-	enum class interface_types
+	uint32_t GetRxDataCount()
 	{
-		USART,  ///< USART interface type
-		SPI     ///< SPI interface type
+		return rx.size();
+	};
+
+	uint32_t GetFirstRxDataSize()
+	{
+		return rx.front().len;
 	};
 
 	/**
-	 * @brief Constructor for Interface class.
-	 * @param _usart Pointer to USART instance.
-	 * @param _dma_tx Pointer to DMA instance for transmit.
-	 * @param _dma_rx Pointer to DMA instance for receive.
+	 * @brief Get received data.
+	 * @param data Pointer to buffer to store received data.
+	 * @param size Size of data to retrieve.
 	 */
-	Interface(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
-		usart(_usart)
+	void GetRxData(uint8_t* data, uint32_t size)
 	{
-		type = interface_types::USART;
-		uint32_t ch = 4;
-		if(usart->USARTx == USART6)
-			ch = 5;
-		dma_tx = new DMA_Sx(_dma_tx, 
-					ch,
-					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
-					DMA_Sx::Per_Type::usart,
-					DMA_Sx::DIR::To_Per);
-		dma_rx = new DMA_Sx(_dma_rx, 
-					ch,
-					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
-					DMA_Sx::Per_Type::usart,
-					DMA_Sx::DIR::From_Per);
+		memcpy(data, rx.front().data_ptr, size);
+		delete rx.front().data_ptr;
+		rx.erase(rx.begin());
 	};
+protected:
+	/**
+	 * @brief Structure defining transmit data.
+	 */
+	typedef struct _tx_data
+	{
+		uint8_t *data_ptr;
+		uint16_t len;
+	}tx_data_typedef;
 
 	/**
-	 * @brief Initialize the Interface.
+	 * @brief Structure defining receive data.
 	 */
-	void Init();
+	typedef struct rx_data
+	{
+		uint8_t *data_ptr;
+		uint16_t len;
+	}rx_data_typedef;
+
+	std::list<tx_data_typedef> tx;
+	std::list<rx_data_typedef> rx;
+
+	bool cont_rx = false;
+};
+
+class Interface_buffer_USART : public Interface_buffer, public Interface_USART
+{
+public:
+	Interface_buffer_USART(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
 
 	/**
 	 * @brief Send data over the interface.
@@ -62,78 +113,14 @@ public:
 	/**
 	 * @brief Enable continuous receive mode.
 	 */
-	void Enable_Cont_Recieve();
+	void Enable_Cont_Recieve(uint16_t len);
 
 	/**
 	 * @brief Receive data from the interface.
 	 */
-	void Recieve();
-
-	/**
-	 * @brief Get the count of received data.
-	 * @return Count of received data.
-	 */
-	uint32_t GetRxDataCount()
-	{
-		return rx.size();
-	};
-
-	/**
-	 * @brief Get received data.
-	 * @param data Pointer to buffer to store received data.
-	 * @param size Size of data to retrieve.
-	 */
-	void GetRxData(uint8_t* data, uint32_t size)
-	{
-		memcpy(data, rx.front().data, size);
-		rx.erase(rx.begin());
-	};
-
-	/**
-	 * @brief IRQ handler for the interface.
-	 */
+	void Recieve(uint16_t len);
 	void IRQHandler(void);
-
-	/**
-	 * @brief Destructor for the Interface class.
-	 */
-	~Interface()
-	{};
-
 private:
-	interface_types type;
-
-	/**
-	 * @brief Structure defining transmit data.
-	 */
-	typedef struct _tx_data
-	{
-		uint8_t data[tx_buffer_size];
-		uint16_t len = tx_buffer_size;
-	}tx_data_typedef;
-
-	tx_data_typedef tmp_tx_data;
-
-	/**
-	 * @brief Structure defining receive data.
-	 */
-	typedef struct rx_data
-	{
-		uint8_t data[rx_buffer_size];
-		uint16_t len = rx_buffer_size;
-	}rx_data_typedef;
-
-	rx_data_typedef tmp_rx_data;
-
-	std::vector<tx_data_typedef> tx;
-	std::vector<rx_data_typedef> rx;
-
-	bool cont_rx = false;
-
-	USART *usart;
-	DMA_Sx *dma_tx;
-	DMA_Sx *dma_rx;
-
 	/**
 	 * @brief Start the transmit process.
 	 */
@@ -145,141 +132,93 @@ private:
 	void StartReceiver();
 };
 
-/**
- * @brief Initialize the Interface.
- */
-template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
-void Interface<tx_buffer_size,rx_buffer_size>::Init()
+class Interface_SPI : public Interface_DMA
 {
-	usart->SetUp();
-	usart->DMA(ENABLE);
-	dma_tx->SetUp();
-	dma_tx->MINC(ENABLE);
-	dma_rx->SetUp();
-	dma_rx->MINC(ENABLE);
+public:
+	Interface_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
+	~Interface_SPI(){};
+
+	void Init();
+
+	void Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len);
+	void Send(uint8_t* tx_data,uint16_t data_len);
+	void Receive(uint8_t* rx_data, uint16_t data_len);
+
+	void IRQHandler();
+	bool IsDataReceived;
+	SYS_StatusTypeDef GetStatus(){return status;};
+protected:
+	SPI *spi;
+	SPI::Init_struct_Typedef spi_init_data;
+
+	uint8_t tmp_data[1];
+
+	SYS_StatusTypeDef status;
 };
 
-/**
- * @brief IRQ handler for the interface.
- */
-template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
-void Interface<tx_buffer_size,rx_buffer_size>::IRQHandler(void)
+class Interface_buffer_SPI : public Interface_buffer, public Interface_SPI
 {
-	// Handle Transmit Complete (TC) interrupt
-	if((usart->USARTx->SR & USART_SR_TC)
-	&& (usart->USARTx->CR1 & USART_CR1_TCIE))
+public:
+	Interface_buffer_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
+
+	void IRQHandler(void);
+
+	void Send_Receive(uint8_t *tx_data, uint16_t len);
+	
+	void Send(uint8_t *tx_data, uint16_t len);
+
+	void Receive(uint16_t len);
+
+	/**
+	 * @brief Get the count of received data.
+	 * @return Count of received data.
+	 */
+	uint32_t GetRxDataCount()
 	{
-		usart->ClearFlags();
+		return rx.size();
+	};
 
-		if(tx.size() != 0)
-		{
-			tx.erase(tx.begin());
-			tmp_tx_data = {};
-		}
-
-		if(tx.size() == 0)
-		{
-			usart->Disable_IRQ(USART::IRQ::TC);
-		}
-		else
-		{
-			StartTranssmit();
-		}
-	}
-
-	// Handle Idle Line Detected interrupt
-	if((usart->USARTx->SR & USART_SR_IDLE)
-	&& (usart->USARTx->CR1 & USART_CR1_IDLEIE))
+	uint32_t GetFirstRxDataSize()
 	{
-		dma_rx->Disable_Stream();
-		usart->USARTx->DR;
+		return rx.front().len;
+	};
 
-		rx.push_back(tmp_rx_data);
-		tmp_rx_data = {};
-		if(cont_rx)
-		{
-			dma_rx->ClearFlags();
-			dma_rx->Enable_Stream();
-		}
-		else
-		{
-			usart->Disable_IRQ(USART::IRQ::IDLE);
-		}
-	}
-}
-
-/**
- * @brief Start the transmit process.
- */
-template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
-void Interface<tx_buffer_size,rx_buffer_size>::StartTranssmit()
-{
-	if(tx.size()>0)
+	/**
+	 * @brief Get received data.
+	 * @param data Pointer to buffer to store received data.
+	 * @param size Size of data to retrieve.
+	 */
+	void GetRxData(uint8_t* data, uint32_t size)
 	{
-		tmp_tx_data = tx.front();
+		memcpy(data, rx.front().rx_data_ptr, size);
+		delete [] rx.front().tx_data_ptr;
+		delete [] rx.front().rx_data_ptr;
+		rx.erase(rx.begin());
+	};
 
-		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tmp_tx_data.data);
-		dma_tx->DMA_Stream_X->NDTR = tmp_tx_data.len;
-		usart->ClearFlags();
-		usart->Enable_IRQ(USART::IRQ::TC);
-		dma_tx->ClearFlags();
-		dma_tx->Enable_Stream();
-	}
-}
-
-/**
- * @brief Start the receive process.
- */
-template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
-void Interface<tx_buffer_size,rx_buffer_size>::StartReceiver()
-{
-	dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tmp_rx_data.data);
-	dma_rx->DMA_Stream_X->NDTR = sizeof(tmp_rx_data.data);
-	usart->Enable_IRQ(USART::IRQ::IDLE);
-	dma_rx->ClearFlags();
-	dma_rx->Enable_Stream();
-}
-
-/**
- * @brief Send data over the interface.
- * @param data Pointer to data to be sent.
- * @param len Length of the data.
- */
-template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
-void Interface<tx_buffer_size,rx_buffer_size>::Send(uint8_t* data, uint16_t len)
-{
-	tx_data_typedef tmp;
-	memcpy(tmp.data, data, len);
-	tmp.len = len;
-	tx.push_back(tmp);
-
-	if(tx.size() == 1)
+private:
+	typedef enum
 	{
-		StartTranssmit();
-	}       
+		none,
+		RXTX,
+		TX,
+		RX
+	}RXTX_Type;
+
+	typedef struct _rxtx_data
+	{
+		// uint8_t tx_data[buffer_size];
+		// uint8_t rx_data[buffer_size];
+		uint8_t *tx_data_ptr;
+		uint8_t *rx_data_ptr;
+		uint16_t len;
+		RXTX_Type type;
+	}rxtx_data_typedef;
+
+	std::list<rxtx_data_typedef> tx, rx;
+	
+	inline void StartTranssmit();
+
 };
-
-/**
- * @brief Enable continuous receive mode.
- */
-template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
-void Interface<tx_buffer_size,rx_buffer_size>::Enable_Cont_Recieve()
-{
-	cont_rx = true;
-
-	StartReceiver();
-}
-
-/**
- * @brief Receive data from the interface.
- */
-template <uint32_t tx_buffer_size, uint32_t rx_buffer_size>
-void Interface<tx_buffer_size,rx_buffer_size>::Recieve()
-{
-	cont_rx = false;
-
-	StartReceiver();
-}
-#endif
 
 #endif /* INTERFACE_HPP_ */

@@ -39,6 +39,8 @@ SYS_StatusTypeDef System::Init()
 	SCB_EnableICache();
 	/* Enable D-Cache */
 	SCB_EnableDCache();
+
+	RCC->APB1ENR |= RCC_APB1ENR_PWREN;
 	#endif
 
 	SystemCoreClock = HSI_Clock;

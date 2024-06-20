@@ -129,14 +129,24 @@ public:
 		USARTx->SR = 0;
 	}
 #elif defined(STM32F7)
-	/**
-	 * @brief Clear all USART flags.
-	 */
-	inline void ClearFlags(uint32_t flag)
+	enum class ISR_FLAGS
 	{
-		USARTx->ICR = flag;
+		PE = USART_ICR_PECF,
+		FE = USART_ICR_FECF,
+		Noise = USART_ICR_NCF,
+		ORE  = USART_ICR_ORECF,
+		IDLE  = USART_ICR_IDLECF,
+		TC  = USART_ICR_TCCF
+	};
+
+	inline void ClearFlags(ISR_FLAGS flag)
+	{
+		USARTx->ICR = static_cast<uint32_t>(flag);
 	}
 #endif
+
+	SYS_StatusTypeDef Send(uint8_t *data, uint32_t len, uint32_t timeout);
+	SYS_StatusTypeDef Receive(uint8_t *data, uint32_t len, uint32_t timeout);
 
 	/**
 	 * @brief Set the baud rate for USART.

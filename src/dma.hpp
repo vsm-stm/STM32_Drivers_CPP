@@ -133,10 +133,11 @@ public:
 	/**
 	 * @brief Function to clear DMA flags.
 	 */
-	void ClearFlags()
+	inline void ClearFlags()
 	{
 		*DMA_CFR =	(DMA_LISR_TCIF0 << cfr_offset) |
 					(DMA_LISR_HTIF0 << cfr_offset) |
+					(DMA_LISR_FEIF0 << cfr_offset) |
 					(DMA_LISR_TEIF0 << cfr_offset);
 	};
 
@@ -170,14 +171,14 @@ public:
 		}
 	}
 
-	void MINC(FunctionalState en)
+	inline void MINC(FunctionalState en)
 	{	if(en)
 			DMA_Stream_X->CR |=  DMA_SxCR_MINC;
 		else
 			DMA_Stream_X->CR &= ~DMA_SxCR_MINC;
 	};
 
-	void CIRC(FunctionalState en)
+	inline void CIRC(FunctionalState en)
 	{
 		if(en)
 			DMA_Stream_X->CR |=  DMA_SxCR_CIRC;
@@ -188,13 +189,13 @@ public:
 	/**
 	 * @brief Function to enable the DMA stream.
 	 */
-	void Enable_Stream()
+	inline void Enable_Stream()
 	{	DMA_Stream_X->CR |= DMA_SxCR_EN;};
 
 	/**
 	 * @brief Function to disable the DMA stream.
 	 */
-	void Disable_Stream()
+	inline void Disable_Stream()
 	{	DMA_Stream_X->CR &= ~DMA_SxCR_EN;};
 
 private:
