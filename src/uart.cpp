@@ -92,7 +92,11 @@ SYS_StatusTypeDef USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 
 	for(uint32_t i = 0;i<len;i++)
 	{
+#if defined(STM32F4)
+		while(!(USARTx->SR & USART_SR_TXE))
+#elif defined(STM32F7)
 		while(!(USARTx->ISR & USART_ISR_TXE))
+#endif
 		{
 			if(System::GetTick() - tick_start > timeout)
 				return SYS_ERROR;
@@ -113,7 +117,11 @@ SYS_StatusTypeDef USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 
 	for(uint32_t i = 0;i<len;i++)
 	{
+#if defined(STM32F4)
+		while(!(USARTx->SR & USART_SR_RXNE))
+#elif defined(STM32F7)
 		while(!(USARTx->ISR & USART_ISR_RXNE))
+#endif
 		{
 			if(System::GetTick() - tick_start > timeout)
 				return SYS_ERROR;

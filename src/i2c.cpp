@@ -1,5 +1,7 @@
 #include <i2c.hpp>
 
+#if defined(STM32F7)
+
 SYS_StatusTypeDef I2C::SetHard()
 {
 	if((i2c_speed == 0)
@@ -226,3 +228,5 @@ SYS_StatusTypeDef I2C::ReceiveFromAddr(uint8_t slave_addr, uint8_t *addr, uint8_
 
 	return Receive(slave_addr, data, len, timeout);
 }
+
+#endif
