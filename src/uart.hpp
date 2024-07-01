@@ -31,7 +31,6 @@ public:
 	typedef struct
 	{
 		USART_TypeDef *USARTx;
-		uint32_t BaudRate;
 		PIN TX;
 		PIN RX;
 	} def;
@@ -45,7 +44,6 @@ public:
 	 */
 	explicit USART(USART_TypeDef *usartx, uint32_t baudrate, PIN TX, PIN RX) :
 		USARTx(usartx),
-		BaudRate(baudrate),
 		_TX(TX),
 		_RX(RX)
 	{
@@ -57,7 +55,6 @@ public:
 	 */
 	explicit USART(def defs) :
 		USARTx(defs.USARTx),
-		BaudRate(defs.BaudRate),
 		_TX(defs.TX),
 		_RX(defs.RX)
 	{
@@ -83,7 +80,7 @@ public:
 	 * @brief Set up the USART configuration.
 	 * @return The status of the setup operation.
 	 */
-	SYS_StatusTypeDef SetUp();
+	SYS_StatusTypeDef SetUp(uint32_t baudrate);
 
 	/**
 	 * @brief Enable the specified USART IRQ.

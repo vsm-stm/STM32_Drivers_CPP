@@ -4,8 +4,13 @@
  * @brief Set up the USART configuration.
  * @return The status of the setup operation.
  */
-SYS_StatusTypeDef USART::SetUp()
+SYS_StatusTypeDef USART::SetUp(uint32_t baudrate)
 {
+	if((baudrate < 9600)
+	|| (baudrate > 115200*16))
+		return SYS_ERROR;
+
+	BaudRate = baudrate;
 	// Check the USARTx pointer and configure corresponding parameters
 	if (USARTx == USART1)
 	{
