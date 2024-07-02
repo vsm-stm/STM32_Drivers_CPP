@@ -13,6 +13,7 @@ class I2C
 {
 public:
 	I2C_TypeDef *I2Cx;
+	const static uint32_t MAX_NBYTE_SIZE = 255;
 
 	enum class I2CMode
 	{
@@ -27,6 +28,16 @@ public:
 		FastPlus
 	};
 
+	enum class IRQ
+	{
+		TXE =  I2C_CR1_TXIE,
+		RXNE = I2C_CR1_RXIE,
+		ADDR = I2C_CR1_ADDRIE,
+		NACK = I2C_CR1_NACKIE,
+		STOP = I2C_CR1_STOPIE,
+		TC =   I2C_CR1_TCIE,
+		ERR =  I2C_CR1_ERRIE
+	};
 
 	I2C(I2C_TypeDef *_i2c, SpeedMode _speed, PIN _scl, PIN _sda) :
 		I2Cx(_i2c),
@@ -68,7 +79,39 @@ public:
 	SYS_StatusTypeDef Receive(uint8_t slave_addr, uint8_t *data, uint32_t len, uint32_t timeout);
 	SYS_StatusTypeDef ReceiveFromAddr(uint8_t slave_addr, uint8_t *addr, uint8_t addr_len, uint8_t *data, uint32_t len, uint32_t timeout);
 
-private:
+	void Enable_IRQ(IRQ irq)
+	{
+		IRQn_Type irq_vec;
+		if(irq == IRQ::ERR)
+			irq_vec = IRQ_vector_ER;
+		else
+			irq_vec = IRQ_vector_EV;
+
+		I2Cx->CR1 |= static_cast<uint32_t>(irq);
+
+		if (!(NVIC_GetEnableIRQ(irq_vec)))
+		{
+			NVIC_EnableIRQ(irq_vec);
+		}
+	}
+
+	void Disable_IRQ(IRQ irq)
+	{
+		I2Cx->CR1 &= ~(static_cast<uint32_t>(irq));
+		if(irq == IRQ::ERR)
+		{
+			NVIC_DisableIRQ(IRQ_vector_ER);
+		}
+		else
+		{
+			if (!(I2Cx->CR1 & (I2C_CR1_RXIE | I2C_CR1_TXIE | I2C_CR1_STOPIE | I2C_CR1_TCIE | I2C_CR1_ADDRIE | I2C_CR1_NACKIE)))
+			{
+				NVIC_DisableIRQ(IRQ_vector_EV);
+			}
+		}
+	}
+
+protected:
 	PIN SCL{};
 	PIN SDA{};
 
@@ -81,174 +124,6 @@ private:
 
 	void error_stop();
 	void normal_stop();
-
-	const uint32_t MAX_NBYTE_SIZE = 255;
 };
-
-
-// class SPI
-// {
-// public:
-// 	SPI_TypeDef *SPIx;
-
-// 	enum class Master_sel
-// 	{
-// 		Slave = 0,
-// 		Master = SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_MSTR
-// 	};
-
-
-// 	enum class Data_frame_format
-// 	{
-// 	#if defined(STM32F4)
-// 		Byte = 0,
-// 		Half_Word = SPI_CR1_DFF
-// 	#elif defined(STM32F7)
-// 		Byte = 0b111 << SPI_CR2_DS_Pos,
-// 		Half_Word = 0b1111 << SPI_CR2_DS_Pos
-// 	#endif
-// 	};
-
-// 	enum class Frame_Format
-// 	{
-// 		MSB = 0,
-// 		LSB = SPI_CR1_LSBFIRST
-// 	};
-
-// 	enum class TYPE
-// 	{
-// 		RX = 0,
-// 		TX = 0,
-// 		TXRX
-// 	};
-
-// 	enum class cPolPha
-// 	{
-// 		None = 0,
-// 		cPha = SPI_CR1_CPHA,
-// 		cPol = SPI_CR1_CPOL,
-// 		cPolPha = SPI_CR1_CPHA | SPI_CR1_CPOL
-// 	};
-
-
-// 	enum class IRQ
-// 	{
-// 		TXE = SPI_CR2_TXEIE,	///< Transmit Data Register Empty interrupt
-// 		RXNE = SPI_CR2_RXNEIE,	///< Receive Data Register Not Empty interrupt
-// 		ERR = SPI_CR2_ERRIE
-// 	};
-
-// 	explicit SPI(SPI_TypeDef *spix, PIN _CLK, PIN _MOSI, PIN _MISO, PIN _SS) :
-// 		SPIx(spix),
-// 		CLK(_CLK),
-// 		MOSI(_MOSI),
-// 		MISO(_MISO),
-// 		SS(_SS)
-// 	{
-// 	}
-
-// 	SPI() = delete;
-// 	SPI(SPI const &) = default;
-// 	SPI(SPI &&) = default;
-// 	SPI &operator=(SPI const &) = default;
-// 	SPI &operator=(SPI &&) = default;
-// 	~SPI(){};
-
-// 	typedef struct 
-// 	{
-// 		Master_sel mstr;
-// 		TYPE type;
-// 		Data_frame_format dff;
-// 		Frame_Format ff;
-// 		cPolPha cpolpha;
-// 		uint8_t br;
-// 	}Init_struct_Typedef;
-
-// 	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type)
-// 	{
-// 		return SetUp(mstr, type, Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, 0);
-// 	};
-
-// 	SYS_StatusTypeDef SetUp(Init_struct_Typedef Init_struct)
-// 	{
-// 		return SetUp(Init_struct.mstr, Init_struct.type, Init_struct.dff, Init_struct.ff, Init_struct.cpolpha, Init_struct.br);
-// 	}
-
-// 	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
-
-// 	inline void Enable()
-// 	{
-// 		SPIx->CR1 |= SPI_CR1_SPE;
-// 	};
-
-// 	inline void Disable()
-// 	{
-// 		SPIx->CR1 &= ~SPI_CR1_SPE;
-// 	};
-
-// 	inline void SlaveSelect(FunctionalState en)
-// 	{
-// 		if(en)
-// 			SS.SetLevel(0);
-// 		else
-// 			SS.SetLevel(1);
-// 	}
-
-// 	inline void DMA_TX(FunctionalState en)
-// 	{
-// 		if(en)
-// 			SPIx->CR2 |= SPI_CR2_TXDMAEN;
-// 		else
-// 			SPIx->CR2 &= ~SPI_CR2_TXDMAEN;
-// 	};
-
-// 	void DMA_RX(FunctionalState en)
-// 	{
-// 		if(en)
-// 			SPIx->CR2 |= SPI_CR2_RXDMAEN;
-// 		else
-// 			SPIx->CR2 &= ~SPI_CR2_RXDMAEN;
-// 	};
-
-// 	/**
-// 	 * @brief Enable the specified USART IRQ.
-// 	 * @param irq The IRQ to enable.
-// 	 */
-// 	void Enable_IRQ(IRQ irq)
-// 	{
-// 		SPIx->CR2 |= static_cast<uint32_t>(irq);
-
-// 		if (!(NVIC_GetEnableIRQ(IRQ_vector)))
-// 		{
-// 			NVIC_EnableIRQ(IRQ_vector);
-// 		}
-// 	}
-
-// 	/**
-// 	 * @brief Disable the specified USART IRQ.
-// 	 * @param irq The IRQ to disable.
-// 	 */
-// 	void Disable_IRQ(IRQ irq)
-// 	{
-// 		SPIx->CR2 &= ~(static_cast<uint32_t>(irq));
-// 		if (!(SPIx->CR2 & (SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE )))
-// 		{
-// 			NVIC_DisableIRQ(IRQ_vector);
-// 		}
-// 	}
-
-// 	SYS_StatusTypeDef Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
-
-// protected:
-// 	PIN CLK{};
-// 	PIN MOSI{};
-// 	PIN MISO{};
-// 	PIN SS{};
-
-// 	uint32_t af, bus_clk;
-// 	IRQn_Type IRQ_vector;
-
-// 	SYS_StatusTypeDef SetHard();
-// };
 
 #endif /* I2C_HPP_ */

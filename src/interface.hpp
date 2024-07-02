@@ -5,6 +5,7 @@
 #include <dma.hpp>
 #include <uart.hpp>
 #include <spi.hpp>
+#include <i2c.hpp>
 #include <gpio.hpp>
 
 #include <list>
@@ -19,6 +20,14 @@ public:
 protected:
 	DMA_Sx *dma_tx;
 	DMA_Sx *dma_rx;
+
+	enum class TXRX_Type
+	{
+		none,
+		TXRX,
+		TX,
+		RX
+	};
 };
 
 class Interface_USART : public Interface_DMA
@@ -197,14 +206,6 @@ public:
 	};
 
 private:
-	typedef enum
-	{
-		none,
-		RXTX,
-		TX,
-		RX
-	}RXTX_Type;
-
 	typedef struct _rxtx_data
 	{
 		// uint8_t tx_data[buffer_size];
@@ -212,13 +213,39 @@ private:
 		uint8_t *tx_data_ptr;
 		uint8_t *rx_data_ptr;
 		uint16_t len;
-		RXTX_Type type;
+		TXRX_Type type;
 	}rxtx_data_typedef;
 
 	std::list<rxtx_data_typedef> tx, rx;
 	
 	inline void StartTranssmit();
 
+};
+
+class Interface_I2C : public Interface_DMA
+{
+public:
+	Interface_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
+	~Interface_I2C(){};
+
+	SYS_StatusTypeDef Init();
+
+	void Send(uint8_t slave_addr, uint8_t* data, uint16_t data_len);
+	void SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len);
+	void Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_len);
+	void ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len);
+	void IRQHandler();
+	bool IsDataReceived;
+protected:
+	I2C *i2c;
+	
+	SYS_StatusTypeDef status;
+
+	TXRX_Type txrx;
+	uint16_t transfer_count;
+	uint8_t _slave_addr;
+	uint8_t* data_addr;
+	bool need_reload_dma;
 };
 
 #endif /* INTERFACE_HPP_ */
