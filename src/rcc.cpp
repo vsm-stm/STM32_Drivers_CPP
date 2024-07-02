@@ -1,11 +1,6 @@
 #include <rcc.hpp>
 
 
-uint32_t ClockSystem::SystemCoreClock{HSI_Clock};
-uint32_t ClockSystem::APB1BusClock{HSI_Clock};
-uint32_t ClockSystem::APB2BusClock{HSI_Clock};
-uint32_t ClockSystem::TIMxAPB1Clock{HSI_Clock};
-uint32_t ClockSystem::TIMxAPB2Clock{HSI_Clock};
 uint32_t ClockSystem::HSESrcClk{0};
 
 
@@ -22,10 +17,10 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 			return SYS_ERROR;
 		
 		RCC->CR |= RCC_CR_HSEON;// HSE Enable
-		tickStart = System_F4::GetTick();
+		tickStart = System::GetTick();
 		while (!(RCC->CR & RCC_CR_HSERDY))
 		{
-			if((System_F4::GetTick() - tickStart) > HSE_TIMEOUT_VALUE)
+			if((System::GetTick() - tickStart) > HSE_TIMEOUT_VALUE)
 				return SYS_TIMEOUT;
 		};
 		HSESrcClk = HSE_Clk;
@@ -78,11 +73,11 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 		if(sys_clk > SYS_CLK_LIMIT)
 			return SYS_ERROR;
 
-		tickStart = System_F4::GetTick();
+		tickStart = System::GetTick();
 		RCC->CR &= ~RCC_CR_PLLON;// PLL Disable
 		while ((RCC->CR & RCC_CR_PLLON)) 
 		{
-			if((System_F4::GetTick() - tickStart) > PLL_TIMEOUT_VALUE)
+			if((System::GetTick() - tickStart) > PLL_TIMEOUT_VALUE)
 				return SYS_TIMEOUT;
 		};
 
@@ -95,11 +90,36 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 		RCC->PLLCFGR |= PLLCfgr.PLL_R << RCC_PLLCFGR_PLLR_Pos;
 #endif
 
-		RCC->CR |= RCC_CR_PLLON;// PLL Disable
-		tickStart = System_F4::GetTick();
+#ifdef STM32F7
+		if(sys_clk > 180000000)
+		{
+			if(PLLCfgr.PLL_ClkSrc == PLL_ClockSource::HSI)
+				PWR->CR1 &= ~(PWR_CR1_VOS_1);
+			else
+				PWR->CR1 &= ~(PWR_CR1_VOS_0);
+			PWR->CR1 |= PWR_CR1_ODEN;
+			tickStart = System::GetTick();
+			while (!(PWR->CSR1 & PWR_CSR1_ODRDY))
+			{
+				if((System::GetTick() - tickStart) > 100)
+					return SYS_TIMEOUT;
+			};
+
+			PWR->CR1 |= PWR_CR1_ODSWEN;
+			tickStart = System::GetTick();
+			while (!(PWR->CSR1 & PWR_CSR1_ODSWRDY))
+			{
+				if((System::GetTick() - tickStart) > 100)
+					return SYS_TIMEOUT;
+			};
+		}
+#endif
+
+		RCC->CR |= RCC_CR_PLLON;// PLL Enable
+		tickStart = System::GetTick();
 		while (!(RCC->CR & RCC_CR_PLLON))
 		{
-			if((System_F4::GetTick() - tickStart) > PLL_TIMEOUT_VALUE)
+			if((System::GetTick() - tickStart) > PLL_TIMEOUT_VALUE)
 				return SYS_TIMEOUT;
 		};
 	}
@@ -125,33 +145,12 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 	|| (sys_clk/AHB_Pre/APB2_Pre > APB2_CLK_LIMIT))
 		return SYS_ERROR;
 	
-	FLASH->ACR &= ~FLASH_ACR_LATENCY_Msk;
-	if(sys_clk < 30000000)
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_0WS;
-	}
-	else if((sys_clk >= 30000000) && (sys_clk < 60000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_1WS;
-	}
-	else if((sys_clk >= 60000000) && (sys_clk < 90000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_2WS;
-	}
-	else if((sys_clk >= 90000000) && (sys_clk < 120000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_3WS;
-	}
-	else if((sys_clk >= 120000000) && (sys_clk < 150000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_4WS;
-	}
-	else if((sys_clk >= 150000000) && (sys_clk <= 180000000))
-	{
-		FLASH->ACR |= FLASH_ACR_LATENCY_5WS;
-	}
-	else
+	uint32_t latency = sys_clk / 30000000;
+	if(latency > 9)
 		return SYS_ERROR;
+
+	FLASH->ACR &= ~FLASH_ACR_LATENCY_Msk;
+	FLASH->ACR |= latency << FLASH_ACR_LATENCY_Pos;
 
 	RCC->CFGR &= ~(RCC_CFGR_HPRE_Msk | RCC_CFGR_PPRE1_Msk | RCC_CFGR_PPRE2_Msk);
 	RCC->CFGR |= (uint32_t)BusDiv.AHB_div |
@@ -159,10 +158,10 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 				 (uint32_t)BusDiv.APB2_div;
 
 	RCC->CFGR |= RCC_CFGR_SW_PLL;         // PLL -> SYSCKLK
-	tickStart = System_F4::GetTick();
+	tickStart = System::GetTick();
 	while (!(RCC->CFGR & RCC_CFGR_SWS))
 	{
-		if((System_F4::GetTick() - tickStart) > CLOCKSWITCH_TIMEOUT_VALUE)
+		if((System::GetTick() - tickStart) > CLOCKSWITCH_TIMEOUT_VALUE)
 			return SYS_TIMEOUT;
 	}// wait PLL used as system clock
 
@@ -179,13 +178,13 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 	else
 		APB2_Pre = (1 << (((RCC->CFGR & RCC_CFGR_PPRE2) >> RCC_CFGR_PPRE2_Pos) - 3));
 
-	SystemCoreClock = sys_clk/AHB_Pre;
-	APB1BusClock = SystemCoreClock/APB1_Pre;
-	APB2BusClock = SystemCoreClock/APB2_Pre;
-	TIMxAPB1Clock = (APB1_Pre == 1) ? (APB1BusClock) : (APB1BusClock * 2);
-	TIMxAPB2Clock = (APB2_Pre == 1) ? (APB2BusClock) : (APB2BusClock * 2);
+	System::SystemCoreClock = sys_clk/AHB_Pre;
+	System::APB1BusClock = System::SystemCoreClock/APB1_Pre;
+	System::APB2BusClock = System::SystemCoreClock/APB2_Pre;
+	System::TIMxAPB1Clock = (APB1_Pre == 1) ? (System::APB1BusClock) : (System::APB1BusClock * 2);
+	System::TIMxAPB2Clock = (APB2_Pre == 1) ? (System::APB2BusClock) : (System::APB2BusClock * 2);
 
-	System_F4::InitTicks();
+	System::InitTicks();
 
 	return SYS_OK;
 
@@ -237,20 +236,20 @@ SYS_StatusTypeDef ClockSystem::Init_calc_pll(uint32_t req_freq, PLL_ClockSource 
 	BusDividers div;
 
 	div.AHB_div = AHB_Divider::DIV1;
-	if(req_freq <= 45000000)
+	if(req_freq <= APB1_CLK_LIMIT)
 	{
 		div.APB1_div = APB1_Divider::DIV1;
 		div.APB2_div = APB2_Divider::DIV1;
 	}
 	else
-	if((req_freq > 45000000)
-	&& (req_freq <=90000000))
+	if((req_freq > APB1_CLK_LIMIT)
+	&& (req_freq <=APB2_CLK_LIMIT))
 	{
 		div.APB1_div = APB1_Divider::DIV2;
 		div.APB2_div = APB2_Divider::DIV1;		
 	}
 	else
-	if(req_freq > 90000000)
+	if(req_freq > APB2_CLK_LIMIT)
 	{
 		div.APB1_div = APB1_Divider::DIV4;
 		div.APB2_div = APB2_Divider::DIV2;		

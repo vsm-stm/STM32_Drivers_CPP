@@ -1,8 +1,7 @@
 #ifndef UART_H_
 #define UART_H_
 
-#include <memory>
-#include <system_f4.hpp>
+#include <system.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
 
@@ -32,7 +31,7 @@ public:
 	typedef struct
 	{
 		USART_TypeDef *USARTx;
-		uint32_t BaudRate;
+		uint32_t baudrate;
 		PIN TX;
 		PIN RX;
 	} def;
@@ -58,7 +57,7 @@ public:
 	 */
 	explicit USART(def defs) :
 		USARTx(defs.USARTx),
-		BaudRate(defs.BaudRate),
+		BaudRate(defs.baudrate),
 		_TX(defs.TX),
 		_RX(defs.RX)
 	{
@@ -113,22 +112,15 @@ public:
 		}
 	}
 
-	/**
-	 * @brief Enable DMA for USART.
-	 */
-	inline void Enable_DMA()
+	inline void DMA(FunctionalState en)
 	{
-		USARTx->CR3 |= USART_CR3_DMAR | USART_CR3_DMAT;
+		if(en)
+			USARTx->CR3 |=   USART_CR3_DMAR | USART_CR3_DMAT;
+		else
+			USARTx->CR3 &= ~(USART_CR3_DMAR | USART_CR3_DMAT);
 	}
 
-	/**
-	 * @brief Disable DMA for USART.
-	 */
-	inline void Disable_DMA()
-	{
-		USARTx->CR3 &= ~(USART_CR3_DMAR | USART_CR3_DMAT);
-	}
-
+#if defined(STM32F4)
 	/**
 	 * @brief Clear all USART flags.
 	 */
@@ -136,6 +128,25 @@ public:
 	{
 		USARTx->SR = 0;
 	}
+#elif defined(STM32F7)
+	enum class ISR_FLAGS
+	{
+		PE = USART_ICR_PECF,
+		FE = USART_ICR_FECF,
+		Noise = USART_ICR_NCF,
+		ORE  = USART_ICR_ORECF,
+		IDLE  = USART_ICR_IDLECF,
+		TC  = USART_ICR_TCCF
+	};
+
+	inline void ClearFlags(ISR_FLAGS flag)
+	{
+		USARTx->ICR = static_cast<uint32_t>(flag);
+	}
+#endif
+
+	SYS_StatusTypeDef Send(uint8_t *data, uint32_t len, uint32_t timeout);
+	SYS_StatusTypeDef Receive(uint8_t *data, uint32_t len, uint32_t timeout);
 
 	/**
 	 * @brief Set the baud rate for USART.

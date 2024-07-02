@@ -1,7 +1,7 @@
 #ifndef TIM_HPP_
 #define TIM_HPP_
 
-#include <system_f4.hpp>
+#include <system.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
 

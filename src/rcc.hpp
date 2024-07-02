@@ -1,9 +1,7 @@
 #ifndef RCC_H_
 #define RCC_H_
 
-#include <system_f4.hpp>
-
-#define HSI_Clock	16000000UL
+#include <system.hpp>
 
 #define PLL_TIMEOUT_VALUE			2U  /* 2 ms */
 #define HSE_STARTUP_TIMEOUT			100U   /*!< Time out for HSE start up, in ms */
@@ -21,32 +19,15 @@
 #define SYS_CLK_LIMIT		168000000 
 #define APB1_CLK_LIMIT		42000000
 #define APB2_CLK_LIMIT		84000000
+#elif defined(STM32F722xx)
+#define SYS_CLK_LIMIT		216000000 
+#define APB1_CLK_LIMIT		54000000
+#define APB2_CLK_LIMIT		108000000
 #endif
 
 class ClockSystem
 {
 	public:
-	/**************************************************************************************************
-	 * @brief System Clock Frequency (Core Clock, GPIO, CRC, DMA, USB)
-	 ***************************************************************************************************/
-	static uint32_t SystemCoreClock;
-	/**************************************************************************************************
-	 * @brief APB1 Bus Clock Frequency (WWDG,SPI<2/3>,USART<2/3>,UART<4/5>,I2C<1/2/3>,CAN<1/2>,DAC)
-	 ***************************************************************************************************/
-	static uint32_t APB1BusClock;
-	/**************************************************************************************************
-	 * @brief APB2 Bus Clock Frequency (USART<1/6>,ADC<1/2/3>,SPI<1/4>,SYSCFG,SAI<1/2>)
-	 ***************************************************************************************************/
-	static uint32_t APB2BusClock;
-	/**************************************************************************************************
-	 * @brief APB1 Timers Clock Frequency (TIM<2/3/4/5/6/7/12/13/14> Clock)
-	 ***************************************************************************************************/
-	static uint32_t TIMxAPB1Clock;
-	/**************************************************************************************************
-	 * @brief APB2 Timers Clock Frequency (TIM<1/8/9/10/11> Clock)
-	 ***************************************************************************************************/
-	static uint32_t TIMxAPB2Clock;
-
 	static uint32_t HSESrcClk;
 
 	/**************************************************************************************************

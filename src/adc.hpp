@@ -1,7 +1,7 @@
 #ifndef ADC_HPP_
 #define ADC_HPP_
 
-#include <system_f4.hpp>
+#include <system.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
 

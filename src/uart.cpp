@@ -1,51 +1,55 @@
 #include "uart.hpp"
-
+#include <stdio.h>
 /**
  * @brief Set up the USART configuration.
  * @return The status of the setup operation.
  */
 SYS_StatusTypeDef USART::SetUp()
 {
+	if((BaudRate < 9600)
+	|| (BaudRate > 115200*16))
+		return SYS_ERROR;
+
 	// Check the USARTx pointer and configure corresponding parameters
 	if (USARTx == USART1)
 	{
 		RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
-		bus_clk = ClockSystem::APB2BusClock;
+		bus_clk = System::APB2BusClock;
 		IRQ_vector = USART1_IRQn;
 		af = 7;
 	}else
 	if (USARTx == USART2)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = USART2_IRQn;
 		af = 7;
 	}
 	else if (USARTx == USART3)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_USART3EN;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = USART3_IRQn;
 		af = 7;
 	}
 	else if (USARTx == UART4)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_UART4EN;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = UART4_IRQn;
 		af = 8;
 	}
 	else if (USARTx == UART5)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_UART5EN;
-		bus_clk = ClockSystem::APB1BusClock;
+		bus_clk = System::APB1BusClock;
 		IRQ_vector = UART5_IRQn;
 		af = 8;
 	}
 	else if (USARTx == USART6)
 	{
 		RCC->APB2ENR |= RCC_APB2ENR_USART6EN;
-		bus_clk = ClockSystem::APB2BusClock;
+		bus_clk = System::APB2BusClock;
 		IRQ_vector = USART6_IRQn;
 		af = 8;
 	}
@@ -73,8 +77,61 @@ SYS_StatusTypeDef USART::SetUp()
 	USARTx->CR2 = 0;
 	USARTx->CR3 = 0;
 
-	// Clear status register
-	USARTx->SR = 0;
+#if defined(STM32F4)
+	ClearFlags();
+#elif defined(STM32F7)
+	ClearFlags(ISR_FLAGS::TC);
+#endif
 
 	return SYS_OK;
 }
+
+SYS_StatusTypeDef USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
+{
+	uint32_t tick_start = System::GetTick();
+
+	for(uint32_t i = 0;i<len;i++)
+	{
+#if defined(STM32F4)
+		while(!(USARTx->SR & USART_SR_TXE))
+#elif defined(STM32F7)
+		while(!(USARTx->ISR & USART_ISR_TXE))
+#endif
+		{
+			if(System::GetTick() - tick_start > timeout)
+				return SYS_ERROR;
+		};
+#if defined(STM32F4)
+		USARTx->DR = data[i];
+#elif defined(STM32F7)
+		USARTx->TDR = data[i];
+#endif
+		
+	};
+	return SYS_OK;
+};
+
+SYS_StatusTypeDef USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
+{
+	uint32_t tick_start = System::GetTick();
+
+	for(uint32_t i = 0;i<len;i++)
+	{
+#if defined(STM32F4)
+		while(!(USARTx->SR & USART_SR_RXNE))
+#elif defined(STM32F7)
+		while(!(USARTx->ISR & USART_ISR_RXNE))
+#endif
+		{
+			if(System::GetTick() - tick_start > timeout)
+				return SYS_ERROR;
+		};
+		#if defined(STM32F4)
+			data[i] = USARTx->DR;
+		#elif defined(STM32F7)
+			data[i] = USARTx->RDR;
+		#endif
+		
+	};
+	return SYS_OK;
+};

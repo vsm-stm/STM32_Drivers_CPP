@@ -8,27 +8,46 @@
  * @copyright Copyright (c) 2022
  *
  *************************************************************************************************/
-#include "system_f4.hpp"
-#include <rcc.hpp>
+#include "system.hpp"
 
 uint32_t Tick;
+
+uint32_t System::SystemCoreClock{HSI_Clock};
+uint32_t System::APB1BusClock{HSI_Clock};
+uint32_t System::APB2BusClock{HSI_Clock};
+uint32_t System::TIMxAPB1Clock{HSI_Clock};
+uint32_t System::TIMxAPB2Clock{HSI_Clock};
 
 /**************************************************************************************************
  * @brief Init system main features - FPU, FLASH, Systick.
  * @return SYS_OK
  * @return SYS_ERROR
  *************************************************************************************************/
-SYS_StatusTypeDef System_F4::Init()
+SYS_StatusTypeDef System::Init()
 {
 	#if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
 		SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2));  /* set CP10 and CP11 Full Access */
 	#endif
 
-	FLASH->ACR |= FLASH_ACR_ICEN |
-				  FLASH_ACR_DCEN |
-				  FLASH_ACR_PRFTEN;
+	FLASH->ACR |= FLASH_ACR_PRFTEN |				/* Prefetch enable */
+	#if defined(STM32F4)
+				  FLASH_ACR_ICEN |
+				  FLASH_ACR_DCEN;
+	#elif defined(STM32F7)
+				  FLASH_ACR_ARTEN;					/* Adaptive real-time memory accelerator */
+	/* Enable I-Cache */
+	SCB_EnableICache();
+	/* Enable D-Cache */
+	SCB_EnableDCache();
 
-	ClockSystem::SystemCoreClock = HSI_Clock;
+	RCC->APB1ENR |= RCC_APB1ENR_PWREN;
+	#endif
+
+	SystemCoreClock = HSI_Clock;
+	APB1BusClock = HSI_Clock;
+	APB2BusClock = HSI_Clock;
+	TIMxAPB1Clock = HSI_Clock;
+	TIMxAPB2Clock = HSI_Clock;
 	if(InitTicks() > 0)
 		return SYS_ERROR;
 
@@ -40,13 +59,13 @@ SYS_StatusTypeDef System_F4::Init()
  * @return SYS_OK
  * @return SYS_ERROR
  *************************************************************************************************/
-SYS_StatusTypeDef System_F4::InitTicks()
+SYS_StatusTypeDef System::InitTicks()
 {
 	// if(SystemCoreClock >= 100000000)
 	// 	Ticks_base = 10000;
 	// else
 	// 	Ticks_base = 1000;
-	if(SysTick_Config(ClockSystem::SystemCoreClock/TICK_BASE) > 0)
+	if(SysTick_Config(SystemCoreClock/TICK_BASE) > 0)
 		return SYS_ERROR;
 
 	return SYS_OK;
@@ -55,12 +74,12 @@ SYS_StatusTypeDef System_F4::InitTicks()
 /**************************************************************************************************
  * @brief Increase tick
  *************************************************************************************************/
-void System_F4::TickIncrease()
+void System::TickIncrease()
 {
 	Tick++;
 };
 
-uint32_t System_F4::GetTick()
+uint32_t System::GetTick()
 {
 	return Tick;
 }
@@ -70,7 +89,7 @@ uint32_t System_F4::GetTick()
  * @brief Make delay in ms
  * @param delay value in ms
  *************************************************************************************************/
-void System_F4::Delay_ms(uint32_t delay)
+void System::Delay_ms(uint32_t delay)
 {
 	uint32_t tick_start = GetTick();
 	uint32_t wait = delay;
@@ -86,7 +105,7 @@ void System_F4::Delay_ms(uint32_t delay)
 	}	
 }
 
-uint32_t System_F4::SWOTrace(uint8_t *ptr, uint32_t len)
+uint32_t System::SWOTrace(uint8_t *ptr, uint32_t len)
 {
 	for (uint32_t DataIdx = 0; DataIdx < len; DataIdx++)
 	{
@@ -95,7 +114,37 @@ uint32_t System_F4::SWOTrace(uint8_t *ptr, uint32_t len)
 	return len;
 }
 
+#if defined(STM32F7) 
+void System::MPU_Init() // todo make class
+{
+	/* Make sure outstanding transfers are done */
+	__DMB();
+	/* Disable MPU*/
+	MPU->CTRL = 0U;
+
+	/* Set Region number */
+	MPU->RNR = 0x00U;
+	/* Set base address */
+	MPU->RBAR =  (0x0 & 0xFFFFFFE0U);
+	/* Configure MPU */
+	MPU->RASR = MPU_RASR_ENABLE_Msk |
+				0x87 << MPU_RASR_SRD_Pos |			
+				0x1FU << MPU_RASR_SIZE_Pos |		/*!< 4GB Size of the MPU protection region */
+				0x00U << MPU_RASR_TEX_Pos |			/*!< b000 for TEX bits */
+				0x00U << MPU_RASR_AP_Pos |			/*!< No access*/
+				MPU_RASR_XN_Msk |					/*!< Instruction fetches disabled*/
+				MPU_RASR_S_Msk;						/*!< Shareable memory attribute */
+
+	/* Enable the MPU*/
+	MPU->CTRL = MPU_CTRL_ENABLE_Msk | MPU_CTRL_PRIVDEFENA_Msk;
+	/* Ensure MPU settings take effects */
+	__DSB();
+	/* Sequence instruction fetches using update settings */
+	__ISB();
+}
+#endif
+
 extern "C" void SysTick_Handler(void)
 {
-	System_F4::TickIncrease();
+	System::TickIncrease();
 }

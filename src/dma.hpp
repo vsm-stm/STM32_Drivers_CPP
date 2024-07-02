@@ -1,7 +1,7 @@
 #ifndef DMA_H_
 #define DMA_H_
 
-#include <system_f4.hpp>
+#include <system.hpp>
 #include <rcc.hpp>
 
 
@@ -133,10 +133,11 @@ public:
 	/**
 	 * @brief Function to clear DMA flags.
 	 */
-	void ClearFlags()
+	inline void ClearFlags()
 	{
 		*DMA_CFR =	(DMA_LISR_TCIF0 << cfr_offset) |
 					(DMA_LISR_HTIF0 << cfr_offset) |
+					(DMA_LISR_FEIF0 << cfr_offset) |
 					(DMA_LISR_TEIF0 << cfr_offset);
 	};
 
@@ -170,40 +171,31 @@ public:
 		}
 	}
 
-	/**
-	 * @brief Function to enable Memory Increment Mode.
-	 */
-	void Enable_MINC()
-	{	DMA_Stream_X->CR |= DMA_SxCR_MINC;};
+	inline void MINC(FunctionalState en)
+	{	if(en)
+			DMA_Stream_X->CR |=  DMA_SxCR_MINC;
+		else
+			DMA_Stream_X->CR &= ~DMA_SxCR_MINC;
+	};
 
-	/**
-	 * @brief Function to disable Memory Increment Mode.
-	 */
-	void Disable_MINC()
-	{	DMA_Stream_X->CR &= ~DMA_SxCR_MINC;};
-
-	/**
-	 * @brief Function to enable Circular Mode.
-	 */
-	void Enable_CIRC()
-	{	DMA_Stream_X->CR |= DMA_SxCR_CIRC;};
-
-	/**
-	 * @brief Function to disable Circular Mode.
-	 */
-	void Disable_CIRC()
-	{	DMA_Stream_X->CR &= ~DMA_SxCR_CIRC;};
+	inline void CIRC(FunctionalState en)
+	{
+		if(en)
+			DMA_Stream_X->CR |=  DMA_SxCR_CIRC;
+		else
+			DMA_Stream_X->CR &= ~DMA_SxCR_CIRC;
+	};
 
 	/**
 	 * @brief Function to enable the DMA stream.
 	 */
-	void Enable_Stream()
+	inline void Enable_Stream()
 	{	DMA_Stream_X->CR |= DMA_SxCR_EN;};
 
 	/**
 	 * @brief Function to disable the DMA stream.
 	 */
-	void Disable_Stream()
+	inline void Disable_Stream()
 	{	DMA_Stream_X->CR &= ~DMA_SxCR_EN;};
 
 private:

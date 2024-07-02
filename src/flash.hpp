@@ -1,7 +1,7 @@
 #ifndef FLASH_HPP_
 #define FLASH_HPP_
 
-#include <system_f4.hpp>
+#include <system.hpp>
 #include <flash_maps.h>
 
 class flash_base

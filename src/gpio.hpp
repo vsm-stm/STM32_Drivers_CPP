@@ -1,7 +1,7 @@
 #ifndef GPIO_H_
 #define GPIO_H_
 
-#include <system_f4.hpp>
+#include <system.hpp>
 
 /**
  * @brief Class representing a GPIO pin with configurable parameters.
@@ -83,6 +83,14 @@ public:
 		ANALOG =         	(static_cast<uint8_t>(MODE::ANALOG))      ///< Analog mode
 	};
 
+	enum class OUTPUT_SPEED
+	{
+		Low  = 0b00,
+		Medium,
+		Fast,
+		High
+	};
+
 	/**
 	 * @brief Enumeration representing different logic levels.
 	 */
@@ -116,6 +124,8 @@ public:
 	 */
 	SYS_StatusTypeDef SetUp(TYPE type);
 
+	SYS_StatusTypeDef SetUp(TYPE type, OUTPUT_SPEED speed);
+
 	/**
 	 * @brief Set up the pin with the specified type and alternate function.
 	 * @param type The enumerate type of pin configuration.
@@ -123,6 +133,8 @@ public:
 	 * @return The status of the setup operation.
 	 */
 	SYS_StatusTypeDef SetUp(TYPE type, uint8_t af);
+
+	SYS_StatusTypeDef SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af);
 
 	/**
 	 * @brief Get the logic level of the pin.
@@ -134,6 +146,34 @@ public:
 	};
 
 	/**
+	 * @brief Set the logic level of the pin.
+	 * @param lvl_int The logic level as an integer.
+	 */
+	inline void SetLevel(bool lvl)
+	{
+		PORT->BSRR |= ((lvl == 0) ? GPIO_BSRR_BR0 : GPIO_BSRR_BS0) << pin;
+	};
+
+	/**
+	 * @brief Set the logic level of the pin using the specified enum.
+	 * @param lvl The logic level enum.
+	 */
+	inline void SetLevel(LVL lvl)
+	{
+		SetLevel(static_cast<bool>(lvl));
+	};
+
+	/**
+	 * @brief Toggle the logic level of the pin.
+	 */
+	inline void TogglePin()
+	{
+		PORT->ODR ^= 0x1 << pin;
+	};
+
+
+#if defined(STM32F4)
+	/**
 	 * @brief Get the logic level of the pin using bit-banding.
 	 * @return The logic level of the pin.
 	 */
@@ -143,30 +183,12 @@ public:
 	};
 
 	/**
-	 * @brief Set the logic level of the pin.
-	 * @param lvl_int The logic level as an integer.
-	 */
-	inline void SetLevel(uint32_t lvl_int)
-	{
-		BIT_BB(&PORT->ODR, pin) = lvl_int;
-	};
-
-	/**
-	 * @brief Set the logic level of the pin using the specified enum.
-	 * @param lvl The logic level enum.
-	 */
-	inline void SetLevel(LVL lvl)
-	{
-		PORT->BSRR |= ((lvl == LVL::HIGH) ? GPIO_BSRR_BS0 : GPIO_BSRR_BR0) << pin;
-	};
-
-	/**
 	 * @brief Set the logic level of the pin using bit-banding.
 	 * @param lvl_int The logic level as an integer.
 	 */
-	inline void SetLevel_BB(uint32_t lvl_int)
+	inline void SetLevel_BB(bool lvl)
 	{
-		BIT_BB(&PORT->ODR, pin) = lvl_int;
+		BIT_BB(&PORT->ODR, pin) = static_cast<uint8_t>(lvl);
 	}
 
 	/**
@@ -179,20 +201,13 @@ public:
 	};
 
 	/**
-	 * @brief Toggle the logic level of the pin.
-	 */
-	inline void TogglePin()
-	{
-		PORT->ODR ^= 0x1 << pin;
-	};
-
-	/**
 	 * @brief Toggle the logic level of the pin using bit-banding.
 	 */
 	inline void TogglePin_BB()
 	{
 		BIT_BB(&PORT->ODR, pin) ^= 1;
 	};
+#endif
 
 	/**
 	 * @brief Destructor for the PIN class.

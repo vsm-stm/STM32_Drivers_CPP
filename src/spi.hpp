@@ -1,7 +1,7 @@
 #ifndef SPI_HPP_
 #define SPI_HPP_
 
-#include <system_f4.hpp>
+#include <system.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
 #include <memory>
@@ -17,10 +17,16 @@ public:
 		Master = SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_MSTR
 	};
 
+
 	enum class Data_frame_format
 	{
+	#if defined(STM32F4)
 		Byte = 0,
 		Half_Word = SPI_CR1_DFF
+	#elif defined(STM32F7)
+		Byte = 0b111 << SPI_CR2_DS_Pos,
+		Half_Word = 0b1111 << SPI_CR2_DS_Pos
+	#endif
 	};
 
 	enum class Frame_Format
@@ -68,44 +74,63 @@ public:
 	SPI &operator=(SPI &&) = default;
 	~SPI(){};
 
+	typedef struct 
+	{
+		Master_sel mstr;
+		TYPE type;
+		Data_frame_format dff;
+		Frame_Format ff;
+		cPolPha cpolpha;
+		uint8_t br;
+	}Init_struct_Typedef;
+
 	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type)
 	{
 		return SetUp(mstr, type, Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, 0);
 	};
 
+	SYS_StatusTypeDef SetUp(Init_struct_Typedef Init_struct)
+	{
+		return SetUp(Init_struct.mstr, Init_struct.type, Init_struct.dff, Init_struct.ff, Init_struct.cpolpha, Init_struct.br);
+	}
+
 	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
 
-	void Enable()
+	inline void Enable()
 	{
 		SPIx->CR1 |= SPI_CR1_SPE;
 	};
 
-	void Disable()
+	inline void Disable()
 	{
 		SPIx->CR1 &= ~SPI_CR1_SPE;
 	};
 
-	void Enable_DMA_TX()
+	inline void SlaveSelect(FunctionalState en)
 	{
-		SPIx->CR2 |= SPI_CR2_TXDMAEN;
+		if(en)
+			SS.SetLevel(0);
+		else
+			SS.SetLevel(1);
+	}
+
+	inline void DMA_TX(FunctionalState en)
+	{
+		if(en)
+			SPIx->CR2 |= SPI_CR2_TXDMAEN;
+		else
+			SPIx->CR2 &= ~SPI_CR2_TXDMAEN;
 	};
 
-	void Disable_DMA_TX()
+	void DMA_RX(FunctionalState en)
 	{
-		SPIx->CR2 &= ~SPI_CR2_TXDMAEN;
+		if(en)
+			SPIx->CR2 |= SPI_CR2_RXDMAEN;
+		else
+			SPIx->CR2 &= ~SPI_CR2_RXDMAEN;
 	};
 
-	void Enable_DMA_RX()
-	{
-		SPIx->CR2 |= SPI_CR2_RXDMAEN;
-	};
-
-	void Disable_DMA_RX()
-	{
-		SPIx->CR2 &= ~SPI_CR2_RXDMAEN;
-	};
-
-		/**
+	/**
 	 * @brief Enable the specified USART IRQ.
 	 * @param irq The IRQ to enable.
 	 */
@@ -132,6 +157,8 @@ public:
 		}
 	}
 
+	SYS_StatusTypeDef Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
+
 protected:
 	PIN CLK{};
 	PIN MOSI{};
@@ -143,30 +170,5 @@ protected:
 
 	SYS_StatusTypeDef SetHard();
 };
-
-class SPI_Slave_TX : public SPI
-{
-private:
-	/* data */
-public:
-
-	SYS_StatusTypeDef SetUp();
-
-	SPI_Slave_TX(SPI_TypeDef *spix, PIN CLK, PIN MISO) : SPI(spix, CLK, {}, MISO, {}){};
-	~SPI_Slave_TX(){};
-};
-
-class SPI_Master : public SPI
-{
-private:
-
-public:
-	SPI_Master(SPI_TypeDef *spix, PIN CLK, PIN MOSI, PIN MISO) : SPI(spix, CLK, MOSI, MISO, {}){};
-	~SPI_Master(){};
-};
-
-
-
-
 
 #endif /* SPI_HPP_ */

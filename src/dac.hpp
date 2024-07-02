@@ -1,7 +1,7 @@
 #ifndef DAC_HPP_
 #define DAC_HPP_
 
-#include <system_f4.hpp>
+#include <system.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
 
