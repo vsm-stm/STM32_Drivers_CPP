@@ -26,7 +26,9 @@ protected:
 		none,
 		TXRX,
 		TX,
-		RX
+		TX_reg,
+		RX,
+		RX_reg
 	};
 };
 
@@ -208,8 +210,6 @@ public:
 private:
 	typedef struct _rxtx_data
 	{
-		// uint8_t tx_data[buffer_size];
-		// uint8_t rx_data[buffer_size];
 		uint8_t *tx_data_ptr;
 		uint8_t *rx_data_ptr;
 		uint16_t len;
@@ -246,6 +246,60 @@ protected:
 	uint8_t _slave_addr;
 	uint8_t* data_addr;
 	bool need_reload_dma;
+};
+
+class Interface_buffer_I2C : public Interface_buffer, public Interface_I2C
+{
+public:
+	Interface_buffer_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
+	~Interface_buffer_I2C(){};
+
+	void IRQHandler(void);
+
+	void Send(uint8_t slave_addr, uint8_t* data, uint16_t data_len);
+	void SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len);
+	void Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_len);
+	void ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len);
+
+
+	uint32_t GetRxDataCount()
+	{
+		return rx.size();
+	};
+
+	uint32_t GetFirstRxDataSize()
+	{
+		return rx.front().data_len;
+	};
+
+	/**
+	 * @brief Get received data.
+	 * @param data Pointer to buffer to store received data.
+	 * @param size Size of data to retrieve.
+	 */
+	void GetRxData(uint8_t* data, uint32_t size)
+	{
+		memcpy(data, rx.front().data_ptr, size);
+		delete [] rx.front().data_ptr;
+		delete [] rx.front().data_ptr;
+		rx.erase(rx.begin());
+	};
+protected:
+	typedef struct _data
+	{
+		uint8_t slave_addr;
+		bool use_reg_addr;
+		uint8_t *reg_addr_ptr;
+		uint16_t reg_addr_len;
+		uint8_t *data_ptr;
+		uint16_t data_len;
+		TXRX_Type type;
+	}Data_Typedef;
+
+	std::list<Data_Typedef> tx, rx;
+
+	inline void StartTranssmit();
+
 };
 
 #endif /* INTERFACE_HPP_ */

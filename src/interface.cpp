@@ -785,3 +785,147 @@ void Interface_I2C::ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t a
 
 	i2c->I2Cx->CR2 = mode;
 }
+
+Interface_buffer_I2C::Interface_buffer_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
+	Interface_buffer(),
+	Interface_I2C(_i2c, _dma_tx, _dma_rx)
+{
+
+};
+
+void Interface_buffer_I2C::IRQHandler(void)
+{
+	Interface_I2C::IRQHandler();
+	if(status != SYS_BUSY)
+	{
+		if((tx.front().type == TXRX_Type::TX)
+		|| (tx.front().type == TXRX_Type::TX_reg))
+		{
+			delete [] tx.front().data_ptr;
+			delete [] tx.front().reg_addr_ptr;
+			tx.erase(tx.begin());
+		} else
+		if((tx.front().type == TXRX_Type::RX)
+		|| (tx.front().type == TXRX_Type::RX_reg))
+		{
+			rx.push_back(tx.front());
+
+			delete [] tx.front().data_ptr;
+			delete [] tx.front().reg_addr_ptr;
+			tx.erase(tx.begin());
+		}
+	}
+	if(tx.size() > 0)
+		StartTranssmit();
+};
+
+void Interface_buffer_I2C::StartTranssmit()
+{
+	if(tx.size() == 0)
+		return;
+
+	if(tx.front().type == TXRX_Type::TX)
+	{
+		Interface_I2C::Send(tx.front().slave_addr, tx.front().data_ptr, tx.front().data_len);
+	} else
+	if(tx.front().type == TXRX_Type::TX_reg)
+	{
+		Interface_I2C::SendToAddr(tx.front().slave_addr, tx.front().reg_addr_ptr, tx.front().reg_addr_len, tx.front().data_ptr, tx.front().data_len);
+	} else
+	if(tx.front().type == TXRX_Type::RX)
+	{
+		Interface_I2C::Receive(tx.front().slave_addr, tx.front().data_ptr, tx.front().data_len);
+	} else
+	if(tx.front().type == TXRX_Type::RX_reg)
+	{
+		Interface_I2C::ReceiveFromAddr(tx.front().slave_addr, tx.front().reg_addr_ptr, tx.front().reg_addr_len, tx.front().data_ptr, tx.front().data_len);
+	}
+};
+
+void Interface_buffer_I2C::Send(uint8_t slave_addr, uint8_t* data, uint16_t data_len)
+{
+	Data_Typedef tmp_data = {
+			.slave_addr = slave_addr,
+			.use_reg_addr = false,
+			.data_len = data_len,
+			.type = TXRX_Type::TX
+	};
+
+	tx.push_back(tmp_data);
+
+	tx.back().data_ptr = new uint8_t[data_len];
+
+	memcpy(tx.back().data_ptr, data, data_len);
+
+	if(tx.size() == 1)
+	{
+		StartTranssmit();
+	}
+};
+
+void Interface_buffer_I2C::SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len)
+{
+	Data_Typedef tmp_data = {
+			.slave_addr = slave_addr,
+			.use_reg_addr = true,
+			.reg_addr_len = addr_size,
+			.data_len = data_len,
+			.type = TXRX_Type::TX_reg
+	};
+
+	tx.push_back(tmp_data);
+
+	tx.back().data_ptr 		= new uint8_t[data_len];
+	tx.back().reg_addr_ptr	= new uint8_t[addr_size];
+
+	memcpy(tx.back().data_ptr, data, data_len);
+	memcpy(tx.back().reg_addr_ptr, addr, addr_size);
+
+	if(tx.size() == 1)
+	{
+		StartTranssmit();
+	}
+};
+
+void Interface_buffer_I2C::Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_len)
+{
+	Data_Typedef tmp_data = {
+			.slave_addr = slave_addr,
+			.use_reg_addr = false,
+			.data_len = data_len,
+			.type = TXRX_Type::RX
+	};
+
+	tx.push_back(tmp_data);
+
+	tx.back().data_ptr = new uint8_t[data_len];
+
+	// memcpy(tx.back().data_ptr, data, data_len);
+
+	if(tx.size() == 1)
+	{
+		StartTranssmit();
+	}
+};
+
+void Interface_buffer_I2C::ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len)
+{
+	Data_Typedef tmp_data = {
+			.slave_addr = slave_addr,
+			.use_reg_addr = true,
+			.reg_addr_len = addr_size,
+			.data_len = data_len,
+			.type = TXRX_Type::RX_reg
+	};
+
+	tx.push_back(tmp_data);
+
+	tx.back().data_ptr = new uint8_t[data_len];
+
+	// memcpy(tx.back().data_ptr, data, data_len);
+
+	if(tx.size() == 1)
+	{
+		StartTranssmit();
+	}
+};
