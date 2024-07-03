@@ -136,7 +136,6 @@ SYS_StatusTypeDef I2C::Send(uint8_t slave_addr, uint8_t *data, uint32_t len, uin
 	return SYS_OK;
 };
 
-
 SYS_StatusTypeDef I2C::Receive(uint8_t slave_addr, uint8_t *data, uint32_t len, uint32_t timeout)
 {
 	uint32_t transfer_count = len / MAX_NBYTE_SIZE;
