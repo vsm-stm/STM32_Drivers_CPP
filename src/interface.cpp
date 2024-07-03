@@ -549,6 +549,7 @@ void Interface_buffer_SPI::IRQHandler(void)
 	}
 };
 
+#if defined(STM32F7)
 Interface_I2C::Interface_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
 	Interface_DMA(),
 	i2c(_i2c)	
@@ -916,3 +917,5 @@ void Interface_buffer_I2C::ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, ui
 		StartTranssmit();
 	}
 };
+
+#endif

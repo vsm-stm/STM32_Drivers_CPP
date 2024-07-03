@@ -222,6 +222,7 @@ private:
 
 };
 
+#if defined(STM32F7)
 class Interface_I2C : public Interface_DMA
 {
 public:
@@ -301,5 +302,5 @@ protected:
 	inline void StartTranssmit();
 
 };
-
+#endif
 #endif /* INTERFACE_HPP_ */
