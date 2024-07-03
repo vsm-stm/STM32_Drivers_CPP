@@ -271,16 +271,7 @@ void Interface_buffer_USART::StartTranssmit()
 {
 	if(tx.size()>0)
 	{
-		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx.front().data_ptr);
-		dma_tx->DMA_Stream_X->NDTR = tx.front().len;
-#if defined(STM32F4)
-		usart->ClearFlags();
-#elif defined(STM32F7)
-		usart->ClearFlags(USART::ISR_FLAGS::TC);
-#endif
-		usart->Enable_IRQ(USART::IRQ::TC);
-		dma_tx->ClearFlags();
-		dma_tx->Enable_Stream();
+		Interface_USART::Send(tx.front().data_ptr, tx.front().len);
 	}
 }
 
@@ -289,11 +280,7 @@ void Interface_buffer_USART::StartTranssmit()
  */
 void Interface_buffer_USART::StartReceiver()
 {
-	dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(rx.back().data_ptr);
-	dma_rx->DMA_Stream_X->NDTR = sizeof(rx.back().len);
-	usart->Enable_IRQ(USART::IRQ::IDLE);
-	dma_rx->ClearFlags();
-	dma_rx->Enable_Stream();
+	Interface_USART::Receive(rx.front().data_ptr, rx.front().len);
 }
 
 Interface_SPI::Interface_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
