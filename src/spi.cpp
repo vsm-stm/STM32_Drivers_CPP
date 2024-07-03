@@ -50,19 +50,33 @@ SYS_StatusTypeDef SPI::SetHard()
 	}
 	if (MOSI.PORT != NULL)
 	{
-		MOSI.SetUp(PIN::TYPE::AF_PushPull, af);
+		if(Master_slave == Master_sel::Master)
+			MOSI.SetUp(PIN::TYPE::AF_PushPull, af);
+		else
+			MOSI.SetUp(PIN::TYPE::AF_OD_PulUp, af);
 	}
 	if (MISO.PORT != NULL)
 	{
-		MISO.SetUp(PIN::TYPE::AF_OD, af);
+		if(Master_slave == Master_sel::Master)
+			MISO.SetUp(PIN::TYPE::AF_OD_PulUp, af);
+		else
+			MISO.SetUp(PIN::TYPE::AF_PushPull, af);
+			
 	}
 
 	if (SS.PORT != NULL)
 	{
 		if(nss_ctrl == NSS_ctrl::Hard)
+		{
 			SS.SetUp(PIN::TYPE::AF_PushPull, af);
+		}	
 		else
-			SS.SetUp(PIN::TYPE::OUTPUT_PushPull);
+		{
+			if(Master_slave == Master_sel::Master)
+				SS.SetUp(PIN::TYPE::OUTPUT_PushPull);
+			else
+				SS.SetUp(PIN::TYPE::INPUT_NO_Pull);
+		}
 	}
 
 	return SYS_OK;
@@ -71,6 +85,7 @@ SYS_StatusTypeDef SPI::SetHard()
 SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br)
 {
 	nss_ctrl = nss;
+	Master_slave = mstr;
 	SYS_StatusTypeDef setup_status = SetHard();
 
 	if(setup_status != SYS_OK)
@@ -90,8 +105,16 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_fram
 				// SPI_CR2_FRXTH;
 	#endif
 
-	if(nss_ctrl == NSS_ctrl::Hard)
+	if((nss_ctrl == NSS_ctrl::Hard)
+	&& (mstr == Master_sel::Master))
 		SPIx->CR2 |= SPI_CR2_SSOE;
+	
+	if((nss_ctrl == NSS_ctrl::Software)
+	&& (mstr == Master_sel::Slave))
+	{
+		SPIx->CR1 |= SPI_CR1_SSM;
+		// SPIx->CR1 &= ~SPI_CR1_SSI;
+	}
 
 	if(type == TYPE::RX)
 	{

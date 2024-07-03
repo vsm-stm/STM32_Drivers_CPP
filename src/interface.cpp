@@ -349,7 +349,6 @@ void Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t da
 	dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
 
 	spi->SlaveSelect(ENABLE);
-	// spi->SPIx->CR1 |= SPI_CR1_SSI;
 
 	spi->DMA_TX(ENABLE);
 	spi->DMA_RX(ENABLE);

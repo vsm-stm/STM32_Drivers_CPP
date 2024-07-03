@@ -117,9 +117,19 @@ public:
 		if(nss_ctrl == NSS_ctrl::Software)
 		{
 			if(en)
-				SS.SetLevel(0);
+			{
+				if(Master_slave == Master_sel::Master)
+					SS.SetLevel(0);
+				else
+					SPIx->CR1 &= ~SPI_CR1_SSI;
+			}
 			else
-				SS.SetLevel(1);
+			{
+				if(Master_slave == Master_sel::Master)
+					SS.SetLevel(1);
+				else
+					SPIx->CR1 |= SPI_CR1_SSI;
+			}
 		}
 	}
 
@@ -176,6 +186,7 @@ protected:
 
 	uint32_t af, bus_clk;
 	NSS_ctrl nss_ctrl;
+	Master_sel Master_slave;
 	IRQn_Type IRQ_vector;
 
 	SYS_StatusTypeDef SetHard();
