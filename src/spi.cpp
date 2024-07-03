@@ -59,14 +59,18 @@ SYS_StatusTypeDef SPI::SetHard()
 
 	if (SS.PORT != NULL)
 	{
-		SS.SetUp(PIN::TYPE::OUTPUT_PushPull);
+		if(nss_ctrl == NSS_ctrl::Hard)
+			SS.SetUp(PIN::TYPE::AF_PushPull, af);
+		else
+			SS.SetUp(PIN::TYPE::OUTPUT_PushPull);
 	}
 
 	return SYS_OK;
 }
 
-SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br)
+SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br)
 {
+	nss_ctrl = nss;
 	SYS_StatusTypeDef setup_status = SetHard();
 
 	if(setup_status != SYS_OK)
@@ -86,6 +90,9 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, 
 				// SPI_CR2_FRXTH;
 	#endif
 
+	if(nss_ctrl == NSS_ctrl::Hard)
+		SPIx->CR2 |= SPI_CR2_SSOE;
+
 	if(type == TYPE::RX)
 	{
 		SPIx->CR1 |= SPI_CR1_RXONLY;
@@ -104,11 +111,6 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, 
 	SPIx->CR1 |= SPI_CR1_SPE;
 	for(uint32_t i = 0;i<data_len;i++)
 	{
-		// while(!(SPIx->SR & SPI_SR_TXE))
-		// {
-		// 	if(System::GetTick() - tick_start > timeout)
-		// 		return SYS_ERROR;
-		// };
 		SPIx->DR = tx_data[i];
 		while(!(SPIx->SR & SPI_SR_RXNE))
 		{
@@ -124,20 +126,7 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, 
 		if(System::GetTick() - tick_start > timeout)
 			return SYS_ERROR;
 	};
+	
 	SS.SetLevel(1);
 	return SYS_OK;
 }
-
-// SYS_StatusTypeDef SPI_Slave_TX::SetUp()
-// {
-// 	SYS_StatusTypeDef setup_status = SetHard();
-
-// 	if(setup_status != SYS_OK)
-// 		return setup_status;
-
-// 	SPIx->CR1 = //SPI_CR1_CPHA;// |
-// 				SPI_CR1_CPOL;
-// 	// SPIx->CR2 = SPI_CR2_TXDMAEN;
-	
-// 	return SYS_OK;
-// }
