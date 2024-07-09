@@ -105,9 +105,9 @@ public:
 			_direction(dir),
 			_channel(channel),
 			_paddr(per_addr),
-			_per_type(type)
+			_per_type(type),
+			_size(SIZE::Byte)
 	{
-		_size = SIZE::Byte;
 	};
 
 	/**

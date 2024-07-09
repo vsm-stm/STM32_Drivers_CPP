@@ -8,39 +8,46 @@ void Interface_DMA::DMA_SetUp()
 	dma_rx->MINC(ENABLE);
 };
 
-Interface_USART::Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_stream_tx, DMA_Stream_TypeDef *_dma_stream_rx) :
+Interface_USART::Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx, uint32_t tx_buffer_size, uint32_t rx_buffer_size) :
 	Interface_DMA(),
-	usart(_usart)
+	usart(_usart),
+	buffer(tx_buffer_size, rx_buffer_size)
 {
-	uint32_t ch = 4;
-	if(usart->USARTx == USART6)
-		ch = 5;
-	if(_dma_stream_tx != NULL)
-	{
-		dma_tx = new DMA_Sx(_dma_stream_tx, 
-					ch,
+	DMA_Sx::StreamSettings s_tx, s_rx;
+
+	s_tx.dma_sx = _dma_tx;
+	s_rx.dma_sx = _dma_rx;
+	s_tx.channel = 4;
+	s_rx.channel = 4;
+	s_tx.type = DMA_Sx::Per_Type::usart;
+	s_rx.type = DMA_Sx::Per_Type::usart;
+	s_tx.dir = DMA_Sx::DIR::To_Per;
+	s_rx.dir = DMA_Sx::DIR::From_Per;
+
 #if defined(STM32F4)
-					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
+	s_tx.per_addr = reinterpret_cast<uint32_t>(&usart->USARTx->DR);
+	s_rx.per_addr = reinterpret_cast<uint32_t>(&usart->USARTx->DR);
 #elif defined(STM32F7)
-					reinterpret_cast<uint32_t>(&usart->USARTx->TDR),
+	s_tx.per_addr = reinterpret_cast<uint32_t>(&usart->USARTx->TDR);
+	s_rx.per_addr = reinterpret_cast<uint32_t>(&usart->USARTx->RDR);
 #endif
-					DMA_Sx::Per_Type::usart,
-					DMA_Sx::DIR::To_Per);
+
+	if(usart->USARTx == USART6)
+	{
+		s_tx.channel = 5;
+		s_rx.channel = 5;
+	}
+
+	if(_dma_tx != NULL)
+	{
+		dma_tx = new DMA_Sx(s_tx);
 
 		status_tx = SYS_NO_Init;
 	}
 
-	if(_dma_stream_tx != NULL)
+	if(_dma_rx != NULL)
 	{
-		dma_rx = new DMA_Sx(_dma_stream_rx, 
-					ch,
-#if defined(STM32F4)
-					reinterpret_cast<uint32_t>(&usart->USARTx->DR),
-#elif defined(STM32F7)
-					reinterpret_cast<uint32_t>(&usart->USARTx->RDR),
-#endif
-					DMA_Sx::Per_Type::usart,
-					DMA_Sx::DIR::From_Per);
+		dma_rx = new DMA_Sx(s_rx);
 
 		status_rx = SYS_NO_Init;
 	}
@@ -59,14 +66,14 @@ SYS_StatusTypeDef Interface_USART::Init()
 	return SYS_OK;
 };
 
-void Interface_USART::Send(uint8_t* data, uint16_t data_len)
+SYS_StatusTypeDef Interface_USART::TX(uint8_t* data, uint16_t data_size)
 {
 	if(status_tx == SYS_OK)
 	{
 		status_tx = SYS_BUSY;
 
 		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
-		dma_tx->DMA_Stream_X->NDTR = data_len;
+		dma_tx->DMA_Stream_X->NDTR = data_size;
 #if defined(STM32F4)
 		usart->ClearFlags();
 #elif defined(STM32F7)
@@ -76,51 +83,148 @@ void Interface_USART::Send(uint8_t* data, uint16_t data_len)
 		dma_tx->ClearFlags();
 		dma_tx->Enable_Stream();
 	}
+
+	return status_tx;
 };
 
-void Interface_USART::Receive(uint8_t* data, uint16_t data_len)
+SYS_StatusTypeDef Interface_USART::Send(uint8_t* data, uint16_t data_size)
 {
-	Receive(data, data_len, false);
-}
+	if(data == NULL)
+		return SYS_ERROR;
+	if(buffer.tx_buffer_size_max == 0)
+	{
+		return TX(data, data_size);
+	}
+	else
+	{
+		if(buffer.tx_buffer_size_max == buffer.tx.size())
+			return SYS_ERROR;
 
-void Interface_USART::Receive(uint8_t* data, uint16_t data_len, bool cont)
+		buffer.tx.emplace_back();
+		buffer.tx.back().len = data_size;
+		buffer.tx.back().data_ptr = new uint8_t[data_size];
+		uint8_t* t = buffer.tx.back().data_ptr;
+		if(t == 0)
+			return SYS_ERROR;
+
+		memcpy(buffer.tx.back().data_ptr, data, data_size);
+		
+		if((buffer.tx.size() == 1)
+		&& (status_tx == SYS_OK))
+		{
+			return TX(buffer.tx.front().data_ptr, buffer.tx.front().len);
+		}
+	}
+
+	return SYS_OK;
+};
+
+SYS_StatusTypeDef Interface_USART::RX(uint8_t* data, uint16_t data_size)
 {
-	status_rx = SYS_BUSY;
+	if(status_rx == SYS_OK)
+	{
+		status_rx = SYS_BUSY;
+
+		dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(&data);
+		dma_rx->DMA_Stream_X->NDTR = data_size;
+		usart->Enable_IRQ(USART::IRQ::IDLE);
+		dma_rx->ClearFlags();
+		dma_rx->Enable_Stream();
+	}
+	return status_rx;
+};
+
+SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size, bool cont)
+{
 	ContReceive = cont;
 
-	dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(&data);
-	dma_rx->DMA_Stream_X->NDTR = data_len;
-	usart->Enable_IRQ(USART::IRQ::IDLE);
-	dma_rx->ClearFlags();
-	dma_rx->Enable_Stream();
+	if(buffer.rx_buffer_size_max == 0)
+	{
+		if(data == NULL)
+			return SYS_ERROR;
+		return RX(data, data_size);
+	}
+	else
+	{
+		if(buffer.rx_buffer_size_max == buffer.rx.size())
+			return SYS_ERROR;
+
+		buffer.rx.emplace_back();
+		buffer.rx.back().len = data_size;
+		buffer.rx.back().data_ptr = new uint8_t[data_size];
+		uint8_t* t = buffer.rx.back().data_ptr;
+		if(t == 0)
+			return SYS_ERROR;
+
+		if(status_rx == SYS_OK)
+		{
+			return RX(buffer.rx.front().data_ptr, buffer.rx.front().len);
+		}
+	}
+	return SYS_OK;
+};
+
+SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size)
+{
+	return Receive(data, data_size, false);
+};
+
+SYS_StatusTypeDef Interface_USART::Receive(uint16_t data_size, bool cont)
+{
+	if(buffer.rx_buffer_size_max == 0)
+		return SYS_ERROR;
+	else
+		return Receive(NULL, data_size, cont);
+};
+
+SYS_StatusTypeDef Interface_USART::Receive(uint16_t data_size)
+{
+	if(buffer.rx_buffer_size_max == 0)
+		return SYS_ERROR;
+	else
+		return Receive(NULL, data_size, false);
 };
 
 void Interface_USART::IRQHandler()
 {
 	// Handle Transmit Complete (TC) interrupt
+	if((usart->USARTx->CR1 & USART_CR1_TCIE) &&
 #if defined(STM32F4)
-	if((usart->USARTx->SR & USART_SR_TC)
-#elif defined(STM32F7)
-	if((usart->USARTx->ISR & USART_ISR_TC)
-#endif
-	&& (usart->USARTx->CR1 & USART_CR1_TCIE))
+		(usart->USARTx->SR & USART_SR_TC))
 	{
-#if defined(STM32F4)
 		usart->USARTx->SR &= ~USART_SR_TC;
+
 #elif defined(STM32F7)
+		(usart->USARTx->ISR & USART_ISR_TC))
+	{
 		usart->USARTx->ICR = USART_ICR_TCCF;
 #endif
+	
 		usart->Disable_IRQ(USART::IRQ::TC);
 		status_tx = SYS_OK;
+
+		if(buffer.tx_buffer_size_max != 0)
+		{
+			if(buffer.tx.size() != 0)
+			{
+				delete [] buffer.tx.front().data_ptr;
+				buffer.tx.erase(buffer.tx.begin());
+			}
+
+			if(!buffer.tx.empty())
+			{
+				status_tx = TX(buffer.tx.front().data_ptr, buffer.tx.front().len);
+			}
+		}
 	}
 
 	// Handle Idle Line Detected interrupt
+	if((usart->USARTx->CR1 & USART_CR1_IDLEIE) &&
 #if defined(STM32F4)
-	if((usart->USARTx->SR & USART_SR_IDLE)
+	  (usart->USARTx->SR & USART_SR_IDLE))
 #elif defined(STM32F7)
-	if((usart->USARTx->ISR & USART_ISR_IDLE)
+	  (usart->USARTx->ISR & USART_ISR_IDLE))
 #endif
-	&& (usart->USARTx->CR1 & USART_CR1_IDLEIE))
 	{
 		IsDataReceived = true;
 		dma_rx->Disable_Stream();
@@ -130,158 +234,36 @@ void Interface_USART::IRQHandler()
 #elif defined(STM32F7)
 		usart->USARTx->ICR = USART_ICR_IDLECF;
 #endif
+
+		status_rx = SYS_OK;
+
+		if(buffer.rx_buffer_size_max != 0)
+		{
+			buffer.rx.back().len -= dma_rx->DMA_Stream_X->NDTR;
+		}
+
 		if(ContReceive)
 		{
-			dma_rx->ClearFlags();
-			dma_rx->Enable_Stream();
-		}
-		else
-		{
-			usart->Disable_IRQ(USART::IRQ::IDLE);
-			status_rx = SYS_OK;
-		}
-	}
-};
-
-Interface_buffer_USART::Interface_buffer_USART(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
-	Interface_buffer(),
-	Interface_USART(_usart, _dma_tx, _dma_rx)
-{
-
-};
-
-/**
- * @brief Send data over the interface.
- * @param data Pointer to data to be sent.
- * @param len Length of the data.
- */
-void Interface_buffer_USART::Send(uint8_t* data, uint16_t len)
-{
-	tx_data_typedef tmp = {.len = len};
-	tx.push_back(tmp);
-
-	tx.back().data_ptr = new uint8_t[len];
-	uint8_t* t = tx.back().data_ptr;
-	if(t == 0)
-		return;
-
-	memcpy(tx.back().data_ptr, data, len);
-	tx.back().len = len;
-	
-	if(tx.size() == 1)
-	{
-		StartTranssmit();
-	}
-};
-
-/**
- * @brief Enable continuous receive mode.
- */
-void Interface_buffer_USART::Enable_Cont_Recieve(uint16_t len)
-{
-	cont_rx = true;
-
-	// StartReceiver();
-	Recieve(len);
-}
-
-/**
- * @brief Receive data from the interface.
- */
-void Interface_buffer_USART::Recieve(uint16_t len)
-{
-	// cont_rx = false;
-
-	rx_data_typedef tmp;
-	tmp.data_ptr = new uint8_t[len];
-	tmp.len = len;
-	rx.push_back(tmp);
-
-	StartReceiver();
-}
-
-/**
- * @brief IRQ handler for the interface.
- */
-void Interface_buffer_USART::IRQHandler(void)
-{
-	// Handle Transmit Complete (TC) interrupt
-#if defined(STM32F4)
-	if((usart->USARTx->SR & USART_SR_TC)
-#elif defined(STM32F7)
-	if((usart->USARTx->ISR & USART_ISR_TC)
-#endif
-	&& (usart->USARTx->CR1 & USART_CR1_TCIE))
-	{
-#if defined(STM32F4)
-		usart->ClearFlags();
-#elif defined(STM32F7)
-		usart->ClearFlags(USART::ISR_FLAGS::TC);
-#endif
-
-		if(tx.size() != 0)
-		{
-			delete tx.front().data_ptr;
-			tx.erase(tx.begin());
-		}
-
-		if(tx.empty())
-		{
-			usart->Disable_IRQ(USART::IRQ::TC);
-		}
-		else
-		{
-			StartTranssmit();
-		}
-	}
-
-	// Handle Idle Line Detected interrupt
-#if defined(STM32F4)
-	if((usart->USARTx->SR & USART_SR_IDLE)
-#elif defined(STM32F7)
-	if((usart->USARTx->ISR & USART_ISR_IDLE)
-#endif
-	&& (usart->USARTx->CR1 & USART_CR1_IDLEIE))
-	{
-		dma_rx->Disable_Stream();
-#if defined(STM32F4)
-		usart->USARTx->DR;
-#elif defined(STM32F7)
-		usart->USARTx->ICR = USART_ICR_IDLECF;
-#endif
-		uint32_t tmp = tx.back().len;
-
-		rx.back().len -= dma_rx->DMA_Stream_X->NDTR;
-
-		if(cont_rx)
-		{
-			Recieve(tmp);
+			if(buffer.rx_buffer_size_max == 0)
+			{
+				dma_rx->ClearFlags();
+				dma_rx->Enable_Stream();
+				status_rx = SYS_BUSY;
+			}
+			else
+			{
+				status_rx = Receive(buffer.rx.back().len, ContReceive);
+			}
 		}
 		else
 		{
 			usart->Disable_IRQ(USART::IRQ::IDLE);
 		}
 	}
-}
 
-/**
- * @brief Start the transmit process.
- */
-void Interface_buffer_USART::StartTranssmit()
-{
-	if(tx.size()>0)
-	{
-		Interface_USART::Send(tx.front().data_ptr, tx.front().len);
-	}
-}
+};
 
-/**
- * @brief Start the receive process.
- */
-void Interface_buffer_USART::StartReceiver()
-{
-	Interface_USART::Receive(rx.front().data_ptr, rx.front().len);
-}
+
 
 Interface_SPI::Interface_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
 	Interface_DMA(),
