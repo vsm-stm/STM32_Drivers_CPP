@@ -1,6 +1,16 @@
 #include <dma.hpp>
 
-SYS_StatusTypeDef DMA_Sx::SetUp()
+SYS_StatusTypeDef DMA_Sx::SetUp(StreamSettings settings)
+{
+	return SetUp(settings.channel, settings.peripheral_address, settings.peripheral_type, settings.direction, settings.data_size);
+};
+
+SYS_StatusTypeDef DMA_Sx::SetUp(
+		uint32_t channel,
+		uint32_t peripheral_address,
+		Per_Type peripheral_type,
+		DIR direction,
+		SIZE data_size)
 {
 	// Determine the DMA controller, IRQ vector, Configuration Register, and offset based on the DMA stream
 	if(DMA_Stream_X == DMA1_Stream0)
@@ -160,23 +170,26 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 	}
 
 	// Set peripheral address for the DMA stream
-	DMA_Stream_X->PAR = _paddr;
+	if(peripheral_address == 0)
+		return SYS_ERROR;
+	else
+		DMA_Stream_X->PAR = peripheral_address;
 	
 	// Configure DMA control register (CR) based on the channel, direction, and peripheral type
-	uint32_t sets = _channel << DMA_SxCR_CHSEL_Pos;
-	sets |= static_cast<uint32_t>(_direction) << DMA_SxCR_DIR_Pos;
+	uint32_t sets = channel << DMA_SxCR_CHSEL_Pos;
+	sets |= static_cast<uint32_t>(direction) << DMA_SxCR_DIR_Pos;
 
 	// Specific configuration for USART and SPI peripheral types
-	if(_per_type == Per_Type::usart)
+	if(peripheral_type == Per_Type::usart)
 	{
 		sets &= ~(DMA_SxCR_PSIZE_Msk |
 				  DMA_SxCR_MSIZE_Msk);
 	}else
-	if((_per_type == Per_Type::spi)
-	|| (_per_type == Per_Type::adc))
+	if((peripheral_type == Per_Type::spi)
+	|| (peripheral_type == Per_Type::adc))
 	{
-		sets |= static_cast<uint32_t>(_size) << DMA_SxCR_PSIZE_Pos |
-				static_cast<uint32_t>(_size) << DMA_SxCR_MSIZE_Pos;
+		sets |= static_cast<uint32_t>(data_size) << DMA_SxCR_PSIZE_Pos |
+				static_cast<uint32_t>(data_size) << DMA_SxCR_MSIZE_Pos;
 	}
 
 	// Apply the configuration to the DMA control register

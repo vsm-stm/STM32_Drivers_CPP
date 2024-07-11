@@ -1,56 +1,52 @@
 #include <interface.hpp>
 
-void Interface_DMA::DMA_SetUp()
+SYS_StatusTypeDef Interface_DMA::DMA_SetUp()
 {
-	dma_tx->SetUp();
-	dma_tx->MINC(ENABLE);
-	dma_rx->SetUp();
-	dma_rx->MINC(ENABLE);
+	SYS_StatusTypeDef status;
+	status = dma_tx.SetUp(tx_settings);
+	if(status == SYS_OK)
+	{
+		dma_tx.MINC(ENABLE);
+		status = dma_rx.SetUp(rx_settings);
+		dma_rx.MINC(ENABLE);
+	}
+	return status;
 };
 
-Interface_USART::Interface_USART(USART *_usart, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx, uint32_t tx_buffer_size, uint32_t rx_buffer_size) :
-	Interface_DMA(),
-	usart(_usart),
-	buffer(tx_buffer_size, rx_buffer_size)
+Interface_USART::Interface_USART(	
+	USART *_usart,
+	DMA_Stream_TypeDef *_dma_tx,
+	DMA_Stream_TypeDef *_dma_rx,
+	uint32_t tx_buffer_size,
+	uint32_t rx_buffer_size) :
+									Interface_DMA(_dma_tx, _dma_rx),
+									usart(_usart),
+									buffer(tx_buffer_size, rx_buffer_size)
 {
-	DMA_Sx::StreamSettings s_tx, s_rx;
-
-	s_tx.dma_sx = _dma_tx;
-	s_rx.dma_sx = _dma_rx;
-	s_tx.channel = 4;
-	s_rx.channel = 4;
-	s_tx.type = DMA_Sx::Per_Type::usart;
-	s_rx.type = DMA_Sx::Per_Type::usart;
-	s_tx.dir = DMA_Sx::DIR::To_Per;
-	s_rx.dir = DMA_Sx::DIR::From_Per;
+	tx_settings.channel = 4;
+	rx_settings.channel = 4;
+	tx_settings.peripheral_type = DMA_Sx::Per_Type::usart;
+	rx_settings.peripheral_type = DMA_Sx::Per_Type::usart;
+	tx_settings.direction = DMA_Sx::DIR::To_Per;
+	rx_settings.direction = DMA_Sx::DIR::From_Per;
 
 #if defined(STM32F4)
-	s_tx.per_addr = reinterpret_cast<uint32_t>(&usart->USARTx->DR);
-	s_rx.per_addr = reinterpret_cast<uint32_t>(&usart->USARTx->DR);
+	tx_settings.peripheral_address = reinterpret_cast<uint32_t>(&usart->USARTx->DR);
+	rx_settings.peripheral_address = reinterpret_cast<uint32_t>(&usart->USARTx->DR);
 #elif defined(STM32F7)
-	s_tx.per_addr = reinterpret_cast<uint32_t>(&usart->USARTx->TDR);
-	s_rx.per_addr = reinterpret_cast<uint32_t>(&usart->USARTx->RDR);
+	tx_settings.peripheral_address = reinterpret_cast<uint32_t>(&usart->USARTx->TDR);
+	rx_settings.peripheral_address = reinterpret_cast<uint32_t>(&usart->USARTx->RDR);
 #endif
 
 	if(usart->USARTx == USART6)
 	{
-		s_tx.channel = 5;
-		s_rx.channel = 5;
+		tx_settings.channel = 5;
+		rx_settings.channel = 5;
 	}
 
-	if(_dma_tx != NULL)
-	{
-		dma_tx = new DMA_Sx(s_tx);
+	status_tx = SYS_NO_Init;
+	status_rx = SYS_NO_Init;
 
-		status_tx = SYS_NO_Init;
-	}
-
-	if(_dma_rx != NULL)
-	{
-		dma_rx = new DMA_Sx(s_rx);
-
-		status_rx = SYS_NO_Init;
-	}
 };
 
 SYS_StatusTypeDef Interface_USART::Init()
@@ -58,9 +54,9 @@ SYS_StatusTypeDef Interface_USART::Init()
 	usart->SetUp();
 	usart->DMA(ENABLE);
 	DMA_SetUp();
-	if(dma_tx->DMA_Stream_X != NULL)
+	if(dma_tx.DMA_Stream_X != NULL)
 		status_tx = SYS_OK;
-	if(dma_rx->DMA_Stream_X != NULL)
+	if(dma_rx.DMA_Stream_X != NULL)
 		status_rx = SYS_OK;
 
 	return SYS_OK;
@@ -72,16 +68,15 @@ SYS_StatusTypeDef Interface_USART::TX(uint8_t* data, uint16_t data_size)
 	{
 		status_tx = SYS_BUSY;
 
-		dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
-		dma_tx->DMA_Stream_X->NDTR = data_size;
+		dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(data), data_size);
 #if defined(STM32F4)
 		usart->ClearFlags();
 #elif defined(STM32F7)
 		usart->ClearFlags(USART::ISR_FLAGS::TC);
 #endif
 		usart->Enable_IRQ(USART::IRQ::TC);
-		dma_tx->ClearFlags();
-		dma_tx->Enable_Stream();
+		dma_tx.ClearFlags();
+		dma_tx.Stream(ENABLE);
 	}
 
 	return status_tx;
@@ -89,7 +84,8 @@ SYS_StatusTypeDef Interface_USART::TX(uint8_t* data, uint16_t data_size)
 
 SYS_StatusTypeDef Interface_USART::Send(uint8_t* data, uint16_t data_size)
 {
-	if(data == NULL)
+	if((data == NULL)
+	|| (data_size == 0))
 		return SYS_ERROR;
 	if(buffer.tx_buffer_size_max == 0)
 	{
@@ -97,22 +93,22 @@ SYS_StatusTypeDef Interface_USART::Send(uint8_t* data, uint16_t data_size)
 	}
 	else
 	{
-		if(buffer.tx_buffer_size_max == buffer.tx.size())
+		if(buffer.tx.size() >= buffer.tx_buffer_size_max)
 			return SYS_ERROR;
 
 		buffer.tx.emplace_back();
-		buffer.tx.back().len = data_size;
-		buffer.tx.back().data_ptr = new uint8_t[data_size];
-		uint8_t* t = buffer.tx.back().data_ptr;
-		if(t == 0)
+		_data_typedef *tmp = &buffer.tx.back();
+		tmp->size = data_size;
+		tmp->data_ptr = new uint8_t[data_size];
+		if(tmp->data_ptr == 0)
 			return SYS_ERROR;
 
-		memcpy(buffer.tx.back().data_ptr, data, data_size);
+		memcpy(tmp->data_ptr, data, data_size);
 		
 		if((buffer.tx.size() == 1)
 		&& (status_tx == SYS_OK))
 		{
-			return TX(buffer.tx.front().data_ptr, buffer.tx.front().len);
+			return TX(buffer.tx.front().data_ptr, buffer.tx.front().size);
 		}
 	}
 
@@ -125,11 +121,10 @@ SYS_StatusTypeDef Interface_USART::RX(uint8_t* data, uint16_t data_size)
 	{
 		status_rx = SYS_BUSY;
 
-		dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(&data);
-		dma_rx->DMA_Stream_X->NDTR = data_size;
+		dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(&data), data_size);
 		usart->Enable_IRQ(USART::IRQ::IDLE);
-		dma_rx->ClearFlags();
-		dma_rx->Enable_Stream();
+		dma_rx.ClearFlags();
+		dma_rx.Stream(ENABLE);
 	}
 	return status_rx;
 };
@@ -150,7 +145,7 @@ SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size, bo
 			return SYS_ERROR;
 
 		buffer.rx.emplace_back();
-		buffer.rx.back().len = data_size;
+		buffer.rx.back().size = data_size;
 		buffer.rx.back().data_ptr = new uint8_t[data_size];
 		uint8_t* t = buffer.rx.back().data_ptr;
 		if(t == 0)
@@ -158,7 +153,7 @@ SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size, bo
 
 		if(status_rx == SYS_OK)
 		{
-			return RX(buffer.rx.front().data_ptr, buffer.rx.front().len);
+			return RX(buffer.rx.front().data_ptr, buffer.rx.front().size);
 		}
 	}
 	return SYS_OK;
@@ -205,15 +200,19 @@ void Interface_USART::IRQHandler()
 
 		if(buffer.tx_buffer_size_max != 0)
 		{
+			
+			_data_typedef *tmp = &buffer.tx.front();
 			if(buffer.tx.size() != 0)
 			{
-				delete [] buffer.tx.front().data_ptr;
-				buffer.tx.erase(buffer.tx.begin());
+				
+				delete [] tmp->data_ptr;
+				buffer.tx.pop_front();
 			}
 
 			if(!buffer.tx.empty())
 			{
-				status_tx = TX(buffer.tx.front().data_ptr, buffer.tx.front().len);
+				tmp = &buffer.tx.front();
+				status_tx = TX(tmp->data_ptr, tmp->size);
 			}
 		}
 	}
@@ -227,7 +226,7 @@ void Interface_USART::IRQHandler()
 #endif
 	{
 		IsDataReceived = true;
-		dma_rx->Disable_Stream();
+		dma_rx.Stream(DISABLE);
 
 #if defined(STM32F4)
 		usart->USARTx->DR;
@@ -239,20 +238,20 @@ void Interface_USART::IRQHandler()
 
 		if(buffer.rx_buffer_size_max != 0)
 		{
-			buffer.rx.back().len -= dma_rx->DMA_Stream_X->NDTR;
+			buffer.rx.back().size -= dma_rx.DMA_Stream_X->NDTR;
 		}
 
 		if(ContReceive)
 		{
 			if(buffer.rx_buffer_size_max == 0)
 			{
-				dma_rx->ClearFlags();
-				dma_rx->Enable_Stream();
+				dma_rx.ClearFlags();
+				dma_rx.Stream(ENABLE);
 				status_rx = SYS_BUSY;
 			}
 			else
 			{
-				status_rx = Receive(buffer.rx.back().len, ContReceive);
+				status_rx = Receive(buffer.rx.back().size, ContReceive);
 			}
 		}
 		else
@@ -265,136 +264,167 @@ void Interface_USART::IRQHandler()
 
 
 
-Interface_SPI::Interface_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
-	Interface_DMA(),
-	spi(_spi),
-	spi_init_data(_init_data)
+Interface_SPI::Interface_SPI(
+	SPI *_spi, 
+	SPI::Init_struct_Typedef _init_data,
+	DMA_Stream_TypeDef *_dma_tx,
+	DMA_Stream_TypeDef *_dma_rx,
+	uint32_t buffer_size) :
+								Interface_DMA(_dma_tx, _dma_rx),
+								spi(_spi),
+								spi_init_data(_init_data),
+								buffer(buffer_size, buffer_size)
 {
-	uint32_t ch_tx = 0, ch_rx = 0;
+	tx_settings.peripheral_type = DMA_Sx::Per_Type::spi;
+	rx_settings.peripheral_type = DMA_Sx::Per_Type::spi;
+	tx_settings.direction = DMA_Sx::DIR::To_Per;
+	rx_settings.direction = DMA_Sx::DIR::From_Per;
+	tx_settings.peripheral_address = reinterpret_cast<uint32_t>(&spi->SPIx->DR);
+	rx_settings.peripheral_address = reinterpret_cast<uint32_t>(&spi->SPIx->DR);
+
 
 	if(spi->SPIx == SPI1)
 	{
-		ch_tx = 3;
-		ch_rx = 3;
+		tx_settings.channel = 3;
+		rx_settings.channel = 3;
 	}
 	else if(spi->SPIx == SPI4)
 	{
 		if(_dma_tx == DMA2_Stream1)
-			ch_tx = 4;
+			tx_settings.channel = 4;
 		else
-			ch_tx = 5;
+			tx_settings.channel = 5;
 		if(_dma_rx == DMA2_Stream0)
-			ch_rx = 4;
+			rx_settings.channel = 4;
 		else
-			ch_rx = 5;
+			rx_settings.channel = 5;
 	}
-
-	dma_tx = new DMA_Sx(_dma_tx, 
-				ch_tx,
-				reinterpret_cast<uint32_t>(&spi->SPIx->DR),
-				DMA_Sx::Per_Type::spi,
-				DMA_Sx::DIR::To_Per);
-	dma_rx = new DMA_Sx(_dma_rx, 
-				ch_rx,
-				reinterpret_cast<uint32_t>(&spi->SPIx->DR),
-				DMA_Sx::Per_Type::spi,
-				DMA_Sx::DIR::From_Per);
 };
 
-void Interface_SPI::Init()
+SYS_StatusTypeDef Interface_SPI::Init()
 {
-	spi->SetUp(spi_init_data);
+	status = spi->SetUp(spi_init_data);
 #if defined(STM32F7)
 	spi->SPIx->CR2 |= SPI_CR2_LDMARX | SPI_CR2_LDMATX;
 #endif
+	if(status == SYS_OK)
+	{
+		status = DMA_SetUp();
+	}
 
-	DMA_SetUp();
-
-	status = SYS_OK;
+	return status;
 };
 
-void Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len)
+SYS_StatusTypeDef Interface_SPI::TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16_t size, TXRX_Type type)
 {
-	status = SYS_BUSY;
+	if(status == SYS_OK)
+	{
+		status = SYS_BUSY;
 
-	dma_tx->ClearFlags();
-	dma_rx->ClearFlags();
+		dma_tx.ClearFlags();
+		dma_rx.ClearFlags();
 
-	dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx_data);
-	dma_tx->DMA_Stream_X->NDTR = data_len;
-	dma_tx->MINC(ENABLE);
+		if(type == TXRX_Type::RX)
+		{
+			dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(&tmp_data),size);
+			dma_tx.MINC(DISABLE);
+		}
+		else
+		{
+			dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(tx_data),size);
+			dma_tx.MINC(ENABLE);
+		}
 
-	dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(rx_data);
-	dma_rx->DMA_Stream_X->NDTR = data_len;
-	dma_rx->MINC(ENABLE);
+		if(type == TXRX_Type::TX)
+		{
+			tmp_data[0] = 0;
+			dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(&tmp_data),size);
+			dma_rx.MINC(DISABLE);
+		}
+		else
+		{
+			dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(rx_data),size);
+			dma_rx.MINC(ENABLE);
+		}
 
-	dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
+		dma_rx.Enable_IRQ(DMA_Sx::IRQ::TC);
 
-	spi->SlaveSelect(ENABLE);
+		spi->SlaveSelect(ENABLE);
 
-	spi->DMA_TX(ENABLE);
-	spi->DMA_RX(ENABLE);
+		spi->DMA_TX(ENABLE);
+		spi->DMA_RX(ENABLE);
 
-	dma_tx->Enable_Stream();
-	dma_rx->Enable_Stream();
+		dma_tx.Stream(ENABLE);
+		dma_rx.Stream(ENABLE);
 
-	spi->Enable();
+		spi->Enable();
+	}
+	return status;
+}
+
+SYS_StatusTypeDef Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_size)
+{
+	if(((tx_data == NULL)
+	 && (rx_data == NULL))
+	|| (data_size == 0))
+		return SYS_ERROR;
+
+	TXRX_Type txrx_type = TXRX_Type::TXRX;
+
+	if((tx_data != NULL)
+	&& (rx_data == NULL))
+		txrx_type = TXRX_Type::TX;
+	else
+	if((tx_data == NULL)
+	&& (rx_data != NULL))
+		txrx_type = TXRX_Type::RX;
+
+	if(buffer.tx_buffer_size_max == 0)
+	{
+		return TXRX(tx_data, rx_data, data_size, txrx_type);
+	}
+	else
+	{
+		if(buffer.tx_buffer_size_max == buffer.tx.size())
+			return SYS_ERROR;
+
+		buffer.tx.emplace_back();
+		rxtx_data_typedef *tmp = &buffer.tx.back();
+		tmp->size = data_size;
+		tmp->type = txrx_type;
+		if(txrx_type != TXRX_Type::RX)
+		{
+			tmp->tx_data_ptr = new uint8_t[data_size];
+			if(tmp->tx_data_ptr == 0)
+				return SYS_ERROR;
+
+			memcpy(tmp->tx_data_ptr, tx_data, data_size);
+		}
+		if(txrx_type != TXRX_Type::TX)
+		{
+			tmp->data_ptr = new uint8_t[data_size];
+			if(tmp->data_ptr == 0)
+				return SYS_ERROR;
+		}
+
+		if((buffer.tx.size() == 1)
+		&& (status == SYS_OK))
+		{
+			tmp = &buffer.tx.front();
+			return TXRX(tmp->tx_data_ptr, tmp->data_ptr, tmp->size, tmp->type);
+		}
+	}
+	return SYS_OK;
 };
 
-void Interface_SPI::Send(uint8_t* tx_data,uint16_t data_len)
+SYS_StatusTypeDef Interface_SPI::Send(uint8_t* tx_data,uint16_t data_size)
 {
-	status = SYS_BUSY;
-
-	dma_tx->ClearFlags();
-	dma_rx->ClearFlags();
-
-	dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tx_data);
-	dma_tx->DMA_Stream_X->NDTR = data_len;
-	dma_tx->MINC(ENABLE);
-
-	dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tmp_data);
-	dma_rx->DMA_Stream_X->NDTR = data_len;
-	dma_rx->MINC(DISABLE);
-
-	dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
-
-	spi->SlaveSelect(ENABLE);
-
-	spi->DMA_TX(ENABLE);
-	spi->DMA_RX(ENABLE);
-
-	dma_tx->Enable_Stream();
-	dma_rx->Enable_Stream();
-
-	spi->Enable();
+	return Send_Receive(tx_data, NULL, data_size);
 };
 
-void Interface_SPI::Receive(uint8_t* rx_data, uint16_t data_len)
+SYS_StatusTypeDef Interface_SPI::Receive(uint8_t* rx_data, uint16_t data_size)
 {
-	status = SYS_BUSY;
-
-	dma_tx->ClearFlags();
-	dma_rx->ClearFlags();
-
-	dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(tmp_data);
-	dma_tx->DMA_Stream_X->NDTR = data_len;
-	dma_tx->MINC(DISABLE);
-
-	dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(rx_data);
-	dma_rx->DMA_Stream_X->NDTR = data_len;
-	dma_rx->MINC(ENABLE);
-
-	dma_rx->Enable_IRQ(DMA_Sx::IRQ::TC);
-
-	spi->SlaveSelect(ENABLE);
-
-	spi->DMA_TX(ENABLE);
-	spi->DMA_RX(ENABLE);
-
-	dma_tx->Enable_Stream();
-	dma_rx->Enable_Stream();
-
-	spi->Enable();
+	return Send_Receive(NULL, rx_data, data_size);
 };
 
 void Interface_SPI::IRQHandler()
@@ -404,110 +434,33 @@ void Interface_SPI::IRQHandler()
 	spi->DMA_RX(DISABLE);
 
 	spi->SlaveSelect(DISABLE);
-	// spi->SPIx->CR1 &= ~SPI_CR1_SSI;
 
-	dma_rx->Disable_IRQ(DMA_Sx::IRQ::TC);
+	dma_rx.Disable_IRQ(DMA_Sx::IRQ::TC);
 
 	IsDataReceived = true;
 
 	status = SYS_OK;
-};
 
-Interface_buffer_SPI::Interface_buffer_SPI(SPI *_spi, SPI::Init_struct_Typedef _init_data, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
-	Interface_buffer(),
-	Interface_SPI(_spi, _init_data, _dma_tx, _dma_rx)
-{
-
-};
-
-void Interface_buffer_SPI::Send_Receive(uint8_t *tx_data, uint16_t len)
-{
-	rxtx_data_typedef tmp_data;
-	tmp_data.len = len;
-	tmp_data.type = TXRX_Type::TXRX;
-	
-	tx.push_back(tmp_data);
-
-	tx.back().tx_data_ptr = new uint8_t[len];
-	tx.back().rx_data_ptr = new uint8_t[len];
-	memcpy(tx.back().tx_data_ptr, tx_data, len);
-
-	if(tx.size() == 1)
+	if(buffer.tx_buffer_size_max != 0)
 	{
-		StartTranssmit();
-	}
-}
+		if(buffer.tx.front().type != TXRX_Type::TX)
+		{
+			buffer.rx.push_back(buffer.tx.front());
+			delete [] buffer.tx.front().data_ptr;
+		}
 
-void Interface_buffer_SPI::Send(uint8_t *tx_data, uint16_t len)
-{
-	rxtx_data_typedef tmp_data;
-	tmp_data.len = len;
-	tmp_data.type = TXRX_Type::TX;
+		if(buffer.tx.front().type != TXRX_Type::RX)
+		{
+			delete [] buffer.tx.front().tx_data_ptr;
+		}
 
-	tx.push_back(tmp_data);
+		buffer.tx.pop_front();
 
-	tx.back().tx_data_ptr = new uint8_t[len];
-	tx.back().rx_data_ptr = new uint8_t[1];
-
-	memcpy(tx.back().tx_data_ptr, tx_data, len);
-
-	if(tx.size() == 1)
-	{
-		StartTranssmit();
-	}
-}
-
-void Interface_buffer_SPI::Receive(uint16_t len)
-{
-	rxtx_data_typedef tmp_data;
-	tmp_data.len = len;
-	tmp_data.type = TXRX_Type::RX;
-
-	tx.push_back(tmp_data);
-
-	tx.back().tx_data_ptr = new uint8_t[1];
-	tx.back().rx_data_ptr = new uint8_t[len];
-	tx.back().tx_data_ptr[0] = 0;
-
-	if(tx.size() == 1)
-	{
-		StartTranssmit();
-	}
-}
-
-void Interface_buffer_SPI::StartTranssmit()
-{
-	if(tx.size() == 0)
-		return;
-
-	if(tx.front().type == TXRX_Type::TX)
-	{
-		Interface_SPI::Send(tx.front().tx_data_ptr, tx.front().len);
-	} else 
-	if(tx.front().type == TXRX_Type::RX)
-	{
-		Interface_SPI::Receive(tx.front().rx_data_ptr, tx.front().len);
-	} else
-	if(tx.front().type == TXRX_Type::TXRX)
-	{
-		Interface_SPI::Send_Receive(tx.front().tx_data_ptr, tx.front().rx_data_ptr, tx.front().len);
-	} 
-}
-
-void Interface_buffer_SPI::IRQHandler(void)
-{
-	Interface_SPI::IRQHandler();
-
-	if(tx.front().type != TXRX_Type::TX)
-		rx.push_back(tx.front());
-
-	delete [] tx.front().tx_data_ptr;
-	delete [] tx.front().rx_data_ptr;
-	tx.erase(tx.begin());
-
-	if(tx.size() != 0)
-	{
-		StartTranssmit();
+		if(!buffer.tx.empty())
+		{
+			std::list<rxtx_data_typedef>::iterator iter = buffer.tx.begin();
+			status = TXRX(iter->tx_data_ptr, iter->data_ptr, iter->size, iter->type);
+		}
 	}
 };
 
@@ -529,7 +482,7 @@ Interface_I2C::Interface_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_
 	else if(i2c->I2Cx == I2C3)
 	{
 		ch = 3;
-		if(dma_rx->DMA_Stream_X == DMA1_Stream1)
+		if(dma_rx.DMA_Stream_X == DMA1_Stream1)
 			ch = 1;
 	}
 
@@ -554,8 +507,8 @@ SYS_StatusTypeDef Interface_I2C::Init()
 	i2c->Enable_IRQ(I2C::IRQ::TC);
 
 	DMA_SetUp();
-	dma_tx->MINC(ENABLE);
-	dma_rx->MINC(ENABLE);
+	dma_tx.MINC(ENABLE);
+	dma_rx.MINC(ENABLE);
 
 	return status;
 };
@@ -587,17 +540,17 @@ void Interface_I2C::IRQHandler()
 
 			if(txrx == TXRX_Type::TX)
 			{
-				dma_tx->ClearFlags();
-				dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data_addr);
-				dma_tx->DMA_Stream_X->NDTR = transfer_count;
-				dma_tx->Enable_Stream();
+				dma_tx.ClearFlags();
+				dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data_addr);
+				dma_tx.DMA_Stream_X->NDTR = transfer_count;
+				dma_tx.Stream(ENABLE);
 			}
 			else
 			{
-				dma_rx->ClearFlags();
-				dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data_addr);
-				dma_rx->DMA_Stream_X->NDTR = transfer_count;
-				dma_rx->Enable_Stream();
+				dma_rx.ClearFlags();
+				dma_rx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data_addr);
+				dma_rx.DMA_Stream_X->NDTR = transfer_count;
+				dma_rx.Stream(ENABLE);
 
 				mode |= I2C_CR2_START |
 						I2C_CR2_RD_WRN;
@@ -646,10 +599,10 @@ void Interface_I2C::Send(uint8_t slave_addr, uint8_t* data, uint16_t data_len)
 			 	transfer_count << I2C_CR2_NBYTES_Pos;
 	}
 
-	dma_tx->ClearFlags();
-	dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
-	dma_tx->DMA_Stream_X->NDTR = data_len;
-	dma_tx->Enable_Stream();
+	dma_tx.ClearFlags();
+	dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
+	dma_tx.DMA_Stream_X->NDTR = data_len;
+	dma_tx.Stream(ENABLE);
 
 	i2c->I2Cx->CR2 = mode;
 }
@@ -672,10 +625,10 @@ void Interface_I2C::SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_s
 	mode |= I2C_CR2_RELOAD |
 			addr_size << I2C_CR2_NBYTES_Pos;
 
-	dma_tx->ClearFlags();
-	dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(addr);
-	dma_tx->DMA_Stream_X->NDTR = addr_size;
-	dma_tx->Enable_Stream();
+	dma_tx.ClearFlags();
+	dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(addr);
+	dma_tx.DMA_Stream_X->NDTR = addr_size;
+	dma_tx.Stream(ENABLE);
 
 	i2c->I2Cx->CR2 = mode;
 }
@@ -703,10 +656,10 @@ void Interface_I2C::Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_len
 			 	transfer_count << I2C_CR2_NBYTES_Pos;
 	}
 
-	dma_rx->ClearFlags();
-	dma_rx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
-	dma_rx->DMA_Stream_X->NDTR = data_len;
-	dma_rx->Enable_Stream();
+	dma_rx.ClearFlags();
+	dma_rx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
+	dma_rx.DMA_Stream_X->NDTR = data_len;
+	dma_rx.Stream(ENABLE);
 
 	i2c->I2Cx->CR2 = mode;
 }
@@ -728,10 +681,10 @@ void Interface_I2C::ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t a
 
 	mode |= addr_size << I2C_CR2_NBYTES_Pos;
 
-	dma_tx->ClearFlags();
-	dma_tx->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(addr);
-	dma_tx->DMA_Stream_X->NDTR = addr_size;
-	dma_tx->Enable_Stream();
+	dma_tx.ClearFlags();
+	dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(addr);
+	dma_tx.DMA_Stream_X->NDTR = addr_size;
+	dma_tx.Stream(ENABLE);
 
 	i2c->I2Cx->CR2 = mode;
 }
