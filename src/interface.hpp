@@ -102,9 +102,9 @@ protected:
 	{
 		uint8_t *data_ptr;
 		uint16_t size;
-	}_data_typedef;
+	}data_typedef;
 
-	Buffer<_data_typedef> buffer;
+	Buffer<data_typedef> buffer;
 
 	inline SYS_StatusTypeDef TX(uint8_t* data, uint16_t data_size);
 	inline SYS_StatusTypeDef RX(uint8_t* data, uint16_t data_size);
@@ -211,15 +211,15 @@ protected:
 class Interface_I2C : public Interface_DMA
 {
 public:
-	Interface_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
+	Interface_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx, uint32_t buffer_size);
 	~Interface_I2C(){};
 
 	SYS_StatusTypeDef Init();
 
-	void Send(uint8_t slave_addr, uint8_t* data, uint16_t data_len);
-	void SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len);
-	void Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_len);
-	void ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len);
+	SYS_StatusTypeDef Send(uint8_t slave_addr, uint8_t* data, uint16_t data_size);
+	SYS_StatusTypeDef SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size);
+	SYS_StatusTypeDef Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_size);
+	SYS_StatusTypeDef ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size);
 	void IRQHandler();
 	bool IsDataReceived;
 protected:
@@ -232,6 +232,24 @@ protected:
 	uint8_t _slave_addr;
 	uint8_t* data_addr;
 	bool need_reload_dma;
+
+	typedef struct _data
+	{
+		uint8_t slave_addr;
+		bool use_reg_addr;
+		uint8_t *reg_addr_ptr;
+		uint16_t reg_addr_size;
+		uint8_t *data_ptr;
+		uint16_t size;
+		TXRX_Type type;
+	}data_typedef;
+
+	Buffer<data_typedef> buffer;
+
+	inline SYS_StatusTypeDef TX(uint8_t slave_addr, uint8_t* data, uint16_t data_size);
+	inline SYS_StatusTypeDef TXToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size);
+	inline SYS_StatusTypeDef RX(uint8_t slave_addr, uint8_t* data, uint16_t data_size);
+	inline SYS_StatusTypeDef RXFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size);
 };
 
 class Interface_buffer_I2C : public Interface_buffer, public Interface_I2C

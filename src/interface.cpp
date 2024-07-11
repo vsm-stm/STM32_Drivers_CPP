@@ -97,7 +97,7 @@ SYS_StatusTypeDef Interface_USART::Send(uint8_t* data, uint16_t data_size)
 			return SYS_ERROR;
 
 		buffer.tx.emplace_back();
-		_data_typedef *tmp = &buffer.tx.back();
+		data_typedef *tmp = &buffer.tx.back();
 		tmp->size = data_size;
 		tmp->data_ptr = new uint8_t[data_size];
 		if(tmp->data_ptr == 0)
@@ -201,7 +201,7 @@ void Interface_USART::IRQHandler()
 		if(buffer.tx_buffer_size_max != 0)
 		{
 			
-			_data_typedef *tmp = &buffer.tx.front();
+			data_typedef *tmp = &buffer.tx.front();
 			if(buffer.tx.size() != 0)
 			{
 				
@@ -465,48 +465,61 @@ void Interface_SPI::IRQHandler()
 };
 
 #if defined(STM32F7)
-Interface_I2C::Interface_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
-	Interface_DMA(),
-	i2c(_i2c)	
+Interface_I2C::Interface_I2C(
+		I2C *_i2c,
+		DMA_Stream_TypeDef *_dma_tx,
+		DMA_Stream_TypeDef *_dma_rx,
+		uint32_t buffer_size) :
+									Interface_DMA(_dma_tx, _dma_rx),
+									i2c(_i2c),
+									buffer(buffer_size, buffer_size)
 {
-	uint32_t ch;
+	tx_settings.peripheral_type = DMA_Sx::Per_Type::i2c;
+	rx_settings.peripheral_type = DMA_Sx::Per_Type::i2c;
+	tx_settings.direction = DMA_Sx::DIR::To_Per;
+	rx_settings.direction = DMA_Sx::DIR::From_Per;
+
+#if defined(STM32F4)
+	tx_settings.peripheral_address = reinterpret_cast<uint32_t>(&i2c->I2Cx->DR);
+	rx_settings.peripheral_address = reinterpret_cast<uint32_t>(&i2c->I2Cx->DR);
+#elif defined(STM32F7)
+	tx_settings.peripheral_address = reinterpret_cast<uint32_t>(&i2c->I2Cx->TXDR);
+	rx_settings.peripheral_address = reinterpret_cast<uint32_t>(&i2c->I2Cx->RXDR);
+#endif
 
 	if(i2c->I2Cx == I2C1)
 	{
-		ch = 1;
+		tx_settings.channel = 1;
+		rx_settings.channel = 1;
 	}
 	else if(i2c->I2Cx == I2C2)
 	{
-		ch = 7;
+		tx_settings.channel = 7;
+		rx_settings.channel = 7;
 	}
 	else if(i2c->I2Cx == I2C3)
 	{
-		ch = 3;
+		tx_settings.channel = 3;
+		rx_settings.channel = 3;
 		if(dma_rx.DMA_Stream_X == DMA1_Stream1)
-			ch = 1;
+		{
+			tx_settings.channel = 1;
+			rx_settings.channel = 1;
+		}
 	}
-
-	dma_tx = new DMA_Sx(_dma_tx, 
-				ch,
-				reinterpret_cast<uint32_t>(&i2c->I2Cx->TXDR),
-				DMA_Sx::Per_Type::i2c,
-				DMA_Sx::DIR::To_Per);
-	dma_rx = new DMA_Sx(_dma_rx, 
-				ch,
-				reinterpret_cast<uint32_t>(&i2c->I2Cx->RXDR),
-				DMA_Sx::Per_Type::i2c,
-				DMA_Sx::DIR::From_Per);
 };
 
 SYS_StatusTypeDef Interface_I2C::Init()
 {
 	status = i2c->SetUp();
+	if(status != SYS_OK)
+		return status;
 	
 	i2c->I2Cx->CR1 |= I2C_CR1_TXDMAEN | I2C_CR1_RXDMAEN;
 	i2c->Enable_IRQ(I2C::IRQ::STOP);
 	i2c->Enable_IRQ(I2C::IRQ::TC);
 
-	DMA_SetUp();
+	status = DMA_SetUp();
 	dma_tx.MINC(ENABLE);
 	dma_rx.MINC(ENABLE);
 
@@ -576,122 +589,166 @@ void Interface_I2C::IRQHandler()
 	}
 };
 
-void Interface_I2C::Send(uint8_t slave_addr, uint8_t* data, uint16_t data_len)
+SYS_StatusTypeDef Interface_I2C::TX(uint8_t slave_addr, uint8_t* data, uint16_t data_size)
 {
-	if(status != SYS_OK)
-		return;
-	status = SYS_BUSY;
-	transfer_count = data_len;
-	_slave_addr = slave_addr;
-	need_reload_dma = false;
-
-	uint32_t mode = _slave_addr | I2C_CR2_START;
-	txrx = TXRX_Type::TX;
-
-	if(transfer_count > I2C::MAX_NBYTE_SIZE)
+	if(status == SYS_OK)
 	{
+		status = SYS_BUSY;
+
+		transfer_count = data_size;
+		_slave_addr = slave_addr;
+		need_reload_dma = false;
+
+		uint32_t mode = _slave_addr | I2C_CR2_START;
+		txrx = TXRX_Type::TX;
+
+		if(transfer_count > I2C::MAX_NBYTE_SIZE)
+		{
+			mode |= I2C_CR2_RELOAD |
+					I2C::MAX_NBYTE_SIZE << I2C_CR2_NBYTES_Pos;
+		}
+		else
+		{
+			mode |= I2C_CR2_AUTOEND |
+					transfer_count << I2C_CR2_NBYTES_Pos;
+		}
+
+		dma_tx.ClearFlags();
+		dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
+		dma_tx.DMA_Stream_X->NDTR = data_size;
+		dma_tx.Stream(ENABLE);
+
+		i2c->I2Cx->CR2 = mode;
+	}
+
+	return status;
+}
+
+SYS_StatusTypeDef Interface_I2C::TXToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size)
+{
+	if(status == SYS_OK)
+	{
+		if((addr_size > 4)
+		|| (addr_size < 0))
+			return SYS_ERROR;
+
+		status = SYS_BUSY;
+
+		transfer_count = data_size;
+		_slave_addr = slave_addr;
+		data_addr = data;
+		need_reload_dma = true;
+
+		uint32_t mode = _slave_addr | I2C_CR2_START;
+		txrx = TXRX_Type::TX_reg;
+
 		mode |= I2C_CR2_RELOAD |
-			 	I2C::MAX_NBYTE_SIZE << I2C_CR2_NBYTES_Pos;
-	}
-	else
-	{
-		mode |= I2C_CR2_AUTOEND |
-			 	transfer_count << I2C_CR2_NBYTES_Pos;
+				addr_size << I2C_CR2_NBYTES_Pos;
+
+		dma_tx.ClearFlags();
+		dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(addr);
+		dma_tx.DMA_Stream_X->NDTR = addr_size;
+		dma_tx.Stream(ENABLE);
+
+		i2c->I2Cx->CR2 = mode;
 	}
 
-	dma_tx.ClearFlags();
-	dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
-	dma_tx.DMA_Stream_X->NDTR = data_len;
-	dma_tx.Stream(ENABLE);
-
-	i2c->I2Cx->CR2 = mode;
+	return status;
 }
 
-void Interface_I2C::SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len)
+SYS_StatusTypeDef Interface_I2C::RX(uint8_t slave_addr, uint8_t* data, uint16_t data_size)
 {
-	if((status != SYS_OK)
-	|| (addr_size > 4)
-	|| (addr_size < 0))
-		return;
-	status = SYS_BUSY;
-	transfer_count = data_len;
-	_slave_addr = slave_addr;
-	data_addr = data;
-	need_reload_dma = true;
-
-	uint32_t mode = _slave_addr | I2C_CR2_START;
-	txrx = TXRX_Type::TX;
-
-	mode |= I2C_CR2_RELOAD |
-			addr_size << I2C_CR2_NBYTES_Pos;
-
-	dma_tx.ClearFlags();
-	dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(addr);
-	dma_tx.DMA_Stream_X->NDTR = addr_size;
-	dma_tx.Stream(ENABLE);
-
-	i2c->I2Cx->CR2 = mode;
-}
-
-void Interface_I2C::Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_len)
-{
-	if(status != SYS_OK)
-		return;
-	status = SYS_BUSY;
-	transfer_count = data_len;
-	_slave_addr = slave_addr;
-	need_reload_dma = false;
-
-	uint32_t mode = _slave_addr | I2C_CR2_START | I2C_CR2_RD_WRN;
-	txrx = TXRX_Type::RX;
-
-	if(transfer_count > I2C::MAX_NBYTE_SIZE)
+	if(status == SYS_OK)
 	{
-		mode |= I2C_CR2_RELOAD |
-			 	I2C::MAX_NBYTE_SIZE << I2C_CR2_NBYTES_Pos;
-	}
-	else
-	{
-		mode |= I2C_CR2_AUTOEND |
-			 	transfer_count << I2C_CR2_NBYTES_Pos;
+		status = SYS_BUSY;
+		transfer_count = data_size;
+		_slave_addr = slave_addr;
+		need_reload_dma = false;
+
+		uint32_t mode = _slave_addr | I2C_CR2_START | I2C_CR2_RD_WRN;
+		txrx = TXRX_Type::RX;
+
+		if(transfer_count > I2C::MAX_NBYTE_SIZE)
+		{
+			mode |= I2C_CR2_RELOAD |
+					I2C::MAX_NBYTE_SIZE << I2C_CR2_NBYTES_Pos;
+		}
+		else
+		{
+			mode |= I2C_CR2_AUTOEND |
+					transfer_count << I2C_CR2_NBYTES_Pos;
+		}
+
+		dma_rx.ClearFlags();
+		dma_rx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
+		dma_rx.DMA_Stream_X->NDTR = data_size;
+		dma_rx.Stream(ENABLE);
+
+		i2c->I2Cx->CR2 = mode;
 	}
 
-	dma_rx.ClearFlags();
-	dma_rx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
-	dma_rx.DMA_Stream_X->NDTR = data_len;
-	dma_rx.Stream(ENABLE);
-
-	i2c->I2Cx->CR2 = mode;
+	return status;
 }
 
-void Interface_I2C::ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len)
+SYS_StatusTypeDef Interface_I2C::RXFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size)
 {
-	if((status != SYS_OK)
-	|| (addr_size > 4)
-	|| (addr_size < 0))
-		return;
-	status = SYS_BUSY;
-	transfer_count = data_len;
-	_slave_addr = slave_addr;
-	data_addr = data;
-	need_reload_dma = true;
+	if(status == SYS_OK)
+	{
+		if((addr_size > 4)
+		|| (addr_size < 0))
+			return SYS_ERROR;
+		status = SYS_BUSY;
+		transfer_count = data_size;
+		_slave_addr = slave_addr;
+		data_addr = data;
+		need_reload_dma = true;
 
-	uint32_t mode = _slave_addr | I2C_CR2_START;
-	txrx = TXRX_Type::RX;
+		uint32_t mode = _slave_addr | I2C_CR2_START;
+		txrx = TXRX_Type::RX;
 
-	mode |= addr_size << I2C_CR2_NBYTES_Pos;
+		mode |= addr_size << I2C_CR2_NBYTES_Pos;
 
-	dma_tx.ClearFlags();
-	dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(addr);
-	dma_tx.DMA_Stream_X->NDTR = addr_size;
-	dma_tx.Stream(ENABLE);
+		dma_tx.ClearFlags();
+		dma_tx.DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(addr);
+		dma_tx.DMA_Stream_X->NDTR = addr_size;
+		dma_tx.Stream(ENABLE);
 
-	i2c->I2Cx->CR2 = mode;
+		i2c->I2Cx->CR2 = mode;
+	}
+
+	return status;
 }
+
+
+SYS_StatusTypeDef Interface_I2C::Send(uint8_t slave_addr, uint8_t* data, uint16_t data_size)
+{
+
+	return status;
+};
+
+SYS_StatusTypeDef Interface_I2C::SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size)
+{
+
+	return status;
+};
+
+SYS_StatusTypeDef Interface_I2C::Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_size)
+{
+
+	return status;
+};
+
+SYS_StatusTypeDef Interface_I2C::ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size)
+{
+
+	return status;
+};
+
+
 
 Interface_buffer_I2C::Interface_buffer_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx) :
 	Interface_buffer(),
-	Interface_I2C(_i2c, _dma_tx, _dma_rx)
+	Interface_I2C(_i2c, _dma_tx, _dma_rx, 0)
 {
 
 };
