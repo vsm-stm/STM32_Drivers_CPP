@@ -1,4 +1,7 @@
 #include <dma.hpp>
+#include <map>
+
+std::map<DMA_Stream_TypeDef*, bool> used_dma {{DMA1_Stream0, false}};
 
 SYS_StatusTypeDef DMA_Sx::SetUp(StreamSettings settings)
 {

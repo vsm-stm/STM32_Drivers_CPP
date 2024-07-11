@@ -4,7 +4,6 @@
 #include <system.hpp>
 #include <rcc.hpp>
 
-
 class DMA_Sx
 {
 public:
