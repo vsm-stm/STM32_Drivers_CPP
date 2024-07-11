@@ -105,6 +105,12 @@ public:
 	PIN(PIN &&) = default;
 	PIN &operator=(PIN const &) = default;
 	PIN &operator=(PIN &&) = default;
+	void operator=(int i) {
+		SetLevel(i);
+	};
+	void operator=(bool b) {
+		SetLevel(b);
+	};
 
 	/**
 	 * @brief Constructor for the PIN class.
