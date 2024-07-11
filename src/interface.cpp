@@ -640,7 +640,7 @@ SYS_StatusTypeDef Interface_I2C::TXToAddr(uint8_t slave_addr, uint8_t* addr, uin
 		need_reload_dma = true;
 
 		uint32_t mode = _slave_addr | I2C_CR2_START;
-		txrx = TXRX_Type::TX_reg;
+		txrx = TXRX_Type::TX;
 
 		mode |= I2C_CR2_RELOAD |
 				addr_size << I2C_CR2_NBYTES_Pos;
