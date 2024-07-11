@@ -110,62 +110,6 @@ protected:
 	inline SYS_StatusTypeDef RX(uint8_t* data, uint16_t data_size);
 };
 
-class Interface_buffer
-{
-public:
-	Interface_buffer(){};
-	~Interface_buffer(){};
-
-	/**
-	 * @brief Get the count of received data.
-	 * @return Count of received data.
-	 */
-	uint32_t GetRxDataCount()
-	{
-		return rx.size();
-	};
-
-	uint32_t GetFirstRxDataSize()
-	{
-		return rx.front().len;
-	};
-
-	/**
-	 * @brief Get received data.
-	 * @param data Pointer to buffer to store received data.
-	 * @param size Size of data to retrieve.
-	 */
-	void GetRxData(uint8_t* data, uint32_t size)
-	{
-		memcpy(data, rx.front().data_ptr, size);
-		delete rx.front().data_ptr;
-		rx.erase(rx.begin());
-	};
-protected:
-	/**
-	 * @brief Structure defining transmit data.
-	 */
-	typedef struct _tx_data
-	{
-		uint8_t *data_ptr;
-		uint16_t len;
-	}tx_data_typedef;
-
-	/**
-	 * @brief Structure defining receive data.
-	 */
-	typedef struct rx_data
-	{
-		uint8_t *data_ptr;
-		uint16_t len;
-	}rx_data_typedef;
-
-	std::list<tx_data_typedef> tx;
-	std::list<rx_data_typedef> rx;
-
-	bool cont_rx = false;
-};
-
 class Interface_SPI : public Interface_DMA
 {
 public:
@@ -217,9 +161,9 @@ public:
 	SYS_StatusTypeDef Init();
 
 	SYS_StatusTypeDef Send(uint8_t slave_addr, uint8_t* data, uint16_t data_size);
-	SYS_StatusTypeDef SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size);
+	SYS_StatusTypeDef Send(uint8_t slave_addr, uint8_t* reg_addr, uint8_t reg_addr_size, uint8_t* data, uint16_t data_size);
 	SYS_StatusTypeDef Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_size);
-	SYS_StatusTypeDef ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size);
+	SYS_StatusTypeDef Receive(uint8_t slave_addr, uint8_t* reg_addr, uint8_t reg_addr_size, uint8_t* data, uint16_t data_size);
 	void IRQHandler();
 	bool IsDataReceived;
 protected:
@@ -245,65 +189,9 @@ protected:
 	}data_typedef;
 
 	Buffer<data_typedef> buffer;
-
-	inline SYS_StatusTypeDef TX(uint8_t slave_addr, uint8_t* data, uint16_t data_size);
-	inline SYS_StatusTypeDef TXToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size);
-	inline SYS_StatusTypeDef RX(uint8_t slave_addr, uint8_t* data, uint16_t data_size);
-	inline SYS_StatusTypeDef RXFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_size);
+	inline SYS_StatusTypeDef Send_Receive(uint8_t slave_addr, uint8_t* reg_addr, uint8_t reg_addr_size, uint8_t* data, uint16_t data_size, TXRX_Type type);
+	inline SYS_StatusTypeDef TXRX(uint8_t slave_addr, uint8_t* reg_addr, uint8_t reg_addr_size, uint8_t* data, uint16_t data_size, TXRX_Type type);
 };
 
-class Interface_buffer_I2C : public Interface_buffer, public Interface_I2C
-{
-public:
-	Interface_buffer_I2C(I2C *_i2c, DMA_Stream_TypeDef *_dma_tx, DMA_Stream_TypeDef *_dma_rx);
-	~Interface_buffer_I2C(){};
-
-	void IRQHandler(void);
-
-	void Send(uint8_t slave_addr, uint8_t* data, uint16_t data_len);
-	void SendToAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len);
-	void Receive(uint8_t slave_addr, uint8_t* data, uint16_t data_len);
-	void ReceiveFromAddr(uint8_t slave_addr, uint8_t* addr, uint8_t addr_size, uint8_t* data, uint16_t data_len);
-
-
-	uint32_t GetRxDataCount()
-	{
-		return rx.size();
-	};
-
-	uint32_t GetFirstRxDataSize()
-	{
-		return rx.front().data_len;
-	};
-
-	/**
-	 * @brief Get received data.
-	 * @param data Pointer to buffer to store received data.
-	 * @param size Size of data to retrieve.
-	 */
-	void GetRxData(uint8_t* data, uint32_t size)
-	{
-		memcpy(data, rx.front().data_ptr, size);
-		delete [] rx.front().data_ptr;
-		delete [] rx.front().data_ptr;
-		rx.erase(rx.begin());
-	};
-protected:
-	typedef struct _data
-	{
-		uint8_t slave_addr;
-		bool use_reg_addr;
-		uint8_t *reg_addr_ptr;
-		uint16_t reg_addr_len;
-		uint8_t *data_ptr;
-		uint16_t data_len;
-		TXRX_Type type;
-	}Data_Typedef;
-
-	std::list<Data_Typedef> tx, rx;
-
-	inline void StartTranssmit();
-
-};
 #endif
 #endif /* INTERFACE_HPP_ */
