@@ -101,14 +101,14 @@ public:
 	 */
 	inline void ClearFlags()
 	{
-		*DMA_CFR =	(DMA_LISR_TCIF0 << cfr_offset) |
-					(DMA_LISR_HTIF0 << cfr_offset) |
-					(DMA_LISR_FEIF0 << cfr_offset) |
-					(DMA_LISR_TEIF0 << cfr_offset);
+		*DMA.cfr =	(DMA_LISR_TCIF0 << DMA.cfr_offset) |
+					(DMA_LISR_HTIF0 << DMA.cfr_offset) |
+					(DMA_LISR_FEIF0 << DMA.cfr_offset) |
+					(DMA_LISR_TEIF0 << DMA.cfr_offset);
 	};
 
 	inline bool GetTC_Flag()
-	{ return ((*DMA_SR & (DMA_LISR_TCIF0_Msk << cfr_offset)) >> cfr_offset);};
+	{ return ((*DMA.sr & (DMA_LISR_TCIF0_Msk << DMA.cfr_offset)) >> DMA.cfr_offset);};
 
 	/**
 	 * @brief Enable the specified USART IRQ.
@@ -118,9 +118,9 @@ public:
 	{
 		DMA_Stream_X->CR |= static_cast<uint32_t>(irq);
 
-		if (!(NVIC_GetEnableIRQ(IRQ_vector)))
+		if (!(NVIC_GetEnableIRQ(DMA.irqn)))
 		{
-			NVIC_EnableIRQ(IRQ_vector);
+			NVIC_EnableIRQ(DMA.irqn);
 		}
 	}
 
@@ -133,7 +133,7 @@ public:
 		DMA_Stream_X->CR &= ~(static_cast<uint32_t>(irq));
 		if (!(DMA_Stream_X->CR & (DMA_SxCR_TCIE | DMA_SxCR_HTIE)))
 		{
-			NVIC_DisableIRQ(IRQ_vector);
+			NVIC_DisableIRQ(DMA.irqn);
 		}
 	}
 
@@ -163,17 +163,19 @@ public:
 			DMA_Stream_X->CR &= ~DMA_SxCR_EN;
 	};
 
+	typedef struct _dma_sets
+	{
+		bool used;
+		DMA_TypeDef *ctrl;
+		uint32_t *cfr;
+		uint32_t *sr;
+		uint32_t cfr_offset;
+		IRQn_Type irqn;
+	}dma_sets_typedef;
 private:
-	DMA_TypeDef *DMA_controller;	///< Pointer to the DMA controller
-	uint32_t *DMA_CFR;				///< Pointer to the DMA CLear Flags Register
-	uint32_t *DMA_SR;				///< Pointer to the DMA Status Flags Register
-	uint32_t cfr_offset;			///< Offset for the Configuration Register
-	// DIR _direction;					///< Data transfer direction
-	// uint32_t _channel;				///< DMA channel number
-	// uint32_t _paddr;				///< Peripheral address
-	// Per_Type _per_type;				///< Type of peripheral
-	// SIZE _size;						///< Data transfer size
-	IRQn_Type IRQ_vector;			///< Interrupt vector for DMA stream
+
+
+	dma_sets_typedef DMA;
 };
 
 #endif
