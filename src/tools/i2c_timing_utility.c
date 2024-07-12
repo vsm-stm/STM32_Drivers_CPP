@@ -116,8 +116,8 @@ static const I2C_Charac_t I2C_Charac[] =
     .sudat_min = 50,
     .lscl_min = 500,
     .hscl_min = 260,
-    .trise = 120,
-    .tfall = 120,
+    .trise = 100,
+    .tfall = 100,
     .dnf = I2C_DIGITAL_FILTER_COEF,
   },
 };

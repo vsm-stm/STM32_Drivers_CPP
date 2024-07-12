@@ -443,23 +443,31 @@ void Interface_SPI::IRQHandler()
 
 	if(buffer.tx_buffer_size_max != 0)
 	{
-		if(buffer.tx.front().type != TXRX_Type::TX)
+		rxtx_data_typedef *tmp = &buffer.tx.front();
+		if(((tmp->type == TXRX_Type::RX)
+		 || (tmp->type == TXRX_Type::TXRX))
+		&& (buffer.rx.size() < buffer.rx_buffer_size_max))
 		{
-			buffer.rx.push_back(buffer.tx.front());
-			delete [] buffer.tx.front().data_ptr;
+			buffer.rx.push_back(*tmp);
+			if(buffer.rx.size() == buffer.rx_buffer_size_max)
+				buffer.rx_buffer_full = true;
 		}
-
-		if(buffer.tx.front().type != TXRX_Type::RX)
+		else
 		{
-			delete [] buffer.tx.front().tx_data_ptr;
+			if((tmp->type == TXRX_Type::TXRX)
+			|| (tmp->type == TXRX_Type::TX))
+				delete [] buffer.tx.front().tx_data_ptr;
+			if((tmp->type == TXRX_Type::TXRX)
+			|| (tmp->type == TXRX_Type::RX))
+				delete [] buffer.tx.front().data_ptr;
 		}
 
 		buffer.tx.pop_front();
 
 		if(!buffer.tx.empty())
 		{
-			std::list<rxtx_data_typedef>::iterator iter = buffer.tx.begin();
-			status = TXRX(iter->tx_data_ptr, iter->data_ptr, iter->size, iter->type);
+			rxtx_data_typedef *tmp = &buffer.tx.front();
+			status = TXRX(tmp->tx_data_ptr, tmp->data_ptr, tmp->size, tmp->type);
 		}
 	}
 };
@@ -520,6 +528,7 @@ SYS_StatusTypeDef Interface_I2C::Init()
 	i2c->I2Cx->CR1 |= I2C_CR1_TXDMAEN | I2C_CR1_RXDMAEN;
 	i2c->Enable_IRQ(I2C::IRQ::STOP);
 	i2c->Enable_IRQ(I2C::IRQ::TC);
+	i2c->Enable_IRQ(I2C::IRQ::NACK);
 
 	status = DMA_SetUp();
 	dma_tx.MINC(ENABLE);
@@ -639,8 +648,7 @@ SYS_StatusTypeDef Interface_I2C::TXRX(uint8_t slave_addr, uint8_t* reg_addr, uin
 			if(txrx == TXRX_Type::RX)
 				mode |= I2C_CR2_RD_WRN;
 
-			req_dma->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(data);
-			req_dma->DMA_Stream_X->NDTR = data_size;
+			req_dma->SetMemAddr(reinterpret_cast<uint32_t>(data), data_size);
 			
 		}
 		else
@@ -652,8 +660,7 @@ SYS_StatusTypeDef Interface_I2C::TXRX(uint8_t slave_addr, uint8_t* reg_addr, uin
 			if(txrx == TXRX_Type::TX)
 				mode |= I2C_CR2_RELOAD;
 
-			req_dma->DMA_Stream_X->M0AR = reinterpret_cast<uint32_t>(reg_addr);
-			req_dma->DMA_Stream_X->NDTR = reg_addr_size;
+			req_dma->SetMemAddr(reinterpret_cast<uint32_t>(reg_addr), reg_addr_size);
 		}
 
 		req_dma->ClearFlags();
@@ -667,6 +674,23 @@ SYS_StatusTypeDef Interface_I2C::TXRX(uint8_t slave_addr, uint8_t* reg_addr, uin
 
 void Interface_I2C::IRQHandler()
 {
+	if(i2c->I2Cx->ISR & I2C_ISR_NACKF)
+	{
+		i2c->I2Cx->ICR = I2C_ICR_NACKCF;
+		i2c->I2Cx->CR2 = 0;
+		i2c->I2Cx->CR1 &= ~I2C_CR1_PE;
+		i2c->I2Cx->CR1 |= I2C_CR1_PE;
+
+		dma_tx.Stream(DISABLE);
+		dma_rx.Stream(DISABLE);
+		transfer_count = 0;
+		_slave_addr = 0;
+		data_addr = 0;
+		need_reload_dma = 0;
+		txrx = TXRX_Type::none;
+		status = SYS_OK;
+	}
+
 	if(i2c->I2Cx->ISR & I2C_ISR_STOPF)
 	{
 		while(!(i2c->I2Cx->ISR & I2C_ISR_STOPF)){};
@@ -679,6 +703,32 @@ void Interface_I2C::IRQHandler()
 		need_reload_dma = 0;
 		txrx = TXRX_Type::none;
 		status = SYS_OK;
+
+		if(buffer.tx_buffer_size_max != 0)
+		{
+			if((buffer.tx.front().type == TXRX_Type::RX)
+			&& (buffer.rx.size() < buffer.rx_buffer_size_max))
+			{
+				buffer.rx.push_back(buffer.tx.front());
+				if(buffer.rx.size() == buffer.rx_buffer_size_max)
+					buffer.rx_buffer_full = true; 
+			}
+			else
+			{
+				if(buffer.tx.front().reg_addr_ptr != NULL)
+					delete [] buffer.tx.front().reg_addr_ptr;
+				delete [] buffer.tx.front().data_ptr;
+			}
+
+			buffer.tx.pop_front();
+
+			if(!buffer.tx.empty())
+			{
+				data_typedef *tmp = &buffer.tx.front();
+				status = TXRX(tmp->slave_addr, tmp->reg_addr_ptr, tmp->reg_addr_size, tmp->data_ptr, tmp->size, tmp->type);
+			}
+
+		}
 	}
 
 	if((i2c->I2Cx->ISR & I2C_ISR_TCR)

@@ -33,9 +33,7 @@ protected:
 		none,
 		TXRX,
 		TX,
-		TX_reg,
-		RX,
-		RX_reg
+		RX
 	};
 };
 
@@ -58,7 +56,7 @@ public:
 
 	uint32_t GetRxDataFirstSize() { return rx.front().size;};
 	uint32_t GetRxDataCount() { return rx.size();};
-	SYS_StatusTypeDef GetData(uint8_t* data, uint16_t size)
+	SYS_StatusTypeDef GetData(uint8_t* data, uint16_t size) //todo: free mem
 	{
 		if(rx.size() == 0)
 			return SYS_ERROR;
@@ -68,6 +66,8 @@ public:
 
 		return SYS_OK;
 	};
+
+	bool rx_buffer_full;
 
 };
 

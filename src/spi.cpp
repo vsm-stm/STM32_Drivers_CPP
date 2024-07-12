@@ -46,21 +46,21 @@ SYS_StatusTypeDef SPI::SetHard()
 
 	if (CLK.PORT != NULL)
 	{
-		CLK.SetUp(PIN::TYPE::AF_PushPull, af);
+		CLK.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, af);
 	}
 	if (MOSI.PORT != NULL)
 	{
 		if(Master_slave == Master_sel::Master)
-			MOSI.SetUp(PIN::TYPE::AF_PushPull, af);
+			MOSI.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, af);
 		else
-			MOSI.SetUp(PIN::TYPE::AF_OD_PulUp, af);
+			MOSI.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High, af);
 	}
 	if (MISO.PORT != NULL)
 	{
 		if(Master_slave == Master_sel::Master)
-			MISO.SetUp(PIN::TYPE::AF_OD_PulUp, af);
+			MISO.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High, af);
 		else
-			MISO.SetUp(PIN::TYPE::AF_PushPull, af);
+			MISO.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, af);
 			
 	}
 
@@ -68,12 +68,12 @@ SYS_StatusTypeDef SPI::SetHard()
 	{
 		if(nss_ctrl == NSS_ctrl::Hard)
 		{
-			SS.SetUp(PIN::TYPE::AF_PushPull, af);
+			SS.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, af);
 		}	
 		else
 		{
 			if(Master_slave == Master_sel::Master)
-				SS.SetUp(PIN::TYPE::OUTPUT_PushPull);
+				SS.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::High);
 			else
 				SS.SetUp(PIN::TYPE::INPUT_NO_Pull);
 		}
