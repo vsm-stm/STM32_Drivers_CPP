@@ -1,156 +1,161 @@
 #include <dma.hpp>
+#include <map>
 
-SYS_StatusTypeDef DMA_Sx::SetUp()
+
+
+DMA_Sx::dma_sets_typedef dma1_s0 = {.used = false,
+									.ctrl = DMA1,
+									.cfr = (uint32_t*)&(DMA1->LIFCR),
+									.sr = (uint32_t*)&(DMA1->LISR),
+									.cfr_offset = 0,
+									.irqn = DMA1_Stream0_IRQn};
+
+DMA_Sx::dma_sets_typedef dma1_s1 = {.used = false,
+									.ctrl = DMA1,
+									.cfr = (uint32_t*)&(DMA1->LIFCR),
+									.sr = (uint32_t*)&(DMA1->LISR),
+									.cfr_offset = 6,
+									.irqn = DMA1_Stream1_IRQn};
+
+DMA_Sx::dma_sets_typedef dma1_s2 = {.used = false,
+									.ctrl = DMA1,
+									.cfr = (uint32_t*)&(DMA1->LIFCR),
+									.sr = (uint32_t*)&(DMA1->LISR),
+									.cfr_offset = 16,
+									.irqn = DMA1_Stream2_IRQn};
+
+DMA_Sx::dma_sets_typedef dma1_s3 = {.used = false,
+									.ctrl = DMA1,
+									.cfr = (uint32_t*)&(DMA1->LIFCR),
+									.sr = (uint32_t*)&(DMA1->LISR),
+									.cfr_offset = 22,
+									.irqn = DMA1_Stream3_IRQn};
+
+DMA_Sx::dma_sets_typedef dma1_s4 = {.used = false,
+									.ctrl = DMA1,
+									.cfr = (uint32_t*)&(DMA1->HIFCR),
+									.sr = (uint32_t*)&(DMA1->HISR),
+									.cfr_offset = 0,
+									.irqn = DMA1_Stream4_IRQn};
+
+DMA_Sx::dma_sets_typedef dma1_s5 = {.used = false,
+									.ctrl = DMA1,
+									.cfr = (uint32_t*)&(DMA1->HIFCR),
+									.sr = (uint32_t*)&(DMA1->HISR),
+									.cfr_offset = 6,
+									.irqn = DMA1_Stream5_IRQn};
+
+DMA_Sx::dma_sets_typedef dma1_s6 = {.used = false,
+									.ctrl = DMA1,
+									.cfr = (uint32_t*)&(DMA1->HIFCR),
+									.sr = (uint32_t*)&(DMA1->HISR),
+									.cfr_offset = 16,
+									.irqn = DMA1_Stream6_IRQn};
+
+DMA_Sx::dma_sets_typedef dma1_s7 = {.used = false,
+									.ctrl = DMA1,
+									.cfr = (uint32_t*)&(DMA1->HIFCR),
+									.sr = (uint32_t*)&(DMA1->HISR),
+									.cfr_offset = 22,
+									.irqn = DMA1_Stream7_IRQn};
+
+DMA_Sx::dma_sets_typedef dma2_s0 = {.used = false,
+									.ctrl = DMA2,
+									.cfr = (uint32_t*)&(DMA2->LIFCR),
+									.sr = (uint32_t*)&(DMA2->LISR),
+									.cfr_offset = 0,
+									.irqn = DMA2_Stream0_IRQn};
+
+DMA_Sx::dma_sets_typedef dma2_s1 = {.used = false,
+									.ctrl = DMA2,
+									.cfr = (uint32_t*)&(DMA2->LIFCR),
+									.sr = (uint32_t*)&(DMA2->LISR),
+									.cfr_offset = 6,
+									.irqn = DMA2_Stream1_IRQn};
+
+DMA_Sx::dma_sets_typedef dma2_s2 = {.used = false,
+									.ctrl = DMA2,
+									.cfr = (uint32_t*)&(DMA2->LIFCR),
+									.sr = (uint32_t*)&(DMA2->LISR),
+									.cfr_offset = 16,
+									.irqn = DMA2_Stream2_IRQn};
+
+DMA_Sx::dma_sets_typedef dma2_s3 = {.used = false,
+									.ctrl = DMA2,
+									.cfr = (uint32_t*)&(DMA2->LIFCR),
+									.sr = (uint32_t*)&(DMA2->LISR),
+									.cfr_offset = 22,
+									.irqn = DMA2_Stream3_IRQn};
+
+DMA_Sx::dma_sets_typedef dma2_s4 = {.used = false,
+									.ctrl = DMA2,
+									.cfr = (uint32_t*)&(DMA2->HIFCR),
+									.sr = (uint32_t*)&(DMA2->HISR),
+									.cfr_offset = 0,
+									.irqn = DMA2_Stream4_IRQn};
+
+DMA_Sx::dma_sets_typedef dma2_s5 = {.used = false,
+									.ctrl = DMA2,
+									.cfr = (uint32_t*)&(DMA2->HIFCR),
+									.sr = (uint32_t*)&(DMA2->HISR),
+									.cfr_offset = 6,
+									.irqn = DMA2_Stream5_IRQn};
+
+DMA_Sx::dma_sets_typedef dma2_s6 = {.used = false,
+									.ctrl = DMA2,
+									.cfr = (uint32_t*)&(DMA2->HIFCR),
+									.sr = (uint32_t*)&(DMA2->HISR),
+									.cfr_offset = 16,
+									.irqn = DMA2_Stream6_IRQn};
+
+DMA_Sx::dma_sets_typedef dma2_s7 = {.used = false,
+									.ctrl = DMA2,
+									.cfr = (uint32_t*)&(DMA2->HIFCR),
+									.sr = (uint32_t*)&(DMA2->HISR),
+									.cfr_offset = 22,
+									.irqn = DMA2_Stream7_IRQn};
+
+std::map<DMA_Stream_TypeDef*, DMA_Sx::dma_sets_typedef> used_dma {	{DMA1_Stream0, dma1_s0},
+																	{DMA1_Stream1, dma1_s1},
+																	{DMA1_Stream2, dma1_s2},
+																	{DMA1_Stream3, dma1_s3},
+																	{DMA1_Stream4, dma1_s4},
+																	{DMA1_Stream5, dma1_s5},
+																	{DMA1_Stream6, dma1_s6},
+																	{DMA1_Stream7, dma1_s7},
+																	{DMA2_Stream0, dma2_s0},
+																	{DMA2_Stream1, dma2_s1},
+																	{DMA2_Stream2, dma2_s2},
+																	{DMA2_Stream3, dma2_s3},
+																	{DMA2_Stream4, dma2_s4},
+																	{DMA2_Stream5, dma2_s5},
+																	{DMA2_Stream6, dma2_s6},
+																	{DMA2_Stream7, dma2_s7}};
+
+
+
+SYS_StatusTypeDef DMA_Sx::SetUp(StreamSettings settings)
 {
-	// Determine the DMA controller, IRQ vector, Configuration Register, and offset based on the DMA stream
-	if(DMA_Stream_X == DMA1_Stream0)
-	{
-		DMA_controller = DMA1;
-		IRQ_vector = DMA1_Stream0_IRQn;
+	return SetUp(settings.channel, settings.peripheral_address, settings.peripheral_type, settings.direction, settings.data_size);
+};
 
-		DMA_CFR = (uint32_t*)&(DMA1->LIFCR);
-		DMA_SR = (uint32_t*)&(DMA1->LISR);
-		cfr_offset = 0;
-	}else
-	if(DMA_Stream_X == DMA1_Stream1)
-	{
-		DMA_controller = DMA1;
-		IRQ_vector = DMA1_Stream1_IRQn;
-
-		DMA_CFR = (uint32_t*)&(DMA1->LIFCR);
-		DMA_SR = (uint32_t*)&(DMA1->LISR);
-		cfr_offset = 6;
-	}else
-	if(DMA_Stream_X == DMA1_Stream2)
-	{
-		DMA_controller = DMA1;
-		IRQ_vector = DMA1_Stream2_IRQn;
-		
-		DMA_CFR = (uint32_t*)&(DMA1->LIFCR);
-		DMA_SR = (uint32_t*)&(DMA1->LISR);
-		cfr_offset = 16;
-	}else
-	if(DMA_Stream_X == DMA1_Stream3)
-	{
-		DMA_controller = DMA1;
-		IRQ_vector = DMA1_Stream3_IRQn;
-		
-		DMA_CFR = (uint32_t*)&(DMA1->LIFCR);
-		DMA_SR = (uint32_t*)&(DMA1->LISR);
-		cfr_offset = 22;
-	}else
-	if(DMA_Stream_X == DMA1_Stream4)
-	{
-		DMA_controller = DMA1;
-		IRQ_vector = DMA1_Stream4_IRQn;
-
-		DMA_CFR = (uint32_t*)&(DMA1->HIFCR);
-		DMA_SR = (uint32_t*)&(DMA1->HISR);
-		cfr_offset = 0;
-	}else
-	if(DMA_Stream_X == DMA1_Stream5)
-	{
-		DMA_controller = DMA1;
-		IRQ_vector = DMA1_Stream5_IRQn;
-
-		DMA_CFR = (uint32_t*)&(DMA1->HIFCR);
-		DMA_SR = (uint32_t*)&(DMA1->HISR);
-		cfr_offset = 6;
-	}else
-	if(DMA_Stream_X == DMA1_Stream6)
-	{
-		DMA_controller = DMA1;
-		IRQ_vector = DMA1_Stream6_IRQn;
-		
-		DMA_CFR = (uint32_t*)&(DMA1->HIFCR);
-		DMA_SR = (uint32_t*)&(DMA1->HISR);
-		cfr_offset = 16;
-	}else
-	if(DMA_Stream_X == DMA1_Stream7)
-	{
-		DMA_controller = DMA1;
-		IRQ_vector = DMA1_Stream7_IRQn;
-		
-		DMA_CFR = (uint32_t*)&(DMA1->HIFCR);
-		DMA_SR = (uint32_t*)&(DMA1->HISR);
-		cfr_offset = 22;
-	}else
-	if(DMA_Stream_X == DMA2_Stream0)
-	{
-		DMA_controller = DMA2;
-		IRQ_vector = DMA2_Stream0_IRQn;
-
-		DMA_CFR = (uint32_t*)&(DMA2->LIFCR);
-		DMA_SR = (uint32_t*)&(DMA2->LISR);
-		cfr_offset = 0;
-	}else
-	if(DMA_Stream_X == DMA2_Stream1)
-	{
-		DMA_controller = DMA2;
-		IRQ_vector = DMA2_Stream1_IRQn;
-
-		DMA_CFR = (uint32_t*)&(DMA2->LIFCR);
-		DMA_SR = (uint32_t*)&(DMA2->LISR);
-		cfr_offset = 6;
-	}else
-	if(DMA_Stream_X == DMA2_Stream2)
-	{
-		DMA_controller = DMA2;
-		IRQ_vector = DMA2_Stream2_IRQn;
-		
-		DMA_CFR = (uint32_t*)&(DMA2->LIFCR);
-		DMA_SR = (uint32_t*)&(DMA2->LISR);
-		cfr_offset = 16;
-	}else
-	if(DMA_Stream_X == DMA2_Stream3)
-	{
-		DMA_controller = DMA2;
-		IRQ_vector = DMA2_Stream3_IRQn;
-		
-		DMA_CFR = (uint32_t*)&(DMA2->LIFCR);
-		DMA_SR = (uint32_t*)&(DMA2->LISR);
-		cfr_offset = 22;
-	}else
-	if(DMA_Stream_X == DMA2_Stream4)
-	{
-		DMA_controller = DMA2;
-		IRQ_vector = DMA2_Stream4_IRQn;
-
-		DMA_CFR = (uint32_t*)&(DMA2->HIFCR);
-		DMA_SR = (uint32_t*)&(DMA2->HISR);
-		cfr_offset = 0;
-	}else
-	if(DMA_Stream_X == DMA2_Stream5)
-	{
-		DMA_controller = DMA2;
-		IRQ_vector = DMA2_Stream5_IRQn;
-
-		DMA_CFR = (uint32_t*)&(DMA2->HIFCR);
-		DMA_SR = (uint32_t*)&(DMA2->HISR);
-		cfr_offset = 6;
-	}else
-	if(DMA_Stream_X == DMA2_Stream6)
-	{
-		DMA_controller = DMA2;
-		IRQ_vector = DMA2_Stream6_IRQn;
-		
-		DMA_CFR = (uint32_t*)&(DMA2->HIFCR);
-		DMA_SR = (uint32_t*)&(DMA2->HISR);
-		cfr_offset = 16;
-	}else
-	if(DMA_Stream_X == DMA2_Stream7)
-	{
-		DMA_controller = DMA2;
-		IRQ_vector = DMA2_Stream7_IRQn;
-		
-		DMA_CFR = (uint32_t*)&(DMA2->HIFCR);
-		DMA_SR = (uint32_t*)&(DMA2->HISR);
-		cfr_offset = 22;
-	}else
+SYS_StatusTypeDef DMA_Sx::SetUp(
+		uint32_t channel,
+		uint32_t peripheral_address,
+		Per_Type peripheral_type,
+		DIR direction,
+		SIZE data_size)
+{
+	if((used_dma[DMA_Stream_X].used == true)
+	|| !(IS_DMA_STREAM_ALL_INSTANCE(DMA_Stream_X)))
 		return SYS_ERROR;
+	else
+		used_dma[DMA_Stream_X].used = true;
 
+	DMA = used_dma[DMA_Stream_X];
+	
 	// Enable the clock for the corresponding DMA controller
-	if(DMA_controller == DMA1)
+	if(DMA.ctrl == DMA1)
 	{
 		RCC->AHB1ENR |= RCC_AHB1ENR_DMA1EN;
 	}
@@ -160,23 +165,26 @@ SYS_StatusTypeDef DMA_Sx::SetUp()
 	}
 
 	// Set peripheral address for the DMA stream
-	DMA_Stream_X->PAR = _paddr;
+	if(peripheral_address == 0)
+		return SYS_ERROR;
+	else
+		DMA_Stream_X->PAR = peripheral_address;
 	
 	// Configure DMA control register (CR) based on the channel, direction, and peripheral type
-	uint32_t sets = _channel << DMA_SxCR_CHSEL_Pos;
-	sets |= static_cast<uint32_t>(_direction) << DMA_SxCR_DIR_Pos;
+	uint32_t sets = channel << DMA_SxCR_CHSEL_Pos;
+	sets |= static_cast<uint32_t>(direction) << DMA_SxCR_DIR_Pos;
 
 	// Specific configuration for USART and SPI peripheral types
-	if(_per_type == Per_Type::usart)
+	if(peripheral_type == Per_Type::usart)
 	{
 		sets &= ~(DMA_SxCR_PSIZE_Msk |
 				  DMA_SxCR_MSIZE_Msk);
 	}else
-	if((_per_type == Per_Type::spi)
-	|| (_per_type == Per_Type::adc))
+	if((peripheral_type == Per_Type::spi)
+	|| (peripheral_type == Per_Type::adc))
 	{
-		sets |= static_cast<uint32_t>(_size) << DMA_SxCR_PSIZE_Pos |
-				static_cast<uint32_t>(_size) << DMA_SxCR_MSIZE_Pos;
+		sets |= static_cast<uint32_t>(data_size) << DMA_SxCR_PSIZE_Pos |
+				static_cast<uint32_t>(data_size) << DMA_SxCR_MSIZE_Pos;
 	}
 
 	// Apply the configuration to the DMA control register

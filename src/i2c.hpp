@@ -4,6 +4,8 @@
 #include <system.hpp>
 #include <rcc.hpp>
 #include <gpio.hpp>
+
+#if defined(STM32F7)
 extern "C"
 {
 	#include <i2c_timing_utility.h>
@@ -125,5 +127,7 @@ protected:
 	void error_stop();
 	void normal_stop();
 };
+
+#endif
 
 #endif /* I2C_HPP_ */

@@ -17,6 +17,11 @@ public:
 		Master = SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_MSTR
 	};
 
+	enum class NSS_ctrl
+	{
+		Hard = 0,
+		Software
+	};
 
 	enum class Data_frame_format
 	{
@@ -77,6 +82,7 @@ public:
 	typedef struct 
 	{
 		Master_sel mstr;
+		NSS_ctrl nss_ctrl;
 		TYPE type;
 		Data_frame_format dff;
 		Frame_Format ff;
@@ -86,15 +92,15 @@ public:
 
 	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type)
 	{
-		return SetUp(mstr, type, Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, 0);
+		return SetUp(mstr, NSS_ctrl::Hard, type, Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, 0);
 	};
 
 	SYS_StatusTypeDef SetUp(Init_struct_Typedef Init_struct)
 	{
-		return SetUp(Init_struct.mstr, Init_struct.type, Init_struct.dff, Init_struct.ff, Init_struct.cpolpha, Init_struct.br);
+		return SetUp(Init_struct.mstr, Init_struct.nss_ctrl, Init_struct.type, Init_struct.dff, Init_struct.ff, Init_struct.cpolpha, Init_struct.br);
 	}
 
-	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
+	SYS_StatusTypeDef SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
 
 	inline void Enable()
 	{
@@ -108,10 +114,23 @@ public:
 
 	inline void SlaveSelect(FunctionalState en)
 	{
-		if(en)
-			SS.SetLevel(0);
-		else
-			SS.SetLevel(1);
+		if(nss_ctrl == NSS_ctrl::Software)
+		{
+			if(en)
+			{
+				if(Master_slave == Master_sel::Master)
+					SS.SetLevel(0);
+				else
+					SPIx->CR1 &= ~SPI_CR1_SSI;
+			}
+			else
+			{
+				if(Master_slave == Master_sel::Master)
+					SS.SetLevel(1);
+				else
+					SPIx->CR1 |= SPI_CR1_SSI;
+			}
+		}
 	}
 
 	inline void DMA_TX(FunctionalState en)
@@ -166,6 +185,8 @@ protected:
 	PIN SS{};
 
 	uint32_t af, bus_clk;
+	NSS_ctrl nss_ctrl;
+	Master_sel Master_slave;
 	IRQn_Type IRQ_vector;
 
 	SYS_StatusTypeDef SetHard();

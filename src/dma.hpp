@@ -4,7 +4,6 @@
 #include <system.hpp>
 #include <rcc.hpp>
 
-
 class DMA_Sx
 {
 public:
@@ -55,66 +54,33 @@ public:
 	 */
 	struct StreamSettings
 	{
-		DMA_Stream_TypeDef *dma_sx;	///< Pointer to the DMA stream
 		uint32_t channel;			///< DMA channel number
-		uint32_t per_addr;			///< Peripheral address
-		Per_Type type;				///< Type of peripheral
-		DIR dir;					///< Data transfer direction
-		SIZE size;					///< Data transfer size
+		uint32_t peripheral_address;			///< Peripheral address
+		Per_Type peripheral_type;				///< Type of peripheral
+		DIR direction;					///< Data transfer direction
+		SIZE data_size;					///< Data transfer size
 	};
 
 	DMA_Stream_TypeDef *DMA_Stream_X;
 
 	/**
-	 * @brief Constructor using initialization list.
-	 */
-	explicit DMA_Sx(StreamSettings setup) :
-			DMA_Stream_X(setup.dma_sx),
-			_direction(setup.dir),
-			_channel(setup.channel),
-			_paddr(setup.per_addr),
-			_per_type(setup.type),
-			_size(setup.size)
-	{
-	};
-
-	/**
 	 * @brief Constructor with individual parameters.
 	 */
-	explicit DMA_Sx(DMA_Stream_TypeDef *dma_sx,
-		   uint32_t channel,
-		   uint32_t per_addr,
-		   Per_Type type,
-		   DIR dir,
-		   SIZE size) :
-			DMA_Stream_X(dma_sx),
-			_direction(dir),
-			_channel(channel),
-			_paddr(per_addr),
-			_per_type(type),
-			_size(size)
-	{
-	};
-
-	explicit DMA_Sx(DMA_Stream_TypeDef *dma_sx,
-		   uint32_t channel,
-		   uint32_t per_addr,
-		   Per_Type type,
-		   DIR dir) :
-			DMA_Stream_X(dma_sx),
-			_direction(dir),
-			_channel(channel),
-			_paddr(per_addr),
-			_per_type(type)
-	{
-		_size = SIZE::Byte;
-	};
+	explicit DMA_Sx(DMA_Stream_TypeDef *dma_sx) : DMA_Stream_X(dma_sx){};
 
 	/**
 	 * @brief Function to set up DMA stream.
 	 * @return Status of the setup operation.
 	 */
-	SYS_StatusTypeDef SetUp();
+	SYS_StatusTypeDef SetUp(StreamSettings settings);
+	SYS_StatusTypeDef SetUp(
+		uint32_t channel,
+		uint32_t peripheral_address,
+		Per_Type peripheral_type,
+		DIR direction,
+		SIZE data_size);
+
+
 	/**
 	 * @brief Function to set memory address for the DMA stream.
 	 * @param addr Memory address.
@@ -135,26 +101,26 @@ public:
 	 */
 	inline void ClearFlags()
 	{
-		*DMA_CFR =	(DMA_LISR_TCIF0 << cfr_offset) |
-					(DMA_LISR_HTIF0 << cfr_offset) |
-					(DMA_LISR_FEIF0 << cfr_offset) |
-					(DMA_LISR_TEIF0 << cfr_offset);
+		*DMA.cfr =	(DMA_LISR_TCIF0 << DMA.cfr_offset) |
+					(DMA_LISR_HTIF0 << DMA.cfr_offset) |
+					(DMA_LISR_FEIF0 << DMA.cfr_offset) |
+					(DMA_LISR_TEIF0 << DMA.cfr_offset);
 	};
 
-	bool GetTC_Flag()
-	{ return ((*DMA_SR & (DMA_LISR_TCIF0_Msk << cfr_offset)) >> cfr_offset);};
+	inline bool GetTC_Flag()
+	{ return ((*DMA.sr & (DMA_LISR_TCIF0_Msk << DMA.cfr_offset)) >> DMA.cfr_offset);};
 
 	/**
 	 * @brief Enable the specified USART IRQ.
 	 * @param irq The IRQ to enable.
 	 */
-	void Enable_IRQ(IRQ irq)
+	inline void Enable_IRQ(IRQ irq)
 	{
 		DMA_Stream_X->CR |= static_cast<uint32_t>(irq);
 
-		if (!(NVIC_GetEnableIRQ(IRQ_vector)))
+		if (!(NVIC_GetEnableIRQ(DMA.irqn)))
 		{
-			NVIC_EnableIRQ(IRQ_vector);
+			NVIC_EnableIRQ(DMA.irqn);
 		}
 	}
 
@@ -162,12 +128,12 @@ public:
 	 * @brief Disable the specified USART IRQ.
 	 * @param irq The IRQ to disable.
 	 */
-	void Disable_IRQ(IRQ irq)
+	inline void Disable_IRQ(IRQ irq)
 	{
 		DMA_Stream_X->CR &= ~(static_cast<uint32_t>(irq));
 		if (!(DMA_Stream_X->CR & (DMA_SxCR_TCIE | DMA_SxCR_HTIE)))
 		{
-			NVIC_DisableIRQ(IRQ_vector);
+			NVIC_DisableIRQ(DMA.irqn);
 		}
 	}
 
@@ -189,27 +155,27 @@ public:
 	/**
 	 * @brief Function to enable the DMA stream.
 	 */
-	inline void Enable_Stream()
-	{	DMA_Stream_X->CR |= DMA_SxCR_EN;};
+	inline void Stream(FunctionalState en)
+	{
+		if(en)
+			DMA_Stream_X->CR |= DMA_SxCR_EN;
+		else
+			DMA_Stream_X->CR &= ~DMA_SxCR_EN;
+	};
 
-	/**
-	 * @brief Function to disable the DMA stream.
-	 */
-	inline void Disable_Stream()
-	{	DMA_Stream_X->CR &= ~DMA_SxCR_EN;};
-
+	typedef struct _dma_sets
+	{
+		bool used;
+		DMA_TypeDef *ctrl;
+		uint32_t *cfr;
+		uint32_t *sr;
+		uint32_t cfr_offset;
+		IRQn_Type irqn;
+	}dma_sets_typedef;
 private:
-	DMA_TypeDef *DMA_controller;	///< Pointer to the DMA controller
-	uint32_t *DMA_CFR;				///< Pointer to the DMA CLear Flags Register
-	uint32_t *DMA_SR;				///< Pointer to the DMA Status Flags Register
-	uint32_t cfr_offset;			///< Offset for the Configuration Register
-	DIR _direction;					///< Data transfer direction
-	uint32_t _channel;				///< DMA channel number
-	uint32_t _paddr;				///< Peripheral address
-	Per_Type _per_type;				///< Type of peripheral
-	SIZE _size;						///< Data transfer size
-	IRQn_Type IRQ_vector;			///< Interrupt vector for DMA stream
 
+
+	dma_sets_typedef DMA;
 };
 
 #endif
