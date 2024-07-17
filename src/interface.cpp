@@ -269,11 +269,12 @@ Interface_SPI::Interface_SPI(
 	SPI::Init_struct_Typedef _init_data,
 	DMA_Stream_TypeDef *_dma_tx,
 	DMA_Stream_TypeDef *_dma_rx,
-	uint32_t buffer_size) :
+	uint32_t tx_buffer_size,
+	uint32_t rx_buffer_size) :
 								Interface_DMA(_dma_tx, _dma_rx),
 								spi(_spi),
 								spi_init_data(_init_data),
-								buffer(buffer_size, buffer_size)
+								buffer(tx_buffer_size, rx_buffer_size)
 {
 	tx_settings.peripheral_type = DMA_Sx::Per_Type::spi;
 	rx_settings.peripheral_type = DMA_Sx::Per_Type::spi;
@@ -355,16 +356,23 @@ SYS_StatusTypeDef Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data
 		}
 		if(txrx_type != TXRX_Type::TX)
 		{
-			tmp->data_ptr = new uint8_t[data_size];
-			if(tmp->data_ptr == 0)
-				return SYS_ERROR;
+			if(buffer.rx_buffer_size_max == 0)
+			{
+				tmp->rx_data_ptr = new uint8_t[data_size];
+				if(tmp->rx_data_ptr == 0)
+					return SYS_ERROR;
+			}
+			else
+			{
+				tmp->rx_data_ptr = rx_data;
+			}
 		}
 
 		if((buffer.tx.size() == 1)
 		&& (status == SYS_OK))
 		{
 			tmp = &buffer.tx.front();
-			return TXRX(tmp->tx_data_ptr, tmp->data_ptr, tmp->size, tmp->type);
+			return TXRX(tmp->tx_data_ptr, tmp->rx_data_ptr, tmp->size, tmp->type);
 		}
 	}
 	return SYS_OK;
@@ -459,7 +467,7 @@ void Interface_SPI::IRQHandler()
 				delete [] buffer.tx.front().tx_data_ptr;
 			if((tmp->type == TXRX_Type::TXRX)
 			|| (tmp->type == TXRX_Type::RX))
-				delete [] buffer.tx.front().data_ptr;
+				delete [] buffer.tx.front().rx_data_ptr;
 		}
 
 		buffer.tx.pop_front();
@@ -467,7 +475,7 @@ void Interface_SPI::IRQHandler()
 		if(!buffer.tx.empty())
 		{
 			rxtx_data_typedef *tmp = &buffer.tx.front();
-			status = TXRX(tmp->tx_data_ptr, tmp->data_ptr, tmp->size, tmp->type);
+			status = TXRX(tmp->tx_data_ptr, tmp->rx_data_ptr, tmp->size, tmp->type);
 		}
 	}
 };

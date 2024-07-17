@@ -56,16 +56,6 @@ public:
 
 	uint32_t GetRxDataFirstSize() { return rx.front().size;};
 	uint32_t GetRxDataCount() { return rx.size();};
-	SYS_StatusTypeDef GetData(uint8_t* data, uint16_t size) //todo: free mem
-	{
-		if(rx.size() == 0)
-			return SYS_ERROR;
-		memcpy(data, rx.front().data_prt, size);
-		delete [] rx.front().data_ptr;
-		rx.erase(rx.begin());
-
-		return SYS_OK;
-	};
 
 	bool rx_buffer_full;
 
@@ -88,7 +78,8 @@ public:
 	SYS_StatusTypeDef Receive(uint8_t* data, uint16_t data_size, bool cont);
 	SYS_StatusTypeDef Receive(uint8_t* data, uint16_t data_size);
 	SYS_StatusTypeDef Receive(uint16_t data_size, bool cont);
-	SYS_StatusTypeDef Receive(uint16_t data_size);	
+	SYS_StatusTypeDef Receive(uint16_t data_size);
+
 	void IRQHandler();
 	bool IsDataReceived;
 protected:
@@ -118,7 +109,8 @@ public:
 		SPI::Init_struct_Typedef _init_data,
 		DMA_Stream_TypeDef *_dma_tx,
 		DMA_Stream_TypeDef *_dma_rx,
-		uint32_t tx_buffer_size);
+		uint32_t tx_buffer_size,
+		uint32_t rx_buffer_size);
 	~Interface_SPI(){};
 
 	SYS_StatusTypeDef Init();
@@ -127,9 +119,27 @@ public:
 	SYS_StatusTypeDef Send(uint8_t* tx_data,uint16_t data_size);
 	SYS_StatusTypeDef Receive(uint8_t* rx_data, uint16_t data_size);
 
+	SYS_StatusTypeDef GetData(uint8_t* data, uint16_t size)
+	{
+		if(buffer.rx.size() == 0)
+			return SYS_ERROR;
+		memcpy(data, buffer.rx.front().rx_data_ptr, size);
+		delete [] buffer.rx.front().rx_data_ptr;
+		buffer.rx.erase(buffer.rx.begin());
+
+		return SYS_OK;
+	};
+
+	void GetReceivedData(uint8_t *data, uint16_t data_size)
+	{
+		if(data_size != buffer.GetRxDataFirstSize())
+			return;
+		GetData(data, data_size);
+	};
+
 	void IRQHandler();
 	bool IsDataReceived;
-	SYS_StatusTypeDef GetStatus(){return status;};
+	inline SYS_StatusTypeDef GetStatus(){return status;};
 protected:
 	SPI *spi;
 	SPI::Init_struct_Typedef spi_init_data;
@@ -141,7 +151,7 @@ protected:
 	typedef struct _rxtx_data
 	{
 		uint8_t *tx_data_ptr;
-		uint8_t *data_ptr;
+		uint8_t *rx_data_ptr;
 		uint16_t size;
 		TXRX_Type type;
 	}rxtx_data_typedef;
