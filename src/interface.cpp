@@ -391,6 +391,7 @@ SYS_StatusTypeDef Interface_SPI::TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16
 
 		if(type == TXRX_Type::RX)
 		{
+			tmp_data[0] = 0;
 			dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(&tmp_data),size);
 			dma_tx.MINC(DISABLE);
 		}
@@ -402,7 +403,6 @@ SYS_StatusTypeDef Interface_SPI::TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16
 
 		if(type == TXRX_Type::TX)
 		{
-			tmp_data[0] = 0;
 			dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(&tmp_data),size);
 			dma_rx.MINC(DISABLE);
 		}

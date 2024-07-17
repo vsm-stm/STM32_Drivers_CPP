@@ -105,6 +105,20 @@ void System::Delay_ms(uint32_t delay)
 	}	
 }
 
+void System::Enable_CYCCNT()
+{
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+void System::Delay_us(uint32_t delay)
+{
+	DWT->CYCCNT = 0;
+	uint32_t wait = delay * (SystemCoreClock/1000000);
+
+	while(DWT->CYCCNT < wait);
+}
+
 uint32_t System::SWOTrace(uint8_t *ptr, uint32_t len)
 {
 	for (uint32_t DataIdx = 0; DataIdx < len; DataIdx++)
