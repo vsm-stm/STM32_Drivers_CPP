@@ -176,6 +176,7 @@ public:
 	SYS_StatusTypeDef Receive(uint8_t slave_addr, uint8_t* reg_addr, uint8_t reg_addr_size, uint8_t* data, uint16_t data_size);
 	void IRQHandler();
 	bool IsDataReceived;
+	inline SYS_StatusTypeDef GetStatus(){return status;};
 protected:
 	I2C *i2c;
 	

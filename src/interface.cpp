@@ -682,28 +682,14 @@ SYS_StatusTypeDef Interface_I2C::TXRX(uint8_t slave_addr, uint8_t* reg_addr, uin
 
 void Interface_I2C::IRQHandler()
 {
-	if(i2c->I2Cx->ISR & I2C_ISR_NACKF)
-	{
-		i2c->I2Cx->ICR = I2C_ICR_NACKCF;
-		i2c->I2Cx->CR2 = 0;
-		i2c->I2Cx->CR1 &= ~I2C_CR1_PE;
-		i2c->I2Cx->CR1 |= I2C_CR1_PE;
-
-		dma_tx.Stream(DISABLE);
-		dma_rx.Stream(DISABLE);
-		transfer_count = 0;
-		_slave_addr = 0;
-		data_addr = 0;
-		need_reload_dma = 0;
-		txrx = TXRX_Type::none;
-		status = SYS_OK;
-	}
-
 	if(i2c->I2Cx->ISR & I2C_ISR_STOPF)
 	{
 		while(!(i2c->I2Cx->ISR & I2C_ISR_STOPF)){};
-		i2c->I2Cx->ICR = I2C_ICR_STOPCF | I2C_ICR_NACKCF;
+		i2c->I2Cx->ICR = I2C_ICR_STOPCF | I2C_ICR_NACKCF | I2C_ICR_ARLOCF;
 		i2c->I2Cx->CR2 = 0;
+
+		dma_tx.Stream(DISABLE);
+		dma_rx.Stream(DISABLE);
 
 		transfer_count = 0;
 		_slave_addr = 0;
@@ -737,6 +723,23 @@ void Interface_I2C::IRQHandler()
 			}
 
 		}
+	}
+	else
+	if(i2c->I2Cx->ISR & I2C_ISR_NACKF)
+	{
+		i2c->I2Cx->ICR = I2C_ICR_NACKCF;
+		i2c->I2Cx->CR2 = 0;
+		i2c->I2Cx->CR1 &= ~I2C_CR1_PE;
+		i2c->I2Cx->CR1 |= I2C_CR1_PE;
+
+		dma_tx.Stream(DISABLE);
+		dma_rx.Stream(DISABLE);
+		transfer_count = 0;
+		_slave_addr = 0;
+		data_addr = 0;
+		need_reload_dma = 0;
+		txrx = TXRX_Type::none;
+		status = SYS_OK;
 	}
 
 	if((i2c->I2Cx->ISR & I2C_ISR_TCR)
