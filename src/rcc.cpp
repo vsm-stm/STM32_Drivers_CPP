@@ -86,7 +86,7 @@ SYS_StatusTypeDef ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, 
 								 PLLCfgr.PLL_N << RCC_PLLCFGR_PLLN_Pos |
 								 ((PLLCfgr.PLL_P >> 1) - 1) << RCC_PLLCFGR_PLLP_Pos |
 								 PLLCfgr.PLL_Q << RCC_PLLCFGR_PLLQ_Pos;
-#ifdef STM32F446xx	
+#if defined(STM32F446xx) || defined(STM32F767xx)
 		RCC->PLLCFGR |= PLLCfgr.PLL_R << RCC_PLLCFGR_PLLR_Pos;
 #endif
 
