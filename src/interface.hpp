@@ -82,12 +82,14 @@ public:
 
 	void IRQHandler();
 	bool IsDataReceived;
+	uint16_t Recieve_Count;
 protected:
 	USART *usart;
 	
 	SYS_StatusTypeDef status_tx, status_rx;
 	
 	bool ContReceive;
+	uint16_t Count_To_Receive;
 
 	typedef struct _data
 	{

@@ -120,8 +120,9 @@ SYS_StatusTypeDef Interface_USART::RX(uint8_t* data, uint16_t data_size)
 	if(status_rx == SYS_OK)
 	{
 		status_rx = SYS_BUSY;
+		Count_To_Receive = data_size;
 
-		dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(&data), data_size);
+		dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(data), data_size);
 		usart->Enable_IRQ(USART::IRQ::IDLE);
 		dma_rx.ClearFlags();
 		dma_rx.Stream(ENABLE);
@@ -226,6 +227,7 @@ void Interface_USART::IRQHandler()
 #endif
 	{
 		IsDataReceived = true;
+		Recieve_Count = Count_To_Receive - dma_rx.DMA_Stream_X->NDTR;
 		dma_rx.Stream(DISABLE);
 
 #if defined(STM32F4)
