@@ -80,6 +80,8 @@ public:
 	SYS_StatusTypeDef Receive(uint16_t data_size, bool cont);
 	SYS_StatusTypeDef Receive(uint16_t data_size);
 
+	void Stop_Receive();
+
 	void IRQHandler();
 	bool IsDataReceived;
 	uint16_t Receive_Count;

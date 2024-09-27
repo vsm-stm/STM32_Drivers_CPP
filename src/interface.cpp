@@ -181,6 +181,14 @@ SYS_StatusTypeDef Interface_USART::Receive(uint16_t data_size)
 		return Receive(NULL, data_size, false);
 };
 
+void Interface_USART::Stop_Receive()
+{
+	dma_rx.Stream(DISABLE);
+	usart->Disable_IRQ(USART::IRQ::IDLE);
+	status_rx = SYS_StatusTypeDef::SYS_OK;
+};
+
+
 void Interface_USART::IRQHandler()
 {
 	// Handle Transmit Complete (TC) interrupt
