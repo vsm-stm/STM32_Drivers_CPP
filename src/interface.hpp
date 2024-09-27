@@ -82,7 +82,7 @@ public:
 
 	void IRQHandler();
 	bool IsDataReceived;
-	uint16_t Recieve_Count;
+	uint16_t Receive_Count;
 protected:
 	USART *usart;
 	

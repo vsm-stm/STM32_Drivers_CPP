@@ -227,7 +227,7 @@ void Interface_USART::IRQHandler()
 #endif
 	{
 		IsDataReceived = true;
-		Recieve_Count = Count_To_Receive - dma_rx.DMA_Stream_X->NDTR;
+		Receive_Count = Count_To_Receive - dma_rx.DMA_Stream_X->NDTR;
 		dma_rx.Stream(DISABLE);
 
 #if defined(STM32F4)
