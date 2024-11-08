@@ -103,6 +103,8 @@ protected:
 
 	inline SYS_StatusTypeDef TX(uint8_t* data, uint16_t data_size);
 	inline SYS_StatusTypeDef RX(uint8_t* data, uint16_t data_size);
+
+	inline void Change_baud(uint32_t new_baud) {usart->SetBaud(new_baud);};
 };
 
 class Interface_SPI : public Interface_DMA
