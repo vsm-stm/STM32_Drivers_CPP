@@ -434,13 +434,15 @@ SYS_StatusTypeDef Interface_SPI::TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16
 
 		spi->SlaveSelect(ENABLE);
 
-		spi->DMA_TX(ENABLE);
+		dma_rx.Stream(ENABLE);
+
 		spi->DMA_RX(ENABLE);
 
 		dma_tx.Stream(ENABLE);
-		dma_rx.Stream(ENABLE);
 
 		spi->Enable();
+
+		spi->DMA_TX(ENABLE);
 	}
 	return status;
 }
