@@ -118,7 +118,7 @@ SYS_StatusTypeDef TIM::SetFreq(uint32_t freq)
 		if(arr > 0xFFFF)
 			return SYS_ERROR;
 
-		pcs = bus_clk/((arr+1) * freq *2) - 1;
+		pcs = bus_clk/((arr+1) * freq) - 1;
 
 	} while (pcs > 0xFFFF);	
 	
