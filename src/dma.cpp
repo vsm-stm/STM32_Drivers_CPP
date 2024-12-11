@@ -201,27 +201,17 @@ SYS_StatusTypeDef DMA_Sx::SetUp(
 	return SYS_OK;
 }
 
-SYS_StatusTypeDef DMA_Sx::SetMemAddr(uint32_t addr)
-{
-	// Check if the memory address is valid
-	if (addr == 0)
-		return SYS_ERROR;
-
-	// Set the memory address for the DMA stream
-	DMA_Stream_X->M0AR = addr;
-
-	return SYS_OK;
-}
-
 SYS_StatusTypeDef DMA_Sx::SetMemAddr(uint32_t addr, uint16_t size)
 {
 	// Check if the size is valid
-	if (size == 0)
+	if ((size == 0)
+	|| (addr == 0))
 		return SYS_ERROR;
 
 	// Set the memory size and address for the DMA stream
 	DMA_Stream_X->NDTR = size;
+	DMA_Stream_X->M0AR = addr;
 
 	// Call the function to set the memory address
-	return SetMemAddr(addr);
+	return SYS_OK;
 }

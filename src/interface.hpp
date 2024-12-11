@@ -8,9 +8,6 @@
 #include <i2c.hpp>
 #include <gpio.hpp>
 
-#include <list>
-#include <string.h>
-
 class Interface_DMA
 {
 public:
@@ -37,29 +34,29 @@ protected:
 	};
 };
 
-template <typename data_typedef>
-class Buffer
-{
-public:
-	Buffer(
-		uint32_t tx_buffer_size,
-		uint32_t rx_buffer_size) :
-									tx_buffer_size_max(tx_buffer_size),
-									rx_buffer_size_max(rx_buffer_size) {};
-	~Buffer(){};
+// template <typename data_typedef>
+// class Buffer
+// {
+// public:
+// 	Buffer(
+// 		uint32_t tx_buffer_size,
+// 		uint32_t rx_buffer_size) :
+// 									tx_buffer_size_max(tx_buffer_size),
+// 									rx_buffer_size_max(rx_buffer_size) {};
+// 	~Buffer(){};
 
-	const uint32_t tx_buffer_size_max;
-	const uint32_t rx_buffer_size_max;
+// 	const uint32_t tx_buffer_size_max;
+// 	const uint32_t rx_buffer_size_max;
 
-	std::list<data_typedef> tx;
-	std::list<data_typedef> rx;
+// 	std::list<data_typedef> tx;
+// 	std::list<data_typedef> rx;
 
-	uint32_t GetRxDataFirstSize() { return rx.front().size;};
-	uint32_t GetRxDataCount() { return rx.size();};
+// 	uint32_t GetRxDataFirstSize() { return rx.front().size;};
+// 	uint32_t GetRxDataCount() { return rx.size();};
 
-	bool rx_buffer_full;
+// 	bool rx_buffer_full;
 
-};
+// };
 
 class Interface_USART : public Interface_DMA
 {
@@ -77,8 +74,6 @@ public:
 	SYS_StatusTypeDef Send(uint8_t* data, uint16_t data_size);
 	SYS_StatusTypeDef Receive(uint8_t* data, uint16_t data_size, bool cont);
 	SYS_StatusTypeDef Receive(uint8_t* data, uint16_t data_size);
-	SYS_StatusTypeDef Receive(uint16_t data_size, bool cont);
-	SYS_StatusTypeDef Receive(uint16_t data_size);
 
 	void Stop_Receive();
 
@@ -99,10 +94,7 @@ protected:
 		uint16_t size;
 	}data_typedef;
 
-	Buffer<data_typedef> buffer;
-
-	inline SYS_StatusTypeDef TX(uint8_t* data, uint16_t data_size);
-	inline SYS_StatusTypeDef RX(uint8_t* data, uint16_t data_size);
+	// Buffer<data_typedef> buffer;
 
 	inline void Change_baud(uint32_t new_baud) {usart->SetBaud(new_baud);};
 };
@@ -125,23 +117,23 @@ public:
 	SYS_StatusTypeDef Send(uint8_t* tx_data,uint16_t data_size);
 	SYS_StatusTypeDef Receive(uint8_t* rx_data, uint16_t data_size);
 
-	SYS_StatusTypeDef GetData(uint8_t* data, uint16_t size)
-	{
-		if(buffer.rx.size() == 0)
-			return SYS_ERROR;
-		memcpy(data, buffer.rx.front().rx_data_ptr, size);
-		delete [] buffer.rx.front().rx_data_ptr;
-		buffer.rx.erase(buffer.rx.begin());
+	// SYS_StatusTypeDef GetData(uint8_t* data, uint16_t size)
+	// {
+	// 	if(buffer.rx.size() == 0)
+	// 		return SYS_ERROR;
+	// 	memcpy(data, buffer.rx.front().rx_data_ptr, size);
+	// 	delete [] buffer.rx.front().rx_data_ptr;
+	// 	buffer.rx.erase(buffer.rx.begin());
 
-		return SYS_OK;
-	};
+	// 	return SYS_OK;
+	// };
 
-	void GetReceivedData(uint8_t *data, uint16_t data_size)
-	{
-		if(data_size != buffer.GetRxDataFirstSize())
-			return;
-		GetData(data, data_size);
-	};
+	// void GetReceivedData(uint8_t *data, uint16_t data_size)
+	// {
+	// 	if(data_size != buffer.GetRxDataFirstSize())
+	// 		return;
+	// 	GetData(data, data_size);
+	// };
 
 	void IRQHandler();
 	bool IsDataReceived;
@@ -162,7 +154,7 @@ protected:
 		TXRX_Type type;
 	}rxtx_data_typedef;
 
-	Buffer<rxtx_data_typedef> buffer;
+	// Buffer<rxtx_data_typedef> buffer;
 
 	inline SYS_StatusTypeDef TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_size, TXRX_Type type);
 };

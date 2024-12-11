@@ -80,14 +80,6 @@ public:
 		DIR direction,
 		SIZE data_size);
 
-
-	/**
-	 * @brief Function to set memory address for the DMA stream.
-	 * @param addr Memory address.
-	 * @return Status of the memory address setting operation.
-	 */
-	SYS_StatusTypeDef SetMemAddr(uint32_t addr);
-
 	/**
 	 * @brief Overloaded function to set memory address and size for the DMA stream.
 	 * @param addr Memory address.

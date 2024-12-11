@@ -20,8 +20,8 @@ Interface_USART::Interface_USART(
 	uint32_t tx_buffer_size,
 	uint32_t rx_buffer_size) :
 									Interface_DMA(_dma_tx, _dma_rx),
-									usart(_usart),
-									buffer(tx_buffer_size, rx_buffer_size)
+									usart(_usart)//,
+									// buffer(tx_buffer_size, rx_buffer_size)
 {
 	tx_settings.channel = 4;
 	rx_settings.channel = 4;
@@ -59,11 +59,17 @@ SYS_StatusTypeDef Interface_USART::Init()
 	if(dma_rx.DMA_Stream_X != NULL)
 		status_rx = SYS_OK;
 
+	usart->EnableNVIC_IRQ();
+
 	return SYS_OK;
 };
 
-SYS_StatusTypeDef Interface_USART::TX(uint8_t* data, uint16_t data_size)
+SYS_StatusTypeDef Interface_USART::Send(uint8_t* data, uint16_t data_size)
 {
+	if((data == NULL)
+	|| (data_size == 0))
+		return SYS_ERROR;
+
 	if(status_tx == SYS_OK)
 	{
 		status_tx = SYS_BUSY;
@@ -82,40 +88,15 @@ SYS_StatusTypeDef Interface_USART::TX(uint8_t* data, uint16_t data_size)
 	return status_tx;
 };
 
-SYS_StatusTypeDef Interface_USART::Send(uint8_t* data, uint16_t data_size)
+SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size, bool cont)
 {
-	if((data == NULL)
-	|| (data_size == 0))
+	ContReceive = cont;
+	if(data == NULL)
 		return SYS_ERROR;
-	if(buffer.tx_buffer_size_max == 0)
-	{
-		return TX(data, data_size);
-	}
-	else
-	{
-		if(buffer.tx.size() >= buffer.tx_buffer_size_max)
-			return SYS_ERROR;
-
-		buffer.tx.emplace_back();
-		data_typedef *tmp = &buffer.tx.back();
-		tmp->size = data_size;
-		tmp->data_ptr = new uint8_t[data_size];
-		if(tmp->data_ptr == 0)
-			return SYS_ERROR;
-
-		memcpy(tmp->data_ptr, data, data_size);
-		
-		if((buffer.tx.size() == 1)
-		&& (status_tx == SYS_OK))
-		{
-			return TX(buffer.tx.front().data_ptr, buffer.tx.front().size);
-		}
-	}
-
-	return SYS_OK;
+	return Receive(data, data_size);
 };
 
-SYS_StatusTypeDef Interface_USART::RX(uint8_t* data, uint16_t data_size)
+SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size)
 {
 	if(status_rx == SYS_OK)
 	{
@@ -130,56 +111,21 @@ SYS_StatusTypeDef Interface_USART::RX(uint8_t* data, uint16_t data_size)
 	return status_rx;
 };
 
-SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size, bool cont)
-{
-	ContReceive = cont;
+// SYS_StatusTypeDef Interface_USART::Receive(uint16_t data_size, bool cont)
+// {
+// 	if(buffer.rx_buffer_size_max == 0)
+// 		return SYS_ERROR;
+// 	else
+// 		return Receive(NULL, data_size, cont);
+// };
 
-	if(buffer.rx_buffer_size_max == 0)
-	{
-		if(data == NULL)
-			return SYS_ERROR;
-		return RX(data, data_size);
-	}
-	else
-	{
-		if(buffer.rx_buffer_size_max == buffer.rx.size())
-			return SYS_ERROR;
-
-		buffer.rx.emplace_back();
-		buffer.rx.back().size = data_size;
-		buffer.rx.back().data_ptr = new uint8_t[data_size];
-		uint8_t* t = buffer.rx.back().data_ptr;
-		if(t == 0)
-			return SYS_ERROR;
-
-		if(status_rx == SYS_OK)
-		{
-			return RX(buffer.rx.front().data_ptr, buffer.rx.front().size);
-		}
-	}
-	return SYS_OK;
-};
-
-SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size)
-{
-	return Receive(data, data_size, false);
-};
-
-SYS_StatusTypeDef Interface_USART::Receive(uint16_t data_size, bool cont)
-{
-	if(buffer.rx_buffer_size_max == 0)
-		return SYS_ERROR;
-	else
-		return Receive(NULL, data_size, cont);
-};
-
-SYS_StatusTypeDef Interface_USART::Receive(uint16_t data_size)
-{
-	if(buffer.rx_buffer_size_max == 0)
-		return SYS_ERROR;
-	else
-		return Receive(NULL, data_size, false);
-};
+// SYS_StatusTypeDef Interface_USART::Receive(uint16_t data_size)
+// {
+// 	if(buffer.rx_buffer_size_max == 0)
+// 		return SYS_ERROR;
+// 	else
+// 		return Receive(NULL, data_size, false);
+// };
 
 void Interface_USART::Stop_Receive()
 {
@@ -207,23 +153,23 @@ void Interface_USART::IRQHandler()
 		usart->Disable_IRQ(USART::IRQ::TC);
 		status_tx = SYS_OK;
 
-		if(buffer.tx_buffer_size_max != 0)
-		{
+		// if(buffer.tx_buffer_size_max != 0)
+		// {
 			
-			data_typedef *tmp = &buffer.tx.front();
-			if(buffer.tx.size() != 0)
-			{
+		// 	data_typedef *tmp = &buffer.tx.front();
+		// 	if(buffer.tx.size() != 0)
+		// 	{
 				
-				delete [] tmp->data_ptr;
-				buffer.tx.pop_front();
-			}
+		// 		delete [] tmp->data_ptr;
+		// 		buffer.tx.pop_front();
+		// 	}
 
-			if(!buffer.tx.empty())
-			{
-				tmp = &buffer.tx.front();
-				status_tx = TX(tmp->data_ptr, tmp->size);
-			}
-		}
+		// 	if(!buffer.tx.empty())
+		// 	{
+		// 		tmp = &buffer.tx.front();
+		// 		status_tx = TX(tmp->data_ptr, tmp->size);
+		// 	}
+		// }
 	}
 
 	// Handle Idle Line Detected interrupt
@@ -246,25 +192,26 @@ void Interface_USART::IRQHandler()
 
 		status_rx = SYS_OK;
 
-		if(buffer.rx_buffer_size_max != 0)
-		{
-			buffer.rx.back().size -= dma_rx.DMA_Stream_X->NDTR;
-		}
+		// if(buffer.rx_buffer_size_max != 0)
+		// {
+		// 	buffer.rx.back().size -= dma_rx.DMA_Stream_X->NDTR;
+		// }
 
-		if(ContReceive)
-		{
-			if(buffer.rx_buffer_size_max == 0)
-			{
-				dma_rx.ClearFlags();
-				dma_rx.Stream(ENABLE);
-				status_rx = SYS_BUSY;
-			}
-			else
-			{
-				status_rx = Receive(buffer.rx.back().size, ContReceive);
-			}
-		}
-		else
+		// if(ContReceive)
+		// {
+		// 	if(buffer.rx_buffer_size_max == 0)
+		// 	{
+		// 		dma_rx.ClearFlags();
+		// 		dma_rx.Stream(ENABLE);
+		// 		status_rx = SYS_BUSY;
+		// 	}
+		// 	else
+		// 	{
+		// 		status_rx = Receive(buffer.rx.back().size, ContReceive);
+		// 	}
+		// }
+		// else
+		if(!ContReceive)
 		{
 			usart->Disable_IRQ(USART::IRQ::IDLE);
 		}
@@ -283,8 +230,8 @@ Interface_SPI::Interface_SPI(
 	uint32_t rx_buffer_size) :
 								Interface_DMA(_dma_tx, _dma_rx),
 								spi(_spi),
-								spi_init_data(_init_data),
-								buffer(tx_buffer_size, rx_buffer_size)
+								spi_init_data(_init_data)//,
+								// buffer(tx_buffer_size, rx_buffer_size)
 {
 	tx_settings.peripheral_type = DMA_Sx::Per_Type::spi;
 	rx_settings.peripheral_type = DMA_Sx::Per_Type::spi;
@@ -343,48 +290,48 @@ SYS_StatusTypeDef Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data
 	&& (rx_data != NULL))
 		txrx_type = TXRX_Type::RX;
 
-	if(buffer.tx_buffer_size_max == 0)
-	{
+	// if(buffer.tx_buffer_size_max == 0)
+	// {
 		return TXRX(tx_data, rx_data, data_size, txrx_type);
-	}
-	else
-	{
-		if(buffer.tx.size() >= buffer.tx_buffer_size_max)
-			return SYS_ERROR;
+	// }
+	// else
+	// {
+	// 	if(buffer.tx.size() >= buffer.tx_buffer_size_max)
+	// 		return SYS_ERROR;
 
-		buffer.tx.emplace_back();
-		rxtx_data_typedef *tmp = &buffer.tx.back();
-		tmp->size = data_size;
-		tmp->type = txrx_type;
-		if(txrx_type != TXRX_Type::RX)
-		{
-			tmp->tx_data_ptr = new uint8_t[data_size];
-			if(tmp->tx_data_ptr == 0)
-				return SYS_ERROR;
+	// 	buffer.tx.emplace_back();
+	// 	rxtx_data_typedef *tmp = &buffer.tx.back();
+	// 	tmp->size = data_size;
+	// 	tmp->type = txrx_type;
+	// 	if(txrx_type != TXRX_Type::RX)
+	// 	{
+	// 		tmp->tx_data_ptr = new uint8_t[data_size];
+	// 		if(tmp->tx_data_ptr == 0)
+	// 			return SYS_ERROR;
 
-			memcpy(tmp->tx_data_ptr, tx_data, data_size);
-		}
-		if(txrx_type != TXRX_Type::TX)
-		{
-			if(buffer.rx_buffer_size_max == 0)
-			{
-				tmp->rx_data_ptr = new uint8_t[data_size];
-				if(tmp->rx_data_ptr == 0)
-					return SYS_ERROR;
-			}
-			else
-			{
-				tmp->rx_data_ptr = rx_data;
-			}
-		}
+	// 		memcpy(tmp->tx_data_ptr, tx_data, data_size);
+	// 	}
+	// 	if(txrx_type != TXRX_Type::TX)
+	// 	{
+	// 		if(buffer.rx_buffer_size_max == 0)
+	// 		{
+	// 			tmp->rx_data_ptr = new uint8_t[data_size];
+	// 			if(tmp->rx_data_ptr == 0)
+	// 				return SYS_ERROR;
+	// 		}
+	// 		else
+	// 		{
+	// 			tmp->rx_data_ptr = rx_data;
+	// 		}
+	// 	}
 
-		if((buffer.tx.size() == 1)
-		&& (status == SYS_OK))
-		{
-			tmp = &buffer.tx.front();
-			return TXRX(tmp->tx_data_ptr, tmp->rx_data_ptr, tmp->size, tmp->type);
-		}
-	}
+	// 	if((buffer.tx.size() == 1)
+	// 	&& (status == SYS_OK))
+	// 	{
+	// 		tmp = &buffer.tx.front();
+	// 		return TXRX(tmp->tx_data_ptr, tmp->rx_data_ptr, tmp->size, tmp->type);
+	// 	}
+	// }
 	return SYS_OK;
 };
 
@@ -461,35 +408,35 @@ void Interface_SPI::IRQHandler()
 
 	status = SYS_OK;
 
-	if(buffer.tx_buffer_size_max != 0)
-	{
-		rxtx_data_typedef *tmp = &buffer.tx.front();
-		if(((tmp->type == TXRX_Type::RX)
-		 || (tmp->type == TXRX_Type::TXRX))
-		&& (buffer.rx.size() < buffer.rx_buffer_size_max))
-		{
-			buffer.rx.push_back(*tmp);
-			if(buffer.rx.size() == buffer.rx_buffer_size_max)
-				buffer.rx_buffer_full = true;
-		}
-		else
-		{
-			if((tmp->type == TXRX_Type::TXRX)
-			|| (tmp->type == TXRX_Type::TX))
-				delete [] buffer.tx.front().tx_data_ptr;
-			if((tmp->type == TXRX_Type::TXRX)
-			|| (tmp->type == TXRX_Type::RX))
-				delete [] buffer.tx.front().rx_data_ptr;
-		}
+	// if(buffer.tx_buffer_size_max != 0)
+	// {
+	// 	rxtx_data_typedef *tmp = &buffer.tx.front();
+	// 	if(((tmp->type == TXRX_Type::RX)
+	// 	 || (tmp->type == TXRX_Type::TXRX))
+	// 	&& (buffer.rx.size() < buffer.rx_buffer_size_max))
+	// 	{
+	// 		buffer.rx.push_back(*tmp);
+	// 		if(buffer.rx.size() == buffer.rx_buffer_size_max)
+	// 			buffer.rx_buffer_full = true;
+	// 	}
+	// 	else
+	// 	{
+	// 		if((tmp->type == TXRX_Type::TXRX)
+	// 		|| (tmp->type == TXRX_Type::TX))
+	// 			delete [] buffer.tx.front().tx_data_ptr;
+	// 		if((tmp->type == TXRX_Type::TXRX)
+	// 		|| (tmp->type == TXRX_Type::RX))
+	// 			delete [] buffer.tx.front().rx_data_ptr;
+	// 	}
 
-		buffer.tx.pop_front();
+	// 	buffer.tx.pop_front();
 
-		if(!buffer.tx.empty())
-		{
-			rxtx_data_typedef *tmp = &buffer.tx.front();
-			status = TXRX(tmp->tx_data_ptr, tmp->rx_data_ptr, tmp->size, tmp->type);
-		}
-	}
+	// 	if(!buffer.tx.empty())
+	// 	{
+	// 		rxtx_data_typedef *tmp = &buffer.tx.front();
+	// 		status = TXRX(tmp->tx_data_ptr, tmp->rx_data_ptr, tmp->size, tmp->type);
+	// 	}
+	// }
 };
 
 

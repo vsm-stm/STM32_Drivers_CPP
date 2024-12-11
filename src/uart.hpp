@@ -89,27 +89,18 @@ public:
 	 * @brief Enable the specified USART IRQ.
 	 * @param irq The IRQ to enable.
 	 */
-	void Enable_IRQ(IRQ irq)
+	inline void Enable_IRQ(IRQ irq)
 	{
 		USARTx->CR1 |= static_cast<uint32_t>(irq);
-
-		if (!(NVIC_GetEnableIRQ(IRQ_vector)))
-		{
-			NVIC_EnableIRQ(IRQ_vector);
-		}
 	}
 
 	/**
 	 * @brief Disable the specified USART IRQ.
 	 * @param irq The IRQ to disable.
 	 */
-	void Disable_IRQ(IRQ irq)
+	inline void Disable_IRQ(IRQ irq)
 	{
 		USARTx->CR1 &= ~(static_cast<uint32_t>(irq));
-		if (!(USARTx->CR1 & (USART_CR1_TXEIE | USART_CR1_TCIE | USART_CR1_RXNEIE | USART_CR1_IDLEIE)))
-		{
-			NVIC_DisableIRQ(IRQ_vector);
-		}
 	}
 
 	inline void DMA(FunctionalState en)
@@ -167,6 +158,16 @@ public:
 	inline void SetParity(uint32_t parity)
 	{
 		// Not implemented
+	}
+
+	inline void EnableNVIC_IRQ()
+	{
+		NVIC_EnableIRQ(IRQ_vector);
+	}
+
+	inline void DisableNVIC_IRQ()
+	{
+		NVIC_DisableIRQ(IRQ_vector);
 	}
 
 private:
