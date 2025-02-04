@@ -23,6 +23,10 @@
 #define SYS_CLK_LIMIT		216000000 
 #define APB1_CLK_LIMIT		54000000
 #define APB2_CLK_LIMIT		108000000
+#elif defined(STM32F411xE)
+#define SYS_CLK_LIMIT		100000000 
+#define APB1_CLK_LIMIT		(SYS_CLK_LIMIT/2)
+#define APB2_CLK_LIMIT		(SYS_CLK_LIMIT)
 #endif
 
 class ClockSystem

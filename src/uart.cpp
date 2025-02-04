@@ -25,6 +25,8 @@ SYS_StatusTypeDef USART::SetUp()
 		IRQ_vector = USART2_IRQn;
 		af = 7;
 	}
+#ifndef STM32F411xE
+
 	else if (USARTx == USART3)
 	{
 		RCC->APB1ENR |= RCC_APB1ENR_USART3EN;
@@ -53,6 +55,7 @@ SYS_StatusTypeDef USART::SetUp()
 		IRQ_vector = USART6_IRQn;
 		af = 8;
 	}
+#endif
 	else
 		return SYS_ERROR;
 
