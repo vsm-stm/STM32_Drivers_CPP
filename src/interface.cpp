@@ -440,8 +440,8 @@ void Interface_SPI::IRQHandler()
 };
 
 
-
-#if defined(STM32F7)
+//#if defined(STM32F7) 
+#if defined(STM32F8) // todo F7 fix
 Interface_I2C::Interface_I2C(
 		I2C *_i2c,
 		DMA_Stream_TypeDef *_dma_tx,

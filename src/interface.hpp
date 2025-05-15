@@ -197,7 +197,7 @@ protected:
 		TXRX_Type type;
 	}data_typedef;
 
-	Buffer<data_typedef> buffer;
+	// Buffer<data_typedef> buffer;
 	inline SYS_StatusTypeDef Send_Receive(uint8_t slave_addr, uint8_t* reg_addr, uint8_t reg_addr_size, uint8_t* data, uint16_t data_size, TXRX_Type type);
 	inline SYS_StatusTypeDef TXRX(uint8_t slave_addr, uint8_t* reg_addr, uint8_t reg_addr_size, uint8_t* data, uint16_t data_size, TXRX_Type type);
 };
