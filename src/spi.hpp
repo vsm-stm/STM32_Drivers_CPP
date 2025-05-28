@@ -175,7 +175,7 @@ public:
 			NVIC_DisableIRQ(IRQ_vector);
 		}
 	}
-
+	SYS_StatusTypeDef Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout);
 	SYS_StatusTypeDef Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
 
 protected:

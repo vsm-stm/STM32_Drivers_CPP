@@ -126,7 +126,7 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_fram
 	return SYS_OK;
 }
 
- SYS_StatusTypeDef SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
+SYS_StatusTypeDef SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
 
@@ -140,16 +140,59 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_fram
 			if(System::GetTick() - tick_start > timeout)
 				return SYS_ERROR;
 		};
+
 		rx_data[i] = SPIx->DR;
 	}
 
 	SPIx->CR1 &= ~SPI_CR1_SPE;
+
 	while(SPIx->SR & SPI_SR_BSY)
 	{
 		if(System::GetTick() - tick_start > timeout)
 			return SYS_ERROR;
 	};
 	
+	SS.SetLevel(1);
+	return SYS_OK;
+}
+
+SYS_StatusTypeDef SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
+{
+	uint32_t tick_start = System::GetTick();
+
+	SS.SetLevel(0);
+	SPIx->CR1 |= SPI_CR1_SPE;
+	for(uint32_t i = 0;i<data_len;i++)
+	{
+		while(!(SPIx->SR & SPI_SR_TXE))
+		{
+			if(System::GetTick() - tick_start > timeout)
+				return SYS_ERROR;
+		};
+
+		// SPIx->DR = tx_data[i];
+
+
+		// if((data_len - i) > 1)
+		// {
+		// 	SPIx->DR = *((uint16_t*)&tx_data[i]);
+		// 	i++;
+		// }
+		// else
+		// {
+			*((uint8_t *)(&SPIx->DR)) = tx_data[i];
+		// }
+
+
+	}
+
+	while(SPIx->SR & SPI_SR_BSY)
+	{
+		if(System::GetTick() - tick_start > timeout)
+			return SYS_ERROR;
+	};
+	SPIx->CR1 &= ~SPI_CR1_SPE;
+
 	SS.SetLevel(1);
 	return SYS_OK;
 }
