@@ -75,6 +75,9 @@ public:
 	SYS_StatusTypeDef Receive(uint8_t* data, uint16_t data_size, bool cont);
 	SYS_StatusTypeDef Receive(uint8_t* data, uint16_t data_size);
 
+	inline SYS_StatusTypeDef GetRxStatus() const { return status_rx; }
+	inline SYS_StatusTypeDef GetTxStatus() const { return status_tx; }
+
 	void Stop_Receive();
 
 	void IRQHandler();
