@@ -106,8 +106,9 @@ public:
 	PIN(PIN &&) = default;
 	PIN &operator=(PIN const &) = default;
 	PIN &operator=(PIN &&) = default;
-	void operator=(bool b) {
+	PIN& operator=(bool b) {
 		SetLevel(b);
+		return *this;
 	};
 
 	/**
@@ -277,6 +278,11 @@ public:
 
 	void ToggleAll() {
 		ToggleAllImpl(std::make_index_sequence<N>{});
+	}
+
+	PinArray& operator=(uint32_t value) {
+		SetLevelAll(value);
+		return *this;
 	}
 	// SYS_StatusTypeDef SetUpAll(TYPE type, uint8_t af) const {
 	// 	[&]<size_t... I>(std::index_sequence<I...>) {
