@@ -142,12 +142,12 @@ std::map<DMA_Stream_TypeDef*, DMA_Sx::dma_sets_typedef> used_dma;
 }dma_using;
 
 
-SYS_StatusTypeDef DMA_Sx::SetUp(StreamSettings settings)
+SysInitStatus DMA_Sx::SetUp(StreamSettings settings)
 {
 	return SetUp(settings.channel, settings.peripheral_address, settings.peripheral_type, settings.direction, settings.data_size);
 };
 
-SYS_StatusTypeDef DMA_Sx::SetUp(
+SysInitStatus DMA_Sx::SetUp(
 		uint32_t channel,
 		uint32_t peripheral_address,
 		Per_Type peripheral_type,
@@ -156,7 +156,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp(
 {
 	if((dma_using.used_dma[DMA_Stream_X].used == true)
 	|| !(IS_DMA_STREAM_ALL_INSTANCE(DMA_Stream_X)))
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 	else
 		dma_using.used_dma[DMA_Stream_X].used = true;
 
@@ -174,7 +174,7 @@ SYS_StatusTypeDef DMA_Sx::SetUp(
 
 	// Set peripheral address for the DMA stream
 	if(peripheral_address == 0)
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 	else
 		DMA_Stream_X->PAR = peripheral_address;
 	
@@ -198,20 +198,20 @@ SYS_StatusTypeDef DMA_Sx::SetUp(
 	// Apply the configuration to the DMA control register
 	DMA_Stream_X->CR = sets;
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
-SYS_StatusTypeDef DMA_Sx::SetMemAddr(uint32_t addr, uint16_t size)
+SysStatus DMA_Sx::SetMemAddr(uint32_t addr, uint16_t size)
 {
 	// Check if the size is valid
 	if ((size == 0)
 	|| (addr == 0))
-		return SYS_ERROR;
+		return SysStatus::Error;
 
 	// Set the memory size and address for the DMA stream
 	DMA_Stream_X->NDTR = size;
 	DMA_Stream_X->M0AR = addr;
 
 	// Call the function to set the memory address
-	return SYS_OK;
+	return SysStatus::OK;
 }

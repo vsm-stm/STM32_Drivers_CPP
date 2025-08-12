@@ -1,10 +1,10 @@
 #include <interface.hpp>
 
-SYS_StatusTypeDef Interface_DMA::DMA_SetUp()
+SysInitStatus Interface_DMA::DMA_SetUp()
 {
-	SYS_StatusTypeDef status;
+	SysInitStatus status;
 	status = dma_tx.SetUp(tx_settings);
-	if(status == SYS_OK)
+	if(status == SysInitStatus::InitOK)
 	{
 		dma_tx.MINC(ENABLE);
 		status = dma_rx.SetUp(rx_settings);
@@ -44,35 +44,35 @@ Interface_USART::Interface_USART(
 		rx_settings.channel = 5;
 	}
 
-	status_tx = SYS_NO_Init;
-	status_rx = SYS_NO_Init;
+	status_tx = SysStatus::NotInit;
+	status_rx = SysStatus::NotInit;
 
 };
 
-SYS_StatusTypeDef Interface_USART::Init()
+SysInitStatus Interface_USART::Init()
 {
 	usart->SetUp();
 	usart->DMA(ENABLE);
 	DMA_SetUp();
 	if(dma_tx.DMA_Stream_X != NULL)
-		status_tx = SYS_OK;
+		status_tx = SysStatus::OK;
 	if(dma_rx.DMA_Stream_X != NULL)
-		status_rx = SYS_OK;
+		status_rx = SysStatus::OK;
 
 	usart->EnableNVIC_IRQ();
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 };
 
-SYS_StatusTypeDef Interface_USART::Send(uint8_t* data, uint16_t data_size)
+SysStatus Interface_USART::Send(uint8_t* data, uint16_t data_size)
 {
 	if((data == NULL)
 	|| (data_size == 0))
-		return SYS_ERROR;
+		return SysStatus::Error;
 
-	if(status_tx == SYS_OK)
+	if(status_tx == SysStatus::OK)
 	{
-		status_tx = SYS_BUSY;
+		status_tx = SysStatus::Busy;
 
 		dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(data), data_size);
 #if defined(STM32F4)
@@ -88,19 +88,19 @@ SYS_StatusTypeDef Interface_USART::Send(uint8_t* data, uint16_t data_size)
 	return status_tx;
 };
 
-SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size, bool cont)
+SysStatus Interface_USART::Receive(uint8_t* data, uint16_t data_size, bool cont)
 {
 	ContReceive = cont;
 	if(data == NULL)
-		return SYS_ERROR;
+		return SysStatus::Error;
 	return Receive(data, data_size);
 };
 
-SYS_StatusTypeDef Interface_USART::Receive(uint8_t* data, uint16_t data_size)
+SysStatus Interface_USART::Receive(uint8_t* data, uint16_t data_size)
 {
-	if(status_rx == SYS_OK)
+	if(status_rx == SysStatus::OK)
 	{
-		status_rx = SYS_BUSY;
+		status_rx = SysStatus::Busy;
 		Count_To_Receive = data_size;
 
 		dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(data), data_size);
@@ -131,7 +131,7 @@ void Interface_USART::Stop_Receive()
 {
 	dma_rx.Stream(DISABLE);
 	usart->Disable_IRQ(USART::IRQ::IDLE);
-	status_rx = SYS_StatusTypeDef::SYS_OK;
+	status_rx = SysStatus::OK;
 };
 
 
@@ -151,7 +151,7 @@ void Interface_USART::IRQHandler()
 #endif
 	
 		usart->Disable_IRQ(USART::IRQ::TC);
-		status_tx = SYS_OK;
+		status_tx = SysStatus::OK;
 
 		// if(buffer.tx_buffer_size_max != 0)
 		// {
@@ -190,7 +190,7 @@ void Interface_USART::IRQHandler()
 		usart->USARTx->ICR = USART_ICR_IDLECF;
 #endif
 
-		status_rx = SYS_OK;
+		status_rx = SysStatus::OK;
 
 		// if(buffer.rx_buffer_size_max != 0)
 		// {
@@ -259,13 +259,13 @@ Interface_SPI::Interface_SPI(
 	}
 };
 
-SYS_StatusTypeDef Interface_SPI::Init()
+SysInitStatus Interface_SPI::Init()
 {
-	status = spi->SetUp(spi_init_data);
+	SysInitStatus status = spi->SetUp(spi_init_data);
 #if defined(STM32F7)
 	spi->SPIx->CR2 |= SPI_CR2_LDMARX | SPI_CR2_LDMATX;
 #endif
-	if(status == SYS_OK)
+	if(status == SysInitStatus::InitOK)
 	{
 		status = DMA_SetUp();
 	}
@@ -273,12 +273,12 @@ SYS_StatusTypeDef Interface_SPI::Init()
 	return status;
 };
 
-SYS_StatusTypeDef Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_size)
+SysStatus Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_size)
 {
 	if(((tx_data == NULL)
 	 && (rx_data == NULL))
 	|| (data_size == 0))
-		return SYS_ERROR;
+		return SysStatus::Error;
 
 	TXRX_Type txrx_type = TXRX_Type::TXRX;
 
@@ -332,24 +332,24 @@ SYS_StatusTypeDef Interface_SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data
 	// 		return TXRX(tmp->tx_data_ptr, tmp->rx_data_ptr, tmp->size, tmp->type);
 	// 	}
 	// }
-	return SYS_OK;
+	return SysStatus::OK;
 };
 
-SYS_StatusTypeDef Interface_SPI::Send(uint8_t* tx_data,uint16_t data_size)
+SysStatus Interface_SPI::Send(uint8_t* tx_data,uint16_t data_size)
 {
 	return Send_Receive(tx_data, NULL, data_size);
 };
 
-SYS_StatusTypeDef Interface_SPI::Receive(uint8_t* rx_data, uint16_t data_size)
+SysStatus Interface_SPI::Receive(uint8_t* rx_data, uint16_t data_size)
 {
 	return Send_Receive(NULL, rx_data, data_size);
 };
 
-SYS_StatusTypeDef Interface_SPI::TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16_t size, TXRX_Type type)
+SysStatus Interface_SPI::TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16_t size, TXRX_Type type)
 {
-	if(status == SYS_OK)
+	if(status == SysStatus::OK)
 	{
-		status = SYS_BUSY;
+		status = SysStatus::Busy;
 
 		dma_tx.ClearFlags();
 		dma_rx.ClearFlags();
@@ -406,7 +406,7 @@ void Interface_SPI::IRQHandler()
 
 	IsDataReceived = true;
 
-	status = SYS_OK;
+	status = SysStatus::OK;
 
 	// if(buffer.tx_buffer_size_max != 0)
 	// {

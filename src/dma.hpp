@@ -72,8 +72,8 @@ public:
 	 * @brief Function to set up DMA stream.
 	 * @return Status of the setup operation.
 	 */
-	SYS_StatusTypeDef SetUp(StreamSettings settings);
-	SYS_StatusTypeDef SetUp(
+	SysInitStatus SetUp(StreamSettings settings);
+	SysInitStatus SetUp(
 		uint32_t channel,
 		uint32_t peripheral_address,
 		Per_Type peripheral_type,
@@ -86,7 +86,7 @@ public:
 	 * @param size Size of the memory transfer.
 	 * @return Status of the memory address and size setting operation.
 	 */
-	SYS_StatusTypeDef SetMemAddr(uint32_t addr, uint16_t size);
+	SysStatus SetMemAddr(uint32_t addr, uint16_t size);
 
 	/**
 	 * @brief Function to clear DMA flags.

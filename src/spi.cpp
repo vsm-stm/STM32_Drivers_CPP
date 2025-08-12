@@ -1,6 +1,6 @@
 #include <spi.hpp>
 
-SYS_StatusTypeDef SPI::SetHard()
+SysInitStatus SPI::SetHard()
 {
 	// Check the SPI pointer and configure corresponding parameters
 	if(SPIx == SPI1)
@@ -82,11 +82,11 @@ SYS_StatusTypeDef SPI::SetHard()
 	return SYS_OK;
 }
 
-SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br)
+SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br)
 {
 	nss_ctrl = nss;
 	Master_slave = mstr;
-	SYS_StatusTypeDef setup_status = SetHard();
+	SysInitStatus setup_status = SetHard();
 
 	if(setup_status != SYS_OK)
 		return setup_status;
@@ -126,7 +126,7 @@ SYS_StatusTypeDef SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_fram
 	return SYS_OK;
 }
 
-SYS_StatusTypeDef SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
+SysInitStatus SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
 
@@ -156,7 +156,7 @@ SYS_StatusTypeDef SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t
 	return SYS_OK;
 }
 
-SYS_StatusTypeDef SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
+SysInitStatus SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
 

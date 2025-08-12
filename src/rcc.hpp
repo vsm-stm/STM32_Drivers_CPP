@@ -117,71 +117,25 @@ class ClockSystem
 	};
 
 	/**************************************************************************************************
-	 * @brief CLK init directly on HSI or HSE
-	 * @param ClkSrc Part of SystemClockSource enum can be HSI or HSE
-	 ***************************************************************************************************/
-	static SYS_StatusTypeDef Init(SystemClockSource ClkSrc)
-	{
-		return Init(ClkSrc, 0, {AHB_Divider::DIV1,APB1_Divider::DIV1,APB2_Divider::DIV1}, {PLL_ClockSource::NO,2,2,2,2,2});
-	};
-
-	/**************************************************************************************************
-	 * @brief CLK init directly on HSI or HSE
-	 * @param ClkSrc Part of SystemClockSource enum can be HSI or HSE
-	 * @param HSE_Clk HSE Freq
-	 ***************************************************************************************************/
-	static SYS_StatusTypeDef Init(SystemClockSource ClkSrc, uint32_t HSE_Clk)
-	{
-		return Init(ClkSrc, HSE_Clk, {AHB_Divider::DIV1,APB1_Divider::DIV1,APB2_Divider::DIV1}, {PLL_ClockSource::NO,2,2,2,2,2});
-	};
-
-	/**************************************************************************************************
-	 * @brief CLK init directly on HSI or HSE with divide bus CLK
-	 * @param ClkSrc Part of SystemClockSource enum can be HSI or HSE
-	 * @param BusDiv AHB, APB1, APB2 dividers
-	 ***************************************************************************************************/
-	static SYS_StatusTypeDef Init(SystemClockSource ClkSrc, BusDividers BusDiv)
-	{
-		return Init(ClkSrc, 0, BusDiv, {PLL_ClockSource::NO,2,2,2,2,2});
-	};
-
-	/**************************************************************************************************
-	 * @brief CLK init directly on HSI or HSE with divide bus CLK
-	 * @param ClkSrc Part of SystemClockSource enum can be HSI or HSE
-	 * @param HSE_Clk HSE Freq
-	 * @param BusDiv AHB, APB1, APB2 dividers
-	 ***************************************************************************************************/	
-	static SYS_StatusTypeDef Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, BusDividers BusDiv)
-	{
-		return Init(ClkSrc, HSE_Clk, {AHB_Divider::DIV1,APB1_Divider::DIV1,APB2_Divider::DIV1}, {PLL_ClockSource::NO,2,2,2,2,2});
-	};
-
-	/**************************************************************************************************
 	 * @brief CLK init with PLL
 	 * @param ClkSrc Part of SystemClockSource enum can be PLL_P or PLL_R
+	 * @param HSE_Clk HSE Freq
 	 * @param BusDiv AHB, APB1, APB2 dividers
 	 * @param PLLCfgr PLL_Cls_Src, PLL_M, PLL_N, PLL_P, PLL_Q, PLL_R
 	 ***************************************************************************************************/
-	static SYS_StatusTypeDef Init(SystemClockSource ClkSrc, BusDividers BusDiv, PLL_CFGR PLLCfgr)
+	static 			SysInitStatus Init(SystemClockSource ClkSrc = SystemClockSource::HSI, uint32_t HSE_Clk = 0, BusDividers BusDiv = {AHB_Divider::DIV1,APB1_Divider::DIV1,APB2_Divider::DIV1}, PLL_CFGR PLLCfgr = {PLL_ClockSource::NO,2,2,2,2,2});
+	static inline	SysInitStatus Init(SystemClockSource ClkSrc, BusDividers BusDiv = {AHB_Divider::DIV1,APB1_Divider::DIV1,APB2_Divider::DIV1}, PLL_CFGR PLLCfgr = {PLL_ClockSource::NO,2,2,2,2,2})
 	{
 		return Init(ClkSrc, 0, BusDiv, PLLCfgr);
 	};
 
-	/**************************************************************************************************
-	 * @brief CLK init with PLL
-	 * @param ClkSrc Part of SystemClockSource enum can be PLL_P or PLL_R
-	 * @param HSE_Clk HSE Freq
-	 * @param BusDiv AHB, APB1, APB2 dividers
-	 * @param PLLCfgr PLL_Cls_Src, PLL_M, PLL_N, PLL_P, PLL_Q, PLL_R
-	 ***************************************************************************************************/
-	static SYS_StatusTypeDef Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, BusDividers BusDiv, PLL_CFGR PLLCfgr);
 
 	/**************************************************************************************************
 	 * @brief CLK init with calculating PLL value from internal clk
 	 * @param pll_src PLL Clock source - HSI
 	 * @param req_freq required frequency
 	 ***************************************************************************************************/
-	static SYS_StatusTypeDef Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src)
+	static SysInitStatus Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src)
 	{
 		return Init_calc_pll(req_freq, pll_src, 0);
 	};
@@ -193,7 +147,7 @@ class ClockSystem
 	 * @param hse_clk HSE clock value
 	 * @todo more intellegent calculations
 	 ***************************************************************************************************/
-	static SYS_StatusTypeDef Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src, uint32_t hse_clk);
+	static SysInitStatus Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src, uint32_t hse_clk);
 
 	private:
 		/* data */

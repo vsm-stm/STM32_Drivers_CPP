@@ -43,8 +43,8 @@ public:
 		CC4E = TIM_DIER_CC4IE
 	};
 
-	SYS_StatusTypeDef SetHard();
-	SYS_StatusTypeDef SetFreq(uint32_t freq);
+	SysInitStatus SetHard();
+	SysInitStatus SetFreq(uint32_t freq);
 
 	void Enable_IRQ(IRQ irq)
 	{
@@ -91,7 +91,7 @@ class TIM_PeriodicIRQ : public TIM
 public:
 	TIM_PeriodicIRQ(TIM_TypeDef *timx) : TIM(timx){};
 
-	SYS_StatusTypeDef SetUp(uint32_t freq);
+	SysInitStatus SetUp(uint32_t freq);
 };
 
 class TIM_EncoderGenerator : public TIM
@@ -107,7 +107,7 @@ public:
 		line_B_offset = static_cast<uint32_t>(B.channel);
 	};
 
-	SYS_StatusTypeDef SetUp(uint32_t freq, uint32_t period, uint32_t ch1_width, uint32_t ch2_width);
+	SysInitStatus SetUp(uint32_t freq, uint32_t period, uint32_t ch1_width, uint32_t ch2_width);
 
 	void GenPulse(int32_t pulses)
 	{
@@ -140,7 +140,7 @@ private:
 class TIM_PulseMeasure : public TIM
 {
 public:
-	SYS_StatusTypeDef SetUp(uint32_t max_freq);
+	SysInitStatus SetUp(uint32_t max_freq);
 
 
 	TIM_PulseMeasure(TIM_TypeDef *timx, struct line in) :
@@ -180,7 +180,7 @@ public:
 	{};
 	~TIM_PWM(){};
 
-	SYS_StatusTypeDef SetUp(uint32_t freq);
+	SysInitStatus SetUp(uint32_t freq);
 	void SetCCR(TIM_Channel ch, uint32_t width);
 
 private:

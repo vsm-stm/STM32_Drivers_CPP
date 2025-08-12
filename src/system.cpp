@@ -23,7 +23,7 @@ uint32_t System::TIMxAPB2Clock{HSI_Clock};
  * @return SYS_OK
  * @return SYS_ERROR
  *************************************************************************************************/
-SYS_StatusTypeDef System::Init()
+SysInitStatus System::Init()
 {
 	#if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
 		SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2));  /* set CP10 and CP11 Full Access */
@@ -48,10 +48,10 @@ SYS_StatusTypeDef System::Init()
 	APB2BusClock = HSI_Clock;
 	TIMxAPB1Clock = HSI_Clock;
 	TIMxAPB2Clock = HSI_Clock;
-	if(InitTicks() > 0)
-		return SYS_ERROR;
+	if(InitTicks() != SysInitStatus::InitOK)
+		return SysInitStatus::InitError;
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 /**************************************************************************************************
@@ -59,16 +59,16 @@ SYS_StatusTypeDef System::Init()
  * @return SYS_OK
  * @return SYS_ERROR
  *************************************************************************************************/
-SYS_StatusTypeDef System::InitTicks()
+SysInitStatus System::InitTicks()
 {
 	// if(SystemCoreClock >= 100000000)
 	// 	Ticks_base = 10000;
 	// else
 	// 	Ticks_base = 1000;
 	if(SysTick_Config(SystemCoreClock/TICK_BASE) > 0)
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 /**************************************************************************************************

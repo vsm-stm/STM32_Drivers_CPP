@@ -83,7 +83,7 @@ public:
 	 * @brief Set up the USART configuration.
 	 * @return The status of the setup operation.
 	 */
-	SYS_StatusTypeDef SetUp();
+	SysInitStatus SetUp();
 
 	/**
 	 * @brief Enable the specified USART IRQ.
@@ -136,8 +136,8 @@ public:
 	}
 #endif
 
-	SYS_StatusTypeDef Send(uint8_t *data, uint32_t len, uint32_t timeout);
-	SYS_StatusTypeDef Receive(uint8_t *data, uint32_t len, uint32_t timeout);
+	SysStatus Send(uint8_t *data, uint32_t len, uint32_t timeout);
+	SysStatus Receive(uint8_t *data, uint32_t len, uint32_t timeout);
 
 	/**
 	 * @brief Set the baud rate for USART.

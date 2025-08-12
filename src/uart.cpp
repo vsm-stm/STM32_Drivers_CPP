@@ -4,11 +4,11 @@
  * @brief Set up the USART configuration.
  * @return The status of the setup operation.
  */
-SYS_StatusTypeDef USART::SetUp()
+SysInitStatus USART::SetUp()
 {
 	if((BaudRate < 9600)
 	|| (BaudRate > 115200*16))
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 
 	// Check the USARTx pointer and configure corresponding parameters
 	if (USARTx == USART1)
@@ -57,7 +57,7 @@ SYS_StatusTypeDef USART::SetUp()
 	}
 #endif
 	else
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 
 	// Set the Baud Rate
 	USARTx->BRR = bus_clk / BaudRate;
@@ -86,10 +86,10 @@ SYS_StatusTypeDef USART::SetUp()
 	ClearFlags(ISR_FLAGS::TC);
 #endif
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
-SYS_StatusTypeDef USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
+SysStatus USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
 
@@ -102,7 +102,7 @@ SYS_StatusTypeDef USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 #endif
 		{
 			if(System::GetTick() - tick_start > timeout)
-				return SYS_ERROR;
+				return SysStatus::Timeout;
 		};
 #if defined(STM32F4)
 		USARTx->DR = data[i];
@@ -111,10 +111,10 @@ SYS_StatusTypeDef USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 #endif
 		
 	};
-	return SYS_OK;
+	return SysStatus::OK;
 };
 
-SYS_StatusTypeDef USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
+SysStatus USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
 
@@ -127,7 +127,7 @@ SYS_StatusTypeDef USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 #endif
 		{
 			if(System::GetTick() - tick_start > timeout)
-				return SYS_ERROR;
+				return SysStatus::Timeout;
 		};
 		#if defined(STM32F4)
 			data[i] = USARTx->DR;
@@ -136,5 +136,5 @@ SYS_StatusTypeDef USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 		#endif
 		
 	};
-	return SYS_OK;
+	return SysStatus::OK;
 };

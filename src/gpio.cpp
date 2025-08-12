@@ -6,7 +6,7 @@
  * @param af The alternate function number.
  * @return The status of the setup operation.
  */
-SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
+SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
 {
 	// Extract individual configuration bits from the type
 	uint8_t mode  = static_cast<uint8_t>(type) & 0x3 << mode_pos;
@@ -46,5 +46,5 @@ SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
 	// Set the mode bits in the MODER register
 	PORT->MODER |= (mode << (pin * 2));
 	
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }

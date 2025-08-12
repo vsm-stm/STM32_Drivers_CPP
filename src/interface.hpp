@@ -18,7 +18,7 @@ public:
 										dma_rx(_dma_rx)
 		{};
 	~Interface_DMA(){};
-	SYS_StatusTypeDef DMA_SetUp();
+	SysInitStatus DMA_SetUp();
 protected:
 	DMA_Sx dma_tx;
 	DMA_Sx dma_rx;
@@ -69,14 +69,14 @@ public:
 		uint32_t rx_buffer_size);
 	~Interface_USART(){};
 
-	SYS_StatusTypeDef Init();
+	SysInitStatus Init();
 
-	SYS_StatusTypeDef Send(uint8_t* data, uint16_t data_size);
-	SYS_StatusTypeDef Receive(uint8_t* data, uint16_t data_size, bool cont);
-	SYS_StatusTypeDef Receive(uint8_t* data, uint16_t data_size);
+	SysStatus Send(uint8_t* data, uint16_t data_size);
+	SysStatus Receive(uint8_t* data, uint16_t data_size, bool cont);
+	SysStatus Receive(uint8_t* data, uint16_t data_size);
 
-	inline SYS_StatusTypeDef GetRxStatus() const { return status_rx; }
-	inline SYS_StatusTypeDef GetTxStatus() const { return status_tx; }
+	inline SysStatus GetRxStatus() const { return status_rx; }
+	inline SysStatus GetTxStatus() const { return status_tx; }
 
 	void Stop_Receive();
 
@@ -85,9 +85,9 @@ public:
 	uint16_t Receive_Count;
 protected:
 	USART *usart;
-	
-	SYS_StatusTypeDef status_tx, status_rx;
-	
+
+	SysStatus status_tx, status_rx;
+
 	bool ContReceive;
 	uint16_t Count_To_Receive;
 
@@ -114,11 +114,11 @@ public:
 		uint32_t rx_buffer_size);
 	~Interface_SPI(){};
 
-	SYS_StatusTypeDef Init();
+	SysInitStatus Init();
 
-	SYS_StatusTypeDef Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_size);
-	SYS_StatusTypeDef Send(uint8_t* tx_data,uint16_t data_size);
-	SYS_StatusTypeDef Receive(uint8_t* rx_data, uint16_t data_size);
+	SysStatus Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_size);
+	SysStatus Send(uint8_t* tx_data,uint16_t data_size);
+	SysStatus Receive(uint8_t* rx_data, uint16_t data_size);
 
 	// SYS_StatusTypeDef GetData(uint8_t* data, uint16_t size)
 	// {
@@ -140,14 +140,14 @@ public:
 
 	void IRQHandler();
 	bool IsDataReceived;
-	inline SYS_StatusTypeDef GetStatus(){return status;};
+	inline SysStatus GetStatus(){return status;};
 protected:
 	SPI *spi;
 	SPI::Init_struct_Typedef spi_init_data;
 
 	uint8_t tmp_data[1];
 
-	SYS_StatusTypeDef status;
+	SysStatus status;
 
 	typedef struct _rxtx_data
 	{
@@ -159,7 +159,7 @@ protected:
 
 	// Buffer<rxtx_data_typedef> buffer;
 
-	inline SYS_StatusTypeDef TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_size, TXRX_Type type);
+	inline SysStatus TXRX(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_size, TXRX_Type type);
 };
 
 #if defined(STM32F7)
@@ -206,4 +206,5 @@ protected:
 };
 
 #endif
+
 #endif /* INTERFACE_HPP_ */

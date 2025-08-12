@@ -90,17 +90,17 @@ public:
 		uint8_t br;
 	}Init_struct_Typedef;
 
-	SYS_StatusTypeDef SetUp(Master_sel mstr, TYPE type)
+	SysInitStatus SetUp(Master_sel mstr, TYPE type)
 	{
 		return SetUp(mstr, NSS_ctrl::Hard, type, Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, 0);
 	};
 
-	SYS_StatusTypeDef SetUp(Init_struct_Typedef Init_struct)
+	SysInitStatus SetUp(Init_struct_Typedef Init_struct)
 	{
 		return SetUp(Init_struct.mstr, Init_struct.nss_ctrl, Init_struct.type, Init_struct.dff, Init_struct.ff, Init_struct.cpolpha, Init_struct.br);
 	}
 
-	SYS_StatusTypeDef SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
+	SysInitStatus SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br);
 
 	inline void Enable()
 	{
@@ -175,8 +175,8 @@ public:
 			NVIC_DisableIRQ(IRQ_vector);
 		}
 	}
-	SYS_StatusTypeDef Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout);
-	SYS_StatusTypeDef Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
+	SysStatus Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout);
+	SysStatus Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
 
 protected:
 	PIN CLK{};
@@ -189,7 +189,7 @@ protected:
 	Master_sel Master_slave;
 	IRQn_Type IRQ_vector;
 
-	SYS_StatusTypeDef SetHard();
+	SysInitStatus SetHard();
 };
 
 #endif /* SPI_HPP_ */

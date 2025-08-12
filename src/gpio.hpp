@@ -3,6 +3,7 @@
 
 #include <system.hpp>
 
+#include <type_traits>
 /**
  * @brief Class representing a GPIO pin with configurable parameters.
  */
@@ -17,7 +18,7 @@ private:
 	/**
 	 * @brief Enumeration for pin modes.
 	 */
-	enum class MODE
+	enum class MODE : uint32_t
 	{
 		INPUT =  (0b00 << mode_pos),	///< Input mode
 		OUTPUT = (0b1 << mode_pos),		///< Output mode
@@ -33,7 +34,7 @@ private:
 	/**
 	 * @brief Enumeration for pull configurations.
 	 */
-	enum class PULL
+	enum class PULL : uint32_t
 	{
 		NO_Pull = (0b0 << pull_pos), 	///< No pull-up/pull-down
 		PullUP = (0b1 << pull_pos),  	///< Pull-up
@@ -48,7 +49,7 @@ private:
 	/**
 	 * @brief Enumeration for output types.
 	 */
-	enum class OUTPUT_TYPE
+	enum class OUTPUT_TYPE : uint32_t
 	{
 		PushPull = (0b0 << output_type_pos),	///< Push-pull output type
 		OpenDrain = (0b1 << output_type_pos)	///< Open-drain output type
@@ -105,9 +106,6 @@ public:
 	PIN(PIN &&) = default;
 	PIN &operator=(PIN const &) = default;
 	PIN &operator=(PIN &&) = default;
-	void operator=(int i) {
-		SetLevel(i);
-	};
 	void operator=(bool b) {
 		SetLevel(b);
 	};
@@ -117,11 +115,9 @@ public:
 	 * @param port Pointer to the GPIO port.
 	 * @param pn Pin number.
 	 */
-	explicit PIN(GPIO_TypeDef *port, uint8_t pn) :
+	constexpr explicit PIN(GPIO_TypeDef *port, uint8_t pn) :
 		PORT(port),
-		pin(pn)
-	{
-	}
+		pin(pn){}
 
 	/**
 	 * @brief Set up the pin with the specified type and alternate function.
@@ -129,8 +125,8 @@ public:
 	 * @param af The alternate function number.
 	 * @return The status of the setup operation.
 	 */
-	SYS_StatusTypeDef SetUp(TYPE type, uint8_t af) {return SetUp(type, OUTPUT_SPEED::Low, af);};
-	SYS_StatusTypeDef SetUp(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low, uint8_t af = 0);
+	SysInitStatus SetUp(TYPE type, uint8_t af) {return SetUp(type, OUTPUT_SPEED::Low, af);};
+	SysInitStatus SetUp(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low, uint8_t af = 0);
 
 	/**
 	 * @brief Get the logic level of the pin.
@@ -147,7 +143,7 @@ public:
 	 */
 	inline void SetLevel(bool lvl)
 	{
-		PORT->BSRR |= ((lvl == 0) ? GPIO_BSRR_BR0 : GPIO_BSRR_BS0) << pin;
+		PORT->BSRR = ((lvl) ? GPIO_BSRR_BS0 : GPIO_BSRR_BR0) << pin;
 	};
 
 	/**
@@ -215,33 +211,89 @@ public:
 };
 
 #include <cstddef> 
-
-struct gpio_array_t {
-	GPIO_TypeDef* port;
-	uint32_t pin; 
-};
+#include <utility>
 
 template<size_t N>
-class PinArray : public PIN
+class PinArray : private PIN
 {
+static_assert(N <= 32, "PinArray: maximum 32 pins allowed");
 private:
-	gpio_array_t gpio_array[N];
+	PIN pins[N];
+
+	template <size_t... I>
+	SysInitStatus SetUpAllImpl(std::index_sequence<I...>,
+								TYPE type,
+								OUTPUT_SPEED speed,
+								uint8_t af) const
+	{
+		SysInitStatus result = SysInitStatus::NotInit;
+		((result = pins[I].SetUp(type, speed, af), result == SysInitStatus::InitOK) && ...);
+		return result;
+	}
+
+	template<std::size_t... I>
+	uint32_t GetLevelImpl(std::index_sequence<I...>) const {
+		// Распаковываем вызовы pins[I].GetLevel() и собираем в 32-битное число
+		return ((static_cast<uint32_t>(pins[I].GetLevel()) << I) | ...);
+	}
+
+	template<std::size_t... I>
+	void SetLevelImpl(uint32_t value, std::index_sequence<I...>) {
+		// Вызываем pins[I].SetLevel для каждого пина,
+		// передавая бит из value с позиции I
+		(pins[I].SetLevel((value >> I) & 0x1), ...);
+	}
+
+	template<std::size_t... I>
+	void ToggleAllImpl(std::index_sequence<I...>) {
+		// Вызываем TogglePin у каждого пина
+		(pins[I].TogglePin(), ...);
+	}
 
 public:
-	constexpr PinArray(const gpio_array_t (&_gpio_array)[N]) : gpio_array{} {
+	constexpr explicit PinArray(const PIN (&_pins)[N]) : pins{} {
 		for (size_t i = 0; i < N; ++i) {
-			gpio_array[i] = _gpio_array[i];
+			pins[i] = _pins[i];
 		}
 	}
 
+	SysInitStatus SetUpAll(TYPE type, uint8_t af) const
+	{
+		return SetUpAllImpl(std::make_index_sequence<N>{}, type, af);
+	}
+
+	SysInitStatus SetUpAll(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low, uint8_t af = 0) const
+	{
+		return SetUpAllImpl(std::make_index_sequence<N>{}, type, speed, af);
+	}
+
+	uint32_t GetLevelAll() const {
+		return GetLevelImpl(std::make_index_sequence<N>{});
+	}
+
+	void SetLevelAll(uint32_t value) {
+		SetLevelImpl(value, std::make_index_sequence<N>{});
+	}
+
+	void ToggleAll() {
+		ToggleAllImpl(std::make_index_sequence<N>{});
+	}
+	// SYS_StatusTypeDef SetUpAll(TYPE type, uint8_t af) const {
+	// 	[&]<size_t... I>(std::index_sequence<I...>) {
+	// 		(pins[I].SetUp(type, af), ...);
+	// 	}(std::make_index_sequence<N>{});
+	// }
+
+	// SYS_StatusTypeDef SetUpAll(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low, uint8_t af = 0) const {
+	// 	[&]<size_t... I>(std::index_sequence<I...>) {
+	// 		(pins[I].SetUp(type, speed, af), ...);
+	// 	}(std::make_index_sequence<N>{});
+	// }
+
+
+
 
 };
-
-// Deduction guide
-template<size_t N>
-PinArray(const gpio_array_t (&)[N]) -> PinArray<N>;
-
-
 
 
 

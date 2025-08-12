@@ -2,7 +2,7 @@
 // #include <gpio.hpp>
 
 
-SYS_StatusTypeDef TIM::SetHard()
+SysInitStatus TIM::SetHard()
 {
 	if(TIMx == TIM1)
 	{
@@ -102,12 +102,12 @@ SYS_StatusTypeDef TIM::SetHard()
 		IRQ_vector = TIM8_TRG_COM_TIM14_IRQn; //todo
 		af = 9;
 	}else
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
-SYS_StatusTypeDef TIM::SetFreq(uint32_t freq)
+SysInitStatus TIM::SetFreq(uint32_t freq)
 {
 	uint32_t pcs = 0, arr = 0;
 
@@ -116,7 +116,7 @@ SYS_StatusTypeDef TIM::SetFreq(uint32_t freq)
 		arr += 10;
 
 		if(arr > 0xFFFF)
-			return SYS_ERROR;
+			return SysInitStatus::InitError;
 
 		pcs = bus_clk/((arr+1) * freq) - 1;
 
@@ -125,19 +125,19 @@ SYS_StatusTypeDef TIM::SetFreq(uint32_t freq)
 	TIMx->ARR = arr;
 	TIMx->PSC = pcs;
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 /* freq in Hz*/
-SYS_StatusTypeDef TIM_PeriodicIRQ::SetUp(uint32_t freq)
+SysInitStatus TIM_PeriodicIRQ::SetUp(uint32_t freq)
 {
-	SYS_StatusTypeDef setup_status = SetHard();
+	SysInitStatus setup_status = SetHard();
 
-	if(setup_status != SYS_OK)
+	if(setup_status != SysInitStatus::InitOK)
 		return setup_status;
 	
 	setup_status = SetFreq(freq/2);
-	if(setup_status != SYS_OK)
+	if(setup_status != SysInitStatus::InitOK)
 		return setup_status;
 
 	TIMx->DIER = TIM_DIER_UIE;
@@ -146,21 +146,21 @@ SYS_StatusTypeDef TIM_PeriodicIRQ::SetUp(uint32_t freq)
 	NVIC_EnableIRQ(IRQ_vector);
 
 	// TIMx->CR1 = TIM_CR1_CEN;
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 
-SYS_StatusTypeDef TIM_EncoderGenerator::SetUp(uint32_t freq, uint32_t period, uint32_t ch1_width, uint32_t ch2_width)
+SysInitStatus TIM_EncoderGenerator::SetUp(uint32_t freq, uint32_t period, uint32_t ch1_width, uint32_t ch2_width)
 {
 	if((freq == 0)
 	|| (freq > 1000)
 	|| (A.pin.PORT == nullptr)
 	|| (B.pin.PORT == nullptr))
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 
-	SYS_StatusTypeDef setup_status = SetHard();
+	SysInitStatus setup_status = SetHard();
 
-	if(setup_status != SYS_OK)
+	if(setup_status != SysInitStatus::InitOK)
 		return setup_status;
 
 	A.pin.SetUp(PIN::TYPE::AF_PushPull, af);
@@ -191,7 +191,7 @@ SYS_StatusTypeDef TIM_EncoderGenerator::SetUp(uint32_t freq, uint32_t period, ui
 
 	NVIC_EnableIRQ(IRQ_vector);
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 void TIM_EncoderGenerator::GenPulses_IRQ()
@@ -201,15 +201,15 @@ void TIM_EncoderGenerator::GenPulses_IRQ()
 		TIMx->CR1 &= ~TIM_CR1_CEN;
 }
 
-SYS_StatusTypeDef TIM_PulseMeasure::SetUp(uint32_t max_freq)
+SysInitStatus TIM_PulseMeasure::SetUp(uint32_t max_freq)
 {
 	if((max_freq > 1000000)
 	|| (line_offset > 1)
 	|| (Input.pin.PORT == nullptr))
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 
-	SYS_StatusTypeDef setup_status = SetHard();
-	if(setup_status != SYS_OK)
+	SysInitStatus setup_status = SetHard();
+	if(setup_status != SysInitStatus::InitOK)
 		return setup_status;
 
 	Input.pin.SetUp(PIN::TYPE::AF_PushPull, af);
@@ -227,10 +227,10 @@ SYS_StatusTypeDef TIM_PulseMeasure::SetUp(uint32_t max_freq)
 	
 	TIMx->CR1 = TIM_CR1_CEN;
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
-SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
+SysInitStatus TIM_PWM::SetUp(uint32_t freq)
 {
 	if((freq == 0)
 	|| (freq > 10000)
@@ -238,11 +238,11 @@ SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
 	 && (CH2.PORT == nullptr)
 	 && (CH3.PORT == nullptr)
 	 && (CH4.PORT == nullptr)))
-		return SYS_ERROR;
+		return SysInitStatus::InitError;
 
-	SYS_StatusTypeDef setup_status = SetHard();
+	SysInitStatus setup_status = SetHard();
 
-	if(setup_status != SYS_OK)
+	if(setup_status != SysInitStatus::InitOK)
 		return setup_status;
 
 	uint32_t pcs = 0, arr = 0;
@@ -254,7 +254,7 @@ SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
 		arr = 99*arr_off;
 
 		if(arr > 0xFFFF)
-			return SYS_ERROR;
+			return SysInitStatus::InitError;
 
 		pcs = bus_clk/((arr+1) * freq) - 1;
 
@@ -295,7 +295,7 @@ SYS_StatusTypeDef TIM_PWM::SetUp(uint32_t freq)
 
 
 	TIMx->CR1 |= TIM_CR1_CEN;
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 void TIM_PWM::SetCCR(TIM_Channel ch, uint32_t width)

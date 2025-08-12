@@ -17,21 +17,39 @@ extern "C"
 
 #define HSI_Clock	16000000UL
 
-typedef enum
-{
-  SYS_OK = 0x00U,
-  SYS_ERROR,
-  SYS_BUSY,
-  SYS_NO_Init,
-  SYS_TIMEOUT
-} SYS_StatusTypeDef;
+// typedef enum
+// {
+//   SYS_OK = 0x00U,
+//   SYS_ERROR,
+//   SYS_BUSY,
+//   SYS_NO_Init,
+//   SYS_TIMEOUT
+// } SYS_StatusTypeDef;
 
-typedef enum
+// typedef enum
+// {
+//   System_NO		= 0x00U,
+//   System_OK		= 0x01U,
+//   System_ERROR	= 0xFFU
+// } SystemInitStatus_TypeDef;
+
+// Результат выполнения операций
+enum class SysStatus : uint8_t
 {
-  System_NO		= 0x00U,
-  System_OK		= 0x01U,
-  System_ERROR	= 0xFFU
-} SystemInitStatus_TypeDef;
+    OK		= 0x00,
+    Error	= 0x01,
+    Busy	= 0x02,
+    NotInit	= 0x03,
+    Timeout	= 0x04
+};
+
+// Состояние инициализации системы
+enum class SysInitStatus : uint8_t
+{
+    NotInit		= 0x00,
+    InitOK		= 0x01,
+    InitError	= 0xFF
+};
 
 class System
 {
@@ -59,8 +77,8 @@ public:
 	 ***************************************************************************************************/
 	static uint32_t TIMxAPB2Clock;
 
-	static SYS_StatusTypeDef Init();
-	static SYS_StatusTypeDef InitTicks();
+	static SysInitStatus Init();
+	static SysInitStatus InitTicks();
 	static void TickIncrease();
 	static uint32_t GetTick();
 	static void Delay_ms(uint32_t delay);
