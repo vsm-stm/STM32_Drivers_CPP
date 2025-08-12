@@ -1,27 +1,6 @@
 #include "gpio.hpp"
 
 /**
- * @brief Set up the GPIO pin with the specified type.
- * @param type The enumerate type of pin configuration.
- * @return The status of the setup operation.
- */
-SYS_StatusTypeDef PIN::SetUp(PIN::TYPE type)
-{
-	// Call the overloaded SetUp function with AF = 0
-	return SetUp(type, OUTPUT_SPEED::Low, 0);
-}
-
-SYS_StatusTypeDef PIN::SetUp(TYPE type, OUTPUT_SPEED speed)
-{
-	return SetUp(type, speed, 0);
-};
-
-SYS_StatusTypeDef PIN::SetUp(TYPE type, uint8_t af)
-{
-	return SetUp(type, OUTPUT_SPEED::Low, af);
-};
-
-/**
  * @brief Set up the GPIO pin with the specified type and alternate function.
  * @param type The enumerate type of pin configuration.
  * @param af The alternate function number.

@@ -124,23 +124,13 @@ public:
 	}
 
 	/**
-	 * @brief Set up the pin with the specified type.
-	 * @param type The enumerate type of pin configuration.
-	 * @return The status of the setup operation.
-	 */
-	SYS_StatusTypeDef SetUp(TYPE type);
-
-	SYS_StatusTypeDef SetUp(TYPE type, OUTPUT_SPEED speed);
-
-	/**
 	 * @brief Set up the pin with the specified type and alternate function.
 	 * @param type The enumerate type of pin configuration.
 	 * @param af The alternate function number.
 	 * @return The status of the setup operation.
 	 */
-	SYS_StatusTypeDef SetUp(TYPE type, uint8_t af);
-
-	SYS_StatusTypeDef SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af);
+	SYS_StatusTypeDef SetUp(TYPE type, uint8_t af) {return SetUp(type, OUTPUT_SPEED::Low, af);};
+	SYS_StatusTypeDef SetUp(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low, uint8_t af = 0);
 
 	/**
 	 * @brief Get the logic level of the pin.
@@ -223,5 +213,36 @@ public:
 		Reset();
 	};
 };
+
+#include <cstddef> 
+
+struct gpio_array_t {
+	GPIO_TypeDef* port;
+	uint32_t pin; 
+};
+
+template<size_t N>
+class PinArray : public PIN
+{
+private:
+	gpio_array_t gpio_array[N];
+
+public:
+	constexpr PinArray(const gpio_array_t (&_gpio_array)[N]) : gpio_array{} {
+		for (size_t i = 0; i < N; ++i) {
+			gpio_array[i] = _gpio_array[i];
+		}
+	}
+
+
+};
+
+// Deduction guide
+template<size_t N>
+PinArray(const gpio_array_t (&)[N]) -> PinArray<N>;
+
+
+
+
 
 #endif
