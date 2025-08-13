@@ -119,7 +119,7 @@ public:
 	 * @param port Pointer to the GPIO port.
 	 * @param pn Pin number.
 	 */
-	constexpr explicit PIN(GPIO_TypeDef *port, uint8_t pn) :
+	explicit PIN(GPIO_TypeDef *port, uint8_t pn) :
 		PORT(port),
 		pin(pn){}
 
