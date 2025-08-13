@@ -110,7 +110,10 @@ public:
 		SetLevel(b);
 		return *this;
 	};
-
+	// Чтение уровня в логических выражениях
+	explicit operator bool() const noexcept {
+		return GetLevel();
+	}
 	/**
 	 * @brief Constructor for the PIN class.
 	 * @param port Pointer to the GPIO port.
@@ -133,7 +136,7 @@ public:
 	 * @brief Get the logic level of the pin.
 	 * @return The logic level of the pin.
 	 */
-	inline bool GetLevel()
+	inline bool GetLevel() const noexcept 
 	{
 		return ((PORT->IDR & (0x1 << pin)) >> pin);
 	};
@@ -142,7 +145,7 @@ public:
 	 * @brief Set the logic level of the pin.
 	 * @param lvl_int The logic level as an integer.
 	 */
-	inline void SetLevel(bool lvl)
+	inline void SetLevel(bool lvl) noexcept 
 	{
 		PORT->BSRR = ((lvl) ? GPIO_BSRR_BS0 : GPIO_BSRR_BR0) << pin;
 	};
@@ -150,8 +153,8 @@ public:
 	/**
 	 * @brief Set the logic level of the pin using the specified enum.
 	 * @param lvl The logic level enum.
-	 */
-	inline void SetLevel(LVL lvl)
+	 */ 
+	inline void SetLevel(LVL lvl) noexcept 
 	{
 		SetLevel(static_cast<bool>(lvl));
 	};
@@ -159,7 +162,7 @@ public:
 	/**
 	 * @brief Toggle the logic level of the pin.
 	 */
-	inline void TogglePin()
+	inline void TogglePin() noexcept 
 	{
 		PORT->ODR ^= 0x1 << pin;
 	};
