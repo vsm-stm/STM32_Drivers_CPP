@@ -1,9 +1,9 @@
 #ifndef TIM_HPP_
 #define TIM_HPP_
 
-#include <system.hpp>
-#include <rcc.hpp>
-#include <gpio.hpp>
+#include "system.hpp"
+#include "rcc.hpp"
+#include "gpio.hpp"
 
 class TIM
 {

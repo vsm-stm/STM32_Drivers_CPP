@@ -1,9 +1,9 @@
 #ifndef ADC_HPP_
 #define ADC_HPP_
 
-#include <system.hpp>
-#include <rcc.hpp>
-#include <gpio.hpp>
+#include "system.hpp"
+#include "rcc.hpp"
+#include "gpio.hpp"
 
 class ADC_N
 {

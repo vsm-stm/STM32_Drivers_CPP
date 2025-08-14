@@ -1,9 +1,8 @@
 #ifndef GPIO_H_
 #define GPIO_H_
 
-#include <system.hpp>
+#include "system.hpp"
 
-#include <type_traits>
 /**
  * @brief Class representing a GPIO pin with configurable parameters.
  */
@@ -228,7 +227,7 @@ private:
 	SysInitStatus SetUpAllImpl(std::index_sequence<I...>,
 								TYPE type,
 								OUTPUT_SPEED speed,
-								uint8_t af) const
+								uint8_t af) 
 	{
 		SysInitStatus result = SysInitStatus::NotInit;
 		((result = pins[I].SetUp(type, speed, af), result == SysInitStatus::InitOK) && ...);
@@ -236,7 +235,7 @@ private:
 	}
 
 	template<std::size_t... I>
-	uint32_t GetLevelImpl(std::index_sequence<I...>) const {
+	uint32_t GetLevelImpl(std::index_sequence<I...>)  {
 		// Распаковываем вызовы pins[I].GetLevel() и собираем в 32-битное число
 		return ((static_cast<uint32_t>(pins[I].GetLevel()) << I) | ...);
 	}
@@ -261,17 +260,17 @@ public:
 		}
 	}
 
-	SysInitStatus SetUpAll(TYPE type, uint8_t af) const
+	SysInitStatus SetUpAll(TYPE type, uint8_t af) 
 	{
 		return SetUpAllImpl(std::make_index_sequence<N>{}, type, af);
 	}
 
-	SysInitStatus SetUpAll(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low, uint8_t af = 0) const
+	SysInitStatus SetUpAll(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low, uint8_t af = 0) 
 	{
 		return SetUpAllImpl(std::make_index_sequence<N>{}, type, speed, af);
-	}
+	};
 
-	uint32_t GetLevelAll() const {
+	uint32_t GetLevelAll()  {
 		return GetLevelImpl(std::make_index_sequence<N>{});
 	}
 

@@ -1,9 +1,9 @@
 #ifndef UART_H_
 #define UART_H_
 
-#include <system.hpp>
-#include <rcc.hpp>
-#include <gpio.hpp>
+#include "system.hpp"
+#include "rcc.hpp"
+#include "gpio.hpp"
 
 /**
  * @brief Class representing a USART communication interface.

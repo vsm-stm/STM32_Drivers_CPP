@@ -1,9 +1,9 @@
 #ifndef SPI_HPP_
 #define SPI_HPP_
 
-#include <system.hpp>
-#include <rcc.hpp>
-#include <gpio.hpp>
+#include "system.hpp"
+#include "rcc.hpp"
+#include "gpio.hpp"
 #include <memory>
 
 class SPI

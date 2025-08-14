@@ -1,7 +1,7 @@
 #ifndef RCC_H_
 #define RCC_H_
 
-#include <system.hpp>
+#include "system.hpp"
 
 #define PLL_TIMEOUT_VALUE			2U  /* 2 ms */
 #define HSE_STARTUP_TIMEOUT			100U   /*!< Time out for HSE start up, in ms */

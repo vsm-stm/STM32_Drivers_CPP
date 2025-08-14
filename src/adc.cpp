@@ -1,4 +1,4 @@
-#include <adc.hpp>
+#include "adc.hpp"
 
 SYS_StatusTypeDef ADC_N::SetUp(MODE mode, TRIG trig)
 {

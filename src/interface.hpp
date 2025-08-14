@@ -1,12 +1,12 @@
 #ifndef INTERFACE_HPP_
 #define INTERFACE_HPP_
 
-#include <system.hpp>
-#include <dma.hpp>
-#include <uart.hpp>
-#include <spi.hpp>
-#include <i2c.hpp>
-#include <gpio.hpp>
+#include "system.hpp"
+#include "dma.hpp"
+#include "uart.hpp"
+#include "spi.hpp"
+#include "i2c.hpp"
+#include "gpio.hpp"
 
 class Interface_DMA
 {

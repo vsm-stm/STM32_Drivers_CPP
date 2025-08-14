@@ -1,9 +1,9 @@
 #ifndef I2C_HPP_
 #define I2C_HPP_
 
-#include <system.hpp>
-#include <rcc.hpp>
-#include <gpio.hpp>
+#include "system.hpp"
+#include "rcc.hpp"
+#include "gpio.hpp"
 
 #if defined(STM32F7)
 extern "C"

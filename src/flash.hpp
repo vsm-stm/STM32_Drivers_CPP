@@ -1,8 +1,8 @@
 #ifndef FLASH_HPP_
 #define FLASH_HPP_
 
-#include <system.hpp>
-#include <flash_maps.h>
+#include "system.hpp"
+#include "flash_maps.h"
 
 class flash_base
 {
