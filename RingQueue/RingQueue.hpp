@@ -42,6 +42,10 @@ public:
 
 	inline bool empty() const { return head == tail; };
 	inline bool full() const { return next_index(head) == tail; };
+	inline uint32_t size() const {
+		if (head >= tail) return head - tail;
+		return N - tail + head; // wrap case
+	}
 };
 
 
