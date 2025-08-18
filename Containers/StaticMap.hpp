@@ -5,13 +5,16 @@
 
 template <typename Key, typename Value, size_t N>
 class StaticMap {
-public:
+private:
 	struct Entry {
 		Key key;
 		Value value;
 		bool used = false;
 	};
 
+	Entry entries[N];
+
+public:
 	bool insert(const Key& k, const Value& v) {
 		for (auto& e : entries) {
 			if (!e.used) {
@@ -51,9 +54,13 @@ public:
 		for (auto& e : entries) if (e.used) cnt++;
 		return cnt;
 	}
-
-private:
-	Entry entries[N];
+	
+	template <typename F>
+	void for_each_used(F&& fn) {
+		for (auto& e : entries) {
+			if (e.used) fn(e.value);
+		}
+	}
 };
 
 #endif // STATIC_MAP_HPP
