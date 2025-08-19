@@ -2,6 +2,7 @@
 #define STATIC_MAP_HPP
 
 #include <cstddef> 
+#include <type_traits>
 
 template <typename Key, typename Value, size_t N>
 class StaticMap {
@@ -14,13 +15,25 @@ private:
 
 	Entry entries[N];
 
+	Entry* find_entry(const Key& k) {
+	for (auto& e : entries) {
+		if (e.used && e.key == k) {
+			return &e;
+		}
+	}
+	return nullptr;
+}
+
+	size_t used_count = 0;
+
 public:
-	bool insert(const Key& k, const Value& v) {
+	bool insert(const Key &k, const Value &v) {
 		for (auto& e : entries) {
 			if (!e.used) {
 				e.key = k;
 				e.value = v;
 				e.used = true;
+				++used_count;
 				return true;
 			}
 		}
@@ -37,9 +50,10 @@ public:
 	}
 
 	bool erase(const Key& k) {
-		auto entry = find(k);
+		auto entry = find_entry(k);
 		if (entry) {
 			entry->used = false;
+			--used_count;
 			return true;
 		}
 		return false;
@@ -47,18 +61,24 @@ public:
 
 	void clear() {
 		for (auto& e : entries) e.used = false;
+		used_count = 0;
 	}
 
 	size_t size() const {
-		size_t cnt = 0;
-		for (auto& e : entries) if (e.used) cnt++;
-		return cnt;
+		return used_count;
 	}
 	
 	template <typename F>
-	void for_each_used(F&& fn) {
+	void for_each_value(F&& fn) {
 		for (auto& e : entries) {
 			if (e.used) fn(e.value);
+		}
+	}
+
+	template <typename F>
+	void for_each_entry(F&& fn) {
+		for (auto& e : entries) {
+			if (e.used) fn(*this, e.key, e.value);
 		}
 	}
 };
