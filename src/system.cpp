@@ -10,7 +10,7 @@
  *************************************************************************************************/
 #include "system.hpp"
 
-uint32_t Tick;
+static volatile uint32_t Tick;
 
 uint32_t System::SystemCoreClock{HSI_Clock};
 uint32_t System::APB1BusClock{HSI_Clock};
