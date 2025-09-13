@@ -189,7 +189,7 @@ SysInitStatus ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, BusD
 
 }
 
-SysInitStatus ClockSystem::Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src, uint32_t hse_clk)
+SysInitStatus ClockSystem::Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src, uint32_t hse_clk, uint32_t pll_q)
 {
 	if((pll_src == PLL_ClockSource::HSE)
 	&& (hse_clk == 0))
@@ -254,5 +254,5 @@ SysInitStatus ClockSystem::Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_
 		div.APB2_div = APB2_Divider::DIV2;		
 	}
 
-	return Init(SystemClockSource::PLL_P, hse_clk, div, {pll_src,pll_m,pll_n,pll_p,2,2});
+	return Init(SystemClockSource::PLL_P, hse_clk, div, {pll_src,pll_m,pll_n,pll_p,pll_q,2});
 }

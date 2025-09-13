@@ -134,20 +134,10 @@ class ClockSystem
 	 * @brief CLK init with calculating PLL value from internal clk
 	 * @param pll_src PLL Clock source - HSI
 	 * @param req_freq required frequency
-	 ***************************************************************************************************/
-	static SysInitStatus Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src)
-	{
-		return Init_calc_pll(req_freq, pll_src, 0);
-	};
-
-	/**************************************************************************************************
-	 * @brief CLK init with calculating PLL value from internal clk
-	 * @param pll_src PLL Clock source - HSI
-	 * @param req_freq required frequency
 	 * @param hse_clk HSE clock value
 	 * @todo more intellegent calculations
 	 ***************************************************************************************************/
-	static SysInitStatus Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src, uint32_t hse_clk);
+	static SysInitStatus Init_calc_pll(uint32_t req_freq, PLL_ClockSource pll_src, uint32_t hse_clk = 0, uint32_t pll_q = 2);
 
 	private:
 		/* data */
