@@ -1,22 +1,38 @@
-#include "flash.hpp"
+#include <flash.hpp>
 #include <string.h>
 
 bool flash_access_enabled = false;
 
-void flash_base::Enable_access()
+bool flash_base::init(bank_type tb)
+{
+	if(tb == bank_type::SINGLE_BANK)
+	{
+		flash_map = flash_map_SB;
+		sector_count = sector_count_SB;
+		return true;
+	}
+	else 
+	if(tb == bank_type::DUAL_BANK)
+	{
+		flash_map = flash_map_DB;
+		sector_count = sector_count_DB;
+		return true;
+	}
+	else
+		return false;
+}
+
+bool flash_base::enable_access()
 {
 	if(!flash_access_enabled)
 	{
 		FLASH->KEYR = 0x45670123;               //Enable access to FLASH
 		FLASH->KEYR = 0xCDEF89AB;
 		flash_access_enabled = 1;
+		return true;
 	}
+	return false;
 };
-
-uint32_t flash_base::ready()
-{
-	return !(FLASH->SR & FLASH_SR_BSY);
-}
 
 void flash_base::erase_sector(uint8_t sector)
 {

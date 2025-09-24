@@ -1,20 +1,27 @@
 #ifndef FLASH_HPP_
 #define FLASH_HPP_
 
-#include "system.hpp"
-#include "flash_maps.h"
+#include <system.hpp>
+#include <flash_maps.h>
 
 class flash_base
 {
 private:
 
 public:
-	static void Enable_access();
-	static uint32_t ready();
+	enum class bank_type
+	{
+		SINGLE_BANK,
+		DUAL_BANK
+	};
+
+	static bool init(bank_type tb = bank_type::SINGLE_BANK);
+	static bool enable_access();
+	static inline uint32_t ready() { return !(FLASH->SR & FLASH_SR_BSY); };
 	static void erase_sector(uint8_t sector);
 
 	template<typename T>
-	static T read(uint32_t addr);
+	static inline T read(uint32_t addr) { return (*reinterpret_cast<T*>(addr));}
 
 	template<typename T>
 	static void write(uint32_t addr, T data);
@@ -45,9 +52,10 @@ public:
 	};
 	~flash_data(){};
 
-	void SetUp()
+	void SetUp(bank_type tb = bank_type::SINGLE_BANK)
 	{
-		Enable_access();
+		init(tb);
+		enable_access();
 		find_offset();
 	}
 
@@ -66,17 +74,12 @@ private:
 
 };
 
-
-template<typename T>
-T flash_base::read(uint32_t addr)
-{
-	return (*reinterpret_cast<T*>(addr));
-};
-
 template<typename T>
 void flash_base::write(uint32_t addr, T data)
 {
 	uint8_t sz = sizeof(data);
+
+	__disable_irq();
 	
 	FLASH->CR |= FLASH_CR_PG; //Разрешаем программирование флеша
 
@@ -85,17 +88,23 @@ void flash_base::write(uint32_t addr, T data)
 
 	while(!ready()){}; //Ожидаем готовности флеша к записи
 
-	*reinterpret_cast<T*>(addr) = data;
+	*reinterpret_cast<volatile T*>(addr) = data;
 
 	while(!ready()){};
 
+	__DSB();
+
 	FLASH->CR &= ~(FLASH_CR_PG); //Запрещаем программирование флеша
+
+	__enable_irq();
 }
 
 template<typename T>
 void flash_base::write_array(uint32_t addr, T *data, uint32_t size)
 {
 	uint8_t sz = sizeof(data[0]);
+
+	__disable_irq();
 	
 	FLASH->CR |= FLASH_CR_PG; //Разрешаем программирование флеша
 
@@ -106,11 +115,14 @@ void flash_base::write_array(uint32_t addr, T *data, uint32_t size)
 
 	for(uint32_t i = 0;i<size;i++)
 	{
-		*reinterpret_cast<T*>(addr + i) = data[i];
+		*reinterpret_cast<volatile T*>(addr + i) = data[i];
 		while(!ready()){};
+		__DSB();
 	}
 
 	FLASH->CR &= ~(FLASH_CR_PG); //Запрещаем программирование флеша
+
+	__enable_irq();
 }
 
 
