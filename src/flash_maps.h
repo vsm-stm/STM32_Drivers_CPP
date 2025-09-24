@@ -47,6 +47,7 @@ static const flash_map_typedef flash_map [sector_count] = {
 	{0x08080000UL, 0x7FFFF},	// Sector 6 - 256Kbytes
 	{0x080C0000UL, 0x7FFFF}};	// Sector 7 - 256Kbytes
 #elif defined(STM32F767VI) || defined(STM32F767ZI)// 
+#define DUAL_MODE_MEM
 #define sector_count_SB 12
 #define sector_count_DB 24
 

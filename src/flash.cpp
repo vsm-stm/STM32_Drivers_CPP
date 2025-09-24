@@ -5,6 +5,7 @@ bool flash_access_enabled = false;
 
 bool flash_base::init(bank_type tb)
 {
+#ifdef DUAL_MODE_MEM
 	if(tb == bank_type::SINGLE_BANK)
 	{
 		flash_map = flash_map_SB;
@@ -20,6 +21,9 @@ bool flash_base::init(bank_type tb)
 	}
 	else
 		return false;
+#else
+		return true;
+#endif
 }
 
 bool flash_base::enable_access()
