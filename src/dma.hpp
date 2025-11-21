@@ -4,9 +4,8 @@
 #include "system.hpp"
 #include "rcc.hpp"
 
-class DMA_Sx
-{
-public:
+
+namespace DMA_Sx_ns {
 	/**
 	 * @brief Enumeration for data transfer direction.
 	 */
@@ -38,47 +37,51 @@ public:
 		DME = DMA_SxCR_DMEIE 	///< Direct Mode Error interrupt
 	};
 
-	/**
-	 * @brief Enumeration for peripheral types.
-	 */
-	enum class Per_Type
-	{
-		usart,	///< Peripheral type: USART
-		spi,	///< Peripheral type: SPI
-		i2c, 	///< Peripheral type: I2C
-		adc		///< Peripheral type: ADC
+	struct dma_sets_typedef {
+		DMA_TypeDef* ctrl;			// контроллер DMA1 или DMA2
+		volatile uint32_t* isr;		// ISR (статус)
+		volatile uint32_t* ifcr;	// IFCR (очистка)
+		uint8_t if_offset;			// смещение флагов
+		IRQn_Type irqn;				// IRQ
+		bool used;					// занят ли поток
 	};
 
-	/**
-	 * @brief Structure to hold DMA stream settings.
-	 */
-	struct StreamSettings
-	{
-		uint32_t channel;			///< DMA channel number
-		uint32_t peripheral_address;			///< Peripheral address
-		Per_Type peripheral_type;				///< Type of peripheral
-		DIR direction;					///< Data transfer direction
-		SIZE data_size;					///< Data transfer size
+	struct StreamSettings {
+		uint32_t channel{0};
+		DIR direction{DIR::From_Per};
+		SIZE data_size{SIZE::Byte};
+		bool minc{0};
+		bool pinc{0};
+		bool circ{0};
+		uint32_t per_address{0};
+		uint32_t mem_address{0};
+		uint32_t count{0};
 	};
 
+// ------------------- КЛАСС DMA STREAM -----------------------
+
+class DMA_Sx
+{
+private:
 	DMA_Stream_TypeDef *DMA_Stream_X;
 
+	// Данные о стриме
+	dma_sets_typedef* DMA = nullptr;
+
+	static int32_t GetStreamIndex(DMA_Stream_TypeDef* s);
+
+public:
 	/**
 	 * @brief Constructor with individual parameters.
 	 */
-	explicit DMA_Sx(DMA_Stream_TypeDef *dma_sx) : DMA_Stream_X(dma_sx){};
+	DMA_Sx(DMA_Stream_TypeDef *dma_sx) : DMA_Stream_X(dma_sx){};
+
 
 	/**
 	 * @brief Function to set up DMA stream.
 	 * @return Status of the setup operation.
 	 */
-	SysInitStatus SetUp(StreamSettings settings);
-	SysInitStatus SetUp(
-		uint32_t channel,
-		uint32_t peripheral_address,
-		Per_Type peripheral_type,
-		DIR direction,
-		SIZE data_size);
+	SysInitStatus SetUp(const StreamSettings &settings);
 
 	/**
 	 * @brief Overloaded function to set memory address and size for the DMA stream.
@@ -86,21 +89,45 @@ public:
 	 * @param size Size of the memory transfer.
 	 * @return Status of the memory address and size setting operation.
 	 */
-	SysStatus SetMemAddr(uint32_t addr, uint16_t size);
+	inline SysStatus SetMemAddr(uint32_t addr) { 
+		if(addr == 0)
+			return SysStatus::Error;
+		DMA_Stream_X->M0AR = addr;
+		return SysStatus::OK;
+	};
+
+	inline SysStatus SetPerAddr(uint32_t addr) { 
+		if(addr == 0)
+			return SysStatus::Error;
+		DMA_Stream_X->PAR = addr;
+		return SysStatus::OK;
+	};
+
+	inline SysStatus SetCount(uint32_t n) { 
+		if(n == 0)
+			return SysStatus::Error;
+		DMA_Stream_X->NDTR = n;
+		return SysStatus::OK;
+	};
+
+	inline uint32_t GetCount() {
+		return DMA_Stream_X->NDTR;
+	};
+
 
 	/**
 	 * @brief Function to clear DMA flags.
 	 */
 	inline void ClearFlags()
 	{
-		*DMA.cfr =	(DMA_LISR_TCIF0 << DMA.cfr_offset) |
-					(DMA_LISR_HTIF0 << DMA.cfr_offset) |
-					(DMA_LISR_FEIF0 << DMA.cfr_offset) |
-					(DMA_LISR_TEIF0 << DMA.cfr_offset);
+		*DMA->ifcr =	(DMA_LIFCR_CTCIF0 | 
+						 DMA_LIFCR_CHTIF0 |
+						 DMA_LIFCR_CFEIF0 |
+						 DMA_LIFCR_CTEIF0) << DMA->if_offset;
 	};
 
 	inline bool GetTC_Flag()
-	{ return ((*DMA.sr & (DMA_LISR_TCIF0_Msk << DMA.cfr_offset)) >> DMA.cfr_offset);};
+	{ return ((*DMA->isr & (DMA_LISR_TCIF0_Msk << DMA->if_offset)) >> DMA->if_offset);};
 
 	/**
 	 * @brief Enable the specified USART IRQ.
@@ -110,9 +137,9 @@ public:
 	{
 		DMA_Stream_X->CR |= static_cast<uint32_t>(irq);
 
-		if (!(NVIC_GetEnableIRQ(DMA.irqn)))
+		if (!(NVIC_GetEnableIRQ(DMA->irqn)))
 		{
-			NVIC_EnableIRQ(DMA.irqn);
+			NVIC_EnableIRQ(DMA->irqn);
 		}
 	}
 
@@ -123,17 +150,20 @@ public:
 	inline void Disable_IRQ(IRQ irq)
 	{
 		DMA_Stream_X->CR &= ~(static_cast<uint32_t>(irq));
-		if (!(DMA_Stream_X->CR & (DMA_SxCR_TCIE | DMA_SxCR_HTIE)))
-		{
-			NVIC_DisableIRQ(DMA.irqn);
-		}
 	}
 
-	inline void MINC(FunctionalState en)
-	{	if(en)
+	inline void MINC(FunctionalState en) {
+		if(en)
 			DMA_Stream_X->CR |=  DMA_SxCR_MINC;
 		else
 			DMA_Stream_X->CR &= ~DMA_SxCR_MINC;
+	};
+
+	inline void PINC(FunctionalState en) {
+		if(en)
+			DMA_Stream_X->CR |=  DMA_SxCR_PINC;
+		else
+			DMA_Stream_X->CR &= ~DMA_SxCR_PINC;
 	};
 
 	inline void CIRC(FunctionalState en)
@@ -147,27 +177,15 @@ public:
 	/**
 	 * @brief Function to enable the DMA stream.
 	 */
-	inline void Stream(FunctionalState en)
+	inline void Stream_EN(FunctionalState en)
 	{
 		if(en)
 			DMA_Stream_X->CR |= DMA_SxCR_EN;
 		else
 			DMA_Stream_X->CR &= ~DMA_SxCR_EN;
 	};
-
-	typedef struct _dma_sets
-	{
-		bool used;
-		DMA_TypeDef *ctrl;
-		uint32_t *cfr;
-		uint32_t *sr;
-		uint32_t cfr_offset;
-		IRQn_Type irqn;
-	}dma_sets_typedef;
-private:
-
-
-	dma_sets_typedef DMA;
 };
+
+} // namespace DMA_Sx
 
 #endif

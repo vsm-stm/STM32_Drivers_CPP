@@ -11,9 +11,9 @@ class RingQueue {
 	static constexpr bool is_power_of_two = (N & (N - 1)) == 0;
 
 private:
-	volatile T buffer[N];
-	volatile size_t head = 0;
-	volatile size_t tail = 0;
+	T buffer[N];
+	size_t head = 0;
+	size_t tail = 0;
 
 	inline size_t next_index(size_t index) const {
 		if constexpr (is_power_of_two) {

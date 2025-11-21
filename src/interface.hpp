@@ -18,12 +18,11 @@ public:
 										dma_rx(_dma_rx)
 		{};
 	~Interface_DMA(){};
-	SysInitStatus DMA_SetUp();
 protected:
-	DMA_Sx dma_tx;
-	DMA_Sx dma_rx;
-	DMA_Sx::StreamSettings tx_settings;
-	DMA_Sx::StreamSettings rx_settings;
+	DMA_Sx_ns::DMA_Sx dma_tx;
+	DMA_Sx_ns::DMA_Sx dma_rx;
+	DMA_Sx_ns::StreamSettings tx_settings;
+	DMA_Sx_ns::StreamSettings rx_settings;
 
 	enum class TXRX_Type
 	{
