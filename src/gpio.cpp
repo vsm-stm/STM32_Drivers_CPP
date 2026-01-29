@@ -20,7 +20,7 @@ SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
 
 	// Clear the relevant bits in the GPIO registers
 	PORT->MODER &= ~(3 << (pin * 2));
-	PORT->PUPDR &= ~(1 << pin);
+	PORT->PUPDR &= ~(3 << pin);
 	PORT->OTYPER &= ~(1 << pin);
 	PORT->OSPEEDR &= ~(3 << (pin * 2));
 	PORT->AFR[pin >> 3] &= ~(0xF << ((pin & 0x7) * 4U));

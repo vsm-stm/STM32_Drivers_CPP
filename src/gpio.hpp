@@ -207,10 +207,7 @@ public:
 	/**
 	 * @brief Destructor for the PIN class.
 	 */
-	~PIN()
-	{
-		Reset();
-	};
+	~PIN() = default;
 };
 
 #include <cstddef> 

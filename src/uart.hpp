@@ -64,24 +64,19 @@ public:
 	}
 
 	USART() = delete;
-	USART(USART const &) = default;
-	USART(USART &&) = default;
-	USART &operator=(USART const &) = default;
-	USART &operator=(USART &&) = default;
+	USART(const USART&) = delete;
+	USART& operator=(const USART&) = delete;
+	USART(USART&&) = delete;
+	USART& operator=(USART&&) = delete;
 
 	/**
 	 * @brief Destructor for USART class.
 	 */
-	~USART()
-	{
-		USARTx->CR1 = 0;
-		USARTx->CR2 = 0;
-		USARTx->CR3 = 0;
-	};
+	~USART(){};
 
 	/**
-	 * @brief Set up the USART configuration.
-	 * @return The status of the setup operation.
+	 * @brief Initialize the USART configuration.
+	 * @return The status of the initialization operation.
 	 */
 	SysInitStatus SetUp();
 
@@ -169,6 +164,15 @@ public:
 	{
 		NVIC_DisableIRQ(IRQ_vector);
 	}
+
+	inline void DeInit()
+	{	
+		USARTx->CR1 = 0;
+		USARTx->CR2 = 0;
+		USARTx->CR3 = 0;
+		DisableNVIC_IRQ();
+	}
+
 
 private:
 	PIN _TX{};

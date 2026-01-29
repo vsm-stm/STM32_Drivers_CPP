@@ -1,8 +1,8 @@
 #include "uart.hpp"
 #include <stdio.h>
 /**
- * @brief Set up the USART configuration.
- * @return The status of the setup operation.
+ * @brief Initialize the USART configuration.
+ * @return The status of the initialization operation.
  */
 SysInitStatus USART::SetUp()
 {
