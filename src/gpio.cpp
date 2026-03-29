@@ -1,50 +1,75 @@
 #include "gpio.hpp"
 
 /**
- * @brief Set up the GPIO pin with the specified type and alternate function.
- * @param type The enumerate type of pin configuration.
- * @param af The alternate function number.
- * @return The status of the setup operation.
+ * @brief Set up the GPIO pin with the specified type, speed and alternate function.
+ *
+ * @param type   Combined pin configuration (mode + pull + output type).
+ * @param speed  Output slew-rate (ignored for INPUT / ANALOG).
+ * @param af     Alternate function index 0..15 (used only in AF mode).
+ * @return       SysInitStatus::InitOK on success.
  */
 SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
 {
-	// Extract individual configuration bits from the type
-	uint8_t mode  = static_cast<uint8_t>(type) & 0x3 << mode_pos;
-	uint8_t pull  = (static_cast<uint8_t>(type) & 0x3 << pull_pos) >> pull_pos;
-	uint8_t otype = (static_cast<uint8_t>(type) & 0x1 << output_type_pos) >> output_type_pos;
+	// ------------------------------------------------------------------
+	// 1. Extract individual fields from the packed TYPE byte.
+	//
+	// FIX: original code had wrong operator-precedence:
+	//      "type & 0x3 << pull_pos" is "type & (0x3 << pull_pos)" which
+	//      masks the wrong bits and never actually shifts back to [1:0].
+	//      Correct form: shift first, then mask.
+	// ------------------------------------------------------------------
+	const uint8_t raw   = static_cast<uint8_t>(type);
+	const uint8_t mode  = (raw >> mode_pos)        & 0x3u;  // bits [1:0]
+	const uint8_t pull  = (raw >> pull_pos)        & 0x3u;  // bits [3:2] → [1:0]
+	const uint8_t otype = (raw >> output_type_pos) & 0x1u;  // bit  [4]   → [0]
 
-	// Calculate the GPIO ID to enable the corresponding clock
-	uint32_t gpio_id = (reinterpret_cast<uint32_t>(PORT) - GPIOA_BASE) / (GPIOB_BASE - GPIOA_BASE);
+	// ------------------------------------------------------------------
+	// 2. Enable the GPIO peripheral clock (AHB1).
+	//    Clock bit for GPIOx = RCC_AHB1ENR_GPIOAEN << gpio_id,
+	//    where gpio_id = 0 for GPIOA, 1 for GPIOB, …
+	// ------------------------------------------------------------------
+	const uint32_t gpio_id =
+		(reinterpret_cast<uint32_t>(PORT) - GPIOA_BASE) / (GPIOB_BASE - GPIOA_BASE);
+
 	if (!(RCC->AHB1ENR & (RCC_AHB1ENR_GPIOAEN << gpio_id)))
 		RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN << gpio_id);
 
-	// Clear the relevant bits in the GPIO registers
-	PORT->MODER &= ~(3 << (pin * 2));
-	PORT->PUPDR &= ~(3 << pin);
-	PORT->OTYPER &= ~(1 << pin);
-	PORT->OSPEEDR &= ~(3 << (pin * 2));
-	PORT->AFR[pin >> 3] &= ~(0xF << ((pin & 0x7) * 4U));
+	// ------------------------------------------------------------------
+	// 3. Clear the relevant register fields before writing new values.
+	//
+	// FIX: PUPDR is a 2-bit-per-pin register just like MODER, so the
+	//      clear mask must use (pin * 2), not plain (pin).
+	// ------------------------------------------------------------------
+	PORT->MODER   &= ~(0x3u << (pin * 2));  // 2 bits per pin
+	PORT->PUPDR   &= ~(0x3u << (pin * 2));  // FIX: was ~(3 << pin) — wrong shift
+	PORT->OTYPER  &= ~(0x1u <<  pin);       // 1 bit per pin
+	PORT->OSPEEDR &= ~(0x3u << (pin * 2));  // 2 bits per pin
+	PORT->AFR[pin >> 3] &= ~(0xFu << ((pin & 0x7u) * 4u));
 
-	// Configure the GPIO registers based on the selected pin mode
-	if (static_cast<PIN::MODE>(mode) != PIN::MODE::ANALOG)
+	// ------------------------------------------------------------------
+	// 4. Configure the registers according to the selected mode.
+	// ------------------------------------------------------------------
+	const PIN::MODE modeEnum = static_cast<PIN::MODE>(mode);
+
+	if (modeEnum != PIN::MODE::ANALOG)
 	{
-		if ((static_cast<PIN::MODE>(mode) == PIN::MODE::OUTPUT)
-		||  (static_cast<PIN::MODE>(mode) == PIN::MODE::AF))
+		if (modeEnum == PIN::MODE::OUTPUT || modeEnum == PIN::MODE::AF)
 		{
-			PORT->OTYPER |= otype << pin;
-			PORT->OSPEEDR |= static_cast<uint8_t>(speed) << (pin*2);
+			PORT->OTYPER  |= (static_cast<uint32_t>(otype) << pin);
+			PORT->OSPEEDR |= (static_cast<uint32_t>(speed) << (pin * 2));
 		}
 
-		PORT->PUPDR |= pull << (pin * 2);
+		// Pull-up / pull-down is valid for INPUT, OUTPUT and AF modes
+		PORT->PUPDR |= (static_cast<uint32_t>(pull) << (pin * 2));
 
-		if (static_cast<PIN::MODE>(mode) == PIN::MODE::AF)
+		if (modeEnum == PIN::MODE::AF)
 		{
-			PORT->AFR[pin >> 3] |= af << ((pin & 0x7) * 4U);
+			PORT->AFR[pin >> 3] |= (static_cast<uint32_t>(af) << ((pin & 0x7u) * 4u));
 		}
 	}
 
-	// Set the mode bits in the MODER register
-	PORT->MODER |= (mode << (pin * 2));
-	
+	// 5. Finally write the mode bits.
+	PORT->MODER |= (static_cast<uint32_t>(mode) << (pin * 2));
+
 	return SysInitStatus::InitOK;
 }

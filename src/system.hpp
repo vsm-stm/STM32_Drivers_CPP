@@ -2,6 +2,7 @@
 #define SYSTEM_H_
 
 #include <stdint.h>
+
 extern "C"
 {
 #if defined(STM32F4)
@@ -13,100 +14,171 @@ extern "C"
 #endif
 }
 
-#define TICK_BASE 1000
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-#define HSI_Clock	16000000UL
+/// SysTick interrupt frequency in Hz (1 kHz → 1 ms resolution).
+static constexpr uint32_t TICK_BASE = 1000U;
 
-// typedef enum
-// {
-//   SYS_OK = 0x00U,
-//   SYS_ERROR,
-//   SYS_BUSY,
-//   SYS_NO_Init,
-//   SYS_TIMEOUT
-// } SYS_StatusTypeDef;
+/// Default HSI oscillator frequency.
+static constexpr uint32_t HSI_Clock = 16000000UL;
 
-// typedef enum
-// {
-//   System_NO		= 0x00U,
-//   System_OK		= 0x01U,
-//   System_ERROR	= 0xFFU
-// } SystemInitStatus_TypeDef;
+// ---------------------------------------------------------------------------
+// Status enumerations
+// ---------------------------------------------------------------------------
 
-// Результат выполнения операций
+/// Result of a runtime operation.
 enum class SysStatus : uint8_t
 {
-    OK		= 0x00,
-    Error	= 0x01,
-    Busy	= 0x02,
-    NotInit	= 0x03,
-    Timeout	= 0x04
+	OK      = 0x00,
+	Error   = 0x01,
+	Busy    = 0x02,
+	NotInit = 0x03,
+	Timeout = 0x04
 };
 
-// Состояние инициализации системы
+/// Result of an initialisation sequence.
 enum class SysInitStatus : uint8_t
 {
-    NotInit		= 0x00,
-    InitOK		= 0x01,
-    InitError	= 0xFF
+	NotInit   = 0x00,
+	InitOK    = 0x01,
+	InitError = 0xFF
 };
+
+// ---------------------------------------------------------------------------
+// System class
+// ---------------------------------------------------------------------------
 
 class System
 {
-private:
-
 public:
-	/**************************************************************************************************
-	 * @brief System Clock Frequency (Core Clock, GPIO, CRC, DMA, USB)
-	 ***************************************************************************************************/
+	/**
+	 * @brief System Core Clock frequency (AHB / core / GPIO / DMA / USB).
+	 */
 	static uint32_t SystemCoreClock;
-	/**************************************************************************************************
-	 * @brief APB1 Bus Clock Frequency (WWDG,SPI<2/3>,USART<2/3>,UART<4/5>,I2C<1/2/3>,CAN<1/2>,DAC)
-	 ***************************************************************************************************/
+
+	/**
+	 * @brief APB1 bus clock (WWDG, SPI2/3, USART2/3, UART4/5, I2C1-3, CAN1/2, DAC).
+	 */
 	static uint32_t APB1BusClock;
-	/**************************************************************************************************
-	 * @brief APB2 Bus Clock Frequency (USART<1/6>,ADC<1/2/3>,SPI<1/4>,SYSCFG,SAI<1/2>)
-	 ***************************************************************************************************/
+
+	/**
+	 * @brief APB2 bus clock (USART1/6, ADC1-3, SPI1/4, SYSCFG, SAI1/2).
+	 */
 	static uint32_t APB2BusClock;
-	/**************************************************************************************************
-	 * @brief APB1 Timers Clock Frequency (TIM<2/3/4/5/6/7/12/13/14> Clock)
-	 ***************************************************************************************************/
+
+	/**
+	 * @brief APB1 timer clock (TIM2-7, TIM12-14).
+	 */
 	static uint32_t TIMxAPB1Clock;
-	/**************************************************************************************************
-	 * @brief APB2 Timers Clock Frequency (TIM<1/8/9/10/11> Clock)
-	 ***************************************************************************************************/
+
+	/**
+	 * @brief APB2 timer clock (TIM1, TIM8-11).
+	 */
 	static uint32_t TIMxAPB2Clock;
 
+	/**
+	 * @brief Initialise core system features: FPU, Flash accelerator, SysTick.
+	 */
 	static SysInitStatus Init();
+
+	/**
+	 * @brief Configure and start the SysTick timer.
+	 */
 	static SysInitStatus InitTicks();
+
+	/**
+	 * @brief Increment the millisecond tick counter — call from SysTick_Handler.
+	 */
 	static void TickIncrease();
+
+	/**
+	 * @brief Return the current millisecond tick count.
+	 */
 	static uint32_t GetTick();
+
+	/**
+	 * @brief Blocking delay using the SysTick counter.
+	 * @param delay  Delay in milliseconds.
+	 */
 	static void Delay_ms(uint32_t delay);
+
+	/**
+	 * @brief Enable the DWT cycle counter (required before Delay_us).
+	 * @note  Not available on Cortex-M0/M0+ (STM32L0). A compile-time
+	 *        warning is emitted if called on an unsupported target.
+	 */
 	static void Enable_CYCCNT();
+
+	/**
+	 * @brief Blocking delay using the DWT cycle counter.
+	 * @param delay  Delay in microseconds.
+	 * @note  Enable_CYCCNT() must be called before using this function.
+	 *        Handles counter wrap-around correctly.
+	 */
 	static void Delay_us(uint32_t delay);
-	static uint32_t SWOTrace(uint8_t *ptr, uint32_t len);
+
+	/**
+	 * @brief Write bytes to the ITM/SWO trace port.
+	 * @param ptr  Pointer to data buffer (must not be nullptr).
+	 * @param len  Number of bytes to send.
+	 * @return     Number of bytes written.
+	 */
+	static uint32_t SWOTrace(const uint8_t *ptr, uint32_t len);
+
 #if defined(STM32F7)
+	/**
+	 * @brief Initialise the MPU for STM32F7 targets.
+	 */
 	static void MPU_Init();
 #endif
 };
 
+// ---------------------------------------------------------------------------
+// Bit-banding helpers (STM32F4 only — Cortex-M4 with bit-band region)
+// ---------------------------------------------------------------------------
+
 #if defined(STM32F4)
-__attribute__ ((always_inline)) static inline uint32_t BB_RD(volatile uint32_t * addr, uint8_t bitnum) 
+
+/**
+ * @brief Read a single bit from a peripheral register via bit-banding.
+ */
+__attribute__((always_inline))
+static inline uint32_t BB_RD(volatile uint32_t *addr, uint8_t bitnum)
 {
-	volatile uint32_t * bitptr;
-	bitptr = ((uint32_t *)( (((uint32_t)addr)-(0x40000000UL))*32 + bitnum*4 + (0x42000000UL) ));
+	volatile uint32_t *bitptr =
+		reinterpret_cast<volatile uint32_t *>(
+			(reinterpret_cast<uint32_t>(addr) - 0x40000000UL) * 32U
+			+ bitnum * 4U
+			+ 0x42000000UL);
 	return *bitptr;
 }
 
-__attribute__ ((always_inline)) static inline void BB_WR(volatile uint32_t * addr, uint8_t bitnum, uint32_t value)
+/**
+ * @brief Write a single bit to a peripheral register via bit-banding.
+ */
+__attribute__((always_inline))
+static inline void BB_WR(volatile uint32_t *addr, uint8_t bitnum, uint32_t value)
 {
-	volatile uint32_t * bitptr;
-	bitptr = ((uint32_t *)( (((uint32_t)addr)-(0x40000000UL))*32 + bitnum*4 + (0x42000000UL) ));
+	volatile uint32_t *bitptr =
+		reinterpret_cast<volatile uint32_t *>(
+			(reinterpret_cast<uint32_t>(addr) - 0x40000000UL) * 32U
+			+ bitnum * 4U
+			+ 0x42000000UL);
 	*bitptr = value;
 }
 
-#define BIT_BB(address, bit) *((uint32_t *)(PERIPH_BB_BASE + ((uint32_t)(address) - PERIPH_BASE)*32 + bit*4))
+/**
+ * @brief Lvalue macro for bit-band access to a peripheral register bit.
+ *        Parentheses around (bit) prevent operator-precedence bugs when
+ *        a compound expression (e.g. pin & 7) is passed as the argument.
+ */
+#define BIT_BB(address, bit) \
+	(*( (volatile uint32_t *)( PERIPH_BB_BASE \
+		+ ((uint32_t)(address) - PERIPH_BASE) * 32U \
+		+ (bit) * 4U ) ))
 
-#endif
+#endif // STM32F4
 
-#endif /* SYSTEM_H_ */
+#endif // SYSTEM_H_
