@@ -95,7 +95,7 @@ SysInitStatus System::InitTicks()
 
 void System::TickIncrease()
 {
-	Tick++;
+	Tick = Tick + 1;
 }
 
 uint32_t System::GetTick()

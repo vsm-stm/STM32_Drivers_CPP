@@ -160,16 +160,24 @@ public:
 	 * @return         InitOK on success, InitError on any failure.
 	 */
 	static SysInitStatus Init(
+		SystemClockSource ClkSrc,
+		uint32_t          HSE_Clk,
+		BusDividers       BusDiv,
+		PLL_CFGR          PLLCfgr);
+
+	/// Overload — HSI with default bus dividers (no PLL, no HSE).
+	static inline SysInitStatus Init(
 		SystemClockSource ClkSrc  = SystemClockSource::HSI,
-		uint32_t          HSE_Clk = 0U,
-		BusDividers       BusDiv  = {},
-		PLL_CFGR          PLLCfgr = {});
+		uint32_t          HSE_Clk = 0U)
+	{
+		return Init(ClkSrc, HSE_Clk, BusDividers{}, PLL_CFGR{});
+	}
 
 	/// Convenience overload — no HSE.
 	static inline SysInitStatus Init(
 		SystemClockSource ClkSrc,
 		BusDividers       BusDiv,
-		PLL_CFGR          PLLCfgr = {})
+		PLL_CFGR          PLLCfgr)
 	{
 		return Init(ClkSrc, 0U, BusDiv, PLLCfgr);
 	}
