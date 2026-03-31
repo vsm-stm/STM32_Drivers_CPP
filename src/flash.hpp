@@ -2,7 +2,7 @@
 #define FLASH_HPP_
 
 #include <system.hpp>
-#include <flash_maps.h>
+#include <flash_config.h>
 
 class flash_base
 {

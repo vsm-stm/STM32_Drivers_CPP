@@ -5,25 +5,14 @@ bool flash_access_enabled = false;
 
 bool flash_base::init(bank_type tb)
 {
-#ifdef DUAL_MODE_MEM
-	if(tb == bank_type::SINGLE_BANK)
+	if constexpr (FLASH_DUAL_BANK)
 	{
-		flash_map = flash_map_SB;
-		sector_count = sector_count_SB;
-		return true;
+		// Both banks are already laid out in flash_sectors[].
+		// bank_type is accepted for API compatibility but has no effect —
+		// the layout is fixed at compile time by CMake (STM32_DUAL_BANK).
+		return (tb == bank_type::SINGLE_BANK || tb == bank_type::DUAL_BANK);
 	}
-	else 
-	if(tb == bank_type::DUAL_BANK)
-	{
-		flash_map = flash_map_DB;
-		sector_count = sector_count_DB;
-		return true;
-	}
-	else
-		return false;
-#else
-		return true;
-#endif
+	return true;
 }
 
 bool flash_base::enable_access()
@@ -54,7 +43,7 @@ flash_data::Data_Status flash_data::read_data()
 {
 	if(status == Data_Status::DATA_OK)
 	{
-		memcpy(data, reinterpret_cast<uint8_t*>(flash_map[sector].address + (offset*(size + 1)) + 1), size);
+		memcpy(data, reinterpret_cast<uint8_t*>(flash_sectors[sector].address + (offset*(size + 1)) + 1), size);
 	}
 
 	return status;
@@ -65,7 +54,7 @@ void flash_data::write_data()
 	if((status == Data_Status::DATA_OK)
 	|| (status == Data_Status::DATA_CORRUPT))
 	{
-		if((((offset+1)*(size + 1)) > flash_map[sector].size)
+		if((((offset+1)*(size + 1)) > flash_sectors[sector].size)
 		|| (status == Data_Status::DATA_CORRUPT))
 		{
 			offset = 0;
@@ -73,13 +62,13 @@ void flash_data::write_data()
 		}
 		else
 		{
-			write(flash_map[sector].address + (offset*(size + 1)), static_cast<uint8_t>(Data_Status::DATA_NOT_VALID));
+			write(flash_sectors[sector].address + (offset*(size + 1)), static_cast<uint8_t>(Data_Status::DATA_NOT_VALID));
 			offset++;
 		}
 	}
 	
-	write(flash_map[sector].address + (offset*(size + 1)), static_cast<uint8_t>(Data_Status::DATA_OK));
-	write_array(flash_map[sector].address + (offset*(size + 1)) + 1, data, size);
+	write(flash_sectors[sector].address + (offset*(size + 1)), static_cast<uint8_t>(Data_Status::DATA_OK));
+	write_array(flash_sectors[sector].address + (offset*(size + 1)) + 1, data, size);
 	status = Data_Status::DATA_OK;
 }
 
@@ -88,10 +77,10 @@ void flash_data::find_offset()
 	offset = 0;
 	do
 	{
-		status = static_cast<Data_Status>(read<uint8_t>(flash_map[sector].address + (offset*(size + 1))));
+		status = static_cast<Data_Status>(read<uint8_t>(flash_sectors[sector].address + (offset*(size + 1))));
 		if(status == Data_Status::DATA_NOT_VALID)
 		{
-			if((++offset*(size + 1) > flash_map[sector].size))
+			if((++offset*(size + 1) > flash_sectors[sector].size))
 			{
 				offset = 0;
 				break;
