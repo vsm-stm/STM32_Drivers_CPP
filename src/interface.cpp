@@ -1,4 +1,5 @@
 #include "interface.hpp"
+#include <cstring>
 
 Interface_USART::Interface_USART(	
 	USART *_usart,
@@ -7,7 +8,15 @@ Interface_USART::Interface_USART(
 	uint32_t tx_buffer_size,
 	uint32_t rx_buffer_size) :
 									Interface_DMA(_dma_tx, _dma_rx),
-									usart(_usart)//,
+										usart(_usart),
+										tx_buffer_size_max(tx_buffer_size),
+										rx_buffer_size_max(rx_buffer_size),
+										tx_buffered_mode(false),
+										rx_buffered_mode(false),
+										tx_buffered_active(false),
+									rx_buffered_active(false),
+									tx_buffered_bytes(0),
+									rx_buffered_bytes(0)//,
 									// buffer(tx_buffer_size, rx_buffer_size)
 {
 	tx_settings.channel = rx_settings.channel = 4;
@@ -71,6 +80,122 @@ SysStatus Interface_USART::Send(uint8_t* data, uint16_t data_size)
 	return status_tx;
 };
 
+void Interface_USART::StartBufferedTx()
+{
+	if((status_tx != SysStatus::OK)
+	|| tx_pending_queue.empty())
+		return;
+
+	if(tx_pending_queue.front().size == 0 || tx_pending_queue.front().size > sizeof(tx_pending_queue.front().data))
+	{
+		if(!tx_pending_queue.empty())
+			tx_pending_queue.pop_front();
+		tx_buffered_active = false;
+		return;
+	}
+	status_tx = SysStatus::Busy;
+	tx_buffered_active = true;
+
+	dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(tx_pending_queue.front().data));
+	dma_tx.SetCount(tx_pending_queue.front().size);
+#if defined(STM32F4)
+	usart->ClearFlags();
+#elif defined(STM32F7)
+	usart->ClearFlags(USART::ISR_FLAGS::TC);
+#endif
+	usart->Enable_IRQ(USART::IRQ::TC);
+	dma_tx.ClearFlags();
+	dma_tx.Stream_EN(ENABLE);
+}
+
+void Interface_USART::StartBufferedRx()
+{
+	if((status_rx != SysStatus::OK)
+	|| rx_pending_queue.empty())
+		return;
+
+	status_rx = SysStatus::Busy;
+	rx_buffered_active = true;
+	Count_To_Receive = rx_pending_queue.front().size;
+	dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(rx_pending_queue.front().data));
+	dma_rx.SetCount(Count_To_Receive);
+	usart->Enable_IRQ(USART::IRQ::IDLE);
+	dma_rx.ClearFlags();
+	dma_rx.Stream_EN(ENABLE);
+}
+
+SysStatus Interface_USART::SendBuffered(uint8_t* data, uint16_t data_size)
+{
+	if((data == NULL)
+	|| (data_size == 0)
+	|| (tx_buffer_size_max == 0))
+		return SysStatus::Error;
+
+	if((tx_buffered_bytes + data_size) > (tx_buffer_size_max * 256))
+		return SysStatus::Busy;
+
+	if(data_size > sizeof(buffered_packet::data))
+		return SysStatus::Error;
+
+	buffered_packet packet;
+	packet.size = data_size;
+	memcpy(packet.data, data, data_size);
+	tx_pending_queue.push_back(packet);
+	tx_buffered_bytes += data_size;
+	tx_buffered_mode = true;
+
+	if(status_tx == SysStatus::OK)
+	{
+		StartBufferedTx();
+	}
+
+	return status_tx;
+}
+
+SysStatus Interface_USART::ReceiveBuffered(uint16_t data_size, bool cont)
+{
+	ContReceive = cont;
+	if((data_size == 0)
+	|| (rx_buffer_size_max == 0))
+		return SysStatus::Error;
+
+	if((rx_buffered_bytes + data_size) > (rx_buffer_size_max * 256))
+		return SysStatus::Busy;
+
+	if(data_size > sizeof(buffered_packet::data))
+		return SysStatus::Error;
+
+	buffered_packet packet;
+	packet.size = data_size;
+	rx_pending_queue.push_back(packet);
+	rx_buffered_bytes += data_size;
+	rx_buffered_mode = true;
+
+	if(status_rx == SysStatus::OK)
+	{
+		StartBufferedRx();
+	}
+
+	return status_rx;
+}
+
+SysStatus Interface_USART::ReadBufferedRx(uint8_t* data, uint16_t data_size)
+{
+	if((data == NULL)
+	|| (data_size == 0)
+	|| rx_ready_queue.empty())
+		return SysStatus::Error;
+
+	if(rx_ready_queue.front().size != data_size)
+		return SysStatus::Error;
+
+	memcpy(data, rx_ready_queue.front().data, data_size);
+	rx_buffered_bytes -= data_size;
+	rx_ready_queue.pop_front();
+
+	return SysStatus::OK;
+}
+
 SysStatus Interface_USART::Receive(uint8_t* data, uint16_t data_size, bool cont)
 {
 	ContReceive = cont;
@@ -121,7 +246,6 @@ void Interface_USART::Stop_Receive()
 
 void Interface_USART::IRQHandler()
 {
-	// Handle Transmit Complete (TC) interrupt
 	if((usart->USARTx->CR1 & USART_CR1_TCIE) &&
 #if defined(STM32F4)
 		(usart->USARTx->SR & USART_SR_TC))
@@ -136,6 +260,25 @@ void Interface_USART::IRQHandler()
 	
 		usart->Disable_IRQ(USART::IRQ::TC);
 		status_tx = SysStatus::OK;
+
+		if(tx_buffered_mode)
+		{
+			if(tx_buffered_active && !tx_pending_queue.empty())
+			{
+				tx_buffered_bytes -= tx_pending_queue.front().size;
+				tx_pending_queue.pop_front();
+			}
+			tx_buffered_active = false;
+
+			if(!tx_pending_queue.empty())
+				StartBufferedTx();
+			else
+			{
+				tx_buffered_mode = false;
+				tx_buffered_active = false;
+				tx_buffered_bytes = 0;
+			}
+		}
 
 		// if(buffer.tx_buffer_size_max != 0)
 		// {
@@ -156,7 +299,6 @@ void Interface_USART::IRQHandler()
 		// }
 	}
 
-	// Handle Idle Line Detected interrupt
 	if((usart->USARTx->CR1 & USART_CR1_IDLEIE) &&
 #if defined(STM32F4)
 	  (usart->USARTx->SR & USART_SR_IDLE))
@@ -176,28 +318,35 @@ void Interface_USART::IRQHandler()
 
 		status_rx = SysStatus::OK;
 
-		// if(buffer.rx_buffer_size_max != 0)
-		// {
-		// 	buffer.rx.back().size -= dma_rx.DMA_Stream_X->NDTR;
-		// }
-
-		// if(ContReceive)
-		// {
-		// 	if(buffer.rx_buffer_size_max == 0)
-		// 	{
-		// 		dma_rx.ClearFlags();
-		// 		dma_rx.Stream(ENABLE);
-		// 		status_rx = SYS_BUSY;
-		// 	}
-		// 	else
-		// 	{
-		// 		status_rx = Receive(buffer.rx.back().size, ContReceive);
-		// 	}
-		// }
-		// else
-		if(!ContReceive)
+		if(rx_buffered_mode)
 		{
-			usart->Disable_IRQ(USART::IRQ::IDLE);
+			if(rx_buffered_active && !rx_pending_queue.empty())
+			{
+				rx_ready_queue.push_back(rx_pending_queue.front());
+				rx_pending_queue.pop_front();
+				rx_buffered_active = false;
+			}
+
+			if(!rx_pending_queue.empty())
+			{
+				StartBufferedRx();
+			}
+			else
+			{
+				rx_buffered_mode = false;
+				rx_buffered_active = false;
+				if(!ContReceive)
+				{
+					usart->Disable_IRQ(USART::IRQ::IDLE);
+				}
+			}
+		}
+		else
+		{
+			if(!ContReceive)
+			{
+				usart->Disable_IRQ(USART::IRQ::IDLE);
+			}
 		}
 	}
 

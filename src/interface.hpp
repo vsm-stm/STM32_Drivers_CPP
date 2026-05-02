@@ -1,6 +1,12 @@
 #ifndef INTERFACE_HPP_
 #define INTERFACE_HPP_
 
+#ifndef PACKET_SIZE
+#define PACKET_SIZE 256
+#endif
+
+#include <deque>
+
 #include "system.hpp"
 #include "dma.hpp"
 #include "uart.hpp"
@@ -73,6 +79,10 @@ public:
 	SysStatus Send(uint8_t* data, uint16_t data_size);
 	SysStatus Receive(uint8_t* data, uint16_t data_size, bool cont);
 	SysStatus Receive(uint8_t* data, uint16_t data_size);
+	SysStatus SendBuffered(uint8_t* data, uint16_t data_size);
+	SysStatus ReceiveBuffered(uint16_t data_size, bool cont = false);
+	SysStatus ReadBufferedRx(uint8_t* data, uint16_t data_size);
+	uint32_t GetBufferedRxCount() const { return static_cast<uint32_t>(rx_ready_queue.size()); }
 
 	inline SysStatus GetRxStatus() const { return status_rx; }
 	inline SysStatus GetTxStatus() const { return status_tx; }
@@ -89,6 +99,10 @@ protected:
 
 	bool ContReceive;
 	uint16_t Count_To_Receive;
+	const uint32_t tx_buffer_size_max;
+	const uint32_t rx_buffer_size_max;
+	uint32_t tx_buffered_bytes;
+	uint32_t rx_buffered_bytes;
 
 	typedef struct _data
 	{
@@ -96,9 +110,25 @@ protected:
 		uint16_t size;
 	}data_typedef;
 
+	struct buffered_packet
+	{
+		uint8_t data[PACKET_SIZE];
+		uint16_t size;
+	};
+
+	std::deque<buffered_packet> tx_pending_queue;
+	std::deque<buffered_packet> rx_pending_queue;
+	std::deque<buffered_packet> rx_ready_queue;
+	bool tx_buffered_mode;
+	bool rx_buffered_mode;
+	bool tx_buffered_active;
+	bool rx_buffered_active;
+
 	// Buffer<data_typedef> buffer;
 
 	inline void Change_baud(uint32_t new_baud) {usart->SetBaud(new_baud);};
+	void StartBufferedTx();
+	void StartBufferedRx();
 };
 
 class Interface_SPI : public Interface_DMA
