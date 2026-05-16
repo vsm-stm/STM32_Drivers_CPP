@@ -36,6 +36,10 @@ static constexpr uint32_t OVERDRIVE_TIMEOUT_MS     =  100U; ///< Overdrive enabl
 	static constexpr uint32_t SYS_CLK_LIMIT  = 100000000UL;
 	static constexpr uint32_t APB1_CLK_LIMIT =  50000000UL;
 	static constexpr uint32_t APB2_CLK_LIMIT = 100000000UL;
+#elif defined(STM32G030xx) || defined(STM32G070xx) || defined(STM32G071xx) || defined(STM32G081xx)
+	static constexpr uint32_t SYS_CLK_LIMIT  = 64000000UL;
+	static constexpr uint32_t APB1_CLK_LIMIT = 64000000UL;
+	// static constexpr uint32_t APB2_CLK_LIMIT = 64000000UL;
 #else
 	#error "rcc.hpp: unsupported STM32 target — please add SYS/APB clock limits for your device."
 #endif
@@ -54,17 +58,26 @@ public:
 	/// System clock source — maps directly to RCC_CFGR_SW field values.
 	enum class SystemClockSource : uint32_t
 	{
+#if defined(STM32F4) or defined(STM32F7)
 		HSI   = RCC_CFGR_SW_HSI,
 		HSE   = RCC_CFGR_SW_HSE,
 		PLL_P = RCC_CFGR_SW_PLL,
-#if defined(STM32F446xx)
+	#if defined(STM32F446xx)
 		PLL_R = RCC_CFGR_SW_PLLR,
+	#endif
+#elif defined(STM32G0)
+		LSE   = RCC_CFGR_SW_LSE,
+		HSI   = RCC_CFGR_SW_HSISYS,
+		HSE   = RCC_CFGR_SW_HSE,
+		PLL   = RCC_CFGR_SW_PLLRCLK,
+		LSI   = RCC_CFGR_SW_LSI,
 #endif
 	};
 
 	/// AHB prescaler — maps to RCC_CFGR_HPRE field values.
 	enum class AHB_Divider : uint32_t
 	{
+#if defined (STM32F7) or defined(STM32F4)
 		DIV1   = RCC_CFGR_HPRE_DIV1,
 		DIV2   = RCC_CFGR_HPRE_DIV2,
 		DIV4   = RCC_CFGR_HPRE_DIV4,
@@ -74,18 +87,38 @@ public:
 		DIV128 = RCC_CFGR_HPRE_DIV128,
 		DIV256 = RCC_CFGR_HPRE_DIV256,
 		DIV512 = RCC_CFGR_HPRE_DIV512,
+#elif defined(STM32G0)
+		DIV1	= 0b0000 << RCC_CFGR_HPRE_Pos,
+		DIV2	= 0b1000 << RCC_CFGR_HPRE_Pos,
+		DIV4	= 0b1001 << RCC_CFGR_HPRE_Pos,
+		DIV8	= 0b1010 << RCC_CFGR_HPRE_Pos,
+		DIV16	= 0b1011 << RCC_CFGR_HPRE_Pos,
+		DIV64	= 0b1100 << RCC_CFGR_HPRE_Pos,
+		DIV128	= 0b1101 << RCC_CFGR_HPRE_Pos,
+		DIV256	= 0b1110 << RCC_CFGR_HPRE_Pos,
+		DIV512	= 0b1111 << RCC_CFGR_HPRE_Pos,
+#endif
 	};
 
 	/// APB1 prescaler — maps to RCC_CFGR_PPRE1 field values.
 	enum class APB1_Divider : uint32_t
 	{
+#if defined (STM32F7) or defined(STM32F4)
 		DIV1  = RCC_CFGR_PPRE1_DIV1,
 		DIV2  = RCC_CFGR_PPRE1_DIV2,
 		DIV4  = RCC_CFGR_PPRE1_DIV4,
 		DIV8  = RCC_CFGR_PPRE1_DIV8,
 		DIV16 = RCC_CFGR_PPRE1_DIV16,
+#elif defined(STM32G0)
+		DIV1	= 0b000 << RCC_CFGR_PPRE_Pos,
+		DIV2	= 0b100 << RCC_CFGR_PPRE_Pos,
+		DIV4	= 0b101 << RCC_CFGR_PPRE_Pos,
+		DIV8	= 0b110 << RCC_CFGR_PPRE_Pos,
+		DIV16	= 0b111 << RCC_CFGR_PPRE_Pos,
+#endif
 	};
 
+#if defined (STM32F7) or defined(STM32F4)
 	/// APB2 prescaler — maps to RCC_CFGR_PPRE2 field values.
 	enum class APB2_Divider : uint32_t
 	{
@@ -95,6 +128,7 @@ public:
 		DIV8  = RCC_CFGR_PPRE2_DIV8,
 		DIV16 = RCC_CFGR_PPRE2_DIV16,
 	};
+#endif
 
 	/// PLL input clock source.
 	enum class PLL_ClockSource : uint32_t
@@ -113,7 +147,9 @@ public:
 	{
 		AHB_Divider  AHB_div  = AHB_Divider::DIV1;
 		APB1_Divider APB1_div = APB1_Divider::DIV1;
+#if defined (STM32F7) or defined(STM32F4)
 		APB2_Divider APB2_div = APB2_Divider::DIV1;
+#endif
 	};
 
 	/**

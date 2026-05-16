@@ -58,8 +58,10 @@ SysInitStatus System::Init()
 	SCB_EnableDCache();              // Enable data cache
 
 	RCC->APB1ENR |= RCC_APB1ENR_PWREN; // Enable PWR clock (required for voltage scaling)
-
-#elif defined(STM32L0)
+#elif defined(STM32G0)
+	FLASH->ACR |= FLASH_ACR_PRFTEN  // Prefetch buffer
+				| FLASH_ACR_ICEN;   // Instruction cache
+#elif defined(STM32L0) 
 	// L0 has no ART/cache; Flash wait states are handled by the HAL / user PLL config.
 #endif
 
@@ -130,6 +132,7 @@ void System::Delay_ms(uint32_t delay)
 	while ((GetTick() - tick_start) < wait) {}
 }
 
+#if not defined(STM32L0) and not defined(STM32G0)
 // ---------------------------------------------------------------------------
 // System::Enable_CYCCNT
 // ---------------------------------------------------------------------------
@@ -143,13 +146,8 @@ void System::Delay_ms(uint32_t delay)
  */
 void System::Enable_CYCCNT()
 {
-#if defined(STM32L0)
-	#warning "Enable_CYCCNT: DWT CYCCNT is not available on Cortex-M0+ (STM32L0). Call has no effect."
-	// Do nothing — no DWT cycle counter on M0+.
-#else
 	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; // Enable trace
 	DWT->CTRL        |= DWT_CTRL_CYCCNTENA_Msk;      // Start CYCCNT
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +194,7 @@ uint32_t System::SWOTrace(const uint8_t *ptr, uint32_t len)
 
 	return len;
 }
-
+#endif // STM32L0 or STM32G0
 // ---------------------------------------------------------------------------
 // System::MPU_Init  (STM32F7 only)
 // ---------------------------------------------------------------------------

@@ -11,6 +11,8 @@ extern "C"
 	#include "stm32f7xx.h"
 #elif defined(STM32L0)
 	#include "stm32l0xx.h"
+#elif defined(STM32G0)
+	#include "stm32g0xx.h"
 #endif
 }
 
@@ -109,6 +111,7 @@ public:
 	 * @note  Not available on Cortex-M0/M0+ (STM32L0). A compile-time
 	 *        warning is emitted if called on an unsupported target.
 	 */
+#if not defined(STM32L0) and not defined(STM32G0)
 	static void Enable_CYCCNT();
 
 	/**
@@ -126,6 +129,7 @@ public:
 	 * @return     Number of bytes written.
 	 */
 	static uint32_t SWOTrace(const uint8_t *ptr, uint32_t len);
+#endif
 
 #if defined(STM32F7)
 	/**
