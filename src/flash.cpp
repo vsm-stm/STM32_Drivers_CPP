@@ -7,6 +7,7 @@
 	#define CR_EARSE_BIT	FLASH_CR_SER
 	#define CR_SERCTOR_Pos	FLASH_CR_SNB_Pos
 	#define CR_SERCTOR_Msk	FLASH_CR_SNB_Msk
+	static constexpr uint32_t FLASH_PAGE_COUNT = FLASH_SECTOR_COUNT;
 
 #elif defined(STM32L0) || defined(STM32G0) // todo check L0
 	#define CR_EARSE_BIT 	FLASH_CR_PER

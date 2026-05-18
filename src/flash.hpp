@@ -48,8 +48,8 @@ public:
 
 	enum class Data_Status : status_t
 	{
-		NO_DATA = ~status_t(0),
-		DATA_OK = ~status_t(0) >> (sizeof(status_t) * 4),
+		NO_DATA = static_cast<status_t>(-1),
+		DATA_OK = static_cast<status_t>(static_cast<status_t>(-1) >> (sizeof(status_t) * 4)),
 		DATA_CORRUPT = 0x1,
 		DATA_NOT_VALID = 0
 	};
