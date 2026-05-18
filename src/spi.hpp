@@ -28,7 +28,7 @@ public:
 	#if defined(STM32F4)
 		Byte = 0,
 		Half_Word = SPI_CR1_DFF
-	#elif defined(STM32F7)
+	#elif defined(STM32F7) || defined(STM32G0)
 		Byte = 0b111 << SPI_CR2_DS_Pos,
 		Half_Word = 0b1111 << SPI_CR2_DS_Pos
 	#endif
@@ -157,26 +157,39 @@ public:
 	{
 		SPIx->CR2 |= static_cast<uint32_t>(irq);
 
-		if (!(NVIC_GetEnableIRQ(IRQ_vector)))
+		if (_info != nullptr && !(NVIC_GetEnableIRQ(_info->irq)))
 		{
-			NVIC_EnableIRQ(IRQ_vector);
+			NVIC_EnableIRQ(_info->irq);
 		}
 	}
 
 	/**
-	 * @brief Disable the specified USART IRQ.
+	 * @brief Disable the specified SPI IRQ.
 	 * @param irq The IRQ to disable.
 	 */
 	void Disable_IRQ(IRQ irq)
 	{
 		SPIx->CR2 &= ~(static_cast<uint32_t>(irq));
-		if (!(SPIx->CR2 & (SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE )))
+		if (_info != nullptr && !(SPIx->CR2 & (SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE)))
 		{
-			NVIC_DisableIRQ(IRQ_vector);
+			NVIC_DisableIRQ(_info->irq);
 		}
 	}
-	SysStatus Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout);
-	SysStatus Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
+	SysInitStatus Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout);
+	SysInitStatus Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
+
+private:
+	struct PeriphInfo {
+		SPI_TypeDef*        periph;
+		volatile uint32_t*  clk_reg;
+		uint32_t            clk_bit;
+		volatile uint32_t*  rst_reg;
+		uint32_t            rst_bit;
+		uint32_t const*     bus_clk;
+		IRQn_Type           irq;
+		uint8_t             af;
+	};
+	static const PeriphInfo spi_table[];
 
 protected:
 	PIN CLK{};
@@ -184,10 +197,9 @@ protected:
 	PIN MISO{};
 	PIN SS{};
 
-	uint32_t af, bus_clk;
 	NSS_ctrl nss_ctrl;
 	Master_sel Master_slave;
-	IRQn_Type IRQ_vector;
+	const PeriphInfo* _info = nullptr;
 
 	SysInitStatus SetHard();
 };

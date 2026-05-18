@@ -1,74 +1,59 @@
 #include "spi.hpp"
 
+
+#if defined(STM32F4) || defined(STM32F7)
+	const SPI::PeriphInfo SPI::spi_table[] = {
+		{ SPI1, &RCC->APB2ENR, RCC_APB2ENR_SPI1EN, &RCC->APB2RSTR, RCC_APB2RSTR_SPI1RST, &System::APB2BusClock, SPI1_IRQn, 5 },
+		{ SPI2, &RCC->APB1ENR, RCC_APB1ENR_SPI2EN, &RCC->APB1RSTR, RCC_APB1RSTR_SPI2RST, &System::APB1BusClock, SPI2_IRQn, 5 },
+		{ SPI3, &RCC->APB1ENR, RCC_APB1ENR_SPI3EN, &RCC->APB1RSTR, RCC_APB1RSTR_SPI3RST, &System::APB1BusClock, SPI3_IRQn, 6 },
+	#if defined(STM32F446xx) || defined(STM32F429xx)
+		{ SPI4, &RCC->APB2ENR, RCC_APB2ENR_SPI4EN, &RCC->APB2RSTR, RCC_APB2RSTR_SPI4RST, &System::APB2BusClock, SPI4_IRQn, 5 },
+	#endif
+	};
+#elif defined(STM32G0)
+	const SPI::PeriphInfo SPI::spi_table[] = {
+		{ SPI1, &RCC->APBENR2, RCC_APBENR2_SPI1EN, &RCC->APBRSTR2, RCC_APBRSTR2_SPI1RST, &System::APB1BusClock, SPI1_IRQn, 0 },
+		{ SPI2, &RCC->APBENR1, RCC_APBENR1_SPI2EN, &RCC->APBRSTR1, RCC_APBRSTR1_SPI2RST, &System::APB1BusClock, SPI2_IRQn, 0 },
+	};
+#endif
+
 SysInitStatus SPI::SetHard()
 {
-	// Check the SPI pointer and configure corresponding parameters
-	if(SPIx == SPI1)
-	{
-		RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
-		RCC->APB2RSTR |= RCC_APB2RSTR_SPI1RST;
-		RCC->APB2RSTR &= ~RCC_APB2RSTR_SPI1RST;
-		bus_clk = System::APB2BusClock;
-		IRQ_vector = SPI1_IRQn;
-		af = 5;
-	}else
-	if (SPIx == SPI2)
-	{
-		RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
-		RCC->APB1RSTR |= RCC_APB1RSTR_SPI2RST;
-		RCC->APB1RSTR &= ~RCC_APB1RSTR_SPI2RST;
-		bus_clk = System::APB1BusClock;
-		IRQ_vector = SPI2_IRQn;
-		af = 5;
-	}else
-	if (SPIx == SPI3)
-	{
-		RCC->APB1ENR |= RCC_APB1ENR_SPI3EN;
-		RCC->APB1RSTR |= RCC_APB1RSTR_SPI3RST;
-		RCC->APB1RSTR &= ~RCC_APB1RSTR_SPI3RST;
-		bus_clk = System::APB1BusClock;
-		IRQ_vector = SPI3_IRQn;
-		af = 6;
-	}
-#if defined(STM32F446xx) || defined(STM32F429xx)
-	else
-	if (SPIx == SPI4)
-	{
-		RCC->APB2ENR |= RCC_APB2ENR_SPI4EN;
-		RCC->APB2RSTR |= RCC_APB2RSTR_SPI4RST;
-		RCC->APB2RSTR &= ~RCC_APB2RSTR_SPI4RST;
-		bus_clk = System::APB2BusClock;
-		IRQ_vector = SPI4_IRQn;
-		af = 5;
-	}
-#endif
-	else return SYS_ERROR;
+	const PeriphInfo* info = nullptr;
+	for (const auto& e : spi_table)
+		if (e.periph == SPIx) { info = &e; break; }
+	if (!info) return SysInitStatus::InitError;
+
+	_info = info;
+	*info->clk_reg |= info->clk_bit;
+	*info->rst_reg |= info->rst_bit;
+	*info->rst_reg &= ~info->rst_bit;
 
 	if (CLK.PORT != NULL)
 	{
-		CLK.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, af);
+		CLK.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
 	}
 	if (MOSI.PORT != NULL)
 	{
 		if(Master_slave == Master_sel::Master)
-			MOSI.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, af);
+			MOSI.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
 		else
-			MOSI.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High, af);
+			MOSI.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High, _info->af);
 	}
 	if (MISO.PORT != NULL)
 	{
 		if(Master_slave == Master_sel::Master)
-			MISO.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High, af);
+			MISO.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High, _info->af);
 		else
-			MISO.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, af);
-			
+			MISO.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
+
 	}
 
 	if (SS.PORT != NULL)
 	{
 		if(nss_ctrl == NSS_ctrl::Hard)
 		{
-			SS.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, af);
+			SS.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
 		}	
 		else
 		{
@@ -79,7 +64,7 @@ SysInitStatus SPI::SetHard()
 		}
 	}
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_format dff, Frame_Format ff, cPolPha cpolpha, uint8_t br)
@@ -88,7 +73,7 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_fo
 	Master_slave = mstr;
 	SysInitStatus setup_status = SetHard();
 
-	if(setup_status != SYS_OK)
+	if(setup_status != SysInitStatus::InitOK)
 		return setup_status;
 
 	SPIx->CR1 =	static_cast<uint32_t>(mstr) |
@@ -123,7 +108,7 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_fo
 
 	SS.SetLevel(1);
 
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 SysInitStatus SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
@@ -138,7 +123,7 @@ SysInitStatus SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t dat
 		while(!(SPIx->SR & SPI_SR_RXNE))
 		{
 			if(System::GetTick() - tick_start > timeout)
-				return SYS_ERROR;
+				return SysInitStatus::InitError;
 		};
 
 		rx_data[i] = SPIx->DR;
@@ -149,11 +134,11 @@ SysInitStatus SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t dat
 	while(SPIx->SR & SPI_SR_BSY)
 	{
 		if(System::GetTick() - tick_start > timeout)
-			return SYS_ERROR;
+			return SysInitStatus::InitError;
 	};
 	
 	SS.SetLevel(1);
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }
 
 SysInitStatus SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
@@ -167,7 +152,7 @@ SysInitStatus SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
 		while(!(SPIx->SR & SPI_SR_TXE))
 		{
 			if(System::GetTick() - tick_start > timeout)
-				return SYS_ERROR;
+				return SysInitStatus::InitError;
 		};
 
 		// SPIx->DR = tx_data[i];
@@ -189,10 +174,10 @@ SysInitStatus SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
 	while(SPIx->SR & SPI_SR_BSY)
 	{
 		if(System::GetTick() - tick_start > timeout)
-			return SYS_ERROR;
+			return SysInitStatus::InitError;
 	};
 	SPIx->CR1 &= ~SPI_CR1_SPE;
 
 	SS.SetLevel(1);
-	return SYS_OK;
+	return SysInitStatus::InitOK;
 }

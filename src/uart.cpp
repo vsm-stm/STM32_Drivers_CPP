@@ -1,5 +1,4 @@
 #include "uart.hpp"
-#include <stdio.h>
 
 
 #if defined(STM32F4) || defined(STM32F7)

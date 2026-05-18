@@ -4,7 +4,6 @@
 #include "system.hpp"
 #include <cstddef>
 #include <utility>
-#include <cassert>
 
 #if defined(STM32F4) or defined(STM32F7)
 	#define RCC_GPIO_EN_REG		RCC->AHB1ENR
@@ -121,7 +120,7 @@ public:
 	explicit PIN(GPIO_TypeDef* port, uint8_t pn)
 		: PORT(port), pin(pn)
 	{
-		assert(pn < 16 && "PIN: pin number must be in [0..15]");
+		if (pn >= 16) { __BKPT(0); while(1); }
 	}
 
 	SysInitStatus SetUp(TYPE type, uint8_t af)
