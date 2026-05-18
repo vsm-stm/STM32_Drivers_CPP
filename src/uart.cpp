@@ -1,5 +1,24 @@
 #include "uart.hpp"
 #include <stdio.h>
+
+
+#if defined(STM32F4) || defined(STM32F7)
+	const USART::PeriphInfo USART::usart_table[] = {
+		{ USART1, &RCC->APB2ENR, RCC_APB2ENR_USART1EN, &System::APB2BusClock, USART1_IRQn, 7 },
+		{ USART2, &RCC->APB1ENR, RCC_APB1ENR_USART2EN, &System::APB1BusClock, USART2_IRQn, 7 },
+	#ifndef STM32F411xE
+		{ USART3, &RCC->APB1ENR, RCC_APB1ENR_USART3EN, &System::APB1BusClock, USART3_IRQn, 7 },
+		{ UART4,  &RCC->APB1ENR, RCC_APB1ENR_UART4EN,  &System::APB1BusClock, UART4_IRQn,  8 },
+		{ UART5,  &RCC->APB1ENR, RCC_APB1ENR_UART5EN,  &System::APB1BusClock, UART5_IRQn,  8 },
+		{ USART6, &RCC->APB2ENR, RCC_APB2ENR_USART6EN, &System::APB2BusClock, USART6_IRQn, 8 },
+	#endif
+	};
+#elif defined(STM32G0)
+	const USART::PeriphInfo USART::usart_table[] = {
+		{ USART1, &RCC->APBENR2, RCC_APBENR2_USART1EN, &System::APB1BusClock, USART1_IRQn, 0 },
+		{ USART2, &RCC->APBENR1, RCC_APBENR1_USART2EN, &System::APB1BusClock, USART2_IRQn, 0 },
+	};
+#endif
 /**
  * @brief Initialize the USART configuration.
  * @return The status of the initialization operation.
@@ -10,69 +29,29 @@ SysInitStatus USART::SetUp()
 	|| (BaudRate > 115200*16))
 		return SysInitStatus::InitError;
 
-	// Check the USARTx pointer and configure corresponding parameters
-	if (USARTx == USART1)
-	{
-		RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
-		bus_clk = System::APB2BusClock;
-		IRQ_vector = USART1_IRQn;
-		af = 7;
-	}else
-	if (USARTx == USART2)
-	{
-		RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
-		bus_clk = System::APB1BusClock;
-		IRQ_vector = USART2_IRQn;
-		af = 7;
-	}
-#ifndef STM32F411xE
-
-	else if (USARTx == USART3)
-	{
-		RCC->APB1ENR |= RCC_APB1ENR_USART3EN;
-		bus_clk = System::APB1BusClock;
-		IRQ_vector = USART3_IRQn;
-		af = 7;
-	}
-	else if (USARTx == UART4)
-	{
-		RCC->APB1ENR |= RCC_APB1ENR_UART4EN;
-		bus_clk = System::APB1BusClock;
-		IRQ_vector = UART4_IRQn;
-		af = 8;
-	}
-	else if (USARTx == UART5)
-	{
-		RCC->APB1ENR |= RCC_APB1ENR_UART5EN;
-		bus_clk = System::APB1BusClock;
-		IRQ_vector = UART5_IRQn;
-		af = 8;
-	}
-	else if (USARTx == USART6)
-	{
-		RCC->APB2ENR |= RCC_APB2ENR_USART6EN;
-		bus_clk = System::APB2BusClock;
-		IRQ_vector = USART6_IRQn;
-		af = 8;
-	}
-#endif
-	else
+	const PeriphInfo* info = nullptr;
+	for (const auto& e : usart_table)
+		if (e.periph == USARTx) { info = &e; break; }
+	if (!info)
 		return SysInitStatus::InitError;
 
+	_info = info;
+	*info->clk_reg |= info->clk_bit;
+
 	// Set the Baud Rate
-	USARTx->BRR = bus_clk / BaudRate;
+	USARTx->BRR = *_info->bus_clk / BaudRate;
 
 	// Enable USART and configure TX and RX pins if available
 	USARTx->CR1 = USART_CR1_UE;
 
 	if (_TX.PORT != NULL)
 	{
-		_TX.SetUp(PIN::TYPE::AF_PushPull, af);
+		_TX.SetUp(PIN::TYPE::AF_PushPull, _info->af);
 		USARTx->CR1 |= USART_CR1_TE;
 	}
 	if (_RX.PORT != NULL)
 	{
-		_RX.SetUp(PIN::TYPE::AF_PushPull, af);
+		_RX.SetUp(PIN::TYPE::AF_PushPull, _info->af);
 		USARTx->CR1 |= USART_CR1_RE;
 	}
 
@@ -82,7 +61,7 @@ SysInitStatus USART::SetUp()
 
 #if defined(STM32F4)
 	ClearFlags();
-#elif defined(STM32F7)
+#elif defined(STM32F7) || defined(STM32G0)
 	ClearFlags(ISR_FLAGS::TC);
 #endif
 
@@ -95,20 +74,13 @@ SysStatus USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 
 	for(uint32_t i = 0;i<len;i++)
 	{
-#if defined(STM32F4)
-		while(!(USARTx->SR & USART_SR_TXE))
-#elif defined(STM32F7)
-		while(!(USARTx->ISR & USART_ISR_TXE))
-#endif
+		while(!(Status_reg() & ISR_TXE))
 		{
 			if(System::GetTick() - tick_start > timeout)
 				return SysStatus::Timeout;
 		};
-#if defined(STM32F4)
-		USARTx->DR = data[i];
-#elif defined(STM32F7)
-		USARTx->TDR = data[i];
-#endif
+
+		TXD() = data[i];
 		
 	};
 	return SysStatus::OK;
@@ -120,20 +92,14 @@ SysStatus USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 
 	for(uint32_t i = 0;i<len;i++)
 	{
-#if defined(STM32F4)
-		while(!(USARTx->SR & USART_SR_RXNE))
-#elif defined(STM32F7)
-		while(!(USARTx->ISR & USART_ISR_RXNE))
-#endif
+
+		while(!(Status_reg() & ISR_RXNE))
 		{
 			if(System::GetTick() - tick_start > timeout)
 				return SysStatus::Timeout;
 		};
-		#if defined(STM32F4)
-			data[i] = USARTx->DR;
-		#elif defined(STM32F7)
-			data[i] = USARTx->RDR;
-		#endif
+
+		data[i] = RXD();
 		
 	};
 	return SysStatus::OK;

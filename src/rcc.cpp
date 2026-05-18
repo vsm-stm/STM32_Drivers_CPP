@@ -38,7 +38,7 @@ SysInitStatus ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, BusD
 		// ---------------------------------------------------------------------------
 		
 		bool f446xx_pllr_out = false;
-		#if defined(STM32f446xx)
+		#if defined(STM32F446xx)
 		f446xx_pllr_out = (ClkSrc == SystemClockSource::PLL_R);
 		#endif
 		validate_out pll_result = ValidatePLLCfgr(PLLCfgr, f446xx_pllr_out);
@@ -131,7 +131,7 @@ SysInitStatus ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, BusD
 
 	RCC->CFGR |= (uint32_t)ClkSrc;         // PLL -> SYSCKLK
 	tickStart = System::GetTick();
-	while (!(RCC->CFGR & RCC_CFGR_SWS))
+	while (!(RCC->CFGR & RCC_CFGR_SWS)) // todo
 	{
 		if((System::GetTick() - tickStart) > CLOCKSWITCH_TIMEOUT_MS)
 			return SysInitStatus::InitError;
@@ -140,9 +140,16 @@ SysInitStatus ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, BusD
 
 	System::SystemCoreClock = sys_clk/AHB_Pre;
 	System::APB1BusClock = System::SystemCoreClock/APB1_Pre;
-	System::APB2BusClock = System::SystemCoreClock/APB2_Pre;
 	System::TIMxAPB1Clock = (APB1_Pre == 1) ? (System::APB1BusClock) : (System::APB1BusClock * 2);
-	System::TIMxAPB2Clock = (APB2_Pre == 1) ? (System::APB2BusClock) : (System::APB2BusClock * 2);
+	
+	if constexpr (PPRE_BUS_2_Pos == 0xFFFFFFFFU){
+		System::APB2BusClock = 0;
+		System::TIMxAPB2Clock = 0;
+	} else {
+		System::APB2BusClock = System::SystemCoreClock/APB2_Pre;
+		System::TIMxAPB2Clock = (APB2_Pre == 1) ? (System::APB2BusClock) : (System::APB2BusClock * 2);
+
+	}
 
 	System::InitTicks();
 
@@ -227,8 +234,14 @@ SysInitStatus ClockSystem::ValidateBusDividers(uint32_t sys_clk, BusDividers div
 	APB1_Pre = 1;
 	APB2_Pre = 1;
 
-	if(((uint32_t)div.AHB_div))
-		AHB_Pre = (1 << (((uint32_t)div.AHB_div)  - 8));
+	uint32_t val = (uint32_t)div.AHB_div;
+	if (val == 0)
+		AHB_Pre = 1;
+	else if (val <= 11)
+		AHB_Pre = 1u << (val - 7);   // DIV2..DIV16
+	else
+		AHB_Pre = 1u << (val - 6);   // DIV64..DIV512
+
 
 	if(((uint32_t)div.APB1_div))
 		APB1_Pre = (1 << (((uint32_t)div.APB1_div) - 3));
@@ -263,7 +276,7 @@ void ClockSystem::ConfigurePLL(PLL_CFGR pllcfgr){
 		#endif
 	#elif defined(STM32G0)
 		RCC->PLLCFGR = (uint32_t)pllcfgr.PLL_ClkSrc  |
-								 pllcfgr.PLL_M << RCC_PLLCFGR_PLLM_Pos |
+								 (pllcfgr.PLL_M - 1)<< RCC_PLLCFGR_PLLM_Pos |
 								 pllcfgr.PLL_N << RCC_PLLCFGR_PLLN_Pos |
 								 (pllcfgr.PLL_P - 1) << RCC_PLLCFGR_PLLP_Pos |
 								 (pllcfgr.PLL_R - 1) << RCC_PLLCFGR_PLLR_Pos |

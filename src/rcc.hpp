@@ -9,7 +9,7 @@
 
 class ClockSystem
 {
-public:
+private:
 
 	// ---------------------------------------------------------------------------
 	// Timeout constants
@@ -66,7 +66,7 @@ public:
 		static constexpr uint32_t APB1_CLK_LIMIT = 64*MHz;
 		static constexpr uint32_t APB2_CLK_LIMIT = 0*MHz;
 
-		static constexpr uint32_t PLL_CLK_IN_MIN = 2.66*MHz;  ///< Minimum PLL input clock frequency
+		static constexpr uint32_t PLL_CLK_IN_MIN = 2660*kHz;  ///< Minimum PLL input clock frequency
 		static constexpr uint32_t PLL_CLK_IN_MAX = 16*MHz; ///< Maximum PLL input clock frequency
 
 		static constexpr uint32_t PLL_N_CLK_MIN = 64*MHz;  ///< Minimum PLL output clock frequency (VCO_in * N)
@@ -83,6 +83,7 @@ public:
 		#error "rcc.hpp: unsupported STM32 target — please add SYS/APB clock limits for your device."
 	#endif
 
+public:
 
 	// -----------------------------------------------------------------------
 	// Enumerations
