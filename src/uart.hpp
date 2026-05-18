@@ -18,34 +18,34 @@ public:
 
 #if defined(STM32G0)
 	struct TX {
-		static constexpr PIN PA2  = { GPIOA_BASE,  2, 1 };
-		static constexpr PIN PA9  = { GPIOA_BASE,  9, 0 };
-		static constexpr PIN PA14 = { GPIOA_BASE, 14, 1 };
-		static constexpr PIN PB6  = { GPIOB_BASE,  6, 0 };
+		static constexpr PIN PA2  = { GPIOA_BASE,  2, 1, USART2_BASE };
+		static constexpr PIN PA9  = { GPIOA_BASE,  9, 0, USART1_BASE };
+		static constexpr PIN PA14 = { GPIOA_BASE, 14, 1, USART2_BASE };
+		static constexpr PIN PB6  = { GPIOB_BASE,  6, 0, USART1_BASE };
 	};
 	struct RX {
-		static constexpr PIN PA3  = { GPIOA_BASE,  3, 1 };
-		static constexpr PIN PA10 = { GPIOA_BASE, 10, 0 };
-		static constexpr PIN PA15 = { GPIOA_BASE, 15, 1 };
-		static constexpr PIN PB7  = { GPIOB_BASE,  7, 0 };
+		static constexpr PIN PA3  = { GPIOA_BASE,  3, 1, USART2_BASE };
+		static constexpr PIN PA10 = { GPIOA_BASE, 10, 0, USART1_BASE };
+		static constexpr PIN PA15 = { GPIOA_BASE, 15, 1, USART2_BASE };
+		static constexpr PIN PB7  = { GPIOB_BASE,  7, 0, USART1_BASE };
 	};
 
 #elif defined(STM32F4) || defined(STM32F7)
 	struct TX {
-		static constexpr PIN PA9  = { GPIOA_BASE,  9, 7 };
-		static constexpr PIN PB6  = { GPIOB_BASE,  6, 7 };
-		static constexpr PIN PA2  = { GPIOA_BASE,  2, 7 };
-		static constexpr PIN PD5  = { GPIOD_BASE,  5, 7 };
-		static constexpr PIN PB10 = { GPIOB_BASE, 10, 7 };
-		static constexpr PIN PC10 = { GPIOC_BASE, 10, 7 };
+		static constexpr PIN PA9  = { GPIOA_BASE,  9, 7, USART1_BASE };
+		static constexpr PIN PB6  = { GPIOB_BASE,  6, 7, USART1_BASE };
+		static constexpr PIN PA2  = { GPIOA_BASE,  2, 7, USART2_BASE };
+		static constexpr PIN PD5  = { GPIOD_BASE,  5, 7, USART2_BASE };
+		static constexpr PIN PB10 = { GPIOB_BASE, 10, 7, USART3_BASE };
+		static constexpr PIN PC10 = { GPIOC_BASE, 10, 7, USART3_BASE };
 	};
 	struct RX {
-		static constexpr PIN PA10 = { GPIOA_BASE, 10, 7 };
-		static constexpr PIN PB7  = { GPIOB_BASE,  7, 7 };
-		static constexpr PIN PA3  = { GPIOA_BASE,  3, 7 };
-		static constexpr PIN PD6  = { GPIOD_BASE,  6, 7 };
-		static constexpr PIN PB11 = { GPIOB_BASE, 11, 7 };
-		static constexpr PIN PC11 = { GPIOC_BASE, 11, 7 };
+		static constexpr PIN PA10 = { GPIOA_BASE, 10, 7, USART1_BASE };
+		static constexpr PIN PB7  = { GPIOB_BASE,  7, 7, USART1_BASE };
+		static constexpr PIN PA3  = { GPIOA_BASE,  3, 7, USART2_BASE };
+		static constexpr PIN PD6  = { GPIOD_BASE,  6, 7, USART2_BASE };
+		static constexpr PIN PB11 = { GPIOB_BASE, 11, 7, USART3_BASE };
+		static constexpr PIN PC11 = { GPIOC_BASE, 11, 7, USART3_BASE };
 	};
 #endif
 
@@ -103,7 +103,15 @@ public:
 		BaudRate(baudrate),
 		_TX(tx),
 		_RX(rx)
-	{}
+	{
+#ifndef NDEBUG
+		auto chk = [usartx](const PIN& p) {
+			if (p.IsValid() && p.periph_base && p.periph_base != (uint32_t)usartx)
+				{ __BKPT(0); while(1); }
+		};
+		chk(tx); chk(rx);
+#endif
+	}
 
 	USART() = delete;
 	USART(const USART&) = delete;

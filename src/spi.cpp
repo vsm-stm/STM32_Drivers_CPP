@@ -58,7 +58,7 @@ SysInitStatus SPI::SetHard()
 
 SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type,
 						  Data_frame_format dff, Frame_Format ff,
-						  cPolPha cpolpha, uint8_t br)
+						  cPolPha cpolpha, BaudRate br)
 {
 	nss_ctrl     = nss;
 	Master_slave = mstr;
@@ -72,7 +72,7 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type,
 #endif
 				static_cast<uint32_t>(ff)      |
 				static_cast<uint32_t>(cpolpha) |
-				br << SPI_CR1_BR_Pos;
+				static_cast<uint32_t>(br) << SPI_CR1_BR_Pos;
 
 #if defined(STM32F7) || defined(STM32G0)
 	SPIx->CR2 = static_cast<uint32_t>(dff);

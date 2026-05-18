@@ -58,6 +58,17 @@ public:
 		cPolPha = SPI_CR1_CPHA | SPI_CR1_CPOL
 	};
 
+	enum class BaudRate {
+		DIV2 = 0,
+		DIV4,
+		DIV8,
+		DIV16,
+		DIV32,
+		DIV64,
+		DIV128,
+		DIV256
+	};
+
 	enum class IRQ
 	{
 		TXE  = SPI_CR2_TXEIE,
@@ -73,64 +84,64 @@ public:
 #if defined(STM32G0)
 
 	struct SCK {
-		static constexpr PIN PA5  = { GPIOA_BASE,  5,  0 };
-		static constexpr PIN PB3  = { GPIOB_BASE,  3,  0 };
-		static constexpr PIN PB8  = { GPIOB_BASE,  8,  1 };
-		static constexpr PIN PB10 = { GPIOB_BASE, 10,  5 };
-		static constexpr PIN PB13 = { GPIOB_BASE, 13,  0 };
+		static constexpr PIN PA5  = { GPIOA_BASE,  5,  0, SPI1_BASE };
+		static constexpr PIN PB3  = { GPIOB_BASE,  3,  0, SPI1_BASE };
+		static constexpr PIN PB8  = { GPIOB_BASE,  8,  1, SPI2_BASE };
+		static constexpr PIN PB10 = { GPIOB_BASE, 10,  5, SPI2_BASE };
+		static constexpr PIN PB13 = { GPIOB_BASE, 13,  0, SPI2_BASE };
 	};
 	struct MOSI {
-		static constexpr PIN PA7  = { GPIOA_BASE,  7,  0 };
-		static constexpr PIN PB5  = { GPIOB_BASE,  5,  0 };
-		static constexpr PIN PB7  = { GPIOB_BASE,  7,  1 };
-		static constexpr PIN PB11 = { GPIOB_BASE, 11,  0 };
-		static constexpr PIN PB15 = { GPIOB_BASE, 15,  0 };
+		static constexpr PIN PA7  = { GPIOA_BASE,  7,  0, SPI1_BASE };
+		static constexpr PIN PB5  = { GPIOB_BASE,  5,  0, SPI1_BASE };
+		static constexpr PIN PB7  = { GPIOB_BASE,  7,  1, SPI2_BASE };
+		static constexpr PIN PB11 = { GPIOB_BASE, 11,  0, SPI2_BASE };
+		static constexpr PIN PB15 = { GPIOB_BASE, 15,  0, SPI2_BASE };
 	};
 	struct MISO {
-		static constexpr PIN PA6  = { GPIOA_BASE,  6,  0 };
-		static constexpr PIN PB4  = { GPIOB_BASE,  4,  0 };
-		static constexpr PIN PB6  = { GPIOB_BASE,  6,  4 };
-		static constexpr PIN PB14 = { GPIOB_BASE, 14,  0 };
+		static constexpr PIN PA6  = { GPIOA_BASE,  6,  0, SPI1_BASE };
+		static constexpr PIN PB4  = { GPIOB_BASE,  4,  0, SPI1_BASE };
+		static constexpr PIN PB6  = { GPIOB_BASE,  6,  4, SPI2_BASE };
+		static constexpr PIN PB14 = { GPIOB_BASE, 14,  0, SPI2_BASE };
 	};
 	struct SS {
-		static constexpr PIN PA4  = { GPIOA_BASE,  4,  0 };
-		static constexpr PIN PA15 = { GPIOA_BASE, 15,  0 };
-		static constexpr PIN PB9  = { GPIOB_BASE,  9,  5 };
-		static constexpr PIN PB12 = { GPIOB_BASE, 12,  0 };
+		static constexpr PIN PA4  = { GPIOA_BASE,  4,  0, SPI1_BASE };
+		static constexpr PIN PA15 = { GPIOA_BASE, 15,  0, SPI1_BASE };
+		static constexpr PIN PB9  = { GPIOB_BASE,  9,  5, SPI2_BASE };
+		static constexpr PIN PB12 = { GPIOB_BASE, 12,  0, SPI2_BASE };
 	};
 
 #elif defined(STM32F4) || defined(STM32F7)
 
 	struct SCK {
-		static constexpr PIN PA5      = { GPIOA_BASE,  5, 5 };
-		static constexpr PIN SPI1_PB3 = { GPIOB_BASE,  3, 5 };
-		static constexpr PIN PB10     = { GPIOB_BASE, 10, 5 };
-		static constexpr PIN PB13     = { GPIOB_BASE, 13, 5 };
-		static constexpr PIN SPI3_PB3 = { GPIOB_BASE,  3, 6 };
-		static constexpr PIN PC10     = { GPIOC_BASE, 10, 6 };
+		static constexpr PIN PA5      = { GPIOA_BASE,  5, 5, SPI1_BASE };
+		static constexpr PIN SPI1_PB3 = { GPIOB_BASE,  3, 5, SPI1_BASE };
+		static constexpr PIN PB10     = { GPIOB_BASE, 10, 5, SPI2_BASE };
+		static constexpr PIN PB13     = { GPIOB_BASE, 13, 5, SPI2_BASE };
+		static constexpr PIN SPI3_PB3 = { GPIOB_BASE,  3, 6, SPI3_BASE };
+		static constexpr PIN PC10     = { GPIOC_BASE, 10, 6, SPI3_BASE };
 	};
 	struct MOSI {
-		static constexpr PIN PA7      = { GPIOA_BASE,  7, 5 };
-		static constexpr PIN SPI1_PB5 = { GPIOB_BASE,  5, 5 };
-		static constexpr PIN PB15     = { GPIOB_BASE, 15, 5 };
-		static constexpr PIN PC3      = { GPIOC_BASE,  3, 5 };
-		static constexpr PIN SPI3_PB5 = { GPIOB_BASE,  5, 6 };
-		static constexpr PIN PC12     = { GPIOC_BASE, 12, 6 };
+		static constexpr PIN PA7      = { GPIOA_BASE,  7, 5, SPI1_BASE };
+		static constexpr PIN SPI1_PB5 = { GPIOB_BASE,  5, 5, SPI1_BASE };
+		static constexpr PIN PB15     = { GPIOB_BASE, 15, 5, SPI2_BASE };
+		static constexpr PIN PC3      = { GPIOC_BASE,  3, 5, SPI2_BASE };
+		static constexpr PIN SPI3_PB5 = { GPIOB_BASE,  5, 6, SPI3_BASE };
+		static constexpr PIN PC12     = { GPIOC_BASE, 12, 6, SPI3_BASE };
 	};
 	struct MISO {
-		static constexpr PIN PA6      = { GPIOA_BASE,  6, 5 };
-		static constexpr PIN SPI1_PB4 = { GPIOB_BASE,  4, 5 };
-		static constexpr PIN PB14     = { GPIOB_BASE, 14, 5 };
-		static constexpr PIN PC2      = { GPIOC_BASE,  2, 5 };
-		static constexpr PIN SPI3_PB4 = { GPIOB_BASE,  4, 6 };
-		static constexpr PIN PC11     = { GPIOC_BASE, 11, 6 };
+		static constexpr PIN PA6      = { GPIOA_BASE,  6, 5, SPI1_BASE };
+		static constexpr PIN SPI1_PB4 = { GPIOB_BASE,  4, 5, SPI1_BASE };
+		static constexpr PIN PB14     = { GPIOB_BASE, 14, 5, SPI2_BASE };
+		static constexpr PIN PC2      = { GPIOC_BASE,  2, 5, SPI2_BASE };
+		static constexpr PIN SPI3_PB4 = { GPIOB_BASE,  4, 6, SPI3_BASE };
+		static constexpr PIN PC11     = { GPIOC_BASE, 11, 6, SPI3_BASE };
 	};
 	struct SS {
-		static constexpr PIN PA4       = { GPIOA_BASE,  4, 5 };
-		static constexpr PIN PA15_SPI1 = { GPIOA_BASE, 15, 5 };
-		static constexpr PIN PB9       = { GPIOB_BASE,  9, 5 };
-		static constexpr PIN PB12      = { GPIOB_BASE, 12, 5 };
-		static constexpr PIN PA15_SPI3 = { GPIOA_BASE, 15, 6 };
+		static constexpr PIN PA4       = { GPIOA_BASE,  4, 5, SPI1_BASE };
+		static constexpr PIN PA15_SPI1 = { GPIOA_BASE, 15, 5, SPI1_BASE };
+		static constexpr PIN PB9       = { GPIOB_BASE,  9, 5, SPI2_BASE };
+		static constexpr PIN PB12      = { GPIOB_BASE, 12, 5, SPI2_BASE };
+		static constexpr PIN PA15_SPI3 = { GPIOA_BASE, 15, 6, SPI3_BASE };
 	};
 
 #endif
@@ -145,7 +156,15 @@ public:
 				 PIN miso = PIN{},
 				 PIN ss   = PIN{})
 		: SPIx(spix), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
-	{}
+	{
+#ifndef NDEBUG
+		auto chk = [spix](const PIN& p) {
+			if (p.IsValid() && p.periph_base && p.periph_base != (uint32_t)spix)
+				{ __BKPT(0); while(1); }
+		};
+		chk(sck); chk(mosi); chk(miso); chk(ss);
+#endif
+	}
 
 	SPI() = delete;
 	SPI(SPI const&)            = default;
@@ -166,13 +185,13 @@ public:
 		Data_frame_format dff;
 		Frame_Format      ff;
 		cPolPha           cpolpha;
-		uint8_t           br;
+		BaudRate          br;
 	} Init_struct_Typedef;
 
 	SysInitStatus SetUp(Master_sel mstr, TYPE type)
 	{
 		return SetUp(mstr, NSS_ctrl::Hard, type,
-					 Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, 0);
+					 Data_frame_format::Byte, Frame_Format::MSB, cPolPha::None, BaudRate::DIV2);
 	}
 
 	SysInitStatus SetUp(Init_struct_Typedef s)
@@ -182,7 +201,7 @@ public:
 
 	SysInitStatus SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type,
 						Data_frame_format dff, Frame_Format ff,
-						cPolPha cpolpha, uint8_t br);
+						cPolPha cpolpha, BaudRate br);
 
 	// -----------------------------------------------------------------------
 	// Runtime control
