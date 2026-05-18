@@ -31,7 +31,16 @@ SysInitStatus SPI::SetHard()
 
 	if (CLK.PORT != NULL)
 	{
-		CLK.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
+	#if defined(STM32G0)
+			if(CLK.PORT == GPIOB &&  CLK.pin == 10)
+				CLK.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, 5);
+			else
+				CLK.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
+	#else
+			CLK.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
+	#endif
+
+		// CLK.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
 	}
 	if (MOSI.PORT != NULL)
 	{
@@ -85,7 +94,7 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_fo
 				static_cast<uint32_t>(cpolpha) |
 				br << SPI_CR1_BR_Pos;
 
-	#if defined(STM32F7)
+	#if defined(STM32F7) || defined(STM32G0)
 	SPIx->CR2 = static_cast<uint32_t>(dff);// |
 				// SPI_CR2_FRXTH;
 	#endif
@@ -111,7 +120,7 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, TYPE type, Data_frame_fo
 	return SysInitStatus::InitOK;
 }
 
-SysInitStatus SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
+SysStatus SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
 
@@ -123,7 +132,7 @@ SysInitStatus SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t dat
 		while(!(SPIx->SR & SPI_SR_RXNE))
 		{
 			if(System::GetTick() - tick_start > timeout)
-				return SysInitStatus::InitError;
+				return SysStatus::Timeout;
 		};
 
 		rx_data[i] = SPIx->DR;
@@ -134,14 +143,14 @@ SysInitStatus SPI::Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t dat
 	while(SPIx->SR & SPI_SR_BSY)
 	{
 		if(System::GetTick() - tick_start > timeout)
-			return SysInitStatus::InitError;
+			return SysStatus::Timeout;
 	};
 	
 	SS.SetLevel(1);
-	return SysInitStatus::InitOK;
+	return SysStatus::OK;
 }
 
-SysInitStatus SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
+SysStatus SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
 
@@ -152,7 +161,7 @@ SysInitStatus SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
 		while(!(SPIx->SR & SPI_SR_TXE))
 		{
 			if(System::GetTick() - tick_start > timeout)
-				return SysInitStatus::InitError;
+				return SysStatus::Timeout;
 		};
 
 		// SPIx->DR = tx_data[i];
@@ -174,10 +183,11 @@ SysInitStatus SPI::Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout)
 	while(SPIx->SR & SPI_SR_BSY)
 	{
 		if(System::GetTick() - tick_start > timeout)
-			return SysInitStatus::InitError;
+			return SysStatus::Timeout;
 	};
+
 	SPIx->CR1 &= ~SPI_CR1_SPE;
 
 	SS.SetLevel(1);
-	return SysInitStatus::InitOK;
+	return SysStatus::OK;
 }

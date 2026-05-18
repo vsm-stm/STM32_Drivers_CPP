@@ -42,9 +42,9 @@ public:
 
 	enum class TYPE
 	{
-		RX = 0,
-		TX = 0,
-		TXRX
+		TXRX = 0,
+		TX   = 1,
+		RX   = 2,
 	};
 
 	enum class cPolPha
@@ -55,6 +55,7 @@ public:
 		cPolPha = SPI_CR1_CPHA | SPI_CR1_CPOL
 	};
 
+	
 
 	enum class IRQ
 	{
@@ -175,8 +176,8 @@ public:
 			NVIC_DisableIRQ(_info->irq);
 		}
 	}
-	SysInitStatus Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout);
-	SysInitStatus Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
+	SysStatus Send(uint8_t* tx_data, uint16_t data_len, uint32_t timeout);
+	SysStatus Send_Receive(uint8_t* tx_data, uint8_t* rx_data, uint16_t data_len, uint32_t timeout);
 
 private:
 	struct PeriphInfo {
