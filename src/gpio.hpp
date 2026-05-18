@@ -48,9 +48,7 @@ private:
 public:
 	uint8_t  pin{};
 	uint8_t  af{};
-#ifndef NDEBUG
 	uint32_t periph_base{};
-#endif
 
 	enum class TYPE : uint8_t
 	{
@@ -90,12 +88,8 @@ public:
 	PIN& operator=(PIN&&)      = default;
 
 	// Constexpr constructor — for compile-time pin tables in SPI/UART/etc.
-	constexpr PIN(uintptr_t port_base, uint8_t p, uint8_t a = 0, [[maybe_unused]] uint32_t periph = 0) noexcept
-		: _port_base(port_base), pin(p), af(a)
-#ifndef NDEBUG
-		, periph_base(periph)
-#endif
-	{}
+	constexpr PIN(uintptr_t port_base, uint8_t p, uint8_t a = 0, uint32_t periph = 0) noexcept
+		: _port_base(port_base), pin(p), af(a), periph_base(periph) {}
 
 	// Runtime constructor — for direct GPIO_TypeDef* usage
 	PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept

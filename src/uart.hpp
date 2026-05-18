@@ -104,13 +104,11 @@ public:
 		_TX(tx),
 		_RX(rx)
 	{
-#ifndef NDEBUG
 		auto chk = [usartx](const PIN& p) {
 			if (p.IsValid() && p.periph_base && p.periph_base != (uint32_t)usartx)
 				{ __BKPT(0); while(1); }
 		};
 		chk(tx); chk(rx);
-#endif
 	}
 
 	USART() = delete;

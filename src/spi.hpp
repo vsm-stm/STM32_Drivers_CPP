@@ -157,13 +157,11 @@ public:
 				 PIN ss   = PIN{})
 		: SPIx(spix), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
 	{
-#ifndef NDEBUG
 		auto chk = [spix](const PIN& p) {
 			if (p.IsValid() && p.periph_base && p.periph_base != (uint32_t)spix)
 				{ __BKPT(0); while(1); }
 		};
 		chk(sck); chk(mosi); chk(miso); chk(ss);
-#endif
 	}
 
 	SPI() = delete;
