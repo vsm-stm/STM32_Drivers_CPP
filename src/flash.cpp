@@ -3,12 +3,12 @@
 // Биты управления стиранием различаются между семействами STM32:
 // F4/F7 — постраничное стирание через SER (Sector Erase) + номер сектора в SNB
 // G0/L0 — постраничное стирание через PER (Page Erase)  + номер страницы в PNB
-#if defined(STM32F7) or defined(STM32F4)
+#if defined(STM32F7) || defined(STM32F4)
 	#define CR_EARSE_BIT	FLASH_CR_SER
 	#define CR_SERCTOR_Pos	FLASH_CR_SNB_Pos
 	#define CR_SERCTOR_Msk	FLASH_CR_SNB_Msk
 
-#elif defined(STM32L0) or defined(STM32G0) // todo check L0
+#elif defined(STM32L0) || defined(STM32G0) // todo check L0
 	#define CR_EARSE_BIT 	FLASH_CR_PER
 	#define CR_SERCTOR_Pos	FLASH_CR_PNB_Pos
 	#define CR_SERCTOR_Msk	FLASH_CR_PNB_Msk

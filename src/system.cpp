@@ -132,7 +132,7 @@ void System::Delay_ms(uint32_t delay)
 	while ((GetTick() - tick_start) < wait) {}
 }
 
-#if not defined(STM32L0) and not defined(STM32G0)
+#if not defined(STM32L0) && not defined(STM32G0)
 // ---------------------------------------------------------------------------
 // System::Enable_CYCCNT
 // ---------------------------------------------------------------------------

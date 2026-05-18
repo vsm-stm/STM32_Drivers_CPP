@@ -1,435 +1,342 @@
-/**
- * @file  rcc.cpp
- * @brief RCC / ClockSystem implementation for STM32F4 / F7.
- *
- * Key fixes vs. original:
- *  1. Waiting for PLLRDY (not PLLON) after enabling/disabling PLL.
- *  2. Comparing full SWS field against the expected source value.
- *  3. Switching to HSI before touching PLL to prevent a clock-less state.
- *  4. SYS_TIMEOUT replaced with SysInitStatus::InitError everywhere.
- *  5. PLLR bits properly masked before being ORed into PLLCFGR.
- *  6. Overdrive VOS selection fixed (not dependent on PLL source).
- *  7. Flash latency uses per-target tables instead of a single formula.
- *  8. Init_calc_pll PLL_N calculation corrected.
- *  9. BusDividers default-initialised in struct definition (rcc.hpp).
- * 10. #error added for unrecognised targets (rcc.hpp).
- */
-
 #include "rcc.hpp"
 
-// ---------------------------------------------------------------------------
-// Static member definition
-// ---------------------------------------------------------------------------
 
-uint32_t ClockSystem::HSESrcClk{ 0U };
+uint32_t ClockSystem::HSESrcClk{0};
+uint32_t ClockSystem::AHB_Pre{1};
+uint32_t ClockSystem::APB1_Pre{1};
+uint32_t ClockSystem::APB2_Pre{1};
 
-// ---------------------------------------------------------------------------
-// Internal helper — CalcFlashLatency
-// ---------------------------------------------------------------------------
-
-/**
- * @brief Return the required Flash wait-state count for @p sys_clk.
- *
- * FIX: The original code used `sys_clk / 30000000` for every target.
- *      STM32F7 has different latency requirements depending on Vcore / Overdrive.
- *      We use the most conservative (highest latency) table here; if Overdrive
- *      is active the caller may reduce latency afterwards.
- *
- *      STM32F4 @ Vdd 2.7–3.6V  : 1 WS per 30 MHz (max 8 WS → 168/180 MHz)
- *      STM32F7 @ Vcore Scale 1 : 1 WS per 30 MHz (max 7 WS → 216 MHz)
- *
- *      Returns UINT32_MAX when the frequency exceeds the device limit so the
- *      caller can detect and reject the configuration.
- */
-uint32_t ClockSystem::CalcFlashLatency(uint32_t sys_clk)
+SysInitStatus ClockSystem::Init(SystemClockSource ClkSrc, uint32_t HSE_Clk, BusDividers BusDiv, PLL_CFGR PLLCfgr)
 {
-#if defined(STM32F7)
-	// STM32F7 RM Table 7: Vcore = Scale 1 (overdrive capable), Vdd >= 2.7V
-	// 0–30 MHz → 0 WS, 30–60 → 1 WS, …, 210–216 → 7 WS
-	static constexpr uint32_t step = 30000000UL;
-	static constexpr uint32_t maxWS = 7U;
-#else
-	// STM32F4 RM Table 10: Vdd 2.7–3.6V
-	// 0–30 MHz → 0 WS, 30–60 → 1 WS, …, 150–168/180 → 5/6 WS
-	static constexpr uint32_t step = 30000000UL;
-	static constexpr uint32_t maxWS = 9U;
-#endif
-
-	if (sys_clk > SYS_CLK_LIMIT)
-		return UINT32_MAX; // signal error
-
-	uint32_t latency = (sys_clk - 1U) / step; // ceiling division − 1 wait per step
-	return (latency > maxWS) ? UINT32_MAX : latency;
-}
-
-// ---------------------------------------------------------------------------
-// Internal helper — SwitchToHSI
-// ---------------------------------------------------------------------------
-
-/**
- * @brief Switch SYSCLK to HSI and confirm via SWS bits.
- *
- * FIX (bug #8): Before disabling/reconfiguring the PLL the system must be
- *               running from a source that does not depend on PLL, otherwise
- *               the MCU loses its clock during the reconfiguration window.
- */
-SysInitStatus ClockSystem::SwitchToHSI()
-{
-	RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW) | RCC_CFGR_SW_HSI;
-
-	uint32_t tickStart = System::GetTick();
-	while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI)
+	uint32_t sys_clk = 0;
+	uint32_t tickStart;
+	// ---------------------------------------------------------------------------
+	// if HSE is used - Enable it.
+	// ---------------------------------------------------------------------------
+	if((ClkSrc == SystemClockSource::HSE)
+	|| (PLLCfgr.PLL_ClkSrc == PLL_ClockSource::HSE))
 	{
-		if ((System::GetTick() - tickStart) > CLOCKSWITCH_TIMEOUT_MS)
-			return SysInitStatus::InitError;
-	}
-	return SysInitStatus::InitOK;
-}
-
-// ---------------------------------------------------------------------------
-// ClockSystem::Init
-// ---------------------------------------------------------------------------
-
-SysInitStatus ClockSystem::Init(SystemClockSource ClkSrc,
-								uint32_t          HSE_Clk,
-								BusDividers       BusDiv,
-								PLL_CFGR          PLLCfgr)
-{
-	uint32_t sys_clk   = 0U;
-	uint32_t tickStart = 0U;
-
-	// -----------------------------------------------------------------------
-	// 1. Start HSE if needed
-	// -----------------------------------------------------------------------
-	if ((ClkSrc == SystemClockSource::HSE)
-	||  (PLLCfgr.PLL_ClkSrc == PLL_ClockSource::HSE))
-	{
-		if ((HSE_Clk == 0U) || (HSE_Clk > 26000000UL))
-			return SysInitStatus::InitError;
-
-		RCC->CR |= RCC_CR_HSEON;
-		tickStart = System::GetTick();
-		while (!(RCC->CR & RCC_CR_HSERDY))
-		{
-			if ((System::GetTick() - tickStart) > HSE_TIMEOUT_MS)
-				return SysInitStatus::InitError;
-		}
-		HSESrcClk = HSE_Clk;
+		SysInitStatus hse_status = EnableHSE(HSE_Clk);
+		if(hse_status != SysInitStatus::InitOK)
+			return hse_status;
 	}
 
-	// -----------------------------------------------------------------------
-	// 2. Determine sys_clk and configure PLL when needed
-	// -----------------------------------------------------------------------
-	if (PLLCfgr.PLL_ClkSrc == PLL_ClockSource::NO)
+	// ---------------------------------------------------------------------------
+	// Chek pll used and if used - check PLL parameters, set PLL and switch system clock to PLL output.
+	// ---------------------------------------------------------------------------
+	if(PLLCfgr.PLL_ClkSrc == PLL_ClockSource::NO) // if PLL is not used, choose clock source from HSI or HSE if available
 	{
-		// No PLL — direct HSI or HSE
-		sys_clk = (HSE_Clk != 0U) ? HSE_Clk : HSI_Clock;
-	}
-	else
-	{
-		// --- Validate PLL parameters ---
-		if (   (PLLCfgr.PLL_M < 2U)   || (PLLCfgr.PLL_M > 63U)
-			|| (PLLCfgr.PLL_N < 50U)  || (PLLCfgr.PLL_N > 432U)
-			|| ((PLLCfgr.PLL_P != 2U) && (PLLCfgr.PLL_P != 4U)
-			 && (PLLCfgr.PLL_P != 6U) && (PLLCfgr.PLL_P != 8U))
-			|| (PLLCfgr.PLL_Q < 2U)   || (PLLCfgr.PLL_Q > 15U)
-			|| (PLLCfgr.PLL_R < 2U)   || (PLLCfgr.PLL_R > 7U))
-		{
-			return SysInitStatus::InitError;
-		}
-
-		uint32_t src_freq = (PLLCfgr.PLL_ClkSrc == PLL_ClockSource::HSE)
-						  ? HSE_Clk
-						  : HSI_Clock;
-
-		uint32_t PLL_in = src_freq / PLLCfgr.PLL_M;
-		if ((PLL_in < 1000000UL) || (PLL_in > 2000000UL))
-			return SysInitStatus::InitError;
-
-		uint32_t VCO_out = PLL_in * PLLCfgr.PLL_N;
-		if ((VCO_out < 100000000UL) || (VCO_out > 432000000UL))
-			return SysInitStatus::InitError;
-
-		if (ClkSrc == SystemClockSource::PLL_P)
-			sys_clk = VCO_out / PLLCfgr.PLL_P;
-#if defined(STM32F446xx)
-		else if (ClkSrc == SystemClockSource::PLL_R)
-			sys_clk = VCO_out / PLLCfgr.PLL_R;
-#endif
+		if(HSE_Clk == 0)
+			sys_clk = HSI_Clock;
 		else
-			return SysInitStatus::InitError; // invalid source for PLL path
+			sys_clk = HSE_Clk;
+	}
+	else										// if PLL check PLL parameters and set PLL
+	{
+		// ---------------------------------------------------------------------------
+		// Validate PLL parameters before applying them, to avoid getting stuck in a bad configuration.
+		// ---------------------------------------------------------------------------
+		
+		bool f446xx_pllr_out = false;
+		#if defined(STM32f446xx)
+		f446xx_pllr_out = (ClkSrc == SystemClockSource::PLL_R);
+		#endif
+		validate_out pll_result = ValidatePLLCfgr(PLLCfgr, f446xx_pllr_out);
+		if(pll_result.status != SysInitStatus::InitOK)
+			return pll_result.status;
+		
+		sys_clk = pll_result.clk_value;
 
-		if (sys_clk > SYS_CLK_LIMIT)
-			return SysInitStatus::InitError;
-
-		// -------------------------------------------------------------------
-		// FIX #8: Switch to HSI before touching PLL so the core keeps its
-		//         clock during the PLL reconfiguration window.
-		// -------------------------------------------------------------------
-		if (SwitchToHSI() != SysInitStatus::InitOK)
-			return SysInitStatus::InitError;
-
-		// -------------------------------------------------------------------
-		// FIX #7: Disable PLL and wait for PLLRDY to clear (not PLLON).
-		//         The RM states PLLCFGR must not be written while PLL is ON.
-		// -------------------------------------------------------------------
-		RCC->CR &= ~RCC_CR_PLLON;
+		// ---------------------------------------------------------------------------
+		// Disable PLL
+		// ---------------------------------------------------------------------------
 		tickStart = System::GetTick();
-		while (RCC->CR & RCC_CR_PLLRDY) // FIX: was RCC_CR_PLLON
+		RCC->CR &= ~RCC_CR_PLLON;// PLL Disable
+		while ((RCC->CR & RCC_CR_PLLRDY)) 
 		{
-			if ((System::GetTick() - tickStart) > PLL_TIMEOUT_MS)
+			if((System::GetTick() - tickStart) > PLL_TIMEOUT_MS)
 				return SysInitStatus::InitError;
-		}
+		};
 
-		// --- Write PLLCFGR ---
-		RCC->PLLCFGR =
-			  (static_cast<uint32_t>(PLLCfgr.PLL_ClkSrc))
-			| (static_cast<uint32_t>(PLLCfgr.PLL_M) << RCC_PLLCFGR_PLLM_Pos)
-			| (static_cast<uint32_t>(PLLCfgr.PLL_N) << RCC_PLLCFGR_PLLN_Pos)
-			| (static_cast<uint32_t>((PLLCfgr.PLL_P >> 1U) - 1U) << RCC_PLLCFGR_PLLP_Pos)
-			| (static_cast<uint32_t>(PLLCfgr.PLL_Q) << RCC_PLLCFGR_PLLQ_Pos);
+		// ---------------------------------------------------------------------------
+		// Configure PLL
+		// ---------------------------------------------------------------------------
+		ConfigurePLL(PLLCfgr);
 
-#if defined(STM32F446xx) || defined(STM32F767xx)
-		// FIX #5: Mask PLLR bits before ORing to avoid stale bits.
-		RCC->PLLCFGR = (RCC->PLLCFGR & ~RCC_PLLCFGR_PLLR_Msk)
-					 | (static_cast<uint32_t>(PLLCfgr.PLL_R) << RCC_PLLCFGR_PLLR_Pos);
-#endif
+		// ---------------------------------------------------------------------------
+		// Set VOS and enable overdrive if required for the target frequency, before switching to the PLL output.
+		// ---------------------------------------------------------------------------
 
-		// -------------------------------------------------------------------
-		// STM32F7 Overdrive (required when SYSCLK > 180 MHz)
-		// FIX #6: VOS selection is independent of PLL source; always set
-		//         Scale 1 (both VOS bits = 1) before enabling Overdrive.
-		// FIX #3: Replaced SYS_TIMEOUT with SysInitStatus::InitError.
-		// -------------------------------------------------------------------
-#if defined(STM32F7)
-		if (sys_clk > 180000000UL)
+#ifdef STM32F7
+		if(sys_clk > 180000000)
 		{
-			// Vcore Scale 1: PWR_CR1_VOS[1:0] = 0b11
-			PWR->CR1 |= PWR_CR1_VOS;
-
-			// Enable Overdrive
+			// if(PLLCfgr.PLL_ClkSrc == PLL_ClockSource::HSI) // todo one more check
+			// 	PWR->CR1 &= ~(PWR_CR1_VOS_1);
+			// else
+			// 	PWR->CR1 &= ~(PWR_CR1_VOS_0);
 			PWR->CR1 |= PWR_CR1_ODEN;
 			tickStart = System::GetTick();
 			while (!(PWR->CSR1 & PWR_CSR1_ODRDY))
 			{
-				if ((System::GetTick() - tickStart) > OVERDRIVE_TIMEOUT_MS)
-					return SysInitStatus::InitError; // FIX: was SYS_TIMEOUT
-			}
+				if((System::GetTick() - tickStart) > 100)
+					return SysInitStatus::InitError;
+			};
 
-			// Switch to Overdrive
 			PWR->CR1 |= PWR_CR1_ODSWEN;
 			tickStart = System::GetTick();
 			while (!(PWR->CSR1 & PWR_CSR1_ODSWRDY))
 			{
-				if ((System::GetTick() - tickStart) > OVERDRIVE_TIMEOUT_MS)
-					return SysInitStatus::InitError; // FIX: was SYS_TIMEOUT
-			}
+				if((System::GetTick() - tickStart) > 100)
+					return SysInitStatus::InitError;
+			};
 		}
-#endif // STM32F7
-
-		// -------------------------------------------------------------------
-		// FIX #1: Enable PLL and wait for PLLRDY (not PLLON).
-		// -------------------------------------------------------------------
-		RCC->CR |= RCC_CR_PLLON;
+#elif defined (STM32G0)
+		PWR->CR1 = (PWR->CR1 & ~PWR_CR1_VOS_Msk) | PWR_CR1_VOS_0; // Set VOS to 1. Scale 2mode allows up to 170 MHz, but is more power efficient than Scale 1 (up to 170 MHz) and Scale 0 (up to 170 MHz with overdrive).
 		tickStart = System::GetTick();
-		while (!(RCC->CR & RCC_CR_PLLRDY)) // FIX: was RCC_CR_PLLON
+			while ((PWR->SR2 & PWR_SR2_VOSF))
+			{
+				if((System::GetTick() - tickStart) > 100)
+					return SysInitStatus::InitError;
+			}; 
+#endif
+
+		// ---------------------------------------------------------------------------
+		// Enable PLL
+		// ---------------------------------------------------------------------------
+
+		RCC->CR |= RCC_CR_PLLON;// PLL Enable
+		tickStart = System::GetTick();
+		while (!(RCC->CR & RCC_CR_PLLRDY))
 		{
-			if ((System::GetTick() - tickStart) > PLL_TIMEOUT_MS)
+			if((System::GetTick() - tickStart) > PLL_TIMEOUT_MS)
 				return SysInitStatus::InitError;
-		}
+		};
 	}
 
-	// -----------------------------------------------------------------------
-	// 3. Validate bus clock limits
-	// -----------------------------------------------------------------------
-
-	// Decode prescaler values from the enum (which stores raw register values).
-	// AHB: HPRE field — when bits [3:0] < 8 the prescaler is /1,
-	//      otherwise prescaler = 2^(bits[3:0] - 7).
-	// APB1/APB2: PPRE field — when bits[2:0] < 4 the prescaler is /1,
-	//            otherwise prescaler = 2^(bits[2:0] - 3).
-	//
-	// The magic offsets (8, 3) come from the Reference Manual CFGR register
-	// description and are named here for clarity.
-	static constexpr uint8_t AHB_NO_DIV_THRESHOLD  = 8U; // HPRE  < 8 → DIV1
-	static constexpr uint8_t APB_NO_DIV_THRESHOLD  = 4U; // PPRE  < 4 → DIV1
-	static constexpr uint8_t AHB_EXPONENT_OFFSET   = 7U; // exponent = field - 7
-	static constexpr uint8_t APB_EXPONENT_OFFSET   = 3U; // exponent = field - 3
-
-	auto decodeAHB = [&](AHB_Divider d) -> uint32_t {
-		uint32_t field = (static_cast<uint32_t>(d) & RCC_CFGR_HPRE_Msk) >> RCC_CFGR_HPRE_Pos;
-		return (field < AHB_NO_DIV_THRESHOLD) ? 1U : (1U << (field - AHB_EXPONENT_OFFSET));
-	};
-	auto decodeAPB1 = [&](APB1_Divider d) -> uint32_t {
-		uint32_t field = (static_cast<uint32_t>(d) & RCC_CFGR_PPRE1_Msk) >> RCC_CFGR_PPRE1_Pos;
-		return (field < APB_NO_DIV_THRESHOLD) ? 1U : (1U << (field - APB_EXPONENT_OFFSET));
-	};
-	auto decodeAPB2 = [&](APB2_Divider d) -> uint32_t {
-		uint32_t field = (static_cast<uint32_t>(d) & RCC_CFGR_PPRE2_Msk) >> RCC_CFGR_PPRE2_Pos;
-		return (field < APB_NO_DIV_THRESHOLD) ? 1U : (1U << (field - APB_EXPONENT_OFFSET));
-	};
-
-	uint32_t AHB_Pre  = decodeAHB(BusDiv.AHB_div);
-	uint32_t APB1_Pre = decodeAPB1(BusDiv.APB1_div);
-	uint32_t APB2_Pre = decodeAPB2(BusDiv.APB2_div);
-
-	uint32_t ahb_clk  = sys_clk  / AHB_Pre;
-	uint32_t apb1_clk = ahb_clk  / APB1_Pre;
-	uint32_t apb2_clk = ahb_clk  / APB2_Pre;
-
-	if (   (ahb_clk  > SYS_CLK_LIMIT)
-		|| (apb1_clk > APB1_CLK_LIMIT)
-		|| (apb2_clk > APB2_CLK_LIMIT))
+	if(ValidateBusDividers(sys_clk, BusDiv) != SysInitStatus::InitOK)
+		return SysInitStatus::InitError;
+	
+	uint32_t latency = (sys_clk - 1) / LATENCY_DIV;
+	if(latency > 9)
 		return SysInitStatus::InitError;
 
-	// -----------------------------------------------------------------------
-	// 4. Set Flash wait states BEFORE increasing clock
-	// -----------------------------------------------------------------------
-	uint32_t latency = CalcFlashLatency(sys_clk);
-	if (latency == UINT32_MAX)
-		return SysInitStatus::InitError;
+	FLASH->ACR &= ~FLASH_ACR_LATENCY_Msk;
+	FLASH->ACR |= latency << FLASH_ACR_LATENCY_Pos;
 
-	FLASH->ACR = (FLASH->ACR & ~FLASH_ACR_LATENCY_Msk)
-			   | (latency << FLASH_ACR_LATENCY_Pos);
+	RCC->CFGR &= ~(RCC_CFGR_HPRE_Msk | PPRE_BUS_1_Msk | PPRE_BUS_2_Msk);
+	RCC->CFGR |= (uint32_t)BusDiv.AHB_div << RCC_CFGR_HPRE_Pos |
+				 (uint32_t)BusDiv.APB1_div << PPRE_BUS_1_Pos;
+	if constexpr (PPRE_BUS_2_Pos != 0xFFFFFFFFU)
+		RCC->CFGR |= (uint32_t)BusDiv.APB2_div << PPRE_BUS_2_Pos;
 
-	// -----------------------------------------------------------------------
-	// 5. Configure bus prescalers
-	// -----------------------------------------------------------------------
-	RCC->CFGR = (RCC->CFGR
-					& ~(RCC_CFGR_HPRE_Msk | RCC_CFGR_PPRE1_Msk | RCC_CFGR_PPRE2_Msk))
-			  |  static_cast<uint32_t>(BusDiv.AHB_div)
-			  |  static_cast<uint32_t>(BusDiv.APB1_div)
-			  |  static_cast<uint32_t>(BusDiv.APB2_div);
-
-	// -----------------------------------------------------------------------
-	// 6. Switch SYSCLK source
-	// -----------------------------------------------------------------------
-
-	// Build the SW field value from the ClkSrc enum.
-	uint32_t sw_val = static_cast<uint32_t>(ClkSrc);
-
-	// FIX #2: Expected SWS value mirrors the SW value shifted to SWS position.
-	// RCC_CFGR_SW and RCC_CFGR_SWS occupy adjacent bit fields; SWS is SW << 2.
-	uint32_t sws_expected = sw_val << (RCC_CFGR_SWS_Pos - RCC_CFGR_SW_Pos);
-
-	RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | sw_val;
-
+	RCC->CFGR |= (uint32_t)ClkSrc;         // PLL -> SYSCKLK
 	tickStart = System::GetTick();
-	while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != sws_expected) // FIX: was != 0
+	while (!(RCC->CFGR & RCC_CFGR_SWS))
 	{
-		if ((System::GetTick() - tickStart) > CLOCKSWITCH_TIMEOUT_MS)
+		if((System::GetTick() - tickStart) > CLOCKSWITCH_TIMEOUT_MS)
 			return SysInitStatus::InitError;
-	}
+	}// wait PLL used as system clock
 
-	// -----------------------------------------------------------------------
-	// 7. Read back actual prescalers from registers and update System clocks
-	// -----------------------------------------------------------------------
-	{
-		uint32_t cfgr = RCC->CFGR;
 
-		uint32_t hpre  = (cfgr & RCC_CFGR_HPRE_Msk)  >> RCC_CFGR_HPRE_Pos;
-		uint32_t ppre1 = (cfgr & RCC_CFGR_PPRE1_Msk) >> RCC_CFGR_PPRE1_Pos;
-		uint32_t ppre2 = (cfgr & RCC_CFGR_PPRE2_Msk) >> RCC_CFGR_PPRE2_Pos;
+	System::SystemCoreClock = sys_clk/AHB_Pre;
+	System::APB1BusClock = System::SystemCoreClock/APB1_Pre;
+	System::APB2BusClock = System::SystemCoreClock/APB2_Pre;
+	System::TIMxAPB1Clock = (APB1_Pre == 1) ? (System::APB1BusClock) : (System::APB1BusClock * 2);
+	System::TIMxAPB2Clock = (APB2_Pre == 1) ? (System::APB2BusClock) : (System::APB2BusClock * 2);
 
-		AHB_Pre  = (hpre  < AHB_NO_DIV_THRESHOLD) ? 1U : (1U << (hpre  - AHB_EXPONENT_OFFSET));
-		APB1_Pre = (ppre1 < APB_NO_DIV_THRESHOLD) ? 1U : (1U << (ppre1 - APB_EXPONENT_OFFSET));
-		APB2_Pre = (ppre2 < APB_NO_DIV_THRESHOLD) ? 1U : (1U << (ppre2 - APB_EXPONENT_OFFSET));
-
-		System::SystemCoreClock = sys_clk / AHB_Pre;
-		System::APB1BusClock    = System::SystemCoreClock / APB1_Pre;
-		System::APB2BusClock    = System::SystemCoreClock / APB2_Pre;
-		System::TIMxAPB1Clock   = (APB1_Pre == 1U) ? System::APB1BusClock
-													: System::APB1BusClock * 2U;
-		System::TIMxAPB2Clock   = (APB2_Pre == 1U) ? System::APB2BusClock
-													: System::APB2BusClock * 2U;
-	}
-
-	// -----------------------------------------------------------------------
-	// 8. Reconfigure SysTick for the new core frequency
-	// -----------------------------------------------------------------------
 	System::InitTicks();
 
 	return SysInitStatus::InitOK;
+
 }
 
-// ---------------------------------------------------------------------------
-// ClockSystem::Init_calc_pll
-// ---------------------------------------------------------------------------
+SysInitStatus ClockSystem::EnableHSE(uint32_t HSE_Clk){
+	uint32_t tickStart;
+	if((HSE_Clk == 0)
+		|| (HSE_Clk > 26*MHz))		// todo set digfferent limits for differen MCU and is it bypass
+			return SysInitStatus::InitError;
+		
+		RCC->CR |= RCC_CR_HSEON;
+		tickStart = System::GetTick();
+		while (!(RCC->CR & RCC_CR_HSERDY))
+		{
+			if((System::GetTick() - tickStart) > HSE_TIMEOUT_MS)
+				return SysInitStatus::InitError;
+		};
+		HSESrcClk = HSE_Clk;
+		return SysInitStatus::InitOK;
+};
 
-/**
- * @brief Automatically calculate PLL coefficients for @p req_freq.
- *
- * Strategy:
- *   - Choose M so that VCO input = 2 MHz  (input_clk / M ≈ 2 MHz)
- *   - Choose P = 2  (smallest divider → highest VCO headroom)
- *   - FIX #6: Correct formula: N = (req_freq * P) / PLL_in
- *             Original code set N = req_freq / 1e6, which only worked by
- *             coincidence when PLL_in happened to equal 1 MHz.
- */
-SysInitStatus ClockSystem::Init_calc_pll(uint32_t        req_freq,
-										 PLL_ClockSource pll_src,
-										 uint32_t        hse_clk,
-										 uint32_t        pll_q)
-{
-	if ((pll_src == PLL_ClockSource::HSE) && (hse_clk == 0U))
-		return SysInitStatus::InitError;
+ClockSystem::validate_out ClockSystem::ValidatePLLCfgr(PLL_CFGR pllcfgr, bool f446xx_pllr_out){
+	
+	validate_out result{SysInitStatus::InitError, 0};
 
-	if (pll_src == PLL_ClockSource::NO)
-		return SysInitStatus::InitError;
+	constexpr auto InRange = [](auto val, auto min, auto max) { 
+		return val >= min && val <= max; 
+	};
 
-	uint32_t input_clk = (pll_src == PLL_ClockSource::HSE) ? hse_clk : HSI_Clock;
-
-	// --- Choose M: target PLL_in = 2 MHz ---
-	// Ceiling division so PLL_in <= 2 MHz (stays within 1–2 MHz spec).
-	uint8_t pll_m = static_cast<uint8_t>((input_clk + 1999999UL) / 2000000UL);
-	if ((pll_m < 2U) || (pll_m > 63U))
-		return SysInitStatus::InitError;
-
-	uint32_t PLL_in = input_clk / pll_m; // actual VCO input frequency
-
-	// --- Choose P = 2 ---
-	uint8_t pll_p = 2U;
-
-	// --- FIX: Correct N calculation ---
-	// VCO_out = req_freq * pll_p → N = VCO_out / PLL_in
-	uint32_t VCO_target = req_freq * pll_p;
-	uint16_t pll_n = static_cast<uint16_t>(VCO_target / PLL_in);
-
-	// Validate computed parameters before passing to Init()
-	if ((pll_n < 50U) || (pll_n > 432U))
-		return SysInitStatus::InitError;
-
-	uint32_t VCO_actual = PLL_in * pll_n;
-	if ((VCO_actual < 100000000UL) || (VCO_actual > 432000000UL))
-		return SysInitStatus::InitError;
-
-	// --- Select bus dividers to keep APB clocks within spec ---
-	BusDividers div;
-	div.AHB_div = AHB_Divider::DIV1;
-
-	if (req_freq <= APB1_CLK_LIMIT)
+#if defined(STM32F446xx) || defined(STM32F767xx)
+	if(!InRange(pllcfgr.PLL_M, 2, 63)
+	|| !InRange(pllcfgr.PLL_N, 50, 432)
+	|| !((pllcfgr.PLL_P == 2) || (pllcfgr.PLL_P == 4) || (pllcfgr.PLL_P == 6) || (pllcfgr.PLL_P == 8))
+	|| !InRange(pllcfgr.PLL_Q, 2, 15)
+	|| !InRange(pllcfgr.PLL_R, 2, 7))
 	{
-		div.APB1_div = APB1_Divider::DIV1;
-		div.APB2_div = APB2_Divider::DIV1;
+		return {SysInitStatus::InitError, 0};
 	}
-	else if (req_freq <= APB2_CLK_LIMIT)
+#elif defined (STM32G0)
+	if(!InRange(pllcfgr.PLL_M, 1, 8)
+	|| !InRange(pllcfgr.PLL_N, 8, 86)
+	|| !InRange(pllcfgr.PLL_R, 2, 16)
+	|| !InRange(pllcfgr.PLL_P, 2, 16))
 	{
-		div.APB1_div = APB1_Divider::DIV2;
-		div.APB2_div = APB2_Divider::DIV1;
+		return result;
+	}
+#endif
+
+	uint32_t tmp_src_freq;
+	if(pllcfgr.PLL_ClkSrc == PLL_ClockSource::HSE)
+		tmp_src_freq = HSESrcClk;
+	else
+		tmp_src_freq = HSI_Clock;
+
+	uint32_t PLL_in = tmp_src_freq/pllcfgr.PLL_M;
+	if(!InRange(PLL_in, PLL_CLK_IN_MIN, PLL_CLK_IN_MAX))
+		return result;
+
+	uint32_t PLL_N_Clk = PLL_in*pllcfgr.PLL_N;
+	if(!InRange(PLL_N_Clk, PLL_N_CLK_MIN, PLL_N_CLK_MAX))
+		return result;
+
+	#if defined(STM32F446xx) || defined(STM32F767xx)
+		uint32_t PLL_Out = f446xx_pllr_out ? PLL_N_Clk/pllcfgr.PLL_R : PLL_N_Clk/pllcfgr.PLL_P;
+	#elif defined (STM32G0)
+		uint32_t PLL_Out = PLL_N_Clk/pllcfgr.PLL_R;
+	#endif
+	if(PLL_Out > SYS_CLK_LIMIT)
+		return result;
+
+	result.status = SysInitStatus::InitOK;
+	result.clk_value = PLL_Out;
+
+	return result;
+};
+
+SysInitStatus ClockSystem::ValidateBusDividers(uint32_t sys_clk, BusDividers div){
+	AHB_Pre = 1;
+	APB1_Pre = 1;
+	APB2_Pre = 1;
+
+	if(((uint32_t)div.AHB_div))
+		AHB_Pre = (1 << (((uint32_t)div.AHB_div)  - 8));
+
+	if(((uint32_t)div.APB1_div))
+		APB1_Pre = (1 << (((uint32_t)div.APB1_div) - 3));
+
+	if constexpr (PPRE_BUS_2_Pos != 0xFFFFFFFFU) {
+		if(((uint32_t)div.APB2_div))
+			APB2_Pre = (1 << ((((uint32_t)div.APB2_div)) - 3));
+	}
+
+	if((sys_clk/AHB_Pre > SYS_CLK_LIMIT)
+	|| (sys_clk/AHB_Pre/APB1_Pre > APB1_CLK_LIMIT))
+		return SysInitStatus::InitError;
+
+	if constexpr (PPRE_BUS_2_Pos != 0xFFFFFFFFU) {
+		if(sys_clk/AHB_Pre/APB2_Pre > APB2_CLK_LIMIT)
+			return SysInitStatus::InitError;
+	}
+
+	return SysInitStatus::InitOK;
+};
+
+void ClockSystem::ConfigurePLL(PLL_CFGR pllcfgr){
+	#if defined(STM32F4) || defined(STM32F7)
+		RCC->PLLCFGR = (uint32_t)pllcfgr.PLL_ClkSrc  |
+								 pllcfgr.PLL_M << RCC_PLLCFGR_PLLM_Pos |
+								 pllcfgr.PLL_N << RCC_PLLCFGR_PLLN_Pos |
+								 ((pllcfgr.PLL_P >> 1) - 1) << RCC_PLLCFGR_PLLP_Pos |
+								 pllcfgr.PLL_Q << RCC_PLLCFGR_PLLQ_Pos;
+
+		#if defined(STM32F446xx) || defined(STM32F767xx)
+			RCC->PLLCFGR |= pllcfgr.PLL_R << RCC_PLLCFGR_PLLR_Pos;
+		#endif
+	#elif defined(STM32G0)
+		RCC->PLLCFGR = (uint32_t)pllcfgr.PLL_ClkSrc  |
+								 pllcfgr.PLL_M << RCC_PLLCFGR_PLLM_Pos |
+								 pllcfgr.PLL_N << RCC_PLLCFGR_PLLN_Pos |
+								 (pllcfgr.PLL_P - 1) << RCC_PLLCFGR_PLLP_Pos |
+								 (pllcfgr.PLL_R - 1) << RCC_PLLCFGR_PLLR_Pos |
+								 RCC_PLLCFGR_PLLREN; // Enable PLL output to system clock
+	#endif
+};
+
+
+SysInitStatus ClockSystem::InitCalcPLL(uint32_t req_freq, PLL_ClockSource pll_src, uint32_t hse_clk, uint8_t pll_q)
+{
+	if((pll_src == PLL_ClockSource::HSE)
+	&& (hse_clk == 0))
+		return SysInitStatus::InitError;
+
+	uint32_t input_clk = 0;
+	if(pll_src == PLL_ClockSource::HSE)
+	{
+		input_clk = hse_clk;
+	}
+	else if(pll_src == PLL_ClockSource::HSI)
+	{
+		input_clk = HSI_Clock;
 	}
 	else
 	{
-		div.APB1_div = APB1_Divider::DIV4;
-		div.APB2_div = APB2_Divider::DIV2;
+		return SysInitStatus::InitError;
 	}
 
-	PLL_CFGR pll_cfg;
-	pll_cfg.PLL_ClkSrc = pll_src;
-	pll_cfg.PLL_M      = pll_m;
-	pll_cfg.PLL_N      = pll_n;
-	pll_cfg.PLL_P      = pll_p;
-	pll_cfg.PLL_Q      = static_cast<uint8_t>(pll_q);
-	pll_cfg.PLL_R      = 2U; // default; not used unless ClkSrc == PLL_R
+	uint8_t pll_m, pll_p;
+	uint16_t pll_n;
 
-	return Init(SystemClockSource::PLL_P, hse_clk, div, pll_cfg);
+	if(input_clk%2000000 == 0)
+	{
+		pll_m = input_clk/2000000;
+	}
+	else
+	{
+		pll_m = input_clk/2000000 + 1;
+	}
+
+	if(req_freq%1000000 == 0)
+	{
+		pll_n = req_freq/1000000;
+	}
+	else
+	{
+		pll_n = req_freq/1000000 + 1;
+	}
+
+	pll_p = 2;
+
+	BusDividers div;
+
+	div.AHB_div = AHB_Divider::DIV1;
+	if(req_freq <= APB1_CLK_LIMIT)
+	{
+		div.APB1_div = APB_Divider::DIV1;
+		div.APB2_div = APB_Divider::DIV1;
+	}
+	else
+	if((req_freq > APB1_CLK_LIMIT)
+	&& (req_freq <=APB2_CLK_LIMIT))
+	{
+		div.APB1_div = APB_Divider::DIV2;
+		div.APB2_div = APB_Divider::DIV1;		
+	}
+	else
+	if(req_freq > APB2_CLK_LIMIT)
+	{
+		div.APB1_div = APB_Divider::DIV4;
+		div.APB2_div = APB_Divider::DIV2;		
+	}
+
+	return Init(SystemClockSource::PLL, hse_clk, div, {pll_src,pll_m,pll_n,pll_p,pll_q,2});
 }
+

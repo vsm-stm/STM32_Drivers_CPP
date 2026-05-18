@@ -4,53 +4,86 @@
 #include "system.hpp"
 
 // ---------------------------------------------------------------------------
-// Timeout constants
-// ---------------------------------------------------------------------------
-
-static constexpr uint32_t PLL_TIMEOUT_MS           =    2U; ///< PLL lock timeout, ms
-static constexpr uint32_t HSE_TIMEOUT_MS           =  100U; ///< HSE startup timeout, ms
-static constexpr uint32_t HSI_TIMEOUT_MS           =    2U; ///< HSI startup timeout, ms
-static constexpr uint32_t LSI_TIMEOUT_MS           =    2U; ///< LSI startup timeout, ms
-static constexpr uint32_t CLOCKSWITCH_TIMEOUT_MS   = 5000U; ///< Clock-switch timeout, ms
-static constexpr uint32_t OVERDRIVE_TIMEOUT_MS     =  100U; ///< Overdrive enable timeout, ms
-
-// ---------------------------------------------------------------------------
-// Per-device frequency limits
-// Emit a hard compile error when the target is not recognised so the
-// developer gets a clear message instead of a silent wrong value.
-// ---------------------------------------------------------------------------
-
-#if   defined(STM32F446xx) || defined(STM32F429xx)
-	static constexpr uint32_t SYS_CLK_LIMIT  = 180000000UL;
-	static constexpr uint32_t APB1_CLK_LIMIT =  45000000UL;
-	static constexpr uint32_t APB2_CLK_LIMIT =  90000000UL;
-#elif defined(STM32F405xx) || defined(STM32F407xx)
-	static constexpr uint32_t SYS_CLK_LIMIT  = 168000000UL;
-	static constexpr uint32_t APB1_CLK_LIMIT =  42000000UL;
-	static constexpr uint32_t APB2_CLK_LIMIT =  84000000UL;
-#elif defined(STM32F722xx) || defined(STM32F746xx) || defined(STM32F767xx)
-	static constexpr uint32_t SYS_CLK_LIMIT  = 216000000UL;
-	static constexpr uint32_t APB1_CLK_LIMIT =  54000000UL;
-	static constexpr uint32_t APB2_CLK_LIMIT = 108000000UL;
-#elif defined(STM32F411xE)
-	static constexpr uint32_t SYS_CLK_LIMIT  = 100000000UL;
-	static constexpr uint32_t APB1_CLK_LIMIT =  50000000UL;
-	static constexpr uint32_t APB2_CLK_LIMIT = 100000000UL;
-#elif defined(STM32G030xx) || defined(STM32G070xx) || defined(STM32G071xx) || defined(STM32G081xx)
-	static constexpr uint32_t SYS_CLK_LIMIT  = 64000000UL;
-	static constexpr uint32_t APB1_CLK_LIMIT = 64000000UL;
-	// static constexpr uint32_t APB2_CLK_LIMIT = 64000000UL;
-#else
-	#error "rcc.hpp: unsupported STM32 target — please add SYS/APB clock limits for your device."
-#endif
-
-// ---------------------------------------------------------------------------
 // ClockSystem
 // ---------------------------------------------------------------------------
 
 class ClockSystem
 {
 public:
+
+	// ---------------------------------------------------------------------------
+	// Timeout constants
+	// ---------------------------------------------------------------------------
+
+	static constexpr uint32_t PLL_TIMEOUT_MS           =    2U; ///< PLL lock timeout, ms
+	static constexpr uint32_t HSE_TIMEOUT_MS           =  100U; ///< HSE startup timeout, ms
+	static constexpr uint32_t HSI_TIMEOUT_MS           =    2U; ///< HSI startup timeout, ms
+	static constexpr uint32_t LSI_TIMEOUT_MS           =    2U; ///< LSI startup timeout, ms
+	static constexpr uint32_t CLOCKSWITCH_TIMEOUT_MS   = 5000U; ///< Clock-switch timeout, ms
+	static constexpr uint32_t OVERDRIVE_TIMEOUT_MS     =  100U; ///< Overdrive enable timeout, ms
+
+	// ---------------------------------------------------------------------------
+	// Per-device frequency limits
+	// Emit a hard compile error when the target is not recognised so the
+	// developer gets a clear message instead of a silent wrong value.
+	// ---------------------------------------------------------------------------
+
+	#if defined(STM32F4) || defined(STM32F7)
+
+		static constexpr uint32_t PLL_CLK_IN_MIN = 1*MHz;  ///< Minimum PLL input clock frequency
+		static constexpr uint32_t PLL_CLK_IN_MAX = 2*MHz; ///< Maximum PLL
+
+		static constexpr uint32_t PLL_N_CLK_MIN = 100*MHz;  ///< Minimum PLL output clock frequency (VCO_in * N)
+		static constexpr uint32_t PLL_N_CLK_MAX = 432*MHz; ///< Maximum PLL output clock frequency (VCO_in * N)
+
+		static constexpr uint32_t PPRE_BUS_1_Msk = RCC_CFGR_PPRE1_Msk;
+		static constexpr uint32_t PPRE_BUS_2_Msk = RCC_CFGR_PPRE2_Msk;
+		static constexpr uint32_t PPRE_BUS_1_Pos = RCC_CFGR_PPRE1_Pos;
+		static constexpr uint32_t PPRE_BUS_2_Pos = RCC_CFGR_PPRE2_Pos;
+
+		static constexpr uint32_t LATENCY_DIV = 30*MHz; ///< Flash latency divider — 1 wait state per LATENCY_DIV MHz
+
+		#if   defined(STM32F446xx) || defined(STM32F429xx)
+			static constexpr uint32_t SYS_CLK_LIMIT  = 180*MHz;
+			static constexpr uint32_t APB1_CLK_LIMIT =  45*MHz;
+			static constexpr uint32_t APB2_CLK_LIMIT =  90*MHz;
+		#elif defined(STM32F405xx) || defined(STM32F407xx)
+			static constexpr uint32_t SYS_CLK_LIMIT  = 168*MHz;
+			static constexpr uint32_t APB1_CLK_LIMIT =  42*MHz;
+			static constexpr uint32_t APB2_CLK_LIMIT =  84*MHz;
+		#elif defined(STM32F722xx) || defined(STM32F746xx) || defined(STM32F767xx)
+			static constexpr uint32_t SYS_CLK_LIMIT  = 216*MHz;
+			static constexpr uint32_t APB1_CLK_LIMIT =  54*MHz;
+			static constexpr uint32_t APB2_CLK_LIMIT = 108*MHz;
+		#elif defined(STM32F411xE)
+			static constexpr uint32_t SYS_CLK_LIMIT  = 100*MHz;
+			static constexpr uint32_t APB1_CLK_LIMIT =  50*MHz;
+			static constexpr uint32_t APB2_CLK_LIMIT = 100*MHz;
+		#endif
+	
+	#elif defined(STM32G0)
+		static constexpr uint32_t SYS_CLK_LIMIT  = 64*MHz;
+		static constexpr uint32_t APB1_CLK_LIMIT = 64*MHz;
+		static constexpr uint32_t APB2_CLK_LIMIT = 0*MHz;
+
+		static constexpr uint32_t PLL_CLK_IN_MIN = 2.66*MHz;  ///< Minimum PLL input clock frequency
+		static constexpr uint32_t PLL_CLK_IN_MAX = 16*MHz; ///< Maximum PLL input clock frequency
+
+		static constexpr uint32_t PLL_N_CLK_MIN = 64*MHz;  ///< Minimum PLL output clock frequency (VCO_in * N)
+		static constexpr uint32_t PLL_N_CLK_MAX = 344*MHz; ///< Maximum PLL output clock frequency (VCO_in * N)
+
+		static constexpr uint32_t PPRE_BUS_1_Msk = RCC_CFGR_PPRE_Msk;
+		static constexpr uint32_t PPRE_BUS_2_Msk = 0;
+		static constexpr uint32_t PPRE_BUS_1_Pos = RCC_CFGR_PPRE_Pos;
+		static constexpr uint32_t PPRE_BUS_2_Pos = 0xFFFFFFFFU;
+
+		static constexpr uint32_t LATENCY_DIV = 24*MHz; ///< Flash latency divider — 1 wait state per LATENCY_DIV MHz
+
+	#else
+		#error "rcc.hpp: unsupported STM32 target — please add SYS/APB clock limits for your device."
+	#endif
+
+
 	// -----------------------------------------------------------------------
 	// Enumerations
 	// -----------------------------------------------------------------------
@@ -58,77 +91,46 @@ public:
 	/// System clock source — maps directly to RCC_CFGR_SW field values.
 	enum class SystemClockSource : uint32_t
 	{
-#if defined(STM32F4) or defined(STM32F7)
-		HSI   = RCC_CFGR_SW_HSI,
-		HSE   = RCC_CFGR_SW_HSE,
-		PLL_P = RCC_CFGR_SW_PLL,
+	#if defined(STM32F4) || defined(STM32F7)
+		HSI = RCC_CFGR_SW_HSI,
+		HSE = RCC_CFGR_SW_HSE,
+		PLL = RCC_CFGR_SW_PLL,
 	#if defined(STM32F446xx)
 		PLL_R = RCC_CFGR_SW_PLLR,
 	#endif
-#elif defined(STM32G0)
-		LSE   = RCC_CFGR_SW_LSE,
-		HSI   = RCC_CFGR_SW_HSISYS,
-		HSE   = RCC_CFGR_SW_HSE,
-		PLL   = RCC_CFGR_SW_PLLRCLK,
-		LSI   = RCC_CFGR_SW_LSI,
-#endif
+
+	#elif defined(STM32G0)
+		HSI = RCC_CFGR_SW_HSISYS,
+		HSE = RCC_CFGR_SW_HSE,
+		PLL = RCC_CFGR_SW_PLLRCLK,
+		LSE = RCC_CFGR_SW_LSE,
+		LSI = RCC_CFGR_SW_LSI,
+	#endif
 	};
 
 	/// AHB prescaler — maps to RCC_CFGR_HPRE field values.
 	enum class AHB_Divider : uint32_t
 	{
-#if defined (STM32F7) or defined(STM32F4)
-		DIV1   = RCC_CFGR_HPRE_DIV1,
-		DIV2   = RCC_CFGR_HPRE_DIV2,
-		DIV4   = RCC_CFGR_HPRE_DIV4,
-		DIV8   = RCC_CFGR_HPRE_DIV8,
-		DIV16  = RCC_CFGR_HPRE_DIV16,
-		DIV64  = RCC_CFGR_HPRE_DIV64,
-		DIV128 = RCC_CFGR_HPRE_DIV128,
-		DIV256 = RCC_CFGR_HPRE_DIV256,
-		DIV512 = RCC_CFGR_HPRE_DIV512,
-#elif defined(STM32G0)
-		DIV1	= 0b0000 << RCC_CFGR_HPRE_Pos,
-		DIV2	= 0b1000 << RCC_CFGR_HPRE_Pos,
-		DIV4	= 0b1001 << RCC_CFGR_HPRE_Pos,
-		DIV8	= 0b1010 << RCC_CFGR_HPRE_Pos,
-		DIV16	= 0b1011 << RCC_CFGR_HPRE_Pos,
-		DIV64	= 0b1100 << RCC_CFGR_HPRE_Pos,
-		DIV128	= 0b1101 << RCC_CFGR_HPRE_Pos,
-		DIV256	= 0b1110 << RCC_CFGR_HPRE_Pos,
-		DIV512	= 0b1111 << RCC_CFGR_HPRE_Pos,
-#endif
+		DIV1	= 0b0000,
+		DIV2	= 0b1000,
+		DIV4	= 0b1001,
+		DIV8	= 0b1010,
+		DIV16	= 0b1011,
+		DIV64	= 0b1100,
+		DIV128	= 0b1101,
+		DIV256	= 0b1110,
+		DIV512	= 0b1111,
 	};
 
 	/// APB1 prescaler — maps to RCC_CFGR_PPRE1 field values.
-	enum class APB1_Divider : uint32_t
+	enum class APB_Divider : uint32_t
 	{
-#if defined (STM32F7) or defined(STM32F4)
-		DIV1  = RCC_CFGR_PPRE1_DIV1,
-		DIV2  = RCC_CFGR_PPRE1_DIV2,
-		DIV4  = RCC_CFGR_PPRE1_DIV4,
-		DIV8  = RCC_CFGR_PPRE1_DIV8,
-		DIV16 = RCC_CFGR_PPRE1_DIV16,
-#elif defined(STM32G0)
-		DIV1	= 0b000 << RCC_CFGR_PPRE_Pos,
-		DIV2	= 0b100 << RCC_CFGR_PPRE_Pos,
-		DIV4	= 0b101 << RCC_CFGR_PPRE_Pos,
-		DIV8	= 0b110 << RCC_CFGR_PPRE_Pos,
-		DIV16	= 0b111 << RCC_CFGR_PPRE_Pos,
-#endif
+		DIV1	= 0b000,
+		DIV2	= 0b100,
+		DIV4	= 0b101,
+		DIV8	= 0b110,
+		DIV16	= 0b111,
 	};
-
-#if defined (STM32F7) or defined(STM32F4)
-	/// APB2 prescaler — maps to RCC_CFGR_PPRE2 field values.
-	enum class APB2_Divider : uint32_t
-	{
-		DIV1  = RCC_CFGR_PPRE2_DIV1,
-		DIV2  = RCC_CFGR_PPRE2_DIV2,
-		DIV4  = RCC_CFGR_PPRE2_DIV4,
-		DIV8  = RCC_CFGR_PPRE2_DIV8,
-		DIV16 = RCC_CFGR_PPRE2_DIV16,
-	};
-#endif
 
 	/// PLL input clock source.
 	enum class PLL_ClockSource : uint32_t
@@ -146,27 +148,25 @@ public:
 	struct BusDividers
 	{
 		AHB_Divider  AHB_div  = AHB_Divider::DIV1;
-		APB1_Divider APB1_div = APB1_Divider::DIV1;
-#if defined (STM32F7) or defined(STM32F4)
-		APB2_Divider APB2_div = APB2_Divider::DIV1;
-#endif
+		APB_Divider  APB1_div = APB_Divider::DIV1;
+		APB_Divider  APB2_div = APB_Divider::DIV1;
 	};
 
 	/**
 	 * @brief PLL configuration registers.
 	 *
-	 * Constraints (validated in Init()):
-	 *   M : 2 – 63      (VCO input = Fsrc / M, target 1–2 MHz)
-	 *   N : 50 – 432    (VCO output = VCO_in * N, must be 100–432 MHz)
-	 *   P : 2, 4, 6, 8
+	 * Constraints (validated in Init()): 
+	 *   M : 2 – 63      (VCO input = Fsrc / M, target 1–2 MHz) 
+	 *   N : 50 – 432    (VCO output = VCO_in * N, must be 100–432 MHz) 
+	 *   P : 2, 4, 6, 8 
 	 *   Q : 2 – 15
-	 *   R : 2 – 7       (STM32F446/F767 only)
+	 *   R : 2 – 7       (STM32F446/F767 only, and main for STM32G0)
 	 */
 	struct PLL_CFGR
 	{
 		PLL_ClockSource PLL_ClkSrc = PLL_ClockSource::NO;
 		uint8_t  PLL_M = 2U;
-		uint16_t PLL_N = 2U;
+		uint16_t PLL_N = 50U;
 		uint8_t  PLL_P = 2U;
 		uint8_t  PLL_Q = 2U;
 		uint8_t  PLL_R = 2U;
@@ -219,7 +219,7 @@ public:
 	}
 
 	// -----------------------------------------------------------------------
-	// Init_calc_pll — auto-calculate PLL coefficients
+	// InitCalcPLL — auto-calculate PLL coefficients
 	// -----------------------------------------------------------------------
 
 	/**
@@ -231,24 +231,29 @@ public:
 	 * @param hse_clk   HSE frequency in Hz (required when pll_src == HSE).
 	 * @param pll_q     PLL Q divider for USB/SDIO/RNG (default 2).
 	 */
-	static SysInitStatus Init_calc_pll(
+	static SysInitStatus InitCalcPLL(
 		uint32_t        req_freq,
 		PLL_ClockSource pll_src,
 		uint32_t        hse_clk = 0U,
-		uint32_t        pll_q   = 2U);
+		uint8_t         pll_q   = 2U);
 
 private:
 	static uint32_t HSESrcClk; ///< Stored HSE frequency after successful Init()
 
-	// -----------------------------------------------------------------------
-	// Internal helpers
-	// -----------------------------------------------------------------------
+	struct validate_out{
+		SysInitStatus status;
+		uint32_t clk_value;
+	};
+	
+	static uint32_t AHB_Pre;
+	static uint32_t APB1_Pre;
+	static uint32_t APB2_Pre;
+	
+	static SysInitStatus EnableHSE(uint32_t HSE_Clk);
+	static validate_out ValidatePLLCfgr(PLL_CFGR pllcfgr, bool f446xx_pllr_out = false);
+	static SysInitStatus ValidateBusDividers(uint32_t sys_clk, BusDividers div);
+	static void ConfigurePLL(PLL_CFGR pllcfgr);
 
-	/// Switch SYSCLK to HSI and wait for confirmation (used before PLL changes).
-	static SysInitStatus SwitchToHSI();
-
-	/// Calculate Flash wait-state count for a given SYSCLK frequency.
-	static uint32_t CalcFlashLatency(uint32_t sys_clk);
 };
 
 #endif // RCC_H_

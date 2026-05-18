@@ -20,11 +20,16 @@ extern "C"
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Frequency viewing convenience constants.
+static constexpr uint32_t kHz = 1000U;
+static constexpr uint32_t MHz = 1000000U;
+
+
 /// SysTick interrupt frequency in Hz (1 kHz → 1 ms resolution).
-static constexpr uint32_t TICK_BASE = 1000U;
+static constexpr uint32_t TICK_BASE = 1*kHz;
 
 /// Default HSI oscillator frequency.
-static constexpr uint32_t HSI_Clock = 16000000UL;
+static constexpr uint32_t HSI_Clock = 16*MHz;
 
 // ---------------------------------------------------------------------------
 // Status enumerations
@@ -111,7 +116,7 @@ public:
 	 * @note  Not available on Cortex-M0/M0+ (STM32L0). A compile-time
 	 *        warning is emitted if called on an unsupported target.
 	 */
-#if not defined(STM32L0) and not defined(STM32G0)
+#if not defined(STM32L0) && not defined(STM32G0)
 	static void Enable_CYCCNT();
 
 	/**

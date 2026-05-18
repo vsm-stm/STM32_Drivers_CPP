@@ -5,20 +5,20 @@
 #include "flash_config.h"
 #include <string.h>
 
-#if defined(STM32F7) or defined(STM32F4)
+#if defined(STM32F7) || defined(STM32F4)
 	#define SR_READY_BIT FLASH_SR_BSY
 	using status_t = uint8_t;
 
-#elif defined(STM32L0) or defined(STM32G0) // todo check L0
+#elif defined(STM32L0) || defined(STM32G0) // todo check L0
 	#define SR_READY_BIT FLASH_SR_BSY1
 	using status_t = uint64_t;
-
 #endif
 
 
 class flash_base
 {
 private:
+
 
 public:
 	enum class bank_type
@@ -126,7 +126,7 @@ void flash_base::write(uint32_t addr, T *data, uint32_t size)
 	}
 	__DSB();
 
-#elif defined(STM32F7) or defined(STM32F4)
+#elif defined(STM32F7) || defined(STM32F4)
 	uint8_t sz = sizeof(T);
 
 	FLASH->CR &= ~(FLASH_CR_PSIZE_Msk);

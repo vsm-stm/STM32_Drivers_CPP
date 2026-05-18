@@ -6,6 +6,14 @@
 #include <utility>
 #include <cassert>
 
+#if defined(STM32F4) or defined(STM32F7)
+	#define RCC_GPIO_EN_REG		RCC->AHB1ENR
+	#define RCC_GPIOA_EN		RCC_AHB1ENR_GPIOAEN
+#elif defined(STM32G0)
+	#define RCC_GPIO_EN_REG		RCC->IOPENR
+	#define RCC_GPIOA_EN		RCC_IOPENR_GPIOAEN
+#endif
+
 /**
  * @brief Class representing a GPIO pin with configurable parameters.
  */

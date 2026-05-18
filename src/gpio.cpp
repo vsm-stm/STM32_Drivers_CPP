@@ -31,9 +31,9 @@ SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af)
 	const uint32_t gpio_id =
 		(reinterpret_cast<uint32_t>(PORT) - GPIOA_BASE) / (GPIOB_BASE - GPIOA_BASE);
 
-	if (!(RCC->AHB1ENR & (RCC_AHB1ENR_GPIOAEN << gpio_id)))
-		RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN << gpio_id);
-
+	RCC_GPIO_EN_REG |= (RCC_GPIOA_EN << gpio_id);
+	(void)RCC_GPIO_EN_REG; // from reference manual: "A read access to the peripheral clock register is required after an RCC peripheral clock enabling to ensure that the clock is effectively enabled before starting the configuration of the peripheral."
+	
 	// ------------------------------------------------------------------
 	// 3. Clear the relevant register fields before writing new values.
 	//
