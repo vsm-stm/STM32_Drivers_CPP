@@ -3,19 +3,19 @@
 
 #if defined(STM32F4) || defined(STM32F7)
 	const USART::PeriphInfo USART::usart_table[] = {
-		{ USART1, &RCC->APB2ENR, RCC_APB2ENR_USART1EN, &System::APB2BusClock, USART1_IRQn, 7 },
-		{ USART2, &RCC->APB1ENR, RCC_APB1ENR_USART2EN, &System::APB1BusClock, USART2_IRQn, 7 },
+		{ USART1, &RCC->APB2ENR, RCC_APB2ENR_USART1EN, &System::APB2BusClock, USART1_IRQn },
+		{ USART2, &RCC->APB1ENR, RCC_APB1ENR_USART2EN, &System::APB1BusClock, USART2_IRQn },
 	#ifndef STM32F411xE
-		{ USART3, &RCC->APB1ENR, RCC_APB1ENR_USART3EN, &System::APB1BusClock, USART3_IRQn, 7 },
-		{ UART4,  &RCC->APB1ENR, RCC_APB1ENR_UART4EN,  &System::APB1BusClock, UART4_IRQn,  8 },
-		{ UART5,  &RCC->APB1ENR, RCC_APB1ENR_UART5EN,  &System::APB1BusClock, UART5_IRQn,  8 },
-		{ USART6, &RCC->APB2ENR, RCC_APB2ENR_USART6EN, &System::APB2BusClock, USART6_IRQn, 8 },
+		{ USART3, &RCC->APB1ENR, RCC_APB1ENR_USART3EN, &System::APB1BusClock, USART3_IRQn },
+		{ UART4,  &RCC->APB1ENR, RCC_APB1ENR_UART4EN,  &System::APB1BusClock, UART4_IRQn  },
+		{ UART5,  &RCC->APB1ENR, RCC_APB1ENR_UART5EN,  &System::APB1BusClock, UART5_IRQn  },
+		{ USART6, &RCC->APB2ENR, RCC_APB2ENR_USART6EN, &System::APB2BusClock, USART6_IRQn },
 	#endif
 	};
 #elif defined(STM32G0)
 	const USART::PeriphInfo USART::usart_table[] = {
-		{ USART1, &RCC->APBENR2, RCC_APBENR2_USART1EN, &System::APB1BusClock, USART1_IRQn, 0 },
-		{ USART2, &RCC->APBENR1, RCC_APBENR1_USART2EN, &System::APB1BusClock, USART2_IRQn, 0 },
+		{ USART1, &RCC->APBENR2, RCC_APBENR2_USART1EN, &System::APB1BusClock, USART1_IRQn },
+		{ USART2, &RCC->APBENR1, RCC_APBENR1_USART2EN, &System::APB1BusClock, USART2_IRQn },
 	};
 #endif
 /**
@@ -43,14 +43,14 @@ SysInitStatus USART::SetUp()
 	// Enable USART and configure TX and RX pins if available
 	USARTx->CR1 = USART_CR1_UE;
 
-	if (_TX.PORT != NULL)
+	if (_TX.IsValid())
 	{
-		_TX.SetUp(PIN::TYPE::AF_PushPull, _info->af);
+		_TX.SetUp(PIN::TYPE::AF_PushPull);
 		USARTx->CR1 |= USART_CR1_TE;
 	}
-	if (_RX.PORT != NULL)
+	if (_RX.IsValid())
 	{
-		_RX.SetUp(PIN::TYPE::AF_PushPull, _info->af);
+		_RX.SetUp(PIN::TYPE::AF_PushPull);
 		USARTx->CR1 |= USART_CR1_RE;
 	}
 

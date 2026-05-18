@@ -13,36 +13,21 @@
 	#define RCC_GPIOA_EN		RCC_IOPENR_GPIOAEN
 #endif
 
-/**
- * @brief Class representing a GPIO pin with configurable parameters.
- */
 class PIN
 {
 private:
-	/**
-	 * @brief Bit positions within the TYPE enum byte.
-	 *   [1:0] = MODE
-	 *   [3:2] = PULL
-	 *   [4]   = OUTPUT_TYPE
-	 */
 	static constexpr uint8_t mode_pos        = 0;
 	static constexpr uint8_t pull_pos        = 2;
 	static constexpr uint8_t output_type_pos = 4;
 
-	/**
-	 * @brief Pin mode — matches MODER register 2-bit encoding.
-	 */
 	enum class MODE : uint8_t
 	{
-		INPUT  = 0b00,  ///< Input mode
-		OUTPUT = 0b01,  ///< Output mode  (FIX: was 0b1, same value but misleading alignment)
-		AF     = 0b10,  ///< Alternate function mode
-		ANALOG = 0b11   ///< Analog mode
+		INPUT  = 0b00,
+		OUTPUT = 0b01,
+		AF     = 0b10,
+		ANALOG = 0b11
 	};
 
-	/**
-	 * @brief Pull-up / pull-down selection — raw 2-bit values (NOT pre-shifted).
-	 */
 	enum class PULL : uint8_t
 	{
 		NO_Pull  = 0b00,
@@ -50,9 +35,6 @@ private:
 		PullDown = 0b10
 	};
 
-	/**
-	 * @brief Output driver type — raw 1-bit value (NOT pre-shifted).
-	 */
 	enum class OUTPUT_TYPE : uint8_t
 	{
 		PushPull  = 0b0,
@@ -61,18 +43,12 @@ private:
 
 	void Reset() { SetUp(TYPE::INPUT_NO_Pull); }
 
-public:
-	GPIO_TypeDef* PORT{};
-	uint8_t       pin{};
+	uintptr_t _port_base{};
 
-	/**
-	 * @brief Combined pin configuration packed into one byte.
-	 *
-	 *  Bit layout:
-	 *   [1:0]  MODE        (0=IN, 1=OUT, 2=AF, 3=ANALOG)
-	 *   [3:2]  PULL        (0=none, 1=up, 2=down)
-	 *   [4]    OUTPUT_TYPE (0=PP, 1=OD)
-	 */
+public:
+	uint8_t pin{};
+	uint8_t af{};
+
 	enum class TYPE : uint8_t
 	{
 		INPUT_NO_Pull   = (static_cast<uint8_t>(MODE::INPUT)  << mode_pos),
@@ -110,39 +86,58 @@ public:
 	PIN& operator=(PIN const&) = default;
 	PIN& operator=(PIN&&)      = default;
 
+	// Constexpr constructor — for compile-time pin tables in SPI/UART/etc.
+	constexpr PIN(uintptr_t port_base, uint8_t p, uint8_t a = 0) noexcept
+		: _port_base(port_base), pin(p), af(a) {}
+
+	// Runtime constructor — for direct GPIO_TypeDef* usage
+	PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept
+		: _port_base(reinterpret_cast<uintptr_t>(port)), pin(p), af(a)
+	{
+		if (p >= 16) { __BKPT(0); while(1); }
+	}
+
+	GPIO_TypeDef* PORT() const noexcept
+	{
+		return reinterpret_cast<GPIO_TypeDef*>(_port_base);
+	}
+
+	constexpr bool IsValid() const noexcept { return _port_base != 0; }
+
 	PIN& operator=(bool b) noexcept { SetLevel(b); return *this; }
 	explicit operator bool() const noexcept { return GetLevel(); }
 
-	/**
-	 * @param port  GPIO port pointer.
-	 * @param pn    Pin number, must be in [0..15].
-	 */
-	explicit PIN(GPIO_TypeDef* port, uint8_t pn)
-		: PORT(port), pin(pn)
+	// SetUp using stored af, explicit speed
+	SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed)
 	{
-		if (pn >= 16) { __BKPT(0); while(1); }
+		return SetUp(type, speed, af);
 	}
 
-	SysInitStatus SetUp(TYPE type, uint8_t af)
+	// SetUp using stored af, default speed
+	SysInitStatus SetUp(TYPE type = TYPE::INPUT_NO_Pull)
 	{
 		return SetUp(type, OUTPUT_SPEED::Low, af);
 	}
 
-	SysInitStatus SetUp(TYPE type          = TYPE::INPUT_NO_Pull,
-						OUTPUT_SPEED speed = OUTPUT_SPEED::Low,
-						uint8_t af         = 0);
+	// SetUp with explicit af override (for PinArray and legacy callers)
+	SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override);
+
+	// Convenience: explicit af, low speed
+	SysInitStatus SetUp(TYPE type, uint8_t af_override)
+	{
+		return SetUp(type, OUTPUT_SPEED::Low, af_override);
+	}
 
 	// ---- level access ----
 
 	inline bool GetLevel() const noexcept
 	{
-		// FIX: was ((PORT->IDR & (0x1 << pin)) >> pin) — equivalent but less clear
-		return (PORT->IDR >> pin) & 0x1u;
+		return (PORT()->IDR >> pin) & 0x1u;
 	}
 
 	inline void SetLevel(bool lvl) noexcept
 	{
-		PORT->BSRR = (lvl ? GPIO_BSRR_BS0 : GPIO_BSRR_BR0) << pin;
+		PORT()->BSRR = 1u << (pin + 16 * static_cast<uint8_t>(!lvl));
 	}
 
 	inline void SetLevel(LVL lvl) noexcept
@@ -152,18 +147,18 @@ public:
 
 	inline void TogglePin() noexcept
 	{
-		PORT->ODR ^= (0x1u << pin);
+		PORT()->ODR ^= (0x1u << pin);
 	}
 
 #if defined(STM32F4)
 	inline bool GetLevel_BB() const noexcept
 	{
-		return static_cast<bool>(BIT_BB(&PORT->IDR, pin));
+		return static_cast<bool>(BIT_BB(&PORT()->IDR, pin));
 	}
 
 	inline void SetLevel_BB(bool lvl) noexcept
 	{
-		BIT_BB(&PORT->ODR, pin) = static_cast<uint32_t>(lvl);
+		BIT_BB(&PORT()->ODR, pin) = static_cast<uint32_t>(lvl);
 	}
 
 	inline void SetLevel_BB(LVL lvl) noexcept
@@ -171,14 +166,9 @@ public:
 		SetLevel_BB(lvl == LVL::HIGH);
 	}
 
-	/**
-	 * FIX: XOR через bit-band alias некорректен — ячейка содержит 0 или 1,
-	 *      запись любого ненулевого значения устанавливает бит.
-	 *      Правильный toggle — read → invert → write.
-	 */
 	inline void TogglePin_BB() noexcept
 	{
-		BIT_BB(&PORT->ODR, pin) = !BIT_BB(&PORT->ODR, pin);
+		BIT_BB(&PORT()->ODR, pin) = !BIT_BB(&PORT()->ODR, pin);
 	}
 #endif
 
@@ -187,13 +177,6 @@ public:
 
 // ---------------------------------------------------------------------------
 
-/**
- * @brief Owning array of PIN objects with bulk configure / read / write operations.
- *
- * @tparam N  Number of pins (1..32).
- *
- * FIX: removed private inheritance from PIN — PinArray IS NOT a PIN.
- */
 template<size_t N>
 class PinArray
 {
@@ -210,8 +193,6 @@ private:
 							   uint8_t            af)
 	{
 		SysInitStatus result = SysInitStatus::InitOK;
-		// FIX: was using short-circuit &&, which stopped on first error.
-		//      Now ALL pins are configured; first failure is remembered.
 		((pins[I].SetUp(type, speed, af) != SysInitStatus::InitOK
 			  ? (result = SysInitStatus::NotInit, void())
 			  : void()), ...);
