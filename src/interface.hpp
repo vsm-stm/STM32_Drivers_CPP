@@ -18,17 +18,19 @@ class Interface_DMA
 {
 public:
 	Interface_DMA(
-		DMA_Stream_TypeDef *_dma_tx,
-		DMA_Stream_TypeDef *_dma_rx):
-										dma_tx(_dma_tx),
-										dma_rx(_dma_rx)
+		DMA_Sx_ns::DMA_Desc tx_desc,
+		DMA_Sx_ns::DMA_Desc rx_desc)
+		: dma_tx(tx_desc.Stream()), dma_rx(rx_desc.Stream()),
+		  _tx_desc(tx_desc), _rx_desc(rx_desc)
 		{};
 	~Interface_DMA(){};
 protected:
-	DMA_Sx_ns::DMA_Sx dma_tx;
-	DMA_Sx_ns::DMA_Sx dma_rx;
+	DMA_Sx_ns::DMA_Sx      dma_tx;
+	DMA_Sx_ns::DMA_Sx      dma_rx;
 	DMA_Sx_ns::StreamSettings tx_settings;
 	DMA_Sx_ns::StreamSettings rx_settings;
+	DMA_Sx_ns::DMA_Desc    _tx_desc;
+	DMA_Sx_ns::DMA_Desc    _rx_desc;
 
 	enum class TXRX_Type
 	{
@@ -66,10 +68,50 @@ protected:
 class Interface_USART : public Interface_DMA
 {
 public:
+
+#if defined(STM32F4) || defined(STM32F7)
+	struct USART_1 {
+		struct TX { static constexpr DMA_Sx_ns::DMA_Desc DMA2_S7 = { DMA2_Stream7_BASE, 4, USART1_BASE }; };
+		struct RX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S2 = { DMA2_Stream2_BASE, 4, USART1_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S5 = { DMA2_Stream5_BASE, 4, USART1_BASE };
+		};
+	};
+	struct USART_2 {
+		struct TX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S6 = { DMA1_Stream6_BASE, 4, USART2_BASE }; };
+		struct RX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S5 = { DMA1_Stream5_BASE, 4, USART2_BASE }; };
+	};
+	struct USART_3 {
+		struct TX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA1_S3 = { DMA1_Stream3_BASE, 4, USART3_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA1_S4 = { DMA1_Stream4_BASE, 7, USART3_BASE };
+		};
+		struct RX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S1 = { DMA1_Stream1_BASE, 4, USART3_BASE }; };
+	};
+	struct UART_4 {
+		struct TX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S4 = { DMA1_Stream4_BASE, 4, UART4_BASE }; };
+		struct RX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S2 = { DMA1_Stream2_BASE, 4, UART4_BASE }; };
+	};
+	struct UART_5 {
+		struct TX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S7 = { DMA1_Stream7_BASE, 4, UART5_BASE }; };
+		struct RX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S0 = { DMA1_Stream0_BASE, 4, UART5_BASE }; };
+	};
+	struct USART_6 {
+		struct TX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S6 = { DMA2_Stream6_BASE, 5, USART6_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S7 = { DMA2_Stream7_BASE, 5, USART6_BASE };
+		};
+		struct RX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S1 = { DMA2_Stream1_BASE, 5, USART6_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S2 = { DMA2_Stream2_BASE, 5, USART6_BASE };
+		};
+	};
+#endif
+
 	Interface_USART(
 		USART *_usart,
-		DMA_Stream_TypeDef *_dma_tx,
-		DMA_Stream_TypeDef *_dma_rx,
+		DMA_Sx_ns::DMA_Desc tx_desc,
+		DMA_Sx_ns::DMA_Desc rx_desc,
 		uint32_t tx_buffer_size,
 		uint32_t rx_buffer_size);
 	~Interface_USART(){};
@@ -134,11 +176,51 @@ protected:
 class Interface_SPI : public Interface_DMA
 {
 public:
+
+#if defined(STM32F4) || defined(STM32F7)
+	struct SPI_1 {
+		struct TX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S3 = { DMA2_Stream3_BASE, 3, SPI1_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S5 = { DMA2_Stream5_BASE, 3, SPI1_BASE };
+		};
+		struct RX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S0 = { DMA2_Stream0_BASE, 3, SPI1_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S2 = { DMA2_Stream2_BASE, 3, SPI1_BASE };
+		};
+	};
+	struct SPI_2 {
+		struct TX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S4 = { DMA1_Stream4_BASE, 0, SPI2_BASE }; };
+		struct RX { static constexpr DMA_Sx_ns::DMA_Desc DMA1_S3 = { DMA1_Stream3_BASE, 0, SPI2_BASE }; };
+	};
+	struct SPI_3 {
+		struct TX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA1_S5 = { DMA1_Stream5_BASE, 0, SPI3_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA1_S7 = { DMA1_Stream7_BASE, 0, SPI3_BASE };
+		};
+		struct RX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA1_S0 = { DMA1_Stream0_BASE, 0, SPI3_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA1_S2 = { DMA1_Stream2_BASE, 0, SPI3_BASE };
+		};
+	};
+#ifdef SPI4_BASE
+	struct SPI_4 {
+		struct TX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S1 = { DMA2_Stream1_BASE, 4, SPI4_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S4 = { DMA2_Stream4_BASE, 5, SPI4_BASE };
+		};
+		struct RX {
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S0 = { DMA2_Stream0_BASE, 4, SPI4_BASE };
+			static constexpr DMA_Sx_ns::DMA_Desc DMA2_S3 = { DMA2_Stream3_BASE, 5, SPI4_BASE };
+		};
+	};
+#endif
+#endif
+
 	Interface_SPI(
 		SPI *_spi,
 		SPI::Init_struct_Typedef _init_data,
-		DMA_Stream_TypeDef *_dma_tx,
-		DMA_Stream_TypeDef *_dma_rx,
+		DMA_Sx_ns::DMA_Desc tx_desc,
+		DMA_Sx_ns::DMA_Desc rx_desc,
 		uint32_t tx_buffer_size,
 		uint32_t rx_buffer_size);
 	~Interface_SPI(){};

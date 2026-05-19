@@ -58,6 +58,17 @@ namespace DMA_Sx_ns {
 		uint32_t count{0};
 	};
 
+	struct DMA_Desc {
+		uintptr_t stream_base{};
+		uint32_t  channel{};
+		uintptr_t periph_base{};
+
+		DMA_Stream_TypeDef* Stream() const noexcept {
+			return reinterpret_cast<DMA_Stream_TypeDef*>(stream_base);
+		}
+		constexpr bool IsValid() const noexcept { return stream_base != 0; }
+	};
+
 // ------------------- КЛАСС DMA STREAM -----------------------
 
 class DMA_Sx

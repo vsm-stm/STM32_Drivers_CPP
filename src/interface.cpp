@@ -1,13 +1,13 @@
 #include "interface.hpp"
 #include <cstring>
 
-Interface_USART::Interface_USART(	
+Interface_USART::Interface_USART(
 	USART *_usart,
-	DMA_Stream_TypeDef *_dma_tx,
-	DMA_Stream_TypeDef *_dma_rx,
+	DMA_Sx_ns::DMA_Desc tx_desc,
+	DMA_Sx_ns::DMA_Desc rx_desc,
 	uint32_t tx_buffer_size,
 	uint32_t rx_buffer_size) :
-									Interface_DMA(_dma_tx, _dma_rx),
+									Interface_DMA(tx_desc, rx_desc),
 										usart(_usart),
 										tx_buffer_size_max(tx_buffer_size),
 										rx_buffer_size_max(rx_buffer_size),
@@ -16,12 +16,17 @@ Interface_USART::Interface_USART(
 										tx_buffered_active(false),
 									rx_buffered_active(false),
 									tx_buffered_bytes(0),
-									rx_buffered_bytes(0)//,
-									// buffer(tx_buffer_size, rx_buffer_size)
+									rx_buffered_bytes(0)
 {
-	tx_settings.channel = rx_settings.channel = 4;
+	if (_tx_desc.IsValid() && _tx_desc.periph_base && _tx_desc.periph_base != (uintptr_t)usart->USARTx)
+		{ __BKPT(0); while(1); }
+	if (_rx_desc.IsValid() && _rx_desc.periph_base && _rx_desc.periph_base != (uintptr_t)usart->USARTx)
+		{ __BKPT(0); while(1); }
+
+	tx_settings.channel   = _tx_desc.channel;
+	rx_settings.channel   = _rx_desc.channel;
 	tx_settings.data_size = rx_settings.data_size = DMA_Sx_ns::SIZE::Byte;
-	tx_settings.minc = rx_settings.minc = true;
+	tx_settings.minc      = rx_settings.minc      = true;
 	tx_settings.direction = DMA_Sx_ns::DIR::To_Per;
 	rx_settings.direction = DMA_Sx_ns::DIR::From_Per;
 
@@ -32,11 +37,6 @@ Interface_USART::Interface_USART(
 	tx_settings.per_address = reinterpret_cast<uint32_t>(&usart->USARTx->TDR);
 	rx_settings.per_address = reinterpret_cast<uint32_t>(&usart->USARTx->RDR);
 #endif
-
-	if(usart->USARTx == USART6)
-	{
-		tx_settings.channel = rx_settings.channel = 5;
-	}
 
 	status_tx = SysStatus::NotInit;
 	status_rx = SysStatus::NotInit;
@@ -355,38 +355,27 @@ void Interface_USART::IRQHandler()
 
 
 Interface_SPI::Interface_SPI(
-	SPI *_spi, 
+	SPI *_spi,
 	SPI::Init_struct_Typedef _init_data,
-	DMA_Stream_TypeDef *_dma_tx,
-	DMA_Stream_TypeDef *_dma_rx,
+	DMA_Sx_ns::DMA_Desc tx_desc,
+	DMA_Sx_ns::DMA_Desc rx_desc,
 	uint32_t tx_buffer_size,
 	uint32_t rx_buffer_size) :
-								Interface_DMA(_dma_tx, _dma_rx),
+								Interface_DMA(tx_desc, rx_desc),
 								spi(_spi),
-								spi_init_data(_init_data)//,
-								// buffer(tx_buffer_size, rx_buffer_size)
+								spi_init_data(_init_data)
 {
+	if (_tx_desc.IsValid() && _tx_desc.periph_base && _tx_desc.periph_base != (uintptr_t)spi->SPIx)
+		{ __BKPT(0); while(1); }
+	if (_rx_desc.IsValid() && _rx_desc.periph_base && _rx_desc.periph_base != (uintptr_t)spi->SPIx)
+		{ __BKPT(0); while(1); }
+
+	tx_settings.channel   = _tx_desc.channel;
+	rx_settings.channel   = _rx_desc.channel;
 	tx_settings.direction = DMA_Sx_ns::DIR::To_Per;
 	rx_settings.direction = DMA_Sx_ns::DIR::From_Per;
 	tx_settings.per_address = reinterpret_cast<uint32_t>(&spi->SPIx->DR);
 	rx_settings.per_address = reinterpret_cast<uint32_t>(&spi->SPIx->DR);
-
-
-	if(spi->SPIx == SPI1)
-	{
-		tx_settings.channel = rx_settings.channel = 3;
-	}
-	else if(spi->SPIx == SPI4)
-	{
-		if(_dma_tx == DMA2_Stream1)
-			tx_settings.channel = 4;
-		else
-			tx_settings.channel = 5;
-		if(_dma_rx == DMA2_Stream0)
-			rx_settings.channel = 4;
-		else
-			rx_settings.channel = 5;
-	}
 };
 
 SysInitStatus Interface_SPI::Init()
