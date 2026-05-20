@@ -22,10 +22,10 @@
  * @brief Initialize the USART configuration.
  * @return The status of the initialization operation.
  */
-SysInitStatus USART::SetUp()
+SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 {
 	if((BaudRate < 9600)
-	|| (BaudRate > 115200*16))
+	|| (BaudRate > 115200*16)) // todo - max baud from datasheets
 		return SysInitStatus::InitError;
 
 	const PeriphInfo* info = nullptr;
@@ -39,9 +39,14 @@ SysInitStatus USART::SetUp()
 
 	// Set the Baud Rate
 	USARTx->BRR = *_info->bus_clk / BaudRate;
+	USARTx->CR2 = 0;
+	USARTx->CR3 = 0;
+	
+	USARTx->CR1 = static_cast<uint32_t>(fifo);  // NO=0, EN=FIFOEN
+	USARTx->CR3 = (static_cast<uint32_t>(fifo_th_tx) << FIFO_TH_TX_Pos) | (static_cast<uint32_t>(fifo_th_rx) << FIFO_TH_RX_Pos);
 
 	// Enable USART and configure TX and RX pins if available
-	USARTx->CR1 = USART_CR1_UE;
+	USARTx->CR1 |= USART_CR1_UE;
 
 	if (_TX.IsValid())
 	{
@@ -54,9 +59,6 @@ SysInitStatus USART::SetUp()
 		USARTx->CR1 |= USART_CR1_RE;
 	}
 
-	// Clear and configure CR2 and CR3 registers
-	USARTx->CR2 = 0;
-	USARTx->CR3 = 0;
 
 #if defined(STM32F4)
 	ClearFlags();
@@ -64,12 +66,16 @@ SysInitStatus USART::SetUp()
 	ClearFlags(ISR_FLAGS::TC);
 #endif
 
+	rx_status = SysStatus::OK;
+	tx_status = SysStatus::OK;
+
 	return SysInitStatus::InitOK;
 }
 
 SysStatus USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
+	tx_status = SysStatus::Busy;
 
 	for(uint32_t i = 0;i<len;i++)
 	{
@@ -82,13 +88,14 @@ SysStatus USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 		TXD() = data[i];
 		
 	};
+	tx_status = SysStatus::OK;
 	return SysStatus::OK;
 };
 
 SysStatus USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 {
 	uint32_t tick_start = System::GetTick();
-
+	rx_status = SysStatus::Busy;
 	for(uint32_t i = 0;i<len;i++)
 	{
 
@@ -99,7 +106,102 @@ SysStatus USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 		};
 
 		data[i] = RXD();
-		
+
 	};
+	rx_status = SysStatus::OK;
 	return SysStatus::OK;
 };
+
+SysStatus USART::Send_IRQ(uint8_t *data, uint32_t len){
+	if(tx_status != SysStatus::OK)
+		return tx_status;
+	if(!data)
+		return SysStatus::Error;
+	
+	tx_status = SysStatus::Busy;
+
+	tx_data.data_ptr = data;
+	tx_data.size = len;
+
+	#if defined(STM32F4) || defined(STM32F7)
+		Enable_IRQ(IRQ::TXE);
+	#elif defined(STM32G0)
+		if(USARTx->CR1 & USART_CR1_FIFOEN)
+			Enable_IRQ(IRQ::TXFIFO);
+		else
+			Enable_IRQ(IRQ::TXE);
+	#endif
+	return SysStatus::OK;
+};
+
+void USART::OnTxEmpty(){
+	while (tx_data.size && (Status_reg() & ISR_TXE)) {  // ISR_TXE = TXFNF в FIFO-режиме
+		TXD() = *tx_data.data_ptr++;
+		tx_data.size--;
+	}
+
+	if (!tx_data.size) {
+#if defined(STM32G0)
+		if (USARTx->CR1 & USART_CR1_FIFOEN)
+			Disable_IRQ(IRQ::TXFIFO);
+		else
+#endif
+			Disable_IRQ(IRQ::TXE);
+		tx_status = SysStatus::OK;
+	}
+};
+
+SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len) {
+	if(rx_status != SysStatus::OK)
+		return rx_status;
+	if(!data)
+		return SysStatus::Error;
+
+	rx_status = SysStatus::Busy;
+
+	rx_data = { data, (uint16_t)len};
+
+	#if defined(STM32F4) || defined(STM32F7)
+		Enable_IRQ(IRQ::RXNE);
+	#elif defined(STM32G0)
+		if(USARTx->CR1 & USART_CR1_FIFOEN)
+			Enable_IRQ(IRQ::RXFIFO);
+		else
+			Enable_IRQ(IRQ::RXNE);
+	#endif
+	Enable_IRQ(IRQ::IDLE); // Enable IDLE line detection to handle cases where data length is unknown or shorter than expected
+
+	return SysStatus::OK;
+}
+
+void USART::OnRxByte(uint8_t byte) {
+	*rx_data.data_ptr++ = byte;
+	rx_data.size--;
+	data_received_count++;
+	if(rx_data.size == 0){
+#if defined(STM32G0)
+		if (USARTx->CR1 & USART_CR1_FIFOEN)
+			Disable_IRQ(IRQ::RXFIFO);
+		else
+#endif
+			Disable_IRQ(IRQ::RXNE);
+		rx_status = SysStatus::OK;
+		data_received = 1;
+	}
+};
+
+void USART::OnIdle(){
+	if(rx_status == SysStatus::Busy){
+#if defined(STM32G0)
+		if (USARTx->CR1 & USART_CR1_FIFOEN)
+			Disable_IRQ(IRQ::RXFIFO);
+		else
+#endif
+			Disable_IRQ(IRQ::RXNE);
+		rx_status = SysStatus::OK;
+		data_received = 1;
+	}
+	Disable_IRQ(IRQ::IDLE);
+};
+
+void USART::OnTC(){};
