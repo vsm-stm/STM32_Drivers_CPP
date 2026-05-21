@@ -10,11 +10,12 @@
  *
  * Key design decisions
  * --------------------
- * - **Compile-time pin validation**: TX/RX pins are chosen from nested
- *   `USART::TX` / `USART::RX` structs whose members carry the correct
- *   alternate-function index and the expected peripheral base address.
- *   The constructor asserts (hard-fault trap) if a pin that belongs to a
- *   different USART instance is passed by mistake.
+ * - **Compile-time pin validation**: TX/RX pins are chosen from
+ *   `USART::_N::TX` / `USART::_N::RX` structs (N = peripheral number)
+ *   whose members carry the correct alternate-function index and the
+ *   expected peripheral base address.  The constructor asserts
+ *   (hard-fault trap) if a pin that belongs to a different USART instance
+ *   is passed by mistake.
  *
  * - **Register abstraction via private accessors**: `TXD()`, `RXD()`,
  *   `Status_reg()` and `Clear_reg()` hide the register-name differences
@@ -29,7 +30,7 @@
  * Typical usage
  * -------------
  * @code
- *   USART debug(USART1, 115200, USART::TX::PB6, USART::RX::PB7);
+ *   USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
  *   debug.SetUp();
  *   debug.Send(buf, len, 1000);
  * @endcode
@@ -64,20 +65,52 @@ public:
 	// -----------------------------------------------------------------------
 
 #if defined(STM32G0)
-	/** @brief Available TX pin mappings for STM32G0. */
-	struct TX {
-		static constexpr PIN PA2  = { GPIOA_BASE,  2, 1, USART2_BASE };
-		static constexpr PIN PA9  = { GPIOA_BASE,  9, 0, USART1_BASE };
-		static constexpr PIN PA14 = { GPIOA_BASE, 14, 1, USART2_BASE };
-		static constexpr PIN PB6  = { GPIOB_BASE,  6, 0, USART1_BASE };
+	struct _1 {
+		struct TX {
+			static constexpr PIN PA9  = { GPIOA_BASE,  9, 0, USART1_BASE };
+			static constexpr PIN PB6  = { GPIOB_BASE,  6, 0, USART1_BASE };
+		};
+		struct RX {
+			static constexpr PIN PA10 = { GPIOA_BASE, 10, 0, USART1_BASE };
+			static constexpr PIN PB7  = { GPIOB_BASE,  7, 0, USART1_BASE };
+		};
 	};
-	/** @brief Available RX pin mappings for STM32G0. */
-	struct RX {
-		static constexpr PIN PA3  = { GPIOA_BASE,  3, 1, USART2_BASE };
-		static constexpr PIN PA10 = { GPIOA_BASE, 10, 0, USART1_BASE };
-		static constexpr PIN PA15 = { GPIOA_BASE, 15, 1, USART2_BASE };
-		static constexpr PIN PB7  = { GPIOB_BASE,  7, 0, USART1_BASE };
+	struct _2 {
+		struct TX {
+			static constexpr PIN PA2  = { GPIOA_BASE,  2, 1, USART2_BASE };
+			static constexpr PIN PA14 = { GPIOA_BASE, 14, 1, USART2_BASE };
+		};
+		struct RX {
+			static constexpr PIN PA3  = { GPIOA_BASE,  3, 1, USART2_BASE };
+			static constexpr PIN PA15 = { GPIOA_BASE, 15, 1, USART2_BASE };
+		};
 	};
+#ifdef USART3_BASE
+	struct _3 {
+		struct TX {
+			static constexpr PIN PB8  = { GPIOB_BASE,  8, 4, USART3_BASE };
+			static constexpr PIN PC4  = { GPIOC_BASE,  4, 0, USART3_BASE };
+			static constexpr PIN PC10 = { GPIOC_BASE, 10, 0, USART3_BASE };
+		};
+		struct RX {
+			static constexpr PIN PB9  = { GPIOB_BASE,  9, 4, USART3_BASE };
+			static constexpr PIN PC5  = { GPIOC_BASE,  5, 0, USART3_BASE };
+			static constexpr PIN PC11 = { GPIOC_BASE, 11, 0, USART3_BASE };
+		};
+	};
+#endif
+#ifdef UART4_BASE
+	struct _4 {
+		struct TX {
+			static constexpr PIN PA0  = { GPIOA_BASE,  0, 0, UART4_BASE };
+			static constexpr PIN PC10 = { GPIOC_BASE, 10, 0, UART4_BASE };
+		};
+		struct RX {
+			static constexpr PIN PA1  = { GPIOA_BASE,  1, 0, UART4_BASE };
+			static constexpr PIN PC11 = { GPIOC_BASE, 11, 0, UART4_BASE };
+		};
+	};
+#endif
 
 	enum class FIFO{
 		NO = 0, 
@@ -98,27 +131,99 @@ public:
 	static constexpr uint32_t FIFO_TH_RX_Pos = USART_CR3_RXFTCFG_Pos;
 
 #elif defined(STM32F4) || defined(STM32F7)
-	/** @brief Available TX pin mappings for STM32F4/F7. */
-	struct TX {
-		static constexpr PIN PA9  = { GPIOA_BASE,  9, 7, USART1_BASE };
-		static constexpr PIN PB6  = { GPIOB_BASE,  6, 7, USART1_BASE };
-		static constexpr PIN PA2  = { GPIOA_BASE,  2, 7, USART2_BASE };
-		static constexpr PIN PD5  = { GPIOD_BASE,  5, 7, USART2_BASE };
-		static constexpr PIN PB10 = { GPIOB_BASE, 10, 7, USART3_BASE };
-		static constexpr PIN PC10 = { GPIOC_BASE, 10, 7, USART3_BASE };
+	struct _1 {
+		struct TX {
+			static constexpr PIN PA9  = { GPIOA_BASE,  9, 7, USART1_BASE };
+			static constexpr PIN PB6  = { GPIOB_BASE,  6, 7, USART1_BASE };
+		};
+		struct RX {
+			static constexpr PIN PA10 = { GPIOA_BASE, 10, 7, USART1_BASE };
+			static constexpr PIN PB7  = { GPIOB_BASE,  7, 7, USART1_BASE };
+		};
 	};
-	/** @brief Available RX pin mappings for STM32F4/F7. */
-	struct RX {
-		static constexpr PIN PA10 = { GPIOA_BASE, 10, 7, USART1_BASE };
-		static constexpr PIN PB7  = { GPIOB_BASE,  7, 7, USART1_BASE };
-		static constexpr PIN PA3  = { GPIOA_BASE,  3, 7, USART2_BASE };
-		static constexpr PIN PD6  = { GPIOD_BASE,  6, 7, USART2_BASE };
-		static constexpr PIN PB11 = { GPIOB_BASE, 11, 7, USART3_BASE };
-		static constexpr PIN PC11 = { GPIOC_BASE, 11, 7, USART3_BASE };
+	struct _2 {
+		struct TX {
+			static constexpr PIN PA2  = { GPIOA_BASE,  2, 7, USART2_BASE };
+			static constexpr PIN PD5  = { GPIOD_BASE,  5, 7, USART2_BASE };
+		};
+		struct RX {
+			static constexpr PIN PA3  = { GPIOA_BASE,  3, 7, USART2_BASE };
+			static constexpr PIN PD6  = { GPIOD_BASE,  6, 7, USART2_BASE };
+		};
 	};
+#ifdef USART3_BASE
+	struct _3 {
+		struct TX {
+			static constexpr PIN PB10 = { GPIOB_BASE, 10, 7, USART3_BASE };
+			static constexpr PIN PC10 = { GPIOC_BASE, 10, 7, USART3_BASE };
+			static constexpr PIN PD8  = { GPIOD_BASE,  8, 7, USART3_BASE };
+		};
+		struct RX {
+			static constexpr PIN PB11 = { GPIOB_BASE, 11, 7, USART3_BASE };
+			static constexpr PIN PC11 = { GPIOC_BASE, 11, 7, USART3_BASE };
+			static constexpr PIN PD9  = { GPIOD_BASE,  9, 7, USART3_BASE };
+		};
+	};
+#endif
+#ifdef UART4_BASE
+	struct _4 {
+		struct TX {
+			static constexpr PIN PA0  = { GPIOA_BASE,  0, 8, UART4_BASE };
+			static constexpr PIN PC10 = { GPIOC_BASE, 10, 8, UART4_BASE };
+		};
+		struct RX {
+			static constexpr PIN PA1  = { GPIOA_BASE,  1, 8, UART4_BASE };
+			static constexpr PIN PC11 = { GPIOC_BASE, 11, 8, UART4_BASE };
+		};
+	};
+#endif
+#ifdef UART5_BASE
+	struct _5 {
+		struct TX {
+			static constexpr PIN PC12 = { GPIOC_BASE, 12, 8, UART5_BASE };
+		};
+		struct RX {
+			static constexpr PIN PD2  = { GPIOD_BASE,  2, 8, UART5_BASE };
+		};
+	};
+#endif
+#ifdef USART6_BASE
+	struct _6 {
+		struct TX {
+			static constexpr PIN PC6  = { GPIOC_BASE,  6, 8, USART6_BASE };
+			static constexpr PIN PG14 = { GPIOG_BASE, 14, 8, USART6_BASE };
+		};
+		struct RX {
+			static constexpr PIN PC7  = { GPIOC_BASE,  7, 8, USART6_BASE };
+			static constexpr PIN PG9  = { GPIOG_BASE,  9, 8, USART6_BASE };
+		};
+	};
+#endif
+#ifdef UART7_BASE
+	struct _7 {
+		struct TX {
+			static constexpr PIN PE8  = { GPIOE_BASE,  8, 8, UART7_BASE };
+			static constexpr PIN PF7  = { GPIOF_BASE,  7, 8, UART7_BASE };
+		};
+		struct RX {
+			static constexpr PIN PE7  = { GPIOE_BASE,  7, 8, UART7_BASE };
+			static constexpr PIN PF6  = { GPIOF_BASE,  6, 8, UART7_BASE };
+		};
+	};
+#endif
+#ifdef UART8_BASE
+	struct _8 {
+		struct TX {
+			static constexpr PIN PE1  = { GPIOE_BASE,  1, 8, UART8_BASE };
+		};
+		struct RX {
+			static constexpr PIN PE0  = { GPIOE_BASE,  0, 8, UART8_BASE };
+		};
+	};
+#endif
 
 	enum class FIFO{
-		NO = 0, 
+		NO = 0,
 	};
 
 	enum class FIFO_TH{
@@ -220,9 +325,9 @@ public:
 	 *
 	 * @param usartx   Pointer to the hardware peripheral (e.g. USART1).
 	 * @param baudrate Desired baud rate in bits per second.
-	 * @param tx       TX pin selected from USART::TX::<PXn>.
+	 * @param tx       TX pin selected from USART::_N::TX::<PXn>.
 	 *                 Pass a default-constructed PIN{} to leave TX unconfigured.
-	 * @param rx       RX pin selected from USART::RX::<PXn>.
+	 * @param rx       RX pin selected from USART::_N::RX::<PXn>.
 	 *                 Pass a default-constructed PIN{} to leave RX unconfigured.
 	 */
 	explicit USART(USART_TypeDef *usartx, uint32_t baudrate,
@@ -353,7 +458,7 @@ public:
 	 * @param timeout Maximum wait time per byte, in milliseconds.
 	 * @return SysStatus::OK on success, SysStatus::Timeout on failure.
 	 */
-	SysStatus Send(uint8_t *data, uint32_t len, uint32_t timeout);
+	SysStatus Send(uint8_t *data, uint32_t len, uint32_t timeout = 100);
 
 	SysStatus Send_IRQ(uint8_t *data, uint32_t len);
 
@@ -389,7 +494,7 @@ public:
 	 * @param timeout Maximum wait time per byte, in milliseconds.
 	 * @return SysStatus::OK on success, SysStatus::Timeout on failure.
 	 */
-	SysStatus Receive(uint8_t *data, uint32_t len, uint32_t timeout);
+	SysStatus Receive(uint8_t *data, uint32_t len, uint32_t timeout = 100);
 
 	SysStatus Receive_IRQ(uint8_t *data, uint32_t len);
 

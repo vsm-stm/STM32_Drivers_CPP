@@ -215,7 +215,7 @@ ClockSystem::validate_out ClockSystem::ValidatePLLCfgr(PLL_CFGR pllcfgr, bool f4
 	if(!InRange(PLL_N_Clk, PLL_N_CLK_MIN, PLL_N_CLK_MAX))
 		return result;
 
-	#if defined(STM32F446xx) || defined(STM32F767xx)
+	#if defined(STM32F4) || defined(STM32F7)
 		uint32_t PLL_Out = f446xx_pllr_out ? PLL_N_Clk/pllcfgr.PLL_R : PLL_N_Clk/pllcfgr.PLL_P;
 	#elif defined (STM32G0)
 		uint32_t PLL_Out = PLL_N_Clk/pllcfgr.PLL_R;

@@ -180,15 +180,15 @@ struct Req {
 		static constexpr DMAReq TX = { DMA1_Stream4, 3U };
 	};
 
-	struct ADC1 {
+	struct Adc1 {
 		static constexpr DMAReq RX     = { DMA2_Stream0, 0U };
 		static constexpr DMAReq RX_alt = { DMA2_Stream4, 0U };  // Stream4 Ch0
 	};
-	struct ADC2 {
+	struct Adc2 {
 		static constexpr DMAReq RX     = { DMA2_Stream2, 1U };
 		static constexpr DMAReq RX_alt = { DMA2_Stream3, 1U };  // Stream3 Ch1
 	};
-	struct ADC3 {
+	struct Adc3 {
 		static constexpr DMAReq RX     = { DMA2_Stream0, 2U };
 		static constexpr DMAReq RX_alt = { DMA2_Stream1, 2U };  // Stream1 Ch2
 	};
