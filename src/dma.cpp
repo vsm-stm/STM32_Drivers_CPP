@@ -1,7 +1,5 @@
 #include "dma.hpp"
 
-using namespace DMA_Sx_ns;
-
 // ---------------------------------------------------------------------------
 // Static descriptor table — one entry per hardware stream/channel.
 //

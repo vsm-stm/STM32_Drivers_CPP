@@ -2,28 +2,21 @@
  * @file    dma_requests.hpp
  * @brief   Compile-time DMA peripheral request tables for STM32 (F4/F7/G0).
  *
- * Defines DMAReq — a struct that pairs a DMA stream/channel pointer with the
- * peripheral selection code — and a namespace Req containing named constants
- * for every supported peripheral direction.
+ * THIS FILE IS INCLUDED INSIDE THE DMA_Sx CLASS BODY (public section).
+ * It defines DMA_Sx::DMAReq and DMA_Sx::Req as nested types.
  *
  * Usage
  * -----
  * @code
- *   // Construct a DMA_Sx driver for a specific peripheral:
- *   DMA_Sx dma(Req::USART1::TX);
- *
- *   // F4/F7 — when you need a stream other than the primary one:
- *   DMA_Sx dma(Req::SPI1::RX_alt);
+ *   DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);  // G0
+ *   DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX);                 // F4/F7
  * @endcode
  *
  * G0 notes
  * --------
  * DMAMUX1 allows any DMA1 channel to be routed to any peripheral.
- * The channel assignments in this file are a recommended default.
- * If two peripherals listed here share a channel (e.g. SPI1 and USART1
- * both suggest Channel2), reassign one of them by constructing DMA_Sx
- * with a raw channel pointer and passing the request ID in
- * StreamSettings::channel.
+ * The channel is chosen by the user; only the DMAMUX1 request ID is encoded
+ * here.  Pass these to DMA_Sx(DMA_Channel_TypeDef*, DMAReq).
  *
  * Request IDs: RM0444 Table 37 (STM32G0x0 — G030/G050/G070).
  *
@@ -38,10 +31,6 @@
 
 #ifndef DMA_REQUESTS_H_
 #define DMA_REQUESTS_H_
-
-#include "system.hpp"
-
-namespace DMA_Sx_ns {
 
 // ---------------------------------------------------------------------------
 // DMAReq
@@ -69,139 +58,143 @@ struct DMAReq {
 };
 
 // ---------------------------------------------------------------------------
-// Req namespace
+// Req
 // ---------------------------------------------------------------------------
 
-namespace Req {
-
-// Struct names use CamelCase to avoid clashing with CMSIS peripheral macros
-// (USART1, SPI1, ADC1, TIM1, etc. are all #define'd as register pointers).
+/**
+ * @brief Named DMA request constants, organised by peripheral.
+ *
+ * Struct names use CamelCase to avoid clashing with CMSIS peripheral macros
+ * (USART1, SPI1, ADC1, TIM1, etc. are all #define'd as register pointers).
+ *
+ * Usage: DMA_Sx::Req::Usart1::TX
+ */
+struct Req {
 
 #if defined(STM32G0)
 
-// Request IDs for STM32G0x0 (G030/G050/G070) — RM0444 Table 37.
-// On G0 the DMA channel is chosen by the user; only the DMAMUX1 request ID
-// is encoded here.  Pass these to DMA_Sx(DMA_Channel_TypeDef*, DMAReq).
+	// Request IDs for STM32G0x0 (G030/G050/G070) — RM0444 Table 37.
+	struct Adc1  { static constexpr DMAReq RX = {  5U }; };
 
-struct Adc1  { static constexpr DMAReq RX = {  5U }; };
+	struct I2c1  {	static constexpr DMAReq RX = { 10U };
+					static constexpr DMAReq TX = { 11U }; };
+	struct I2c2  {	static constexpr DMAReq RX = { 12U };
+					static constexpr DMAReq TX = { 13U }; };
 
-struct Spi1  { static constexpr DMAReq RX = {  9U };
-			   static constexpr DMAReq TX = { 10U }; };
-struct Spi2  { static constexpr DMAReq RX = { 11U };
-			   static constexpr DMAReq TX = { 12U }; };
+	struct Spi1  {	static constexpr DMAReq RX = { 16U };
+					static constexpr DMAReq TX = { 17U }; };
+	struct Spi2  {	static constexpr DMAReq RX = { 18U };
+					static constexpr DMAReq TX = { 19U }; };
 
-struct I2c1  { static constexpr DMAReq RX = { 13U };
-			   static constexpr DMAReq TX = { 14U }; };
+	struct Tim1 {
+					static constexpr DMAReq CH1  = { 20U };
+					static constexpr DMAReq CH2  = { 21U };
+					static constexpr DMAReq CH3  = { 22U };
+					static constexpr DMAReq CH4  = { 23U };
+					static constexpr DMAReq TRIG = { 24U };
+					static constexpr DMAReq UP   = { 25U };
+	};
+	struct Tim3 {
+					static constexpr DMAReq CH1  = { 32U };
+					static constexpr DMAReq CH2  = { 33U };
+					static constexpr DMAReq CH3  = { 34U };
+					static constexpr DMAReq CH4  = { 35U };
+					static constexpr DMAReq TRIG = { 36U };
+					static constexpr DMAReq UP   = { 37U };
+	};
 
-struct Usart1 { static constexpr DMAReq RX = { 47U };
-				static constexpr DMAReq TX = { 48U }; };
-struct Usart2 { static constexpr DMAReq RX = { 49U };
-				static constexpr DMAReq TX = { 50U }; };
+	struct Tim16 {	static constexpr DMAReq CH1 = { 44U };
+					static constexpr DMAReq COM = { 45U };
+					static constexpr DMAReq UP  = { 46U }; };
+	struct Tim17 {	static constexpr DMAReq CH1 = { 47U };
+					static constexpr DMAReq COM = { 48U };
+					static constexpr DMAReq UP  = { 49U }; };
 
-struct Tim1 {
-	static constexpr DMAReq CH1  = { 17U };
-	static constexpr DMAReq CH2  = { 18U };
-	static constexpr DMAReq CH3  = { 19U };
-	static constexpr DMAReq CH4  = { 20U };
-	static constexpr DMAReq TRIG = { 21U };
-	static constexpr DMAReq UP   = { 22U };
-};
-struct Tim3 {
-	static constexpr DMAReq CH1  = { 29U };
-	static constexpr DMAReq CH2  = { 30U };
-	static constexpr DMAReq CH3  = { 31U };
-	static constexpr DMAReq CH4  = { 32U };
-	static constexpr DMAReq TRIG = { 33U };
-	static constexpr DMAReq UP   = { 34U };
-};
-struct Tim16 { static constexpr DMAReq CH1 = { 43U };
-			   static constexpr DMAReq UP  = { 44U }; };
-struct Tim17 { static constexpr DMAReq CH1 = { 45U };
-			   static constexpr DMAReq UP  = { 46U }; };
+	struct Usart1 {	static constexpr DMAReq RX = { 50U };
+					static constexpr DMAReq TX = { 51U }; };
+	struct Usart2 { static constexpr DMAReq RX = { 52U };
+					static constexpr DMAReq TX = { 53U }; };
 
 #elif defined(STM32F4) || defined(STM32F7)
 
-// Stream + CHSEL values for STM32F4 (RM0090 Table 42) / F7 (RM0385 Table 8).
-// _alt = alternate stream when more than one exists for the same direction.
+	// Stream + CHSEL values for STM32F4 (RM0090 Table 42) / F7 (RM0385 Table 8).
+	// _alt = alternate stream when more than one exists for the same direction.
+	struct Usart1 {
+		static constexpr DMAReq RX     = { DMA2_Stream2, 4U };
+		static constexpr DMAReq TX     = { DMA2_Stream7, 4U };
+		static constexpr DMAReq TX_alt = { DMA2_Stream5, 4U };  // Stream5 Ch4
+	};
+	struct Usart2 {
+		static constexpr DMAReq RX = { DMA1_Stream5, 4U };
+		static constexpr DMAReq TX = { DMA1_Stream6, 4U };
+	};
+	struct Usart3 {
+		static constexpr DMAReq RX     = { DMA1_Stream1, 4U };
+		static constexpr DMAReq TX     = { DMA1_Stream3, 4U };
+		static constexpr DMAReq TX_alt = { DMA1_Stream4, 7U };  // Stream4 Ch7
+	};
+	struct Uart4 {
+		static constexpr DMAReq RX = { DMA1_Stream2, 4U };
+		static constexpr DMAReq TX = { DMA1_Stream4, 4U };
+	};
+	struct Uart5 {
+		static constexpr DMAReq RX = { DMA1_Stream0, 4U };
+		static constexpr DMAReq TX = { DMA1_Stream7, 4U };
+	};
+	struct Usart6 {
+		static constexpr DMAReq RX     = { DMA2_Stream1, 5U };
+		static constexpr DMAReq TX     = { DMA2_Stream6, 5U };
+		static constexpr DMAReq RX_alt = { DMA2_Stream2, 5U };  // Stream2 Ch5
+		static constexpr DMAReq TX_alt = { DMA2_Stream7, 5U };  // Stream7 Ch5
+	};
 
-struct Usart1 {
-	static constexpr DMAReq RX     = { DMA2_Stream2, 4U };
-	static constexpr DMAReq TX     = { DMA2_Stream7, 4U };
-	static constexpr DMAReq TX_alt = { DMA2_Stream5, 4U };  // Stream5 Ch4
-};
-struct Usart2 {
-	static constexpr DMAReq RX = { DMA1_Stream5, 4U };
-	static constexpr DMAReq TX = { DMA1_Stream6, 4U };
-};
-struct Usart3 {
-	static constexpr DMAReq RX     = { DMA1_Stream1, 4U };
-	static constexpr DMAReq TX     = { DMA1_Stream3, 4U };
-	static constexpr DMAReq TX_alt = { DMA1_Stream4, 7U };  // Stream4 Ch7
-};
-struct Uart4 {
-	static constexpr DMAReq RX = { DMA1_Stream2, 4U };
-	static constexpr DMAReq TX = { DMA1_Stream4, 4U };
-};
-struct Uart5 {
-	static constexpr DMAReq RX = { DMA1_Stream0, 4U };
-	static constexpr DMAReq TX = { DMA1_Stream7, 4U };
-};
-struct Usart6 {
-	static constexpr DMAReq RX     = { DMA2_Stream1, 5U };
-	static constexpr DMAReq TX     = { DMA2_Stream6, 5U };
-	static constexpr DMAReq RX_alt = { DMA2_Stream2, 5U };  // Stream2 Ch5
-	static constexpr DMAReq TX_alt = { DMA2_Stream7, 5U };  // Stream7 Ch5
-};
+	struct Spi1 {
+		static constexpr DMAReq RX     = { DMA2_Stream0, 3U };
+		static constexpr DMAReq TX     = { DMA2_Stream3, 3U };
+		static constexpr DMAReq RX_alt = { DMA2_Stream2, 3U };  // Stream2 Ch3
+		static constexpr DMAReq TX_alt = { DMA2_Stream5, 3U };  // Stream5 Ch3
+	};
+	struct Spi2 {
+		static constexpr DMAReq RX = { DMA1_Stream3, 0U };
+		static constexpr DMAReq TX = { DMA1_Stream4, 0U };
+	};
+	struct Spi3 {
+		static constexpr DMAReq RX     = { DMA1_Stream0, 0U };
+		static constexpr DMAReq TX     = { DMA1_Stream5, 0U };
+		static constexpr DMAReq RX_alt = { DMA1_Stream2, 0U };  // Stream2 Ch0
+		static constexpr DMAReq TX_alt = { DMA1_Stream7, 0U };  // Stream7 Ch0
+	};
 
-struct Spi1 {
-	static constexpr DMAReq RX     = { DMA2_Stream0, 3U };
-	static constexpr DMAReq TX     = { DMA2_Stream3, 3U };
-	static constexpr DMAReq RX_alt = { DMA2_Stream2, 3U };  // Stream2 Ch3
-	static constexpr DMAReq TX_alt = { DMA2_Stream5, 3U };  // Stream5 Ch3
-};
-struct Spi2 {
-	static constexpr DMAReq RX = { DMA1_Stream3, 0U };
-	static constexpr DMAReq TX = { DMA1_Stream4, 0U };
-};
-struct Spi3 {
-	static constexpr DMAReq RX     = { DMA1_Stream0, 0U };
-	static constexpr DMAReq TX     = { DMA1_Stream5, 0U };
-	static constexpr DMAReq RX_alt = { DMA1_Stream2, 0U };  // Stream2 Ch0
-	static constexpr DMAReq TX_alt = { DMA1_Stream7, 0U };  // Stream7 Ch0
-};
+	struct I2c1 {
+		static constexpr DMAReq RX     = { DMA1_Stream0, 1U };
+		static constexpr DMAReq TX     = { DMA1_Stream6, 1U };
+		static constexpr DMAReq RX_alt = { DMA1_Stream5, 1U };  // Stream5 Ch1
+	};
+	struct I2c2 {
+		static constexpr DMAReq RX     = { DMA1_Stream2, 7U };
+		static constexpr DMAReq TX     = { DMA1_Stream7, 7U };
+		static constexpr DMAReq RX_alt = { DMA1_Stream3, 7U };  // Stream3 Ch7
+	};
+	struct I2c3 {
+		static constexpr DMAReq RX = { DMA1_Stream2, 1U };
+		static constexpr DMAReq TX = { DMA1_Stream4, 3U };
+	};
 
-struct I2c1 {
-	static constexpr DMAReq RX     = { DMA1_Stream0, 1U };
-	static constexpr DMAReq TX     = { DMA1_Stream6, 1U };
-	static constexpr DMAReq RX_alt = { DMA1_Stream5, 1U };  // Stream5 Ch1
-};
-struct I2c2 {
-	static constexpr DMAReq RX     = { DMA1_Stream2, 7U };
-	static constexpr DMAReq TX     = { DMA1_Stream7, 7U };
-	static constexpr DMAReq RX_alt = { DMA1_Stream3, 7U };  // Stream3 Ch7
-};
-struct I2c3 {
-	static constexpr DMAReq RX = { DMA1_Stream2, 1U };
-	static constexpr DMAReq TX = { DMA1_Stream4, 3U };
-};
-
-struct ADC1 {
-	static constexpr DMAReq RX     = { DMA2_Stream0, 0U };
-	static constexpr DMAReq RX_alt = { DMA2_Stream4, 0U };  // Stream4 Ch0
-};
-struct ADC2 {
-	static constexpr DMAReq RX     = { DMA2_Stream2, 1U };
-	static constexpr DMAReq RX_alt = { DMA2_Stream3, 1U };  // Stream3 Ch1
-};
-struct ADC3 {
-	static constexpr DMAReq RX     = { DMA2_Stream0, 2U };
-	static constexpr DMAReq RX_alt = { DMA2_Stream1, 2U };  // Stream1 Ch2
-};
+	struct ADC1 {
+		static constexpr DMAReq RX     = { DMA2_Stream0, 0U };
+		static constexpr DMAReq RX_alt = { DMA2_Stream4, 0U };  // Stream4 Ch0
+	};
+	struct ADC2 {
+		static constexpr DMAReq RX     = { DMA2_Stream2, 1U };
+		static constexpr DMAReq RX_alt = { DMA2_Stream3, 1U };  // Stream3 Ch1
+	};
+	struct ADC3 {
+		static constexpr DMAReq RX     = { DMA2_Stream0, 2U };
+		static constexpr DMAReq RX_alt = { DMA2_Stream1, 2U };  // Stream1 Ch2
+	};
 
 #endif
 
-} // namespace Req
-
-} // namespace DMA_Sx_ns
+}; // struct Req
 
 #endif // DMA_REQUESTS_H_

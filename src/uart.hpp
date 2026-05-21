@@ -358,23 +358,23 @@ public:
 	SysStatus Send_IRQ(uint8_t *data, uint32_t len);
 
 	/**
-	 * @brief Attaches DMA channels for TX and/or RX and registers this
-	 *        instance as the IRQ handler for the DMA interrupt lines.
+	 * @brief Attaches DMA channels for TX and/or RX, configures them, and
+	 *        registers this instance as the IRQ handler for the DMA lines.
 	 *
-	 * Must be called after both SetUp() and DMA_Sx::SetUp() have been called.
-	 * The UART instance handles all DMA TC events inside its own HandleIRQ,
-	 * so no separate DMA IRQ handler is needed.
+	 * Calls DMA_Sx::SetUp() internally — do NOT call it separately beforehand.
+	 * Direction, peripheral address (TDR/RDR), data width (Byte) and minc are
+	 * set automatically.  Must be called after USART::SetUp().
 	 *
 	 * @param tx  DMA channel for transmit (nullptr to skip TX DMA).
 	 * @param rx  DMA channel for receive  (nullptr to skip RX DMA).
 	 */
-	void AttachDMA(DMA_Sx_ns::DMA_Sx* tx = nullptr, DMA_Sx_ns::DMA_Sx* rx = nullptr);
+	void AttachDMA(DMA_Sx* tx = nullptr, DMA_Sx* rx = nullptr);
 
 	/** @brief Starts a DMA TX transfer. Returns Busy if one is already in progress. */
-	SysStatus SendDMA(uint8_t* data, uint32_t len);
+	SysStatus Send_DMA(uint8_t* data, uint32_t len);
 
 	/** @brief Starts a DMA RX transfer. Enables IDLE detection for early termination. */
-	SysStatus ReceiveDMA(uint8_t* data, uint32_t len);
+	SysStatus Receive_DMA(uint8_t* data, uint32_t len);
 
 
 	/**
@@ -499,8 +499,8 @@ private:
 	bool data_overflow{false};
 	uint32_t data_overflow_count{0};
 
-	DMA_Sx_ns::DMA_Sx* _dma_tx = nullptr;
-	DMA_Sx_ns::DMA_Sx* _dma_rx = nullptr;
+	DMA_Sx* _dma_tx = nullptr;
+	DMA_Sx* _dma_rx = nullptr;
 
 	void HandleIRQ() override final;
 

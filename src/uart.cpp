@@ -73,6 +73,8 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 
 SysStatus USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 {
+	if(tx_status == SysStatus::Busy)
+		return tx_status;
 	uint32_t tick_start = System::GetTick();
 	tx_status = SysStatus::Busy;
 
@@ -95,6 +97,8 @@ SysStatus USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 
 SysStatus USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 {
+	if(rx_status == SysStatus::Busy)
+		return rx_status;
 	uint32_t tick_start = System::GetTick();
 	rx_status = SysStatus::Busy;
 	for(uint32_t i = 0;i<len;i++)
@@ -273,10 +277,36 @@ void USART::HandleIRQ() {
 // DMA attachment and transfer methods
 // ---------------------------------------------------------------------------
 
-void USART::AttachDMA(DMA_Sx_ns::DMA_Sx* tx, DMA_Sx_ns::DMA_Sx* rx) {
+void USART::AttachDMA(DMA_Sx* tx, DMA_Sx* rx) {
 	_dma_tx = tx;
 	_dma_rx = rx;
 	if (!_info) return;
+
+	if (tx) {
+		DMA_Sx::StreamSettings cfg;
+		cfg.direction   = DMA_Sx::DIR::To_Per;
+		cfg.data_size   = DMA_Sx::SIZE::Byte;
+		cfg.minc        = true;
+#if defined(STM32F4)
+		cfg.per_address = reinterpret_cast<uint32_t>(&USARTx->DR);
+#else
+		cfg.per_address = reinterpret_cast<uint32_t>(&USARTx->TDR);
+#endif
+		tx->SetUp(cfg);
+	}
+
+	if (rx) {
+		DMA_Sx::StreamSettings cfg;
+		cfg.direction   = DMA_Sx::DIR::From_Per;
+		cfg.data_size   = DMA_Sx::SIZE::Byte;
+		cfg.minc        = true;
+#if defined(STM32F4)
+		cfg.per_address = reinterpret_cast<uint32_t>(&USARTx->DR);
+#else
+		cfg.per_address = reinterpret_cast<uint32_t>(&USARTx->RDR);
+#endif
+		rx->SetUp(cfg);
+	}
 
 	IRQn_Type tx_irqn = static_cast<IRQn_Type>(-1);
 	if (tx) {
@@ -284,7 +314,7 @@ void USART::AttachDMA(DMA_Sx_ns::DMA_Sx* tx, DMA_Sx_ns::DMA_Sx* rx) {
 		if (tx_irqn != static_cast<IRQn_Type>(-1)) {
 			IRQ_Registry::Register(tx_irqn, this);
 			NVIC_EnableIRQ(tx_irqn);
-			tx->Enable_IRQ(DMA_Sx_ns::IRQ::TC);
+			tx->Enable_IRQ(DMA_Sx::IRQ::TC);
 		}
 	}
 
@@ -294,11 +324,11 @@ void USART::AttachDMA(DMA_Sx_ns::DMA_Sx* tx, DMA_Sx_ns::DMA_Sx* rx) {
 			IRQ_Registry::Register(rx_irqn, this);
 			NVIC_EnableIRQ(rx_irqn);
 		}
-		rx->Enable_IRQ(DMA_Sx_ns::IRQ::TC);
+		rx->Enable_IRQ(DMA_Sx::IRQ::TC);
 	}
 }
 
-SysStatus USART::SendDMA(uint8_t* data, uint32_t len) {
+SysStatus USART::Send_DMA(uint8_t* data, uint32_t len) {
 	if (!_dma_tx || !data || !len) return SysStatus::Error;
 	if (tx_status == SysStatus::Busy)  return SysStatus::Busy;
 
@@ -311,7 +341,7 @@ SysStatus USART::SendDMA(uint8_t* data, uint32_t len) {
 	return SysStatus::OK;
 }
 
-SysStatus USART::ReceiveDMA(uint8_t* data, uint32_t len) {
+SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len) {
 	if (!_dma_rx || !data || !len) return SysStatus::Error;
 	if (rx_status == SysStatus::Busy)  return SysStatus::Busy;
 
