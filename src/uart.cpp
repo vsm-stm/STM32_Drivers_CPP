@@ -40,7 +40,6 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 	// Set the Baud Rate
 	USARTx->BRR = *_info->bus_clk / BaudRate;
 	USARTx->CR2 = 0;
-	USARTx->CR3 = 0;
 	
 	USARTx->CR1 = static_cast<uint32_t>(fifo);  // NO=0, EN=FIFOEN
 	USARTx->CR3 = (static_cast<uint32_t>(fifo_th_tx) << FIFO_TH_TX_Pos) | (static_cast<uint32_t>(fifo_th_rx) << FIFO_TH_RX_Pos);
@@ -81,8 +80,10 @@ SysStatus USART::Send(uint8_t *data, uint32_t len, uint32_t timeout)
 	{
 		while(!(Status_reg() & ISR_TXE))
 		{
-			if(System::GetTick() - tick_start > timeout)
+			if(System::GetTick() - tick_start > timeout) {
+				tx_status = SysStatus::OK;
 				return SysStatus::Timeout;
+			}
 		};
 
 		TXD() = data[i];
@@ -101,8 +102,10 @@ SysStatus USART::Receive(uint8_t *data, uint32_t len, uint32_t timeout)
 
 		while(!(Status_reg() & ISR_RXNE))
 		{
-			if(System::GetTick() - tick_start > timeout)
+			if(System::GetTick() - tick_start > timeout) {
+				rx_status = SysStatus::OK;
 				return SysStatus::Timeout;
+			}
 		};
 
 		data[i] = RXD();
@@ -158,6 +161,8 @@ SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len) {
 		return SysStatus::Error;
 
 	rx_status = SysStatus::Busy;
+	data_overflow = false;
+	data_overflow_count = 0;
 
 	rx_data = { data, (uint16_t)len};
 
@@ -175,6 +180,11 @@ SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len) {
 }
 
 void USART::OnRxByte(uint8_t byte) {
+	if (!rx_data.size) {
+		data_overflow = true;
+		data_overflow_count++;
+		return;
+	}
 	*rx_data.data_ptr++ = byte;
 	rx_data.size--;
 	data_received_count++;
@@ -186,22 +196,147 @@ void USART::OnRxByte(uint8_t byte) {
 #endif
 			Disable_IRQ(IRQ::RXNE);
 		rx_status = SysStatus::OK;
-		data_received = 1;
+		data_received = true;
 	}
 };
 
-void USART::OnIdle(){
-	if(rx_status == SysStatus::Busy){
+void USART::OnIdle() {
+	if (rx_status == SysStatus::Busy) {
+		if (_dma_rx) {
+			// DMA receive: stop channel, count actual bytes received
+			uint32_t remaining = _dma_rx->GetCount();
+			_dma_rx->Stream_EN(DISABLE);
+			_dma_rx->ClearFlags();
+			DMA_en(DISABLE, DMA::RX);
+			data_received_count = rx_data.size - remaining;
+			data_received = true;
+			rx_status = SysStatus::OK;
+		} else {
+			// IRQ receive
 #if defined(STM32G0)
-		if (USARTx->CR1 & USART_CR1_FIFOEN)
-			Disable_IRQ(IRQ::RXFIFO);
-		else
+			if (USARTx->CR1 & USART_CR1_FIFOEN)
+				Disable_IRQ(IRQ::RXFIFO);
+			else
 #endif
-			Disable_IRQ(IRQ::RXNE);
-		rx_status = SysStatus::OK;
-		data_received = 1;
+				Disable_IRQ(IRQ::RXNE);
+			rx_status = SysStatus::OK;
+			data_received = true;
+		}
 	}
 	Disable_IRQ(IRQ::IDLE);
-};
+}
 
-void USART::OnTC(){};
+void USART::OnTC() {}
+
+// ---------------------------------------------------------------------------
+// HandleIRQ — handles both UART and DMA interrupt lines
+// ---------------------------------------------------------------------------
+
+void USART::HandleIRQ() {
+	// DMA TC checks (invoked when the DMA IRQ line fires)
+	if (_dma_tx && _dma_tx->GetTC_Flag()) {
+		_dma_tx->Stream_EN(DISABLE);
+		_dma_tx->ClearFlags();
+		OnDmaTxComplete();
+	}
+	if (_dma_rx && _dma_rx->GetTC_Flag()) {
+		_dma_rx->Stream_EN(DISABLE);
+		_dma_rx->ClearFlags();
+		OnDmaRxComplete();
+	}
+
+	// UART status flags
+	uint32_t sr = Status_reg();
+#if defined(STM32G0)
+	while (Status_reg() & (ISR_RXNE | ISR_RXFT)) OnRxByte(RXD());
+#else
+	while (Status_reg() & ISR_RXNE) OnRxByte(RXD());
+#endif
+#if defined(STM32F4)
+	if (sr & ISR_IDLE) { (void)USARTx->DR; OnIdle(); }  // F4: clear IDLE by reading DR after SR
+	if (sr & ISR_TC)   { USARTx->SR &= ~USART_SR_TC; OnTC(); }
+#else
+	if (sr & ISR_IDLE) { ClearFlags(ISR_FLAGS::IDLE); OnIdle(); }
+	if (sr & ISR_TC)   { ClearFlags(ISR_FLAGS::TC);   OnTC();   }
+#endif
+#if defined(STM32G0)
+	if (sr & (ISR_TXE | ISR_TXFT)) OnTxEmpty();
+#else
+	if (sr & ISR_TXE)  OnTxEmpty();
+#endif
+}
+
+
+
+
+// ---------------------------------------------------------------------------
+// DMA attachment and transfer methods
+// ---------------------------------------------------------------------------
+
+void USART::AttachDMA(DMA_Sx_ns::DMA_Sx* tx, DMA_Sx_ns::DMA_Sx* rx) {
+	_dma_tx = tx;
+	_dma_rx = rx;
+	if (!_info) return;
+
+	IRQn_Type tx_irqn = static_cast<IRQn_Type>(-1);
+	if (tx) {
+		tx_irqn = tx->GetIRQn();
+		if (tx_irqn != static_cast<IRQn_Type>(-1)) {
+			IRQ_Registry::Register(tx_irqn, this);
+			NVIC_EnableIRQ(tx_irqn);
+			tx->Enable_IRQ(DMA_Sx_ns::IRQ::TC);
+		}
+	}
+
+	if (rx) {
+		IRQn_Type rx_irqn = rx->GetIRQn();
+		if (rx_irqn != static_cast<IRQn_Type>(-1) && rx_irqn != tx_irqn) {
+			IRQ_Registry::Register(rx_irqn, this);
+			NVIC_EnableIRQ(rx_irqn);
+		}
+		rx->Enable_IRQ(DMA_Sx_ns::IRQ::TC);
+	}
+}
+
+SysStatus USART::SendDMA(uint8_t* data, uint32_t len) {
+	if (!_dma_tx || !data || !len) return SysStatus::Error;
+	if (tx_status == SysStatus::Busy)  return SysStatus::Busy;
+
+	tx_status = SysStatus::Busy;
+	_dma_tx->ClearFlags();
+	_dma_tx->SetMemAddr(reinterpret_cast<uint32_t>(data));
+	_dma_tx->SetCount(len);
+	DMA_en(ENABLE, DMA::TX);
+	_dma_tx->Stream_EN(ENABLE);
+	return SysStatus::OK;
+}
+
+SysStatus USART::ReceiveDMA(uint8_t* data, uint32_t len) {
+	if (!_dma_rx || !data || !len) return SysStatus::Error;
+	if (rx_status == SysStatus::Busy)  return SysStatus::Busy;
+
+	rx_status = SysStatus::Busy;
+	data_overflow = false;
+	data_overflow_count = 0;
+	rx_data = { data, static_cast<uint16_t>(len) };
+	_dma_rx->ClearFlags();
+	_dma_rx->SetMemAddr(reinterpret_cast<uint32_t>(data));
+	_dma_rx->SetCount(len);
+	DMA_en(ENABLE, DMA::RX);
+	_dma_rx->Stream_EN(ENABLE);
+	Enable_IRQ(IRQ::IDLE);
+	return SysStatus::OK;
+}
+
+void USART::OnDmaTxComplete() {
+	DMA_en(DISABLE, DMA::TX);
+	tx_status = SysStatus::OK;
+}
+
+void USART::OnDmaRxComplete() {
+	DMA_en(DISABLE, DMA::RX);
+	Disable_IRQ(IRQ::IDLE);
+	data_received_count = rx_data.size;
+	data_received = 1;
+	rx_status = SysStatus::OK;
+}

@@ -42,6 +42,7 @@
 #include "rcc.hpp"
 #include "gpio.hpp"
 #include "irq_registry.hpp"
+#include "dma.hpp"
 
 /**
  * @class USART
@@ -178,6 +179,8 @@ private:
 		static constexpr uint32_t ISR_RXNE = USART_ISR_RXNE_RXFNE;
 		static constexpr uint32_t ISR_IDLE = USART_ISR_IDLE;
 		static constexpr uint32_t ISR_TC   = USART_ISR_TC;
+		static constexpr uint32_t ISR_TXFT = USART_ISR_TXFT;
+		static constexpr uint32_t ISR_RXFT = USART_ISR_RXFT;
 
 	#endif
 public:
@@ -188,13 +191,13 @@ public:
 	 * can be cast to uint32_t without a lookup table.
 	 */
 	enum class IRQ{
-		TXE  = CR1_TXEIE,        ///< Transmit data register empty.
-		RXNE = CR1_RXNEIE,       ///< Receive data register not empty.
-		TC   = USART_CR1_TCIE,   ///< Transmission complete.
-		IDLE = USART_CR1_IDLEIE,  ///< Idle line detected.
+		TXE  = CR1_TXEIE,				///< Transmit data register empty.
+		RXNE = CR1_RXNEIE,				///< Receive data register not empty.
+		TC   = USART_CR1_TCIE,			///< Transmission complete.
+		IDLE = USART_CR1_IDLEIE,		///< Idle line detected.
 	#if defined(STM32G0)
-		TXFIFO   = USART_CR3_TXFTIE,   ///< Parity error.
-		RXFIFO   = USART_CR3_RXFTIE,
+		TXFIFO   = USART_CR3_TXFTIE,	///< IRQ for TX FIFO threshold (G0 only).
+		RXFIFO   = USART_CR3_RXFTIE,	///< IRQ for RX FIFO threshold (G0 only).
 	#endif
 	};
 
@@ -355,6 +358,26 @@ public:
 	SysStatus Send_IRQ(uint8_t *data, uint32_t len);
 
 	/**
+	 * @brief Attaches DMA channels for TX and/or RX and registers this
+	 *        instance as the IRQ handler for the DMA interrupt lines.
+	 *
+	 * Must be called after both SetUp() and DMA_Sx::SetUp() have been called.
+	 * The UART instance handles all DMA TC events inside its own HandleIRQ,
+	 * so no separate DMA IRQ handler is needed.
+	 *
+	 * @param tx  DMA channel for transmit (nullptr to skip TX DMA).
+	 * @param rx  DMA channel for receive  (nullptr to skip RX DMA).
+	 */
+	void AttachDMA(DMA_Sx_ns::DMA_Sx* tx = nullptr, DMA_Sx_ns::DMA_Sx* rx = nullptr);
+
+	/** @brief Starts a DMA TX transfer. Returns Busy if one is already in progress. */
+	SysStatus SendDMA(uint8_t* data, uint32_t len);
+
+	/** @brief Starts a DMA RX transfer. Enables IDLE detection for early termination. */
+	SysStatus ReceiveDMA(uint8_t* data, uint32_t len);
+
+
+	/**
 	 * @brief Receives a fixed number of bytes in blocking mode.
 	 *
 	 * Polls the RXNE flag for each byte.  Returns early with
@@ -370,13 +393,20 @@ public:
 
 	SysStatus Receive_IRQ(uint8_t *data, uint32_t len);
 
-	inline bool GetDataReceived() {return data_received;};
+	inline bool GetDataReceived() { return data_received; }
 	inline uint32_t GetDataReceivedCount() {
 		uint32_t count = data_received_count;
 		data_received_count = 0;
-		data_received = 0;
+		data_received = false;
 		return count;
-	};
+	}
+	inline bool GetOverflow() { return data_overflow; }
+	inline uint32_t GetOverflowCount() {
+		uint32_t count = data_overflow_count;
+		data_overflow_count = 0;
+		data_overflow = false;
+		return count;
+	}
 
 	/**
 	 * @brief Reprograms the baud rate without re-initialising the peripheral.
@@ -464,27 +494,22 @@ private:
 	SysStatus tx_status{SysStatus::NotInit};
 	SysStatus rx_status{SysStatus::NotInit};
 
-	bool data_received{0};
+	bool data_received{false};
 	uint32_t data_received_count{0};
+	bool data_overflow{false};
+	uint32_t data_overflow_count{0};
 
-	void HandleIRQ() override final {
-		uint32_t sr = Status_reg();
+	DMA_Sx_ns::DMA_Sx* _dma_tx = nullptr;
+	DMA_Sx_ns::DMA_Sx* _dma_rx = nullptr;
 
-		while (Status_reg() & ISR_RXNE) OnRxByte(RXD());
-#if defined(STM32F4)
-		if (sr & ISR_IDLE) { USARTx->SR &= ~USART_SR_IDLE; OnIdle(); }
-		if (sr & ISR_TC)   { USARTx->SR &= ~USART_SR_TC;   OnTC();   }
-#else
-		if (sr & ISR_IDLE) { ClearFlags(ISR_FLAGS::IDLE); OnIdle(); }
-		if (sr & ISR_TC)   { ClearFlags(ISR_FLAGS::TC);   OnTC();   }
-#endif
-		if (sr & ISR_TXE)  OnTxEmpty();
-	}
+	void HandleIRQ() override final;
 
 	virtual void OnRxByte(uint8_t);
 	virtual void OnTxEmpty();
 	virtual void OnIdle();
 	virtual void OnTC();
+	virtual void OnDmaTxComplete();
+	virtual void OnDmaRxComplete();
 
 	const PeriphInfo* _info = nullptr; ///< Points into usart_table after SetUp().
 };
