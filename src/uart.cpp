@@ -18,6 +18,34 @@
 		{ USART2, &RCC->APBENR1, RCC_APBENR1_USART2EN, &System::APB1BusClock, USART2_IRQn },
 	};
 #endif
+
+// Maps each USART peripheral to its DMA request IDs (G0: DMAMUX req, F4/F7: CHSEL).
+// Values are taken from the Req:: table in dma_requests.hpp — no duplication.
+// AttachDMA uses this so the user does not have to specify the peripheral in DMA_Sx.
+struct UartDmaInfo {
+	USART_TypeDef* periph;
+	uint32_t       tx_req;
+	uint32_t       rx_req;
+};
+
+#if defined(STM32G0)
+static const UartDmaInfo uart_dma_req_table[] = {
+	{ USART1, DMA_Sx::Req::Usart1::TX.ch, DMA_Sx::Req::Usart1::RX.ch },
+	{ USART2, DMA_Sx::Req::Usart2::TX.ch, DMA_Sx::Req::Usart2::RX.ch },
+};
+#elif defined(STM32F4) || defined(STM32F7)
+static const UartDmaInfo uart_dma_req_table[] = {
+	{ USART1, DMA_Sx::Req::Usart1::TX.ch, DMA_Sx::Req::Usart1::RX.ch },
+	{ USART2, DMA_Sx::Req::Usart2::TX.ch, DMA_Sx::Req::Usart2::RX.ch },
+#ifndef STM32F411xE
+	{ USART3, DMA_Sx::Req::Usart3::TX.ch, DMA_Sx::Req::Usart3::RX.ch },
+	{ UART4,  DMA_Sx::Req::Uart4::TX.ch,  DMA_Sx::Req::Uart4::RX.ch  },
+	{ UART5,  DMA_Sx::Req::Uart5::TX.ch,  DMA_Sx::Req::Uart5::RX.ch  },
+	{ USART6, DMA_Sx::Req::Usart6::TX.ch, DMA_Sx::Req::Usart6::RX.ch },
+#endif
+};
+#endif
+
 /**
  * @brief Initialize the USART configuration.
  * @return The status of the initialization operation.
@@ -282,8 +310,15 @@ void USART::AttachDMA(DMA_Sx* tx, DMA_Sx* rx) {
 	_dma_rx = rx;
 	if (!_info) return;
 
+	// Look up req ID (G0) / CHSEL (F4/F7) for this peripheral.
+	// Only used when DMA_Sx was not constructed with an explicit DMAReq (_has_preset=false).
+	uint32_t tx_req = 0, rx_req = 0;
+	for (const auto& e : uart_dma_req_table)
+		if (e.periph == USARTx) { tx_req = e.tx_req; rx_req = e.rx_req; break; }
+
 	if (tx) {
 		DMA_Sx::StreamSettings cfg;
+		cfg.channel     = tx_req;
 		cfg.direction   = DMA_Sx::DIR::To_Per;
 		cfg.data_size   = DMA_Sx::SIZE::Byte;
 		cfg.minc        = true;
@@ -297,6 +332,7 @@ void USART::AttachDMA(DMA_Sx* tx, DMA_Sx* rx) {
 
 	if (rx) {
 		DMA_Sx::StreamSettings cfg;
+		cfg.channel     = rx_req;
 		cfg.direction   = DMA_Sx::DIR::From_Per;
 		cfg.data_size   = DMA_Sx::SIZE::Byte;
 		cfg.minc        = true;
