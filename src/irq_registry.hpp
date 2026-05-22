@@ -15,6 +15,7 @@ class IIRQHandler
 {
 public:
 	virtual void HandleIRQ() = 0;
+	IIRQHandler* _irq_next = nullptr;  // intrusive chain for shared IRQ lines
 };
 
 /**
