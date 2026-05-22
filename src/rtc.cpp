@@ -1,25 +1,12 @@
 #include "rtc.hpp"
 
-RTC_cl::WutCallback RTC_cl::_wut_cb      = nullptr;
-RTC_cl::WutHandler  RTC_cl::_wut_handler = {};
+const RTC_cl::AlarmConfig RTC_cl::kNoAlarm{};
 
-void RTC_cl::IRQ_en(IRQ_s irq, FunctionalState en)
-{
-	WriteProtection(DISABLE);
-	if (en) RTC->CR |=  static_cast<uint32_t>(irq);
-	else    RTC->CR &= ~static_cast<uint32_t>(irq);
-	WriteProtection(ENABLE);
+void (*RTC_cl::_wut_cb)(void)     = nullptr;
+void (*RTC_cl::_alarm_a_cb)(void) = nullptr;
+void (*RTC_cl::_alarm_b_cb)(void) = nullptr;
+RTC_cl::RtcHandler RTC_cl::_rtc_handler;
 
-	constexpr uint32_t all_irq_bits = RTC_CR_WUTIE | RTC_CR_ALRAIE | RTC_CR_ALRBIE | RTC_CR_TSIE;
-	if (en && !NVIC_GetEnableIRQ(RTC_TAMP_IRQn)) {
-		IRQ_Registry::Register(RTC_TAMP_IRQn, &_wut_handler);
-		EXTI->IMR1 |= EXTI_IMR1_IM19;
-		NVIC_EnableIRQ(RTC_TAMP_IRQn);
-	} else if (!en && !(RTC->CR & all_irq_bits)) {
-		IRQ_Registry::Unregister(RTC_TAMP_IRQn);
-		NVIC_DisableIRQ(RTC_TAMP_IRQn);
-	}
-}
 
 SysInitStatus RTC_cl::SetUp(CLK_Source clk_src, uint32_t prediv_a, uint32_t prediv_s)
 {
@@ -29,6 +16,7 @@ SysInitStatus RTC_cl::SetUp(CLK_Source clk_src, uint32_t prediv_a, uint32_t pred
 
 	if (clk_src == CLK_Source::LSE)
 	{
+		RCC->BDCR = (RCC->BDCR & ~RCC_BDCR_LSEDRV_Msk) | (0b01 << RCC_BDCR_LSEDRV_Pos); // максимальный ток
 		RCC->BDCR |= RCC_BDCR_LSEON;
 		while(!(RCC->BDCR & RCC_BDCR_LSERDY));
 	}
@@ -55,4 +43,46 @@ SysInitStatus RTC_cl::SetUp(CLK_Source clk_src, uint32_t prediv_a, uint32_t pred
 	}
 
 	return SysInitStatus::InitOK;
+}
+
+static uint32_t build_alrmr(const RTC_cl::AlarmConfig& cfg)
+{
+	return (static_cast<uint32_t>(cfg.day.mask)  << RTC_ALRMAR_MSK4_Pos) |
+		   (static_cast<uint32_t>(cfg.hour.mask) << RTC_ALRMAR_MSK3_Pos) |
+		   (static_cast<uint32_t>(cfg.min.mask)  << RTC_ALRMAR_MSK2_Pos) |
+		   (static_cast<uint32_t>(cfg.sec.mask)  << RTC_ALRMAR_MSK1_Pos) |
+		   (RTC_cl::to_bcd(cfg.day.val)  << RTC_ALRMAR_DU_Pos)  |
+		   (RTC_cl::to_bcd(cfg.hour.val) << RTC_ALRMAR_HU_Pos)  |
+		   (RTC_cl::to_bcd(cfg.min.val)  << RTC_ALRMAR_MNU_Pos) |
+		   (RTC_cl::to_bcd(cfg.sec.val)  << RTC_ALRMAR_SU_Pos);
+}
+
+void RTC_cl::EnableAlarm_A(FunctionalState en, const AlarmConfig& cfg, void (*cb)(void))
+{
+	_alarm_a_cb = cb;
+	WriteProtection(DISABLE);
+	RTC->CR &= ~RTC_CR_ALRAE;
+	while (!(RTC->ICSR & RTC_ICSR_ALRAWF));
+	if (en) {
+		RTC->ALRMAR  = build_alrmr(cfg);
+		RTC->ALRMASSR = (cfg.sub_sec_msk << RTC_ALRMASSR_MASKSS_Pos) | cfg.sub_sec;
+		RTC->CR |= RTC_CR_ALRAE;
+	}
+	WriteProtection(ENABLE);
+	IRQ_en(IRQ_s::ALR_A, en);
+}
+
+void RTC_cl::EnableAlarm_B(FunctionalState en, const AlarmConfig& cfg, void (*cb)(void))
+{
+	_alarm_b_cb = cb;
+	WriteProtection(DISABLE);
+	RTC->CR &= ~RTC_CR_ALRBE;
+	while (!(RTC->ICSR & RTC_ICSR_ALRBWF));
+	if (en) {
+		RTC->ALRMBR  = build_alrmr(cfg);
+		RTC->ALRMBSSR = (cfg.sub_sec_msk << RTC_ALRMBSSR_MASKSS_Pos) | cfg.sub_sec;
+		RTC->CR |= RTC_CR_ALRBE;
+	}
+	WriteProtection(ENABLE);
+	IRQ_en(IRQ_s::ALR_B, en);
 }

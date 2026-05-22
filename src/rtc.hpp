@@ -37,9 +37,6 @@
 class RTC_cl
 {
 public:
-	/** @brief User callback type for the WakeUp Timer interrupt. */
-	using WutCallback = void(*)();
-
 	/**
 	 * @brief RTC clock source selection (RTCSEL bits in RCC->BDCR).
 	 *
@@ -83,6 +80,42 @@ public:
 	/** @brief Date in decimal. Year is two-digit: 26 = 2026. */
 	struct Date { uint8_t day; uint8_t month; uint8_t year; };
 
+	enum class Alarm_Masks{
+		Care = 0,
+		Ignore = 1
+	};
+
+	/** @brief One alarm field: decimal value + whether the RTC should match it. */
+	struct AlarmField {
+		uint8_t     val  = 0;
+		Alarm_Masks mask = Alarm_Masks::Ignore;
+	};
+
+	/**
+	 * @brief Full alarm configuration passed to EnableAlarm_A / EnableAlarm_B.
+	 *
+	 * Fields left at their defaults (mask = Ignore) are not compared by the RTC.
+	 * Example — trigger at 14:25:00, any day:
+	 * @code
+	 *   RTC_cl::AlarmConfig cfg {
+	 *       .hour = {14, RTC_cl::Alarm_Masks::Care},
+	 *       .min  = {25, RTC_cl::Alarm_Masks::Care},
+	 *       .sec  = { 0, RTC_cl::Alarm_Masks::Care},
+	 *   };
+	 * @endcode
+	 */
+	struct AlarmConfig {
+		AlarmField day;
+		AlarmField hour;
+		AlarmField min;
+		AlarmField sec;
+		uint32_t   sub_sec_msk = 0; ///< MASKSS field: number of sub-second bits to ignore (0 = compare all).
+		uint32_t   sub_sec     = 0; ///< Sub-second target value (SS field).
+	};
+
+	/** Default config: all fields ignored — used as default argument for EnableAlarm_A/B. */
+	static const AlarmConfig kNoAlarm;
+
 	// -----------------------------------------------------------------------
 	// Initialisation
 	// -----------------------------------------------------------------------
@@ -105,8 +138,8 @@ public:
 	 * @param prediv_s Synchronous prescaler  (15-bit, range 0..32767).
 	 */
 	static SysInitStatus SetUp(CLK_Source clk_src = CLK_Source::LSI,
-	                           uint32_t prediv_a  = 127,
-	                           uint32_t prediv_s  = 255);
+							   uint32_t prediv_a  = 127,
+							   uint32_t prediv_s  = 255);
 
 	// -----------------------------------------------------------------------
 	// Write protection
@@ -142,8 +175,8 @@ public:
 		RTC->ICSR = RTC_ICSR_INIT;
 		while (!(RTC->ICSR & RTC_ICSR_INITF));
 		RTC->TR = to_bcd(t.hours)   << RTC_TR_HU_Pos  |
-		          to_bcd(t.minutes) << RTC_TR_MNU_Pos |
-		          to_bcd(t.seconds) << RTC_TR_SU_Pos;
+				  to_bcd(t.minutes) << RTC_TR_MNU_Pos |
+				  to_bcd(t.seconds) << RTC_TR_SU_Pos;
 		RTC->ICSR &= ~RTC_ICSR_INIT;
 		WriteProtection(ENABLE);
 	}
@@ -159,9 +192,9 @@ public:
 		RTC->ICSR = RTC_ICSR_INIT;
 		while (!(RTC->ICSR & RTC_ICSR_INITF));
 		RTC->DR = to_bcd(d.day)   << RTC_DR_DU_Pos  |
-		          to_bcd(d.month) << RTC_DR_MU_Pos  |
-		          to_bcd(d.year)  << RTC_DR_YU_Pos  |
-		          static_cast<uint32_t>(wd) << RTC_DR_WDU_Pos;
+				  to_bcd(d.month) << RTC_DR_MU_Pos  |
+				  to_bcd(d.year)  << RTC_DR_YU_Pos  |
+				  static_cast<uint32_t>(wd) << RTC_DR_WDU_Pos;
 		RTC->ICSR &= ~RTC_ICSR_INIT;
 		WriteProtection(ENABLE);
 	}
@@ -196,8 +229,8 @@ public:
 	 *                  Pass nullptr to enable the timer without a callback.
 	 */
 	inline static void EnableWakeUpTimer(uint32_t counter   = 0,
-	                                     uint8_t  clock_div = 0b100,
-	                                     WutCallback cb     = nullptr) {
+										 uint8_t  clock_div = 0b100,
+										 void (*cb)(void) = nullptr) {
 		_wut_cb = cb;
 		WriteProtection(DISABLE);
 		RTC->WUTR = counter;
@@ -205,6 +238,29 @@ public:
 		WriteProtection(ENABLE);
 		IRQ_en(IRQ_s::WUT, ENABLE);
 	}
+
+	/**
+	 * @brief Configures and enables / disables Alarm A.
+	 *
+	 * When enabled, writes ALRMAR from @p cfg and sets the user callback.
+	 * The alarm interrupt (ALRAIE) is managed via IRQ_en().
+	 *
+	 * @param en   ENABLE to arm the alarm, DISABLE to disarm it.
+	 * @param cfg  Match fields — only those with mask = Care are compared.
+	 * @param cb   Callback invoked from the interrupt after flag clearing.
+	 */
+	static void EnableAlarm_A(FunctionalState en,
+							   const AlarmConfig& cfg = kNoAlarm,
+							   void (*cb)(void) = nullptr);
+
+	/**
+	 * @brief Configures and enables / disables Alarm B.
+	 *
+	 * Identical to EnableAlarm_A but targets ALRMBR and the ALRBIE interrupt.
+	 */
+	static void EnableAlarm_B(FunctionalState en,
+							   const AlarmConfig& cfg = kNoAlarm,
+							   void (*cb)(void) = nullptr);
 
 	// -----------------------------------------------------------------------
 	// Interrupt control
@@ -227,8 +283,22 @@ public:
 	 * @param irq Interrupt source (see IRQ_s).
 	 * @param en  ENABLE / DISABLE.
 	 */
-	static void IRQ_en(IRQ_s irq, FunctionalState en);
+	static void IRQ_en(IRQ_s irq, FunctionalState en){
+		WriteProtection(DISABLE);
+		if (en) RTC->CR |=  static_cast<uint32_t>(irq);
+		else    RTC->CR &= ~static_cast<uint32_t>(irq);
+		WriteProtection(ENABLE);
 
+		constexpr uint32_t all_irq_bits = RTC_CR_WUTIE | RTC_CR_ALRAIE | RTC_CR_ALRBIE | RTC_CR_TSIE;
+		if (en && !NVIC_GetEnableIRQ(RTC_TAMP_IRQn)) {
+			IRQ_Registry::Register(RTC_TAMP_IRQn, &_rtc_handler);
+			EXTI->IMR1 |= EXTI_IMR1_IM19;
+			NVIC_EnableIRQ(RTC_TAMP_IRQn);
+		} else if (!en && !(RTC->CR & all_irq_bits)) {
+			IRQ_Registry::Unregister(RTC_TAMP_IRQn);
+			NVIC_DisableIRQ(RTC_TAMP_IRQn);
+		}
+	};
 	// -----------------------------------------------------------------------
 	// Calibration output
 	// -----------------------------------------------------------------------
@@ -246,48 +316,51 @@ public:
 		WriteProtection(ENABLE);
 	}
 
-private:
 	// -----------------------------------------------------------------------
-	// BCD conversion
+	// BCD conversion (public — used by build_alrmr in rtc.cpp)
 	// -----------------------------------------------------------------------
 
-	/**
-	 * @brief Converts a decimal value (0..99) to packed BCD without division.
-	 *
-	 * Trick: (v * 205) >> 11 equals v / 10 exactly for v in [0, 99].
-	 * Approximately 4 instructions on Cortex-M0+: MUL, LSR, LSL, SUB+OR.
-	 * Result: high nibble = tens digit, low nibble = units digit.
-	 */
+	/** @brief Decimal (0..99) to packed BCD. Returns 0xFF for out-of-range input. */
 	inline static uint8_t to_bcd(uint8_t v) {
 		if (v > 99) return 0xFF;
 		uint8_t t = ((uint16_t)v * 205u) >> 11;
 		return (t << 4) | (v - t * 10u);
 	}
 
+private:
+
 	// -----------------------------------------------------------------------
 	// WakeUp IRQ handler (private singleton)
 	// -----------------------------------------------------------------------
 
-	static WutCallback _wut_cb; ///< User callback set by EnableWakeUpTimer.
+	static void (*_wut_cb)(void);     ///< User callback set by EnableWakeUpTimer.
+	static void (*_alarm_a_cb)(void); ///< User callback set by EnableAlarm_A.
+	static void (*_alarm_b_cb)(void); ///< User callback set by EnableAlarm_B.
 
 	/**
-	 * @brief Private IIRQHandler for the WakeUp Timer interrupt.
+	 * @brief Private IIRQHandler singleton for all RTC interrupts.
 	 *
-	 * The single instance (_wut_handler) is registered in IRQ_Registry
-	 * automatically when IRQ_en(WUT, ENABLE) is called.
-	 *
-	 * HandleIRQ sequence:
-	 *   1. Clear CWUTF in RTC->SCR to prevent immediate re-entry.
-	 *   2. Call the user callback if one was provided.
+	 * Registered in IRQ_Registry automatically by IRQ_en() on the first enable.
+	 * Dispatches to the per-source user callbacks after clearing each flag.
 	 */
-	struct WutHandler : IIRQHandler {
-		void HandleIRQ() override {
-			RTC->SCR |= RTC_SCR_CWUTF;
-			EXTI->IMR1 |= EXTI_IMR1_IM19;
-			if (RTC_cl::_wut_cb) RTC_cl::_wut_cb();
+	struct RtcHandler : IIRQHandler {
+		void HandleIRQ() override final {
+			if (RTC->SR & RTC_SR_WUTF) {
+				RTC->SCR = RTC_SCR_CWUTF;
+				if (RTC_cl::_wut_cb) RTC_cl::_wut_cb();
+			}
+			if (RTC->SR & RTC_SR_ALRAF) {
+				RTC->SCR = RTC_SCR_CALRAF;
+				if (RTC_cl::_alarm_a_cb) RTC_cl::_alarm_a_cb();
+			}
+			if (RTC->SR & RTC_SR_ALRBF) {
+				RTC->SCR = RTC_SCR_CALRBF;
+				if (RTC_cl::_alarm_b_cb) RTC_cl::_alarm_b_cb();
+			}
 		}
 	};
-	static WutHandler _wut_handler;
+	static RtcHandler _rtc_handler;
+
 };
 
 #endif // RTC_HPP_
