@@ -208,7 +208,7 @@ SysStatus SPI::Send_IRQ(uint8_t* data, uint16_t len)
 	_rx_active = false;
 	SlaveSelect(ENABLE);
 	SPIx->CR1 |= SPI_CR1_SPE;
-	Enable_IRQ(IRQ::TXE);
+	IRQ_en(IRQ::TXE, ENABLE);
 	return SysStatus::OK;
 }
 
@@ -223,8 +223,8 @@ SysStatus SPI::SendReceive_IRQ(uint8_t* tx, uint8_t* rx, uint16_t len)
 	_rx_active = true;
 	SlaveSelect(ENABLE);
 	SPIx->CR1 |= SPI_CR1_SPE;
-	Enable_IRQ(IRQ::TXE);
-	Enable_IRQ(IRQ::RXNE);
+	IRQ_en(IRQ::TXE, ENABLE);
+	IRQ_en(IRQ::RXNE, ENABLE);
 	return SysStatus::OK;
 }
 
@@ -239,7 +239,7 @@ SysStatus SPI::Receive_IRQ(uint8_t* data, uint16_t len)
 	SPIx->CR1 |= SPI_CR1_RXONLY;
 	SlaveSelect(ENABLE);
 	SPIx->CR1 |= SPI_CR1_SPE;  // clock starts immediately
-	Enable_IRQ(IRQ::RXNE);
+	IRQ_en(IRQ::RXNE, ENABLE);
 	return SysStatus::OK;
 }
 
@@ -427,7 +427,7 @@ void SPI::OnTxEmpty()
 	else if (!_rx_active)
 	{
 		// TX-only: no RX pending — drain shift register and release bus.
-		Disable_IRQ(IRQ::TXE);
+		IRQ_en(IRQ::TXE, DISABLE);
 		while (SPIx->SR & SR_BSY) {}
 		SPIx->CR1 &= ~SPI_CR1_SPE;
 		SlaveSelect(DISABLE);
@@ -437,7 +437,7 @@ void SPI::OnTxEmpty()
 	{
 		// Full-duplex: TX done, last byte still shifting out.
 		// Cleanup deferred to OnRxByte when the last RXNE fires.
-		Disable_IRQ(IRQ::TXE);
+		IRQ_en(IRQ::TXE, DISABLE);
 	}
 }
 
@@ -449,7 +449,7 @@ void SPI::OnRxByte(uint8_t byte)
 		rx_data.size--;
 		if (rx_data.size == 0)
 		{
-			Disable_IRQ(IRQ::RXNE);
+			IRQ_en(IRQ::RXNE, DISABLE);
 			while (SPIx->SR & SR_BSY) {}
 			SPIx->CR1 &= ~(SPI_CR1_SPE | SPI_CR1_RXONLY);
 			SlaveSelect(DISABLE);

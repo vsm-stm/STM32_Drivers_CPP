@@ -24,12 +24,15 @@ extern "C"
 static constexpr uint32_t kHz = 1000U;
 static constexpr uint32_t MHz = 1000000U;
 
-
 /// SysTick interrupt frequency in Hz (1 kHz → 1 ms resolution).
 static constexpr uint32_t TICK_BASE = 1*kHz;
 
 /// Default HSI oscillator frequency.
 static constexpr uint32_t HSI_Clock = 16*MHz;
+
+/// Default LSI oscillator frequency.
+static constexpr uint32_t LSI_Clock = 32*kHz;
+static constexpr uint32_t LSE_STARTUP_TIMEOUT = 5000UL; //ms;
 
 // ---------------------------------------------------------------------------
 // Status enumerations

@@ -256,48 +256,26 @@ public:
 	}
 
 	/**
-	 * @brief Enables a SPI interrupt source in CR2 and unmasks the NVIC line.
-	 * @param irq Interrupt source to enable (see SPI::IRQ).
+	 * @brief Enables or disables a SPI interrupt source in CR2.
+	 * On first enable: registers in IRQ_Registry and unmasks NVIC.
+	 * On last disable: unregisters and masks NVIC.
 	 */
-	void Enable_IRQ(IRQ irq)
-	{
-		SPIx->CR2 |= static_cast<uint32_t>(irq);
-		if (_info != nullptr && !NVIC_GetEnableIRQ(_info->irq))
-			NVIC_EnableIRQ(_info->irq);
-	}
-
-	/**
-	 * @brief Disables a SPI interrupt source in CR2.
-	 * Disables the NVIC line when no SPI interrupt sources remain active.
-	 * @param irq Interrupt source to disable (see SPI::IRQ).
-	 */
-	void Disable_IRQ(IRQ irq)
-	{
-		SPIx->CR2 &= ~static_cast<uint32_t>(irq);
-		if (_info != nullptr &&
-			!(SPIx->CR2 & (SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE)))
-			NVIC_DisableIRQ(_info->irq);
-	}
-
-	/**
-	 * @brief Registers this instance in IRQ_Registry and enables the NVIC line.
-	 * Must be called after SetUp().
-	 */
-	inline void EnableNVIC_IRQ()
+	void IRQ_en(IRQ irq, FunctionalState en)
 	{
 		if (_info == nullptr) return;
-		IRQ_Registry::Register(_info->irq, this);
-		NVIC_EnableIRQ(_info->irq);
-	}
-
-	/**
-	 * @brief Unregisters from IRQ_Registry and disables the NVIC line.
-	 */
-	inline void DisableNVIC_IRQ()
-	{
-		if (_info == nullptr) return;
-		IRQ_Registry::Unregister(_info->irq);
-		NVIC_DisableIRQ(_info->irq);
+		if (en) {
+			SPIx->CR2 |= static_cast<uint32_t>(irq);
+			if (!NVIC_GetEnableIRQ(_info->irq)) {
+				IRQ_Registry::Register(_info->irq, this);
+				NVIC_EnableIRQ(_info->irq);
+			}
+		} else {
+			SPIx->CR2 &= ~static_cast<uint32_t>(irq);
+			if (!(SPIx->CR2 & (SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE))) {
+				IRQ_Registry::Unregister(_info->irq);
+				NVIC_DisableIRQ(_info->irq);
+			}
+		}
 	}
 
 	// -----------------------------------------------------------------------

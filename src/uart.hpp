@@ -143,35 +143,32 @@ public:
 	SysInitStatus SetUp(FIFO fifo = FIFO::NO, FIFO_TH fifo_th_tx = FIFO_TH::NO, FIFO_TH fifo_th_rx = FIFO_TH::NO);
 
 	/**
-	 * @brief Enables a USART interrupt source in CR1.
-	 * @param irq Interrupt source to enable (see USART::IRQ).
+	 * @brief Enables or disables a USART interrupt source.
+	 * On first enable: registers in IRQ_Registry and unmasks NVIC.
+	 * On last disable: unregisters and masks NVIC.
 	 */
-	inline void Enable_IRQ(IRQ irq)
+	inline void IRQ_en(IRQ irq, FunctionalState en)
 	{
+		if (_info == nullptr) return;
 	#if defined(STM32F4) || defined(STM32F7)
-		USARTx->CR1 |= static_cast<uint32_t>(irq);
+		if (en) USARTx->CR1 |=  static_cast<uint32_t>(irq);
+		else    USARTx->CR1 &= ~static_cast<uint32_t>(irq);
+		bool all_cleared = !(USARTx->CR1 & (CR1_TXEIE | CR1_RXNEIE | USART_CR1_TCIE | USART_CR1_IDLEIE));
 	#elif defined(STM32G0)
-		if(irq == IRQ::TXE || irq == IRQ::RXNE || irq == IRQ::TC || irq == IRQ::IDLE)
-			USARTx->CR1 |= static_cast<uint32_t>(irq);
-		else
-			USARTx->CR3 |= static_cast<uint32_t>(irq);
+		auto& reg = (irq == IRQ::TXE || irq == IRQ::RXNE || irq == IRQ::TC || irq == IRQ::IDLE)
+					? USARTx->CR1 : USARTx->CR3;
+		if (en) reg |=  static_cast<uint32_t>(irq);
+		else    reg &= ~static_cast<uint32_t>(irq);
+		bool all_cleared = !(USARTx->CR1 & (CR1_TXEIE | CR1_RXNEIE | USART_CR1_TCIE | USART_CR1_IDLEIE))
+						&& !(USARTx->CR3 & (USART_CR3_TXFTIE | USART_CR3_RXFTIE));
 	#endif
-	}
-
-	/**
-	 * @brief Disables a USART interrupt source in CR1.
-	 * @param irq Interrupt source to disable (see USART::IRQ).
-	 */
-	inline void Disable_IRQ(IRQ irq)
-	{
-	#if defined(STM32F4) || defined(STM32F7)
-		USARTx->CR1 &= ~(static_cast<uint32_t>(irq));
-	#elif defined(STM32G0)
-		if(irq == IRQ::TXE || irq == IRQ::RXNE || irq == IRQ::TC || irq == IRQ::IDLE)
-			USARTx->CR1 &= ~(static_cast<uint32_t>(irq));
-		else
-			USARTx->CR3 &= ~(static_cast<uint32_t>(irq));
-	#endif
+		if (en && !NVIC_GetEnableIRQ(_info->irq)) {
+			IRQ_Registry::Register(_info->irq, this);
+			NVIC_EnableIRQ(_info->irq);
+		} else if (!en && all_cleared) {
+			IRQ_Registry::Unregister(_info->irq);
+			NVIC_DisableIRQ(_info->irq);
+		}
 	}
 
 	/**
@@ -307,35 +304,13 @@ public:
 	inline void SetParity(uint32_t parity) { (void)parity; }
 
 	/**
-	 * @brief Registers this instance in IRQ_Registry and enables the NVIC line.
-	 *
-	 * Has no effect if SetUp() was not called successfully.
-	 */
-	inline void EnableNVIC_IRQ() {
-		if (_info == nullptr) return;
-		IRQ_Registry::Register(_info->irq, this);
-		NVIC_EnableIRQ(_info->irq);
-	}
-
-	/**
-	 * @brief Unregisters from IRQ_Registry and disables the NVIC line.
-	 *
-	 * Has no effect if SetUp() was not called successfully.
-	 */
-	inline void DisableNVIC_IRQ() {
-		if (_info == nullptr) return;
-		IRQ_Registry::Unregister(_info->irq);
-		NVIC_DisableIRQ(_info->irq);
-	}
-
-	/**
-	 * @brief Resets all control registers and disables the NVIC interrupt.
+	 * @brief Resets all control registers and unregisters the IRQ handler.
 	 *
 	 * Does not disable the peripheral clock.  Call SetUp() again to
 	 * re-initialise.
 	 */
 	inline void DeInit(){
-		DisableNVIC_IRQ();
+		if (_info) { IRQ_Registry::Unregister(_info->irq); NVIC_DisableIRQ(_info->irq); }
 		USARTx->CR1 = 0;
 		USARTx->CR2 = 0;
 		USARTx->CR3 = 0;

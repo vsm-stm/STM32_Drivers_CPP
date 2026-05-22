@@ -117,12 +117,12 @@ SysStatus USART::Send_IRQ(uint8_t *data, uint32_t len){
 	tx_data.size = len;
 
 	#if defined(STM32F4) || defined(STM32F7)
-		Enable_IRQ(IRQ::TXE);
+		IRQ_en(IRQ::TXE, ENABLE);
 	#elif defined(STM32G0)
 		if(USARTx->CR1 & USART_CR1_FIFOEN)
-			Enable_IRQ(IRQ::TXFIFO);
+			IRQ_en(IRQ::TXFIFO, ENABLE);
 		else
-			Enable_IRQ(IRQ::TXE);
+			IRQ_en(IRQ::TXE, ENABLE);
 	#endif
 	return SysStatus::OK;
 };
@@ -140,14 +140,14 @@ SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len) {
 	rx_data = { data, (uint16_t)len};
 
 	#if defined(STM32F4) || defined(STM32F7)
-		Enable_IRQ(IRQ::RXNE);
+		IRQ_en(IRQ::RXNE, ENABLE);
 	#elif defined(STM32G0)
 		if(USARTx->CR1 & USART_CR1_FIFOEN)
-			Enable_IRQ(IRQ::RXFIFO);
+			IRQ_en(IRQ::RXFIFO, ENABLE);
 		else
-			Enable_IRQ(IRQ::RXNE);
+			IRQ_en(IRQ::RXNE, ENABLE);
 	#endif
-	Enable_IRQ(IRQ::IDLE); // Enable IDLE line detection to handle cases where data length is unknown or shorter than expected
+	IRQ_en(IRQ::IDLE, ENABLE);
 
 	return SysStatus::OK;
 }
@@ -178,7 +178,7 @@ SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len) {
 	_dma_rx->SetCount(len);
 	DMA_en(ENABLE, DMA::RX);
 	_dma_rx->Stream_EN(ENABLE);
-	Enable_IRQ(IRQ::IDLE);
+	IRQ_en(IRQ::IDLE, ENABLE);
 	return SysStatus::OK;
 }
 
@@ -296,10 +296,10 @@ void USART::OnTxEmpty(){
 	if (!tx_data.size) {
 #if defined(STM32G0)
 		if (USARTx->CR1 & USART_CR1_FIFOEN)
-			Disable_IRQ(IRQ::TXFIFO);
+			IRQ_en(IRQ::TXFIFO, DISABLE);
 		else
 #endif
-			Disable_IRQ(IRQ::TXE);
+			IRQ_en(IRQ::TXE, DISABLE);
 		tx_status = SysStatus::OK;
 	}
 };
@@ -316,10 +316,10 @@ void USART::OnRxByte(uint8_t byte) {
 	if(rx_data.size == 0){
 #if defined(STM32G0)
 		if (USARTx->CR1 & USART_CR1_FIFOEN)
-			Disable_IRQ(IRQ::RXFIFO);
+			IRQ_en(IRQ::RXFIFO, DISABLE);
 		else
 #endif
-			Disable_IRQ(IRQ::RXNE);
+			IRQ_en(IRQ::RXNE, DISABLE);
 		rx_status = SysStatus::OK;
 		data_received = true;
 	}
@@ -340,15 +340,15 @@ void USART::OnIdle() {
 			// IRQ receive
 #if defined(STM32G0)
 			if (USARTx->CR1 & USART_CR1_FIFOEN)
-				Disable_IRQ(IRQ::RXFIFO);
+				IRQ_en(IRQ::RXFIFO, DISABLE);
 			else
 #endif
-				Disable_IRQ(IRQ::RXNE);
+				IRQ_en(IRQ::RXNE, DISABLE);
 			rx_status = SysStatus::OK;
 			data_received = true;
 		}
 	}
-	Disable_IRQ(IRQ::IDLE);
+	IRQ_en(IRQ::IDLE, DISABLE);
 }
 
 void USART::OnTC() {}
@@ -360,7 +360,7 @@ void USART::OnDmaTxComplete() {
 
 void USART::OnDmaRxComplete() {
 	DMA_en(DISABLE, DMA::RX);
-	Disable_IRQ(IRQ::IDLE);
+	IRQ_en(IRQ::IDLE, DISABLE);
 	data_received_count = rx_data.size;
 	data_received = 1;
 	rx_status = SysStatus::OK;

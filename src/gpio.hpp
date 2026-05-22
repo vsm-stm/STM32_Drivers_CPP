@@ -108,22 +108,16 @@ public:
 	PIN& operator=(bool b) noexcept { SetLevel(b); return *this; }
 	explicit operator bool() const noexcept { return GetLevel(); }
 
-	// SetUp using stored af, explicit speed
-	SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed)
+	// Uses stored af; speed defaults to Low
+	SysInitStatus SetUp(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low)
 	{
 		return SetUp(type, speed, af);
 	}
 
-	// SetUp using stored af, default speed
-	SysInitStatus SetUp(TYPE type = TYPE::INPUT_NO_Pull)
-	{
-		return SetUp(type, OUTPUT_SPEED::Low, af);
-	}
-
-	// SetUp with explicit af override (for PinArray and legacy callers)
+	// Full form — actual implementation
 	SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override);
 
-	// Convenience: explicit af, low speed
+	// Explicit af, default Low speed
 	SysInitStatus SetUp(TYPE type, uint8_t af_override)
 	{
 		return SetUp(type, OUTPUT_SPEED::Low, af_override);
