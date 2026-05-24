@@ -141,39 +141,47 @@ public:
 	void SetCCR(TIM_Channel ch, uint32_t val);
 
 	/**
-	 * @brief Attaches a DMA channel for PWM waveform output via timer Update event.
+	 * @brief Attaches a DMA channel to a PWM output channel.
 	 *
 	 * Configures the DMA stream to write 16-bit CCR values from a user buffer
-	 * to the CCRx register of @p ch on every timer update.  Also registers
-	 * this object in IRQ_Registry for the DMA TC interrupt so SendDMA()
-	 * can signal completion automatically.
+	 * to the CCRx register of @p ch on every timer Update event.  Registers
+	 * this object in IRQ_Registry for the DMA TC interrupt.
 	 *
-	 * Must be called after SetUp().
+	 * Multiple channels can be attached independently; each gets its own DMA
+	 * stream.  Must be called after SetUp().
 	 *
-	 * @param dma  DMA channel to use (pre-constructed, not yet SetUp'd).
-	 * @param ch   Timer output channel whose CCR will be updated by DMA.
+	 * @param dma  DMA stream (pre-constructed, not yet SetUp'd).
+	 * @param ch   Timer output channel whose CCR this DMA will drive.
 	 */
 	void AttachDMA(DMA_Sx* dma, TIM_Channel ch);
 
 	/**
-	 * @brief Starts a DMA transfer of CCR values, one per timer period.
+	 * @brief Starts a DMA transfer on one PWM channel.
 	 *
-	 * Each element of @p data is written to CCRx on the next Update event.
-	 * Returns Busy if a transfer is already in progress.
+	 * Each element of @p data is written to CCRx on the next timer Update
+	 * event.  All attached channels share the same TIM_DIER_UDE trigger; call
+	 * SendDMA() for every channel you want active before the next update fires.
+	 * Returns Busy if this channel's transfer is already in progress.
 	 *
+	 * @param ch    Output channel to drive.
 	 * @param data  Array of 16-bit CCR values (must stay valid until complete).
-	 * @param len   Number of values (= number of PWM periods / bits).
+	 * @param len   Number of values (= PWM periods = WS2812B bits).
 	 */
-	SysStatus SendDMA(const uint16_t* data, uint32_t len);
+	SysStatus SendDMA(TIM_Channel ch, const uint16_t* data, uint32_t len);
 
-	inline bool    IsDMABusy()  const { return _dma_busy; }
-	inline void    SetDMACallback(void (*cb)(void)) { _dma_cb = cb; }
+	/** @brief True if the specified channel's DMA is still running. */
+	inline bool IsDMABusy(TIM_Channel ch) const {
+		return (_dma_busy >> static_cast<uint8_t>(ch)) & 1u;
+	}
+	/** @brief True if any channel's DMA is still running. */
+	inline bool IsAnyDMABusy() const { return _dma_busy != 0; }
+
+	inline void SetDMACallback(void (*cb)(void)) { _dma_cb = cb; }
 
 private:
 	PIN      _ch[4];
-	DMA_Sx*  _dma      = nullptr;
-	TIM_Channel _dma_ch{TIM_Channel::CH1};
-	bool     _dma_busy = false;
+	DMA_Sx*  _dma[4]        = {};    ///< One DMA stream per channel (null = unused).
+	uint8_t  _dma_busy      = 0;    ///< Bitmask: bit i set while _dma[i] is running.
 	void   (*_dma_cb)(void) = nullptr;
 
 	void HandleIRQ() override;

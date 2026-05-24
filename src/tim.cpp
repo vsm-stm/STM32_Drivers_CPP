@@ -151,21 +151,33 @@ SysInitStatus TIM_PWM::SetUp(uint32_t freq, uint32_t arr)
 	SysInitStatus s = Init();
 	if (s != SysInitStatus::InitOK) return s;
 
-	uint32_t psc = *_info->bus_clk / ((arr + 1u) * freq) - 1u;
+	uint32_t psc = *_info->bus_clk / ((arr-1) * freq) - 1u;
 	if (psc > 0xFFFF) return SysInitStatus::InitError;
 	TIMx->PSC = psc;
-	TIMx->ARR = arr;
+	TIMx->ARR = arr - 1u;
 
 	TIMx->CCMR1 = 0;
 	TIMx->CCMR2 = 0;
 	TIMx->CCER  = 0;
+	TIMx->CCR1  = 0;
+	TIMx->CCR2  = 0;
+	TIMx->CCR3  = 0;
+	TIMx->CCR4  = 0;
 
 	for (uint32_t i = 0; i < 4; i++) {
 		if (!_ch[i].IsValid()) continue;
-		_ch[i].SetUp(PIN::TYPE::AF_PushPull, _info->af);
-		uint32_t shift = TIM_CCMR1_OC1M_Pos + (i & 1u) * 8u;
-		if (i < 2) TIMx->CCMR1 |= 6u << shift;
-		else       TIMx->CCMR2 |= 6u << shift;
+		_ch[i].SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
+		// OC1M=6 (PWM mode 1) | OC1PE=1 (CCR preload enable).
+		// Preload is required for DMA-driven output: without it the DMA write
+		// arrives ~3 cycles after the UPDATE event (AHB latency) and overwrites
+		// CCR mid-period, truncating the leading edge of the first bit whenever
+		// the CCR value changes.  With preload, DMA writes go to the shadow
+		// register and are applied atomically at the next UPDATE.
+		uint32_t shift    = TIM_CCMR1_OC1M_Pos  + (i & 1u) * 8u;
+		uint32_t pe_shift = TIM_CCMR1_OC1PE_Pos + (i & 1u) * 8u;
+		uint32_t val = (6u << shift) | (1u << pe_shift);
+		if (i < 2) TIMx->CCMR1 |= val;
+		else       TIMx->CCMR2 |= val;
 		TIMx->CCER |= TIM_CCER_CC1E << (i * 4u);
 	}
 
@@ -177,8 +189,8 @@ SysInitStatus TIM_PWM::SetUp(uint32_t freq, uint32_t arr)
 void TIM_PWM::AttachDMA(DMA_Sx* dma, TIM_Channel ch)
 {
 	if (!_info || !dma) return;
-	_dma    = dma;
-	_dma_ch = ch;
+	int idx = static_cast<int>(ch);
+	_dma[idx] = dma;
 
 	DMA_Sx::StreamSettings cfg;
 	cfg.channel     = _info->dma_up_req;
@@ -196,31 +208,43 @@ void TIM_PWM::AttachDMA(DMA_Sx* dma, TIM_Channel ch)
 	}
 }
 
-SysStatus TIM_PWM::SendDMA(const uint16_t* data, uint32_t len)
+SysStatus TIM_PWM::SendDMA(TIM_Channel ch, const uint16_t* data, uint32_t len)
 {
-	if (!_dma || !data || !len) return SysStatus::Error;
-	if (_dma_busy)              return SysStatus::Busy;
+	int idx = static_cast<int>(ch);
+	if (!_dma[idx] || !data || !len) return SysStatus::Error;
+	if (_dma_busy & (1u << idx))     return SysStatus::Busy;
 
-	_dma_busy = true;
-	_dma->ClearFlags();
-	_dma->SetMemAddr(reinterpret_cast<uint32_t>(data));
-	_dma->SetCount(len);
-	TIMx->DIER |= TIM_DIER_UDE;
-	_dma->Stream_EN(ENABLE);
+	_dma_busy |= static_cast<uint8_t>(1u << idx);
+	_dma[idx]->ClearFlags();
+	_dma[idx]->SetMemAddr(reinterpret_cast<uint32_t>(data));
+	_dma[idx]->SetCount(len);
+	// Enable the timer→DMA request on the first channel to start.
+	// Subsequent channels reuse the already-set UDE bit.
+	if ((_dma_busy & ~static_cast<uint8_t>(1u << idx)) == 0)
+		TIMx->DIER |= TIM_DIER_UDE;
+	_dma[idx]->Stream_EN(ENABLE);
 	return SysStatus::OK;
 }
 
 void TIM_PWM::HandleIRQ()
 {
-	if (_dma && _dma->GetTC_Flag()) {
-		_dma->Stream_EN(DISABLE);
-		_dma->ClearFlags();
-		TIMx->DIER &= ~TIM_DIER_UDE;
-		_dma_busy = false;
-		if (_dma_cb) _dma_cb();
-	} else {
-		TIM::HandleIRQ();
+	// Check every attached DMA channel — any of them may have triggered this IRQ.
+	bool any_done = false;
+	for (int i = 0; i < 4; ++i) {
+		if (_dma[i] && (_dma_busy & (1u << i)) && _dma[i]->GetTC_Flag()) {
+			_dma[i]->Stream_EN(DISABLE);
+			_dma[i]->ClearFlags();
+			_dma_busy &= ~static_cast<uint8_t>(1u << i);
+			any_done = true;
+		}
 	}
+	// Disable the timer→DMA trigger and invoke the callback once all channels finish.
+	if (any_done && _dma_busy == 0) {
+		TIMx->DIER &= ~TIM_DIER_UDE;
+		if (_dma_cb) _dma_cb();
+	}
+	// Handle timer update / CC interrupts (UIF, CCxIF) if any are enabled.
+	TIM::HandleIRQ();
 }
 
 // ---------------------------------------------------------------------------

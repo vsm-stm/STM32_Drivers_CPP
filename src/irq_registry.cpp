@@ -1,5 +1,5 @@
 #include "irq_registry.hpp"
-#include "irq_registry_config.h"
+#include "irq_registry_config.h"   // определяет IRQ_TABLE_SIZE (CMake-generated)
 
 bool IRQ_Registry::Register(IRQn_Type irqn, IIRQHandler* handler)
 {
@@ -8,14 +8,17 @@ bool IRQ_Registry::Register(IRQn_Type irqn, IIRQHandler* handler)
 	if (idx < 0 || idx >= IRQ_TABLE_SIZE)
 		return false;
 
-	if (_table[idx] == nullptr) {
-		_table[idx] = handler;
-	} else {
-		IIRQHandler* tail = _table[idx];
-		while (tail->_irq_next) tail = tail->_irq_next;
-		tail->_irq_next = handler;
+	for (int s = 0; s < MAX_PER_IRQ; ++s) {
+		if (_table[idx][s] == nullptr) {
+			_table[idx][s] = handler;
+			return true;
+		}
 	}
-	return true;
+
+	// все слоты заняты — ошибка конфигурации
+	__BKPT(0);
+	while (1);
+	return false;
 }
 
 void IRQ_Registry::Unregister(IRQn_Type irqn)
@@ -23,7 +26,8 @@ void IRQ_Registry::Unregister(IRQn_Type irqn)
 	int idx = static_cast<int>(irqn);
 
 	if (idx < 0 || idx >= IRQ_TABLE_SIZE) return;
-	_table[idx] = nullptr;  // clears the whole chain; acceptable for exclusive-use lines
+	for (int s = 0; s < MAX_PER_IRQ; ++s)
+		_table[idx][s] = nullptr;
 }
 
 void IRQ_Registry::Dispatch(IRQn_Type irqn)
@@ -31,6 +35,8 @@ void IRQ_Registry::Dispatch(IRQn_Type irqn)
 	int idx = static_cast<int>(irqn);
 
 	if (idx < 0 || idx >= IRQ_TABLE_SIZE) return;
-	for (IIRQHandler* h = _table[idx]; h; h = h->_irq_next)
-		h->HandleIRQ();
+	for (int s = 0; s < MAX_PER_IRQ; ++s) {
+		if (_table[idx][s])
+			_table[idx][s]->HandleIRQ();
+	}
 }
