@@ -114,11 +114,10 @@ public:
 		_TX(tx),
 		_RX(rx)
 	{
-		auto chk = [usartx](const PIN& p) {
-			if (p.IsValid() && p.periph_base && p.periph_base != (uint32_t)usartx)
-				{ __BKPT(0); while(1); }
-		};
-		chk(tx); chk(rx);
+		if (tx.IsValid() && tx.periph_base && tx.periph_base != (uint32_t)usartx)
+			System::DebugTrap("USART: TX pin belongs to wrong peripheral");
+		if (rx.IsValid() && rx.periph_base && rx.periph_base != (uint32_t)usartx)
+			System::DebugTrap("USART: RX pin belongs to wrong peripheral");
 	}
 
 	USART() = delete;

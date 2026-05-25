@@ -1,54 +1,12 @@
 #include "tim.hpp"
 
 // ---------------------------------------------------------------------------
-// Peripheral table
+// Peripheral table — defined in tim_defs.hpp Section B
 // ---------------------------------------------------------------------------
 
-#if defined(STM32G0)
-const TIM::PeriphInfo TIM::tim_table[] = {
-	{ TIM1,  &RCC->APBENR2, RCC_APBENR2_TIM1EN,  &System::TIMxAPB1Clock,
-	  TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn,  true,  2, DMA_Sx::Req::Tim1::UP.ch  },
-	{ TIM3,  &RCC->APBENR1, RCC_APBENR1_TIM3EN,  &System::TIMxAPB1Clock,
-	  TIM3_IRQn,              TIM3_IRQn,         false, 1, DMA_Sx::Req::Tim3::UP.ch  },
-	{ TIM14, &RCC->APBENR2, RCC_APBENR2_TIM14EN, &System::TIMxAPB1Clock,
-	  TIM14_IRQn,             TIM14_IRQn,        false, 4, 0                          },
-	{ TIM16, &RCC->APBENR2, RCC_APBENR2_TIM16EN, &System::TIMxAPB1Clock,
-	  TIM16_IRQn,             TIM16_IRQn,        true,  2, DMA_Sx::Req::Tim16::UP.ch },
-	{ TIM17, &RCC->APBENR2, RCC_APBENR2_TIM17EN, &System::TIMxAPB1Clock,
-	  TIM17_IRQn,             TIM17_IRQn,        true,  2, DMA_Sx::Req::Tim17::UP.ch },
-};
-#elif defined(STM32F4)
-const TIM::PeriphInfo TIM::tim_table[] = {
-	{ TIM1,  &RCC->APB2ENR, RCC_APB2ENR_TIM1EN,  &System::TIMxAPB2Clock,
-	  TIM1_UP_TIM10_IRQn,      TIM1_CC_IRQn,               true,  1, 0 },
-	{ TIM2,  &RCC->APB1ENR, RCC_APB1ENR_TIM2EN,  &System::TIMxAPB1Clock,
-	  TIM2_IRQn,               TIM2_IRQn,                  false, 1, 0 },
-	{ TIM3,  &RCC->APB1ENR, RCC_APB1ENR_TIM3EN,  &System::TIMxAPB1Clock,
-	  TIM3_IRQn,               TIM3_IRQn,                  false, 2, 0 },
-	{ TIM4,  &RCC->APB1ENR, RCC_APB1ENR_TIM4EN,  &System::TIMxAPB1Clock,
-	  TIM4_IRQn,               TIM4_IRQn,                  false, 2, 0 },
-	{ TIM5,  &RCC->APB1ENR, RCC_APB1ENR_TIM5EN,  &System::TIMxAPB1Clock,
-	  TIM5_IRQn,               TIM5_IRQn,                  false, 2, 0 },
-	{ TIM6,  &RCC->APB1ENR, RCC_APB1ENR_TIM6EN,  &System::TIMxAPB1Clock,
-	  TIM6_DAC_IRQn,           TIM6_DAC_IRQn,              false, 0, 0 },
-	{ TIM7,  &RCC->APB1ENR, RCC_APB1ENR_TIM7EN,  &System::TIMxAPB1Clock,
-	  TIM7_IRQn,               TIM7_IRQn,                  false, 0, 0 },
-	{ TIM8,  &RCC->APB2ENR, RCC_APB2ENR_TIM8EN,  &System::TIMxAPB2Clock,
-	  TIM8_UP_TIM13_IRQn,      TIM8_CC_IRQn,               true,  3, 0 },
-	{ TIM9,  &RCC->APB2ENR, RCC_APB2ENR_TIM9EN,  &System::TIMxAPB2Clock,
-	  TIM1_BRK_TIM9_IRQn,      TIM1_BRK_TIM9_IRQn,         false, 3, 0 },
-	{ TIM10, &RCC->APB2ENR, RCC_APB2ENR_TIM10EN, &System::TIMxAPB2Clock,
-	  TIM1_UP_TIM10_IRQn,      TIM1_UP_TIM10_IRQn,         false, 3, 0 },
-	{ TIM11, &RCC->APB2ENR, RCC_APB2ENR_TIM11EN, &System::TIMxAPB2Clock,
-	  TIM1_TRG_COM_TIM11_IRQn, TIM1_TRG_COM_TIM11_IRQn,   false, 3, 0 },
-	{ TIM12, &RCC->APB1ENR, RCC_APB1ENR_TIM12EN, &System::TIMxAPB1Clock,
-	  TIM8_BRK_TIM12_IRQn,     TIM8_BRK_TIM12_IRQn,        false, 9, 0 },
-	{ TIM13, &RCC->APB1ENR, RCC_APB1ENR_TIM13EN, &System::TIMxAPB1Clock,
-	  TIM8_UP_TIM13_IRQn,      TIM8_UP_TIM13_IRQn,         false, 9, 0 },
-	{ TIM14, &RCC->APB1ENR, RCC_APB1ENR_TIM14EN, &System::TIMxAPB1Clock,
-	  TIM8_TRG_COM_TIM14_IRQn, TIM8_TRG_COM_TIM14_IRQn,   false, 9, 0 },
-};
-#endif
+#define TIM_DEFS_CPP
+#include "tim_defs.hpp"
+#undef  TIM_DEFS_CPP
 
 // ---------------------------------------------------------------------------
 // TIM base
@@ -166,7 +124,8 @@ SysInitStatus TIM_PWM::SetUp(uint32_t freq, uint32_t arr)
 
 	for (uint32_t i = 0; i < 4; i++) {
 		if (!_ch[i].IsValid()) continue;
-		_ch[i].SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _info->af);
+		PIN(reinterpret_cast<GPIO_TypeDef*>(_ch[i].port), _ch[i].pin)
+		    .SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High, _ch[i].af);
 		// OC1M=6 (PWM mode 1) | OC1PE=1 (CCR preload enable).
 		// Preload is required for DMA-driven output: without it the DMA write
 		// arrives ~3 cycles after the UPDATE event (AHB latency) and overwrites

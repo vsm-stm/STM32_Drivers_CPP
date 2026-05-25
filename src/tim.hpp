@@ -15,6 +15,10 @@ class TIM : public IIRQHandler
 public:
 	enum class TIM_Channel { CH1 = 0, CH2 = 1, CH3 = 2, CH4 = 3 };
 
+	// Channel pin tables + TIM_PIN struct (see tim_defs.hpp Section A).
+	// Provides TIM::_1::CH1::PA8, TIM::_3::CH3::PB0, etc.
+#include "tim_defs.hpp"
+
 	/** Maps directly to DIER bits — cast to uint32_t for register writes. */
 	enum class IRQ {
 		UE  = TIM_DIER_UIE,
@@ -115,13 +119,39 @@ class TIM_PWM : public TIM
 {
 public:
 	/**
-	 * @param timx    Timer peripheral (e.g. TIM1).
-	 * @param ch1–ch4 Output pins; pass PIN{} to leave a channel unused.
+	 * @brief Constructs a PWM driver with up to four output channels.
+	 *
+	 * Pins are passed as TIM::_N::CHx::Pyz constants from tim_defs.hpp.
+	 * Each pin encodes its own channel index, so they can be given in any
+	 * order and channels can be skipped without counting empty arguments.
+	 *
+	 * @param timx  Timer peripheral (TIM1, TIM3, …).
+	 * @param p0–p3 Channel pins from the TIM::_N::CHx tables; omit unused ones.
+	 *
+	 * Example:
+	 * @code
+	 *   // WS2812B on TIM1 CH1+CH2+CH3:
+	 *   TIM_PWM ws_tim(TIM1, TIM::_1::CH1::PA8,
+	 *                        TIM::_1::CH2::PA9,
+	 *                        TIM::_1::CH3::PA10);
+	 *
+	 *   // Anode dimmer on TIM3 CH3+CH4 only (no empty PIN{} needed):
+	 *   TIM_PWM Anode_tim(TIM3, TIM::_3::CH3::PB0,
+	 *                           TIM::_3::CH4::PB1);
+	 * @endcode
 	 */
 	TIM_PWM(TIM_TypeDef* timx,
-	        PIN ch1 = PIN{}, PIN ch2 = PIN{},
-	        PIN ch3 = PIN{}, PIN ch4 = PIN{}) :
-		TIM(timx), _ch{ch1, ch2, ch3, ch4} {}
+	        TIM_PIN p0 = {}, TIM_PIN p1 = {},
+	        TIM_PIN p2 = {}, TIM_PIN p3 = {}) : TIM(timx), _ch{}
+	{
+		// Validate and route each pin to its declared channel slot.
+		for (const TIM_PIN& p : {p0, p1, p2, p3}) {
+			if (!p.IsValid()) continue;
+			if (p.tim_base && p.tim_base != reinterpret_cast<uint32_t>(timx))
+				System::DebugTrap("TIM_PWM: pin belongs to wrong timer");
+			_ch[p.channel] = p;
+		}
+	}
 
 	/**
 	 * @brief Configures PWM on all valid pins and starts the timer.
@@ -179,7 +209,7 @@ public:
 	inline void SetDMACallback(void (*cb)(void)) { _dma_cb = cb; }
 
 private:
-	PIN      _ch[4];
+	TIM_PIN  _ch[4];
 	DMA_Sx*  _dma[4]        = {};    ///< One DMA stream per channel (null = unused).
 	uint8_t  _dma_busy      = 0;    ///< Bitmask: bit i set while _dma[i] is running.
 	void   (*_dma_cb)(void) = nullptr;

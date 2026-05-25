@@ -145,6 +145,51 @@ public:
 	 */
 	static void MPU_Init();
 #endif
+
+	// ---------------------------------------------------------------------------
+	// Debug assertion
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * @brief Stores @p msg in a debugger-visible variable, invokes the
+	 *        registered output callback (if any), triggers a software
+	 *        breakpoint, then halts.
+	 *
+	 * In debug builds (DEBUG defined by CMake for the Debug configuration):
+	 *   - @p msg is written to the volatile @c _debug_trap_msg symbol so it
+	 *     appears in the debugger's Watch / Memory window even without a
+	 *     call-stack.
+	 *   - If a callback was registered via SetDebugOutput() it is called with
+	 *     @p msg so the message reaches e.g. a USART terminal.
+	 *   - @c __BKPT(0) halts the core immediately.
+	 *
+	 * In release builds the body collapses to @c while(1) — no overhead,
+	 * no string literals in flash.
+	 *
+	 * @param msg  Null-terminated ASCII description of the fault.
+	 *             Must point to a string with static storage duration.
+	 */
+	[[noreturn]] static void DebugTrap(const char* msg);
+
+#ifdef DEBUG
+	/**
+	 * @brief Registers a function that DebugTrap uses to emit the error
+	 *        message (e.g. a USART send wrapper).
+	 *
+	 * Call once after your debug peripheral is initialised:
+	 * @code
+	 *   System::SetDebugOutput([](const char* s) {
+	 *       debug_usart.Send((uint8_t*)s, strlen(s));
+	 *   });
+	 * @endcode
+	 *
+	 * Only available in debug builds.  The linker removes the symbol entirely
+	 * in release.
+	 *
+	 * @param fn  Callback to invoke; pass nullptr to unregister.
+	 */
+	static void SetDebugOutput(void (*fn)(const char*));
+#endif
 };
 
 // ---------------------------------------------------------------------------

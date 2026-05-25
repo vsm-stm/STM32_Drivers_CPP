@@ -176,11 +176,14 @@ public:
 				 PIN ss   = PIN{})
 		: SPIx(spix), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
 	{
-		auto chk = [spix](const PIN& p) {
-			if (p.IsValid() && p.periph_base && p.periph_base != (uint32_t)spix)
-				{ __BKPT(0); while(1); }
-		};
-		chk(sck); chk(mosi); chk(miso); chk(ss);
+		if (sck.IsValid()  && sck.periph_base  && sck.periph_base  != (uint32_t)spix)
+			System::DebugTrap("SPI: SCK  pin belongs to wrong peripheral");
+		if (mosi.IsValid() && mosi.periph_base && mosi.periph_base != (uint32_t)spix)
+			System::DebugTrap("SPI: MOSI pin belongs to wrong peripheral");
+		if (miso.IsValid() && miso.periph_base && miso.periph_base != (uint32_t)spix)
+			System::DebugTrap("SPI: MISO pin belongs to wrong peripheral");
+		if (ss.IsValid()   && ss.periph_base   && ss.periph_base   != (uint32_t)spix)
+			System::DebugTrap("SPI: SS   pin belongs to wrong peripheral");
 	}
 
 	SPI() = delete;

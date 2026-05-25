@@ -242,6 +242,40 @@ void System::MPU_Init()
 #endif // STM32F7
 
 // ---------------------------------------------------------------------------
+// System::DebugTrap / SetDebugOutput
+// ---------------------------------------------------------------------------
+
+#ifdef DEBUG
+
+/// Last message passed to DebugTrap — inspect in debugger Watch / Memory view.
+static volatile const char* _debug_trap_msg = nullptr;
+
+/// Optional user-supplied output callback (e.g. USART send wrapper).
+static void (*_debug_out_fn)(const char*) = nullptr;
+
+[[noreturn]] void System::DebugTrap(const char* msg)
+{
+	_debug_trap_msg = msg;          // visible in debugger even without call-stack
+	if (_debug_out_fn) _debug_out_fn(msg);
+	__BKPT(0);                      // halt core; debugger shows msg in locals
+	while (1) {}
+}
+
+void System::SetDebugOutput(void (*fn)(const char*))
+{
+	_debug_out_fn = fn;
+}
+
+#else // release — no strings, no breakpoint, just halt
+
+[[noreturn]] void System::DebugTrap(const char*)
+{
+	while (1) {}
+}
+
+#endif // DEBUG
+
+// ---------------------------------------------------------------------------
 // SysTick IRQ handler
 // ---------------------------------------------------------------------------
 
