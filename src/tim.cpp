@@ -151,9 +151,9 @@ SysInitStatus TIM_PWM::SetUp(uint32_t freq, uint32_t arr)
 	SysInitStatus s = Init();
 	if (s != SysInitStatus::InitOK) return s;
 
-	uint32_t psc = *_info->bus_clk / ((arr-1) * freq) - 1u;
+	uint32_t psc = *_info->bus_clk / ((arr) * freq);
 	if (psc > 0xFFFF) return SysInitStatus::InitError;
-	TIMx->PSC = psc;
+	TIMx->PSC = psc - 1u;
 	TIMx->ARR = arr - 1u;
 
 	TIMx->CCMR1 = 0;
