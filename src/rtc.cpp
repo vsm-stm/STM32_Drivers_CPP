@@ -16,7 +16,7 @@ SysInitStatus RTC_cl::SetUp(CLK_Source clk_src, uint32_t prediv_a, uint32_t pred
 
 	if (clk_src == CLK_Source::LSE)
 	{
-		RCC->BDCR = (RCC->BDCR & ~RCC_BDCR_LSEDRV_Msk) | (0b01 << RCC_BDCR_LSEDRV_Pos); // максимальный ток
+		RCC->BDCR = (RCC->BDCR & ~RCC_BDCR_LSEDRV_Msk) | (0b11 << RCC_BDCR_LSEDRV_Pos);
 		RCC->BDCR |= RCC_BDCR_LSEON;
 		while(!(RCC->BDCR & RCC_BDCR_LSERDY));
 	}
@@ -27,8 +27,18 @@ SysInitStatus RTC_cl::SetUp(CLK_Source clk_src, uint32_t prediv_a, uint32_t pred
 		while(!(RCC->CSR & RCC_CSR_LSIRDY));
 	}
 
-	if(!(RTC->ICSR & RTC_ICSR_RSF)) {
-		RCC->BDCR = (RCC->BDCR & ~RCC_BDCR_RTCSEL) | static_cast<uint32_t>(clk_src);
+	// RTC is already running with the requested clock source — skip re-init.
+	// RTCEN and RTCSEL live in the backup domain and survive system resets
+	// (debugger attach, SYSRESETREQ), so this correctly guards against losing
+	// the running time after a reset.  RSF, by contrast, is cleared on every
+	// system reset even when the RTC is still ticking, so it is NOT a reliable
+	// "already initialised" flag.
+	const bool already_running =
+		(RCC->BDCR & RCC_BDCR_RTCEN) &&
+		((RCC->BDCR & RCC_BDCR_RTCSEL_Msk) == static_cast<uint32_t>(clk_src));
+
+	if (!already_running) {
+		RCC->BDCR = (RCC->BDCR & ~RCC_BDCR_RTCSEL_Msk) | static_cast<uint32_t>(clk_src);
 		RCC->BDCR |= RCC_BDCR_RTCEN;
 
 		WriteProtection(DISABLE);
@@ -85,4 +95,18 @@ void RTC_cl::EnableAlarm_B(FunctionalState en, const AlarmConfig& cfg, void (*cb
 	}
 	WriteProtection(ENABLE);
 	IRQ_en(IRQ_s::ALR_B, en);
+}
+
+// ---------------------------------------------------------------------------
+// RTC_cl::SetCalibration
+// ---------------------------------------------------------------------------
+
+void RTC_cl::SetCalibration(uint16_t calm, bool calp)
+{
+	// Wait for any ongoing recalibration to be absorbed by the RTC (≤2 RTCCLK cycles).
+	while (RTC->ICSR & RTC_ICSR_RECALPF) {}
+
+	WriteProtection(DISABLE);
+	RTC->CALR = (calp ? RTC_CALR_CALP : 0u) | (calm & 0x1FFu);
+	WriteProtection(ENABLE);
 }

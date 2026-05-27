@@ -74,6 +74,11 @@ public:
 		TS    = RTC_CR_TSIE     ///< Timestamp
 	};
 
+	enum class CalOut {
+		Out_512	= 0,
+		Out_1Hz	= RTC_CR_COSEL
+	};
+
 	/** @brief Time in decimal (converted to BCD internally by to_bcd). */
 	struct Time { uint8_t hours; uint8_t minutes; uint8_t seconds; };
 
@@ -233,8 +238,17 @@ public:
 										 void (*cb)(void) = nullptr) {
 		_wut_cb = cb;
 		WriteProtection(DISABLE);
+
+		// RM0454 §27.5.2: WUTR/WUCKSEL are write-protected while WUTE=1.
+		// Must clear WUTE and wait for WUTWF=1 (~2 RTCCLK ≈ 61 µs) before writing.
+		RTC->CR &= ~RTC_CR_WUTE;
+		while (!(RTC->ICSR & RTC_ICSR_WUTWF)) {}
+
 		RTC->WUTR = counter;
-		RTC->CR  |= clock_div << RTC_CR_WUCKSEL_Pos | RTC_CR_WUTE;
+		RTC->CR   = (RTC->CR & ~RTC_CR_WUCKSEL_Msk)
+		          | ((clock_div & 0x7u) << RTC_CR_WUCKSEL_Pos)
+		          | RTC_CR_WUTE;
+
 		WriteProtection(ENABLE);
 		IRQ_en(IRQ_s::WUT, ENABLE);
 	}
@@ -300,6 +314,30 @@ public:
 		}
 	};
 	// -----------------------------------------------------------------------
+	// Smooth digital calibration (RTC->CALR)
+	// -----------------------------------------------------------------------
+
+	/**
+	 * @brief Programs the RTC smooth calibration register (CALR).
+	 *
+	 * Works in a 32-second window (2²⁰ = 1 048 576 RTCCLK pulses):
+	 *   calp=false → suppress @p calm pulses  → clock slows by calm × 0.9537 ppm
+	 *   calp=true  → add 512, suppress @p calm → net: (512 − calm) × 0.9537 ppm faster
+	 *
+	 * Resolution: ~0.954 ppm / step.  Range: ±488 ppm.
+	 *
+	 * Typical usage — measured period 999.9945 ms (clock 5.5 ppm fast):
+	 * @code
+	 *   // CALM = round(5.5 / 0.9537) = 6  →  correction −5.72 ppm
+	 *   RTC_cl::SetCalibration(6);
+	 * @endcode
+	 *
+	 * @param calm  Pulses to suppress per 32 s window (0 – 511).
+	 * @param calp  Add 512 extra pulses (true = shift clock positive / faster).
+	 */
+	static void SetCalibration(uint16_t calm = 0, bool calp = false);
+
+	// -----------------------------------------------------------------------
 	// Calibration output
 	// -----------------------------------------------------------------------
 
@@ -309,9 +347,13 @@ public:
 	 * Useful for measuring oscillator accuracy with an oscilloscope.
 	 * Outputs ck_spre (1 Hz) or RTCCLK/64 depending on the COSEL bit.
 	 */
-	static void EnableCOE(bool en) {
+	static void EnableCOE(bool en, CalOut out = CalOut::Out_512) {
 		WriteProtection(DISABLE);
-		if (en) RTC->CR |=  RTC_CR_COE;
+		if (en) {
+			RTC->CR &= ~RTC_CR_COSEL;
+			RTC->CR |=  static_cast<uint32_t>(out);
+			RTC->CR |=  RTC_CR_COE;
+		}
 		else    RTC->CR &= ~RTC_CR_COE;
 		WriteProtection(ENABLE);
 	}

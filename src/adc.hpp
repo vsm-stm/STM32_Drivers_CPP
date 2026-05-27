@@ -2,132 +2,239 @@
 #define ADC_HPP_
 
 #include "system.hpp"
-#include "rcc.hpp"
 #include "gpio.hpp"
+#include "irq_registry.hpp"
+#include "dma.hpp"
 
-class ADC_N
-{
-public:
-	ADC_TypeDef *ADCx;
+// ---------------------------------------------------------------------------
+// ADC_PIN — compile-time descriptor for one analog input.
+//
+// Defined at file scope (not nested in ADC_N) so that it can be used as a
+// default-argument type inside the ADC_N constructor without triggering
+// GCC's "default member initializer required before end of enclosing class"
+// restriction (which fires when a nested aggregate with DMIs is used as a
+// default argument in the same enclosing class body).
+// ---------------------------------------------------------------------------
+struct ADC_PIN {
+	uint32_t port     = 0;
+	uint8_t  pin      = 0;
+	uint8_t  channel  = 0;   ///< ADC channel number (0-18)
+	uint32_t adc_base = 0;   ///< Owning ADC peripheral base (for validation)
 
-	enum class MODE
-	{
-		Single,
-		Single_continuous,
-		Multi,
-		Multi_continuous
-	};
-
-	enum class TRIG
-	{
-		TIM1_CH1 = 0,
-		TIM1_CH2,
-		TIM1_CH3,
-		TIM2_CH2,
-		TIM2_CH3,
-		TIM2_CH4,
-		TIM2_TRGO,
-		TIM3_CH1,
-		TIM3_TRGO,
-		TIM4_CH4,
-		TIM5_CH1,
-		TIM5_CH2,
-		TIM5_CH3,
-		TIM8_CH1,
-		TIM8_TRGO,
-		EXTI_line11,
-		Manual
-	};
-
-	enum class IN_GPIO
-	{
-		PA0 = 0,
-		PA1,
-		PA2,
-		PA3,
-		PA4,
-		PA5,
-		PA6,
-		PA7,
-		PB0,
-		PB1,
-		PC0,
-		PC1,
-		PC2,
-		PC3,
-		PC4,
-		PC5
-	};
-
-	SYS_StatusTypeDef SetUp(MODE mode)
-	{	return SetUp(mode, TRIG::Manual);};
-
-	SYS_StatusTypeDef SetUp(MODE mode, TRIG trig);
-
-	void Start()
-	{	ADCx->CR2 |= ADC_CR2_SWSTART;};
-
-	void Enable_DMA()
-	{	ADCx->CR2 |= ADC_CR2_DMA | ADC_CR2_DDS;};
-
-	uint32_t Get_data()
-	{ return ADCx->DR;};
-
-	void Add_Channel(IN_GPIO in)
-	{	Add_Channel(static_cast<uint8_t>(in));};
-	void Add_Channel(uint8_t ch);
-
-	bool GetStartGlag()
-	{	return ((ADCx->SR & ADC_SR_STRT) >> ADC_SR_STRT_Pos);}
-	
-	void ClearStartGlag()
-	{	ADCx->SR &= ~ADC_SR_STRT;}
-
-	bool GetEOCGlag()
-	{	return ((ADCx->SR & ADC_SR_EOC) >> ADC_SR_EOC_Pos);}
-	
-	void ClearEOCGlag()
-	{	ADCx->SR &= ~ADC_SR_EOC;}
-
-	ADC_N(ADC_TypeDef *adcx): ADCx(adcx) {};
-	~ADC_N(){};
-
-private:
-	IRQn_Type IRQ_vector;
-	MODE _mode;
-
-	struct IN_st
-	{
-		PIN pin;
-		bool use;
-	};
-
-	IN_st IN[16] = {	{PIN(GPIOA, 0),0},
-						{PIN(GPIOA, 1),0},
-						{PIN(GPIOA, 2),0},
-						{PIN(GPIOA, 3),0},
-						{PIN(GPIOA, 4),0},
-						{PIN(GPIOA, 5),0},
-						{PIN(GPIOA, 6),0},
-						{PIN(GPIOA, 7),0},
-						{PIN(GPIOB, 0),0},
-						{PIN(GPIOB, 1),0},
-						{PIN(GPIOC, 0),0},
-						{PIN(GPIOC, 1),0},
-						{PIN(GPIOC, 2),0},
-						{PIN(GPIOC, 3),0},
-						{PIN(GPIOC, 4),0},
-						{PIN(GPIOC, 5),0}
-					};
+	constexpr bool IsValid() const { return port != 0; }
 };
 
+// ---------------------------------------------------------------------------
+// ADC_N — single ADC peripheral driver
+// ---------------------------------------------------------------------------
 
+class ADC_N : public IIRQHandler
+{
+public:
+	// IN / _1 / _2 / _3 channel tables, TRIG enum, SMPL enum.
+	// Access as: ADC_N::IN::PA1 (G0), ADC_N::_1::PA0 (F4 ADC1), etc.
+#include "adc_defs.hpp"
 
+	/**
+	 * @brief Constructs an ADC driver with up to four analog input channels.
+	 *
+	 * Each ADC_PIN carries its port, pin number, channel index, and the base
+	 * address of the ADC it belongs to.  The constructor validates that every
+	 * supplied pin belongs to @p adcx and calls System::DebugTrap on mismatch.
+	 *
+	 * Pins can be given in any order — they are not positional.
+	 * Unused slots default to ADC_PIN{} (IsValid() == false) and are ignored.
+	 *
+	 * Example (G0, single channel, software trigger):
+	 * @code
+	 *   ADC_N adc(ADC1, ADC_N::IN::PA1);
+	 *   adc.SetUp();
+	 *   adc.Start();
+	 *   while (!adc.IsEOC()) {}
+	 *   uint16_t val = adc.GetData();
+	 * @endcode
+	 *
+	 * Example (G0, two-channel DMA scan triggered by TIM3):
+	 * @code
+	 *   DMA_Sx dma_adc(DMA1_Channel6, DMA_Sx::Req::Adc1::RX);
+	 *   ADC_N  adc(ADC1, ADC_N::IN::PA0, ADC_N::IN::PB0);
+	 *   adc.SetUp(ADC_N::TRIG::TIM3_TRGO, ADC_N::SMPL::CYC_39_5);
+	 *   adc.SetDMACallback(on_done);
+	 *   adc.AttachDMA(&dma_adc);
+	 *   uint16_t buf[2];
+	 *   adc.StartDMA(buf, 2);
+	 * @endcode
+	 *
+	 * @param adcx   Pointer to the hardware ADC (ADC1, ADC2, ADC3).
+	 * @param p0–p3  Analog input pins from ADC_N::IN (G0) or ADC_N::_N (F4).
+	 */
+	explicit ADC_N(ADC_TypeDef* adcx,
+	               ADC_PIN p0 = {}, ADC_PIN p1 = {},
+	               ADC_PIN p2 = {}, ADC_PIN p3 = {})
+	    : ADCx(adcx), _ch{}, _ch_count(0)
+	{
+		for (const ADC_PIN& p : {p0, p1, p2, p3}) {
+			if (!p.IsValid()) continue;
+			if (p.adc_base && p.adc_base != reinterpret_cast<uint32_t>(adcx))
+				System::DebugTrap("ADC_N: pin belongs to wrong ADC peripheral");
+			_ch[_ch_count++] = p;
+		}
+	}
 
+	ADC_N() = delete;
+	ADC_N(const ADC_N&) = delete;
+	ADC_N& operator=(const ADC_N&) = delete;
 
+	/**
+	 * @brief Enables the ADC clock, runs calibration, programs GPIO and
+	 *        channel selection, then enables the ADC.
+	 *
+	 * Must be called before Start(), StartDMA() or IRQ_en().
+	 * Does NOT call Start() — the caller does so explicitly.
+	 *
+	 * @param smpl  Sampling time applied to all channels.
+	 */
+	SysInitStatus SetUp(SMPL smpl = SMPL::CYC_12_5);
 
+	/**
+	 * @brief Overload that also configures an external hardware trigger.
+	 *
+	 * @param trig  Trigger source (rising-edge sensitivity).
+	 * @param smpl  Sampling time applied to all channels.
+	 */
+	SysInitStatus SetUp(TRIG trig, SMPL smpl = SMPL::CYC_12_5);
 
+	/**
+	 * @brief Adds an extra analog input channel after construction.
+	 *
+	 * Applies the same peripheral validation as the constructor.
+	 * Call before SetUp() so the channel is included in CHSELR / SQRx.
+	 */
+	void AddChannel(ADC_PIN pin);
 
+	// -----------------------------------------------------------------------
+	// Callbacks — invoked from HandleIRQ
+	// -----------------------------------------------------------------------
 
+	/** @brief Called at end of each single conversion (EOC). */
+	inline void SetEOCCallback(void (*cb)(void)) { _eoc_cb = cb; }
 
-#endif /* ADC_HPP_ */
+	/** @brief Called at end of the full scan sequence (EOS). */
+	inline void SetEOSCallback(void (*cb)(void)) { _eos_cb = cb; }
+
+	/** @brief Called when the DMA transfer completes. */
+	inline void SetDMACallback(void (*cb)(void)) { _dma_cb = cb; }
+
+	// -----------------------------------------------------------------------
+	// IRQ enable / disable
+	// -----------------------------------------------------------------------
+
+	/**
+	 * @brief Maps directly to IER (G0) / CR1 (F4) interrupt-enable bits.
+	 * Cast to uint32_t for direct register writes.
+	 */
+	enum class IRQ : uint32_t {
+#if defined(STM32G0)
+		EOC = ADC_IER_EOCIE,
+		EOS = ADC_IER_EOSIE,
+		OVR = ADC_IER_OVRIE,
+#elif defined(STM32F4)
+		EOC = ADC_CR1_EOCIE,
+		OVR = ADC_CR1_OVRIE,
+#endif
+	};
+
+	/**
+	 * @brief Enables or disables one ADC interrupt source.
+	 *
+	 * On first enable: registers in IRQ_Registry and unmasks NVIC.
+	 * On last disable: unregisters and masks NVIC.
+	 */
+	void IRQ_en(IRQ irq, FunctionalState en);
+
+	// -----------------------------------------------------------------------
+	// DMA
+	// -----------------------------------------------------------------------
+
+	/**
+	 * @brief Attaches a DMA channel for ADC→memory transfers.
+	 *
+	 * Configures the stream: Per→Mem direction, 16-bit HalfWord, MINC,
+	 * source = ADCx->DR, DMAMUX request from the peripheral table.
+	 * Registers this object in IRQ_Registry for the DMA TC interrupt.
+	 *
+	 * Must be called after SetUp().
+	 *
+	 * @param dma  DMA stream (pre-constructed, not yet SetUp'd).
+	 */
+	void AttachDMA(DMA_Sx* dma);
+
+	/**
+	 * @brief Starts a one-shot DMA transfer: ADC → @p buf.
+	 *
+	 * Enables ADC_CFGR1_DMAEN, arms the DMA stream, then calls Start().
+	 * Returns Busy if a transfer is already in progress.
+	 *
+	 * @param buf  Destination buffer (must stay valid until the callback fires).
+	 * @param len  Number of 16-bit samples (= number of active channels per trigger).
+	 */
+	SysStatus StartDMA(uint16_t* buf, uint32_t len);
+
+	/** @brief True while a DMA transfer is in progress. */
+	inline bool IsDMABusy() const { return _dma_busy; }
+
+	// -----------------------------------------------------------------------
+	// Control
+	// -----------------------------------------------------------------------
+
+	/** @brief Starts a conversion (software trigger). */
+	void Start();
+
+	/** @brief Stops an ongoing conversion. */
+	void Stop();
+
+	/** @brief Returns the last converted value from ADCx->DR. */
+	inline uint16_t GetData()  const { return static_cast<uint16_t>(ADCx->DR); }
+
+	/** @brief True if the EOC flag is set (conversion complete). */
+#if defined(STM32G0)
+	inline bool IsEOC() const { return (ADCx->ISR & ADC_ISR_EOC) != 0u; }
+#elif defined(STM32F4)
+	inline bool IsEOC() const { return (ADCx->SR & ADC_SR_EOC) != 0u; }
+#endif
+
+	ADC_TypeDef* ADCx;
+
+protected:
+	/** @brief Run-time descriptor for one ADC peripheral. Defined in adc_defs.hpp Section B. */
+	struct PeriphInfo {
+		ADC_TypeDef*        periph;
+		volatile uint32_t*  clk_reg;
+		uint32_t            clk_bit;
+		IRQn_Type           irqn;
+		uint32_t            dma_req;   ///< DMAMUX request ID (G0) / DMA channel select (F4)
+	};
+	static const PeriphInfo adc_table[];
+
+	const PeriphInfo* _info   = nullptr;
+
+	void (*_eoc_cb)(void)     = nullptr;
+	void (*_eos_cb)(void)     = nullptr;
+	void (*_dma_cb)(void)     = nullptr;
+
+	DMA_Sx*  _dma             = nullptr;
+	bool     _dma_busy        = false;
+
+	ADC_PIN  _ch[4]           = {};
+	uint8_t  _ch_count        = 0;
+
+	/** @brief Performs the table lookup and enables the peripheral clock. */
+	SysInitStatus Init();
+
+	/** @brief Internal SetUp implementation after Init(). */
+	SysInitStatus SetUpInternal(TRIG trig, SMPL smpl);
+
+	void HandleIRQ() override;
+};
+
+#endif // ADC_HPP_
