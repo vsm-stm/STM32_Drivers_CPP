@@ -1,5 +1,4 @@
-#include "irq_registry.hpp"
-#include "irq_registry_config.h"   // определяет IRQ_TABLE_SIZE (CMake-generated)
+#include "irq_registry_config.h"   // defines IRQ_MAX_SHARED + IRQ_TABLE_SIZE, includes irq_registry.hpp
 
 bool IRQ_Registry::Register(IRQn_Type irqn, IIRQHandler* handler)
 {
