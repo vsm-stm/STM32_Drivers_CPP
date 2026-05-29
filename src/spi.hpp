@@ -367,10 +367,13 @@ public:
 	 *
 	 * Asserts SS, enables SPE, starts DMA.  OnDmaTxComplete() is called
 	 * when the TC interrupt fires.
-	 *
+	 * 
+	 * @param data Source buffer to send on MOSI.
+	 * @param len  Number of bytes to send.
+	 * @param minc Whether to increment the memory address after each byte.
 	 * @return SysStatus::Busy if a transfer is already in progress.
 	 */
-	SysStatus SendDMA(uint8_t* data, uint32_t len);
+	SysStatus SendDMA(uint8_t* data, uint32_t len, FunctionalState minc = ENABLE);
 
 	/**
 	 * @brief Starts a DMA full-duplex transfer (RX captured, TX = 0xFF dummy).

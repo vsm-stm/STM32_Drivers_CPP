@@ -290,7 +290,7 @@ void SPI::AttachDMA(DMA_Sx* tx, DMA_Sx* rx)
 // DMA transfers
 // ---------------------------------------------------------------------------
 
-SysStatus SPI::SendDMA(uint8_t* data, uint32_t len)
+SysStatus SPI::SendDMA(uint8_t* data, uint32_t len, FunctionalState minc)
 {
 	if (!_dma_tx || !data || !len)  return SysStatus::Error;
 	if (_status == SysStatus::Busy) return SysStatus::Busy;
@@ -298,7 +298,7 @@ SysStatus SPI::SendDMA(uint8_t* data, uint32_t len)
 	_rx_active = false;
 
 	_dma_tx->ClearFlags();
-	_dma_tx->MINC(ENABLE);
+	_dma_tx->MINC(minc);
 	_dma_tx->SetMemAddr(reinterpret_cast<uint32_t>(data));
 	_dma_tx->SetCount(len);
 

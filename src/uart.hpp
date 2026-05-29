@@ -271,13 +271,16 @@ public:
 
 	SysStatus Receive_IRQ(uint8_t *data, uint32_t len);
 
-	inline bool GetDataReceived() { return data_received; }
+	inline bool GetDataReceivedFlag() { return data_received; }
 	inline uint32_t GetDataReceivedCount() {
 		uint32_t count = data_received_count;
 		data_received_count = 0;
 		data_received = false;
 		return count;
 	}
+
+	inline void ClearDataReceivedFlag() { data_received = false; data_received_count = 0; }
+
 	inline bool GetOverflow() { return data_overflow; }
 	inline uint32_t GetOverflowCount() {
 		uint32_t count = data_overflow_count;
