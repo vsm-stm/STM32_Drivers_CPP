@@ -186,6 +186,17 @@ public:
 		WriteProtection(ENABLE);
 	}
 
+	inline static void SetTime_hex(const Time& t) {
+		WriteProtection(DISABLE);
+		RTC->ICSR = RTC_ICSR_INIT;
+		while (!(RTC->ICSR & RTC_ICSR_INITF));
+		RTC->TR = t.hours   << RTC_TR_HU_Pos  |
+				  t.minutes << RTC_TR_MNU_Pos |
+				  t.seconds << RTC_TR_SU_Pos;
+		RTC->ICSR &= ~RTC_ICSR_INIT;
+		WriteProtection(ENABLE);
+	}
+
 	/**
 	 * @brief Sets the current date and day of week.
 	 *
@@ -199,6 +210,18 @@ public:
 		RTC->DR = to_bcd(d.day)   << RTC_DR_DU_Pos  |
 				  to_bcd(d.month) << RTC_DR_MU_Pos  |
 				  to_bcd(d.year)  << RTC_DR_YU_Pos  |
+				  static_cast<uint32_t>(wd) << RTC_DR_WDU_Pos;
+		RTC->ICSR &= ~RTC_ICSR_INIT;
+		WriteProtection(ENABLE);
+	}
+
+	inline static void SetDate_hex(const Date& d, WeekDay wd = WeekDay::Monday) {
+		WriteProtection(DISABLE);
+		RTC->ICSR = RTC_ICSR_INIT;
+		while (!(RTC->ICSR & RTC_ICSR_INITF));
+		RTC->DR = d.day   << RTC_DR_DU_Pos  |
+				  d.month << RTC_DR_MU_Pos  |
+				  d.year  << RTC_DR_YU_Pos  |
 				  static_cast<uint32_t>(wd) << RTC_DR_WDU_Pos;
 		RTC->ICSR &= ~RTC_ICSR_INIT;
 		WriteProtection(ENABLE);
