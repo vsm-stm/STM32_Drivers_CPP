@@ -116,11 +116,11 @@ void flash_base::write(uint32_t addr, T *data, uint32_t size)
 			dword = *reinterpret_cast<const uint64_t*>(src + i);
 		}
 
-		*reinterpret_cast<volatile uint32_t*>(addr) = (uint32_t)(dword);
+		*reinterpret_cast<volatile uint32_t*>(addr + i) = (uint32_t)(dword);
 		/* Barrier to ensure programming is performed in 2 steps, in right order
 			(independently of compiler optimization behavior) */
-		__ISB();
-		*reinterpret_cast<volatile uint32_t*>(addr + 4) = (uint32_t)(dword >> 32);
+		// __ISB();
+		*reinterpret_cast<volatile uint32_t*>(addr + i + 4) = (uint32_t)(dword >> 32);
 
 		while(!ready()){};
 	}
