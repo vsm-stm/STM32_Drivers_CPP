@@ -289,6 +289,9 @@ public:
 		return count;
 	}
 
+	SysStatus GetTxStatus() const { return tx_status; }
+	SysStatus GetRxStatus() const { return rx_status; }
+
 	/**
 	 * @brief Reprograms the baud rate without re-initialising the peripheral.
 	 *
