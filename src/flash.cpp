@@ -74,14 +74,14 @@ void flash_base::mass_erase(uint8_t bank)
 	while(!ready()){};
 	clear_errors();
 
-	if(bank & 1) FLASH->CR |= FLASH_CR_MER1;
+	if(bank & 1) FLASH->CR |= CR_MER;
 	// if(bank & 2) FLASH->CR |= FLASH_CR_MER2; todo check if MER2 is supported on STM32G0
 
 	FLASH->CR |= FLASH_CR_STRT;
 
 	while(!ready()){};
 
-	FLASH->CR &= ~(FLASH_CR_MER1);
+	FLASH->CR &= ~(CR_MER);
 }
 
 // -----------------------------------------------------------------------------

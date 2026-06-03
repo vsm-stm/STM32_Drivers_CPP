@@ -7,10 +7,12 @@
 
 #if defined(STM32F7) || defined(STM32F4)
 	#define SR_READY_BIT FLASH_SR_BSY
+	constexpr uint32_t CR_MER = FLASH_CR_MER;
 	using status_t = uint8_t;
 
 #elif defined(STM32L0) || defined(STM32G0) // todo check L0
 	#define SR_READY_BIT FLASH_SR_BSY1
+	constexpr uint32_t CR_MER = FLASH_CR_MER1;
 	using status_t = uint64_t;
 #endif
 

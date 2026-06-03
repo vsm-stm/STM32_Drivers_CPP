@@ -157,6 +157,10 @@ SysStatus USART::Send_DMA(uint8_t* data, uint32_t len) {
 	if (tx_status == SysStatus::Busy)  return SysStatus::Busy;
 
 	tx_status = SysStatus::Busy;
+#if defined(STM32F7)
+	SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t*>(data),
+	                         static_cast<int32_t>((len + 31u) & ~31u));
+#endif
 	_dma_tx->ClearFlags();
 	_dma_tx->SetMemAddr(reinterpret_cast<uint32_t>(data));
 	_dma_tx->SetCount(len);
