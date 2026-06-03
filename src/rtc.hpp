@@ -85,6 +85,29 @@ public:
 	/** @brief Date in decimal. Year is two-digit: 26 = 2026. */
 	struct Date { uint8_t day; uint8_t month; uint8_t year; };
 
+	/** @brief Raw BCD digits read from RTC->TR. Use .sec()/.min()/.hour() for decoded values. */
+	struct RtcTime {
+		uint8_t su, st;    // seconds: units / tens
+		uint8_t mnu, mnt;  // minutes
+		uint8_t hu, ht;    // hours
+
+		uint8_t sec()  const { return st  * 10 + su;  }
+		uint8_t min()  const { return mnt * 10 + mnu; }
+		uint8_t hour() const { return ht  * 10 + hu;  }
+	};
+
+	/** @brief Raw BCD digits read from RTC->DR. Use .day()/.month()/.year() for decoded values. */
+	struct RtcDate {
+		uint8_t du, dt;   // day
+		uint8_t mu, mt;   // month
+		uint8_t yu, yt;   // year
+		uint8_t wdu;      // weekday (1=Mon..7=Sun)
+
+		uint8_t day()   const { return dt * 10 + du; }
+		uint8_t month() const { return mt * 10 + mu; }
+		uint8_t year()  const { return yt * 10 + yu; }
+	};
+
 	enum class Alarm_Masks{
 		Care = 0,
 		Ignore = 1
@@ -225,6 +248,31 @@ public:
 				  static_cast<uint32_t>(wd) << RTC_DR_WDU_Pos;
 		RTC->ICSR &= ~RTC_ICSR_INIT;
 		WriteProtection(ENABLE);
+	}
+
+	inline static RtcTime GetTime() {
+		uint32_t tr = RTC->TR;
+		return {
+			.su  = uint8_t((tr & RTC_TR_SU)  >> RTC_TR_SU_Pos),
+			.st  = uint8_t((tr & RTC_TR_ST)  >> RTC_TR_ST_Pos),
+			.mnu = uint8_t((tr & RTC_TR_MNU) >> RTC_TR_MNU_Pos),
+			.mnt = uint8_t((tr & RTC_TR_MNT) >> RTC_TR_MNT_Pos),
+			.hu  = uint8_t((tr & RTC_TR_HU)  >> RTC_TR_HU_Pos),
+			.ht  = uint8_t((tr & RTC_TR_HT)  >> RTC_TR_HT_Pos),
+		};
+	}
+
+	inline static RtcDate GetDate() {
+		uint32_t dr = RTC->DR;
+		return {
+			.du  = uint8_t((dr & RTC_DR_DU)  >> RTC_DR_DU_Pos),
+			.dt  = uint8_t((dr & RTC_DR_DT)  >> RTC_DR_DT_Pos),
+			.mu  = uint8_t((dr & RTC_DR_MU)  >> RTC_DR_MU_Pos),
+			.mt  = uint8_t((dr & RTC_DR_MT)  >> RTC_DR_MT_Pos),
+			.yu  = uint8_t((dr & RTC_DR_YU)  >> RTC_DR_YU_Pos),
+			.yt  = uint8_t((dr & RTC_DR_YT)  >> RTC_DR_YT_Pos),
+			.wdu = uint8_t((dr & RTC_DR_WDU) >> RTC_DR_WDU_Pos),
+		};
 	}
 
 	// -----------------------------------------------------------------------
