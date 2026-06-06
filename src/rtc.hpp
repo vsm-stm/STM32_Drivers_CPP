@@ -87,9 +87,10 @@ public:
 
 	/** @brief Raw BCD digits read from RTC->TR. Use .sec()/.min()/.hour() for decoded values. */
 	struct RtcTime {
-		uint8_t su, st;    // seconds: units / tens
-		uint8_t mnu, mnt;  // minutes
-		uint8_t hu, ht;    // hours
+		uint8_t su, st;		// seconds: units / tens
+		uint8_t mnu, mnt;	// minutes
+		uint8_t hu, ht;		// hours
+		uint8_t pad[2];		// padding to u32
 
 		uint8_t sec()  const { return st  * 10 + su;  }
 		uint8_t min()  const { return mnt * 10 + mnu; }
@@ -98,10 +99,11 @@ public:
 
 	/** @brief Raw BCD digits read from RTC->DR. Use .day()/.month()/.year() for decoded values. */
 	struct RtcDate {
-		uint8_t du, dt;   // day
-		uint8_t mu, mt;   // month
-		uint8_t yu, yt;   // year
-		uint8_t wdu;      // weekday (1=Mon..7=Sun)
+		uint8_t du, dt;		// day
+		uint8_t mu, mt;		// month
+		uint8_t yu, yt;		// year
+		uint8_t wdu;		// weekday (1=Mon..7=Sun)
+		uint8_t pad;		// padding to u32
 
 		uint8_t day()   const { return dt * 10 + du; }
 		uint8_t month() const { return mt * 10 + mu; }
@@ -259,6 +261,7 @@ public:
 			.mnt = uint8_t((tr & RTC_TR_MNT) >> RTC_TR_MNT_Pos),
 			.hu  = uint8_t((tr & RTC_TR_HU)  >> RTC_TR_HU_Pos),
 			.ht  = uint8_t((tr & RTC_TR_HT)  >> RTC_TR_HT_Pos),
+			.pad = {}, 
 		};
 	}
 
@@ -272,6 +275,7 @@ public:
 			.yu  = uint8_t((dr & RTC_DR_YU)  >> RTC_DR_YU_Pos),
 			.yt  = uint8_t((dr & RTC_DR_YT)  >> RTC_DR_YT_Pos),
 			.wdu = uint8_t((dr & RTC_DR_WDU) >> RTC_DR_WDU_Pos),
+			.pad = 0
 		};
 	}
 
