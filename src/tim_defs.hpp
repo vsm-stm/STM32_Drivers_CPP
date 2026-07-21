@@ -256,46 +256,73 @@ struct _8 {
 #if defined(STM32G0)
 const TIM::PeriphInfo TIM::tim_table[] = {
 	{ TIM1,  &RCC->APBENR2, RCC_APBENR2_TIM1EN,  &System::TIMxAPB1Clock,
-	  TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn,  true,  2, DMA_Sx::Req::Tim1::UP.ch  },
+	  TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn,  true,  0xFFFF, 2, DMA_Sx::Req::Tim1::UP.ch  },
 	{ TIM3,  &RCC->APBENR1, RCC_APBENR1_TIM3EN,  &System::TIMxAPB1Clock,
-	  TIM3_IRQn,              TIM3_IRQn,         false, 1, DMA_Sx::Req::Tim3::UP.ch  },
+	  TIM3_IRQn,              TIM3_IRQn,         false, 0xFFFF, 1, DMA_Sx::Req::Tim3::UP.ch  },
 	{ TIM14, &RCC->APBENR2, RCC_APBENR2_TIM14EN, &System::TIMxAPB1Clock,
-	  TIM14_IRQn,             TIM14_IRQn,        false, 4, 0                          },
+	  TIM14_IRQn,             TIM14_IRQn,        false, 0xFFFF, 4, 0                          },
 	{ TIM16, &RCC->APBENR2, RCC_APBENR2_TIM16EN, &System::TIMxAPB1Clock,
-	  TIM16_IRQn,             TIM16_IRQn,        true,  2, DMA_Sx::Req::Tim16::UP.ch },
+	  TIM16_IRQn,             TIM16_IRQn,        true,  0xFFFF, 2, DMA_Sx::Req::Tim16::UP.ch },
 	{ TIM17, &RCC->APBENR2, RCC_APBENR2_TIM17EN, &System::TIMxAPB1Clock,
-	  TIM17_IRQn,             TIM17_IRQn,        true,  2, DMA_Sx::Req::Tim17::UP.ch },
+	  TIM17_IRQn,             TIM17_IRQn,        true,  0xFFFF, 2, DMA_Sx::Req::Tim17::UP.ch },
+};
+
+// TODO: verify against RM0444 "TIMx internal trigger connection" before use.
+// Only TIM1/TIM3 have an SMCR on G0; itr=0xFF marks these as unverified so
+// TIM_HWCounter::SetUp() refuses them rather than risk a silently wrong route.
+const TIM::ITR_Route TIM::itr_table[] = {
+	{ TIM3, TIM1, 0xFF },
+	{ TIM1, TIM3, 0xFF },
 };
 #elif defined(STM32F4)
 const TIM::PeriphInfo TIM::tim_table[] = {
 	{ TIM1,  &RCC->APB2ENR, RCC_APB2ENR_TIM1EN,  &System::TIMxAPB2Clock,
-	  TIM1_UP_TIM10_IRQn,      TIM1_CC_IRQn,               true,  1, 0 },
+	  TIM1_UP_TIM10_IRQn,      TIM1_CC_IRQn,               true,  0xFFFF,     1, 0 },
 	{ TIM2,  &RCC->APB1ENR, RCC_APB1ENR_TIM2EN,  &System::TIMxAPB1Clock,
-	  TIM2_IRQn,               TIM2_IRQn,                  false, 1, 0 },
+	  TIM2_IRQn,               TIM2_IRQn,                  false, 0xFFFFFFFF, 1, 0 },
 	{ TIM3,  &RCC->APB1ENR, RCC_APB1ENR_TIM3EN,  &System::TIMxAPB1Clock,
-	  TIM3_IRQn,               TIM3_IRQn,                  false, 2, 0 },
+	  TIM3_IRQn,               TIM3_IRQn,                  false, 0xFFFF,     2, 0 },
 	{ TIM4,  &RCC->APB1ENR, RCC_APB1ENR_TIM4EN,  &System::TIMxAPB1Clock,
-	  TIM4_IRQn,               TIM4_IRQn,                  false, 2, 0 },
+	  TIM4_IRQn,               TIM4_IRQn,                  false, 0xFFFF,     2, 0 },
 	{ TIM5,  &RCC->APB1ENR, RCC_APB1ENR_TIM5EN,  &System::TIMxAPB1Clock,
-	  TIM5_IRQn,               TIM5_IRQn,                  false, 2, 0 },
+	  TIM5_IRQn,               TIM5_IRQn,                  false, 0xFFFFFFFF, 2, 0 },
 	{ TIM6,  &RCC->APB1ENR, RCC_APB1ENR_TIM6EN,  &System::TIMxAPB1Clock,
-	  TIM6_DAC_IRQn,           TIM6_DAC_IRQn,              false, 0, 0 },
+	  TIM6_DAC_IRQn,           TIM6_DAC_IRQn,              false, 0xFFFF,     0, 0 },
 	{ TIM7,  &RCC->APB1ENR, RCC_APB1ENR_TIM7EN,  &System::TIMxAPB1Clock,
-	  TIM7_IRQn,               TIM7_IRQn,                  false, 0, 0 },
+	  TIM7_IRQn,               TIM7_IRQn,                  false, 0xFFFF,     0, 0 },
 	{ TIM8,  &RCC->APB2ENR, RCC_APB2ENR_TIM8EN,  &System::TIMxAPB2Clock,
-	  TIM8_UP_TIM13_IRQn,      TIM8_CC_IRQn,               true,  3, 0 },
+	  TIM8_UP_TIM13_IRQn,      TIM8_CC_IRQn,               true,  0xFFFF,     3, 0 },
 	{ TIM9,  &RCC->APB2ENR, RCC_APB2ENR_TIM9EN,  &System::TIMxAPB2Clock,
-	  TIM1_BRK_TIM9_IRQn,      TIM1_BRK_TIM9_IRQn,         false, 3, 0 },
+	  TIM1_BRK_TIM9_IRQn,      TIM1_BRK_TIM9_IRQn,         false, 0xFFFF,     3, 0 },
 	{ TIM10, &RCC->APB2ENR, RCC_APB2ENR_TIM10EN, &System::TIMxAPB2Clock,
-	  TIM1_UP_TIM10_IRQn,      TIM1_UP_TIM10_IRQn,         false, 3, 0 },
+	  TIM1_UP_TIM10_IRQn,      TIM1_UP_TIM10_IRQn,         false, 0xFFFF,     3, 0 },
 	{ TIM11, &RCC->APB2ENR, RCC_APB2ENR_TIM11EN, &System::TIMxAPB2Clock,
-	  TIM1_TRG_COM_TIM11_IRQn, TIM1_TRG_COM_TIM11_IRQn,   false, 3, 0 },
+	  TIM1_TRG_COM_TIM11_IRQn, TIM1_TRG_COM_TIM11_IRQn,   false, 0xFFFF,     3, 0 },
 	{ TIM12, &RCC->APB1ENR, RCC_APB1ENR_TIM12EN, &System::TIMxAPB1Clock,
-	  TIM8_BRK_TIM12_IRQn,     TIM8_BRK_TIM12_IRQn,        false, 9, 0 },
+	  TIM8_BRK_TIM12_IRQn,     TIM8_BRK_TIM12_IRQn,        false, 0xFFFF,     9, 0 },
 	{ TIM13, &RCC->APB1ENR, RCC_APB1ENR_TIM13EN, &System::TIMxAPB1Clock,
-	  TIM8_UP_TIM13_IRQn,      TIM8_UP_TIM13_IRQn,         false, 9, 0 },
+	  TIM8_UP_TIM13_IRQn,      TIM8_UP_TIM13_IRQn,         false, 0xFFFF,     9, 0 },
 	{ TIM14, &RCC->APB1ENR, RCC_APB1ENR_TIM14EN, &System::TIMxAPB1Clock,
-	  TIM8_TRG_COM_TIM14_IRQn, TIM8_TRG_COM_TIM14_IRQn,   false, 9, 0 },
+	  TIM8_TRG_COM_TIM14_IRQn, TIM8_TRG_COM_TIM14_IRQn,   false, 0xFFFF,     9, 0 },
+};
+
+// RM0090 "TIMx internal trigger connection" — TIM1/2/3/4/5/8 (the only ones
+// with a full slave-mode controller). TIM9-14 are omitted: on F4 they either
+// lack an SMCR or their ITR sources are OC outputs, not TRGO, so they don't
+// fit this master-TRGO -> slave-TS scheme.
+const TIM::ITR_Route TIM::itr_table[] = {
+	// slave TIM1
+	{ TIM5, TIM1, 0 }, { TIM2, TIM1, 1 }, { TIM3, TIM1, 2 }, { TIM4, TIM1, 3 },
+	// slave TIM2
+	{ TIM1, TIM2, 0 }, { TIM8, TIM2, 1 }, { TIM3, TIM2, 2 }, { TIM4, TIM2, 3 },
+	// slave TIM3
+	{ TIM1, TIM3, 0 }, { TIM2, TIM3, 1 }, { TIM5, TIM3, 2 }, { TIM4, TIM3, 3 },
+	// slave TIM4
+	{ TIM1, TIM4, 0 }, { TIM2, TIM4, 1 }, { TIM3, TIM4, 2 }, { TIM8, TIM4, 3 },
+	// slave TIM5
+	{ TIM2, TIM5, 0 }, { TIM3, TIM5, 1 }, { TIM4, TIM5, 2 }, { TIM8, TIM5, 3 },
+	// slave TIM8
+	{ TIM1, TIM8, 0 }, { TIM2, TIM8, 1 }, { TIM4, TIM8, 2 }, { TIM5, TIM8, 3 },
 };
 #endif
 

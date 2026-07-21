@@ -75,10 +75,27 @@ protected:
 		IRQn_Type           irq_up;    ///< Update (or shared) IRQ vector.
 		IRQn_Type           irq_cc;    ///< CC IRQ vector; same as irq_up when shared.
 		bool                has_bdtr;  ///< True for advanced/semi-advanced timers (TIM1, TIM16, TIM17).
+		uint32_t            arr_max;   ///< Max ARR value: 0xFFFF, or 0xFFFFFFFF for 32-bit TIM2/TIM5 (F4/F7).
 		uint8_t             af;        ///< GPIO alternate-function index for this timer.
 		uint32_t            dma_up_req; ///< DMAMUX request ID for the Update event (used by TIM_PWM::AttachDMA).
 	};
 	static const PeriphInfo tim_table[];
+
+	/**
+	 * @brief One "slave can count master's TRGO via this ITR index" fact.
+	 * @note itr == 0xFF marks a pair that is not yet verified against the
+	 *       Reference Manual's "internal trigger connection" table for this
+	 *       family — treat as unsupported until confirmed (see tim_defs.hpp).
+	 */
+	struct ITR_Route {
+		TIM_TypeDef* master;
+		TIM_TypeDef* slave;
+		uint8_t      itr;   ///< TS field value (0-3 = ITR0-ITR3), or 0xFF = unverified/unsupported.
+	};
+	static const ITR_Route itr_table[];
+
+	/** @brief Looks up the ITR index connecting master's TRGO to slave's TS. 0xFF if absent/unverified. */
+	static uint8_t FindITR(TIM_TypeDef* master, TIM_TypeDef* slave);
 
 	const PeriphInfo* _info = nullptr;
 	void (*_update_cb)(void)  = nullptr;
@@ -158,7 +175,8 @@ public:
 	 *
 	 * @param freq  PWM frequency in Hz.
 	 * @param arr   Auto-reload value; PSC is derived automatically.
-	 *              Default 999 gives 0.1 % duty resolution via SetDuty().
+	 *              SetDuty() scales percent by the actual arr, so any value
+	 *              works; default 999 gives 0.1 % resolution.
 	 *              For protocols like WS2812B pass an explicit value
 	 *              (e.g. arr = 79 at 64 MHz / 800 kHz) and use SetCCR().
 	 */
@@ -293,7 +311,7 @@ public:
 	 * @param ch2_width  CCR value for channel B.
 	 */
 	SysInitStatus SetUp(uint32_t freq, uint32_t period,
-	                    uint32_t ch1_width, uint32_t ch2_width);
+						uint32_t ch1_width, uint32_t ch2_width);
 
 	/**
 	 * @brief Generates @p pulses steps.  Positive = forward, negative = reverse.
@@ -310,6 +328,129 @@ private:
 	void           (*_on_complete)(void) = nullptr;
 
 	void HandleIRQ() override;
+};
+
+// ---------------------------------------------------------------------------
+// TIM_StepGenerator — continuous 50%-duty STEP pulse train (STEP/DIR drivers)
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Generates the STEP pulse train for a STEP/DIR stepper driver.
+ *
+ * DIR is deliberately not handled here — it is a plain GPIO toggled by the
+ * caller (e.g. Motor::Driver::set_direction), independent of this timer.
+ *
+ * Two ways to know how many steps have gone out, chosen via SetUp()'s
+ * @p count_in_isr:
+ *  - Software (count_in_isr = true): the Update IRQ fires on every toggle,
+ *    GetStepCount() reads a RAM counter. Simplest, costs one ISR every 2
+ *    output edges — fine up to a few tens of kHz of step rate.
+ *  - Hardware (count_in_isr = false): no IRQ at all. Pair this timer with a
+ *    TIM_HWCounter chained to its TRGO (see that class) and read steps from
+ *    TIM_HWCounter::Count()/2 instead — needed at step rates where an ISR
+ *    per toggle would load the CPU noticeably.
+ *
+ * @code
+ *   // Software-counted, up to ~20 kHz steps:
+ *   TIM_StepGenerator step(TIM3, {TIM::_3::CH1::PA6, TIM::TIM_Channel::CH1});
+ *   step.SetUp(1000, true);   // 1 kHz, counted via IRQ
+ *   step.Start();
+ *   uint32_t done = step.GetStepCount();
+ *
+ *   // Hardware-counted, high step rates, zero ISR overhead:
+ *   TIM_StepGenerator step(TIM1, {TIM::_1::CH1::PA8, TIM::TIM_Channel::CH1});
+ *   step.SetUp(200000, false);       // 200 kHz, no IRQ
+ *   TIM_HWCounter counter(TIM3);
+ *   counter.SetUp(step);              // TIM3 counts TIM1's TRGO via ITR
+ *   step.Start();
+ *   uint32_t done = counter.Count() / 2;
+ * @endcode
+ */
+class TIM_StepGenerator : public TIM
+{
+public:
+	/** @param step  STEP pulse pin + channel. DIR is a plain GPIO, not owned here. */
+	TIM_StepGenerator(TIM_TypeDef* timx, Line step) : TIM(timx), _step(step) {}
+
+	/**
+	 * @brief Configures the STEP channel for a free-running square wave.
+	 * Does NOT start the timer — call Start()/Stop() (inherited) explicitly.
+	 *
+	 * @param freq          Initial step frequency in Hz (pulses/sec); 0 is invalid.
+	 * @param count_in_isr  true: enable the Update IRQ and maintain GetStepCount()
+	 *                      in software. false: no IRQ is enabled at all — use a
+	 *                      TIM_HWCounter chained to this timer's TRGO instead
+	 *                      (GetStepCount() then stays at 0, it isn't updated).
+	 */
+	SysInitStatus SetUp(uint32_t freq, bool count_in_isr = true);
+
+	/**
+	 * @brief Changes the step frequency, at rest or while running.
+	 * Recomputes PSC/ARR from scratch — call at ramp-update rate, not per-pulse.
+	 */
+	SysInitStatus SetStepFrequency(uint32_t freq);
+
+	/** @brief Steps (rising edges) generated since SetUp() or the last ResetStepCount(). Only updates when SetUp() was called with count_in_isr = true; else stays 0 — see TIM_HWCounter. */
+	inline uint32_t GetStepCount() const { return _step_count >> 1; }
+	inline void     ResetStepCount()     { _step_count = 0; }
+
+private:
+	Line              _step;
+	volatile uint32_t _step_count = 0;  ///< Counts toggles; one step = 2 toggles. Unused when count_in_isr = false.
+
+	void HandleIRQ() override;
+};
+
+// ---------------------------------------------------------------------------
+// TIM_HWCounter — free-running hardware pulse counter, no interrupts/CPU
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Counts another timer's pulses entirely in hardware.
+ *
+ * Chains this timer's counter to a "master" timer's TRGO (Update event) via
+ * the internal trigger (ITR) bus, in External Clock Mode 1: CNT increments
+ * once per master Update event with no ISR and no CPU cycles spent, at any
+ * pulse rate the master can generate. Use this instead of
+ * TIM_StepGenerator's built-in software counter when the step rate is high
+ * enough that an interrupt per toggle would be a real CPU cost.
+ *
+ * Requires a verified (master, slave) route in TIM::itr_table — currently
+ * only STM32F4/F7 (TIM1/2/3/4/5/8) are populated; on STM32G0 SetUp() returns
+ * InitError until the table entries are confirmed against RM0444 (see the
+ * TODO in tim_defs.hpp).
+ *
+ * @code
+ *   TIM_StepGenerator step(TIM1, {TIM::_1::CH1::PA8, TIM::TIM_Channel::CH1});
+ *   step.SetUp(200000, false);   // no IRQ — see TIM_StepGenerator docs above
+ *
+ *   TIM_HWCounter counter(TIM3); // TIM3 free-run, unrelated to STEP's own pins
+ *   if (counter.SetUp(step) != SysInitStatus::InitOK) return; // no ITR route for this pair
+ *
+ *   step.Start();
+ *   uint32_t steps_done = counter.Count() / 2;  // /2: toggle mode = 2 edges/step
+ * @endcode
+ */
+class TIM_HWCounter : public TIM
+{
+public:
+	explicit TIM_HWCounter(TIM_TypeDef* timx) : TIM(timx) {}
+
+	/**
+	 * @brief Chains this timer's counter to another timer's Update event via
+	 * the internal trigger (ITR) bus, in External Clock Mode 1 — CNT then
+	 * increments once per master Update event with zero CPU involvement.
+	 *
+	 * @param master  Timer whose TRGO drives this counter. Its
+	 *                EnableTriggerOutput() is called here.
+	 * @return InitError if this (master, slave) pair has no verified ITR route
+	 *         for the current MCU family (see TIM::itr_table in tim_defs.hpp).
+	 */
+	SysInitStatus SetUp(TIM& master);
+
+	/** @brief Raw counter value — increments once per master Update event. */
+	inline uint32_t Count() const { return TIMx->CNT; }
+	inline void     Reset()       { TIMx->CNT = 0; }
 };
 
 #endif // TIM_HPP_

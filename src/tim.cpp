@@ -21,13 +21,21 @@ SysInitStatus TIM::Init()
 	return SysInitStatus::InitOK;
 }
 
+uint8_t TIM::FindITR(TIM_TypeDef* master, TIM_TypeDef* slave)
+{
+	for (const auto& r : itr_table)
+		if (r.master == master && r.slave == slave) return r.itr;
+	return 0xFF;
+}
+
 SysInitStatus TIM::SetFrequency(uint32_t freq)
 {
 	if (!_info || !freq) return SysInitStatus::InitError;
-	uint32_t ratio = *_info->bus_clk / freq;     // (PSC+1)*(ARR+1)
-	uint32_t psc   = ratio / 0x10000;
+	uint32_t ratio = *_info->bus_clk / freq;     // (PSC+1)*(ARR+1), fits in 32 bits
+	// arr_max+1 alone needs 64 bits: it overflows uint32_t when arr_max is 0xFFFFFFFF (32-bit ARR).
+	uint32_t psc   = static_cast<uint32_t>(ratio / (static_cast<uint64_t>(_info->arr_max) + 1));
 	uint32_t arr   = ratio / (psc + 1) - 1;
-	if (psc > 0xFFFF || arr > 0xFFFF) return SysInitStatus::InitError;
+	if (psc > 0xFFFF || arr > _info->arr_max) return SysInitStatus::InitError;
 	TIMx->PSC = psc;
 	TIMx->ARR = arr;
 	return SysInitStatus::InitOK;
@@ -92,7 +100,11 @@ SysInitStatus TIM_PeriodicIRQ::SetUp(uint32_t freq, void (*cb)(void))
 void TIM_PWM::SetDuty(TIM_Channel ch, uint32_t percent)
 {
 	if (percent > 100) percent = 100;
-	*ccr(static_cast<uint32_t>(ch)) = percent * 10u;
+	// (ARR+1) is the PWM period in ticks; scale by percent instead of assuming
+	// the default arr=999 from SetUp() (which only holds for 0.1% resolution).
+	// SetDuty targets percentage-scale periods; for ARR near the 32-bit limit
+	// (TIM2/TIM5 without a prescaler) use SetCCR() instead.
+	*ccr(static_cast<uint32_t>(ch)) = (TIMx->ARR + 1) * percent / 100;
 }
 
 void TIM_PWM::SetCCR(TIM_Channel ch, uint32_t val)
@@ -104,7 +116,7 @@ SysInitStatus TIM_PWM::SetUp(uint32_t freq, uint32_t arr)
 {
 	bool any = false;
 	for (int i = 0; i < 4; i++) if (_ch[i].IsValid()) { any = true; break; }
-	if (!freq || !arr || arr > 0xFFFF || !any) return SysInitStatus::InitError;
+	if (!freq || !arr || arr > _info->arr_max || !any) return SysInitStatus::InitError;
 
 	SysInitStatus s = Init();
 	if (s != SysInitStatus::InitOK) return s;
@@ -340,4 +352,72 @@ void TIM_EncoderGenerator::HandleIRQ()
 		Stop();
 		if (_on_complete) _on_complete();
 	}
+}
+
+// ---------------------------------------------------------------------------
+// TIM_StepGenerator
+// ---------------------------------------------------------------------------
+
+SysInitStatus TIM_StepGenerator::SetUp(uint32_t freq, bool count_in_isr)
+{
+	if (!_step.pin.IsValid() || !freq) return SysInitStatus::InitError;
+
+	SysInitStatus s = Init();
+	if (s != SysInitStatus::InitOK) return s;
+
+	_step.pin.SetUp(PIN::TYPE::AF_PushPull, _info->af);
+
+	uint32_t idx = static_cast<uint32_t>(_step.channel);
+	TIMx->CCMR1 = 0;
+	TIMx->CCMR2 = 0;
+	TIMx->CCER  = 0;
+
+	// Toggle mode (OCxM = 0b011): output flips on every compare match, giving
+	// an exact 50% duty cycle regardless of the CCR value (0 <= CCR <= ARR).
+	uint32_t shift = TIM_CCMR1_OC1M_Pos + (idx & 1u) * 8u;
+	if (idx < 2) TIMx->CCMR1 |= 3u << shift;
+	else         TIMx->CCMR2 |= 3u << shift;
+	TIMx->CCER |= TIM_CCER_CC1E << (idx * 4u);
+
+	if (_info->has_bdtr) TIMx->BDTR = TIM_BDTR_MOE;
+
+	// Only pay for the Update IRQ when software step counting was asked for;
+	// with a TIM_HWCounter attached instead, no IRQ is needed at all.
+	if (count_in_isr) IRQ_en(IRQ::UE, ENABLE);
+	return SetStepFrequency(freq);
+}
+
+SysInitStatus TIM_StepGenerator::SetStepFrequency(uint32_t freq)
+{
+	// Toggle mode needs two counter overflows per output pulse.
+	SysInitStatus s = SetFrequency(freq * 2);
+	if (s != SysInitStatus::InitOK) return s;
+	*ccr(static_cast<uint32_t>(_step.channel)) = TIMx->ARR >> 1;
+	return SysInitStatus::InitOK;
+}
+
+void TIM_StepGenerator::HandleIRQ()
+{
+	TIMx->SR = 0;
+	_step_count = _step_count + 1;
+}
+
+// ---------------------------------------------------------------------------
+// TIM_HWCounter
+// ---------------------------------------------------------------------------
+
+SysInitStatus TIM_HWCounter::SetUp(TIM& master)
+{
+	SysInitStatus s = Init();
+	if (s != SysInitStatus::InitOK) return s;
+
+	uint8_t itr = FindITR(master.TIMx, TIMx);
+	if (itr == 0xFF) return SysInitStatus::InitError;
+
+	master.EnableTriggerOutput();  // MMS = 010: TRGO on Update event
+
+	TIMx->ARR  = _info->arr_max;                                          // maximise range before wraparound
+	TIMx->SMCR = (itr << TIM_SMCR_TS_Pos) | (0b111u << TIM_SMCR_SMS_Pos);  // External clock mode 1
+	Start();
+	return SysInitStatus::InitOK;
 }
