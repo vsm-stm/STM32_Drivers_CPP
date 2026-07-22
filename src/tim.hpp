@@ -365,6 +365,13 @@ private:
  *   step.Start();
  *   uint32_t done = counter.Count() / 2;
  * @endcode
+ *
+ * @note Position moves: for a fixed target at constant or ramped speed, use
+ * RunSteps(N) instead of Start() — it stops itself in hardware after exactly
+ * N pulses (needs an advanced/semi-advanced timer, see RunSteps() docs) and
+ * tolerates SetStepFrequency() ramps mid-move. Deciding *what* frequency to
+ * ramp through at each moment (accel/decel profile) is not this class's job —
+ * that belongs to Motor/orchestration, which knows the motion limits.
  */
 class TIM_StepGenerator : public TIM
 {
@@ -387,8 +394,37 @@ public:
 	/**
 	 * @brief Changes the step frequency, at rest or while running.
 	 * Recomputes PSC/ARR from scratch — call at ramp-update rate, not per-pulse.
+	 * Also cancels any pending RunSteps() one-shot, returning to free-running mode.
 	 */
 	SysInitStatus SetStepFrequency(uint32_t freq);
+
+	/**
+	 * @brief Generates exactly @p steps pulses, then stops itself in hardware
+	 * (Repetition Counter + One Pulse Mode) — no ISR needed to detect
+	 * completion, and correct even if SetStepFrequency() changes the speed
+	 * mid-run (RCR counts elapsed periods, not elapsed time, so a ramp between
+	 * calls doesn't throw off the count).
+	 *
+	 * Requires an advanced/semi-advanced timer with a Repetition Counter
+	 * (TIM1/TIM8, TIM16/TIM17 — wherever PeriphInfo::has_bdtr is true);
+	 * returns InitError otherwise, or if @p steps doesn't fit this timer's
+	 * RCR width.
+	 *
+	 * @note The RCR arithmetic below (2*steps-1 Update events) has not been
+	 * confirmed on real hardware — verify the actual pulse count on a scope
+	 * on first bring-up before relying on it for position accuracy.
+	 *
+	 * @param steps  Number of STEP pulses to generate; 0 is invalid.
+	 *
+	 * @note No RCR on this timer (e.g. STEP generated on TIM3)? Use
+	 * TIM_HWCounter::RunUntil() instead — pair a second timer chained via ITR
+	 * and let its own ARR overflow stop this one. One IRQ for the whole move
+	 * (on completion), not zero, but still nowhere near an IRQ per step.
+	 */
+	SysInitStatus RunSteps(uint32_t steps);
+
+	/** @brief True while the timer is generating pulses (continuous or a RunSteps() burst). */
+	inline bool IsRunning() const { return (TIMx->CR1 & TIM_CR1_CEN) != 0; }
 
 	/** @brief Steps (rising edges) generated since SetUp() or the last ResetStepCount(). Only updates when SetUp() was called with count_in_isr = true; else stays 0 — see TIM_HWCounter. */
 	inline uint32_t GetStepCount() const { return _step_count >> 1; }
@@ -415,12 +451,24 @@ private:
  * TIM_StepGenerator's built-in software counter when the step rate is high
  * enough that an interrupt per toggle would be a real CPU cost.
  *
+ * Two modes:
+ *  - SetUp(master): free-running, poll Count()/2 for steps done — zero IRQs,
+ *    but nothing stops the master automatically (pair with
+ *    TIM_StepGenerator::RunSteps() on the master if it has an RCR, or just
+ *    Stop() the master yourself once Count() reaches your target).
+ *  - RunUntil(master, steps, cb): this counter's own ARR is the target step
+ *    count; on reaching it, it stops itself, stops the master, and calls
+ *    @p cb — one IRQ for the whole move, not one per step. Use this when the
+ *    master has no Repetition Counter (e.g. STEP generated on TIM3) and
+ *    RunSteps() isn't available there.
+ *
  * Requires a verified (master, slave) route in TIM::itr_table — currently
- * only STM32F4/F7 (TIM1/2/3/4/5/8) are populated; on STM32G0 SetUp() returns
- * InitError until the table entries are confirmed against RM0444 (see the
- * TODO in tim_defs.hpp).
+ * only STM32F4/F7 (TIM1/2/3/4/5/8) are populated; on STM32G0 both methods
+ * return InitError until the table entries are confirmed against RM0444
+ * (see the TODO in tim_defs.hpp).
  *
  * @code
+ *   // Free-running, poll-based:
  *   TIM_StepGenerator step(TIM1, {TIM::_1::CH1::PA8, TIM::TIM_Channel::CH1});
  *   step.SetUp(200000, false);   // no IRQ — see TIM_StepGenerator docs above
  *
@@ -429,6 +477,14 @@ private:
  *
  *   step.Start();
  *   uint32_t steps_done = counter.Count() / 2;  // /2: toggle mode = 2 edges/step
+ *
+ *   // Auto-stop on a master without RCR (e.g. STEP on TIM3):
+ *   TIM_StepGenerator step(TIM3, {TIM::_3::CH1::PA6, TIM::TIM_Channel::CH1});
+ *   step.SetUp(5000, false);         // no IRQ on the STEP timer itself
+ *
+ *   TIM_HWCounter counter(TIM1);     // any timer with a free ITR route to TIM3
+ *   counter.RunUntil(step, 800, &OnMoveDone);  // 800 steps, then auto-stop
+ *   step.Start();
  * @endcode
  */
 class TIM_HWCounter : public TIM
@@ -440,6 +496,7 @@ public:
 	 * @brief Chains this timer's counter to another timer's Update event via
 	 * the internal trigger (ITR) bus, in External Clock Mode 1 — CNT then
 	 * increments once per master Update event with zero CPU involvement.
+	 * Free-running: nothing stops the master automatically, see Count().
 	 *
 	 * @param master  Timer whose TRGO drives this counter. Its
 	 *                EnableTriggerOutput() is called here.
@@ -448,9 +505,37 @@ public:
 	 */
 	SysInitStatus SetUp(TIM& master);
 
+	/**
+	 * @brief Like SetUp(), but stops both this counter and @p master, and
+	 * calls @p on_complete, the moment @p steps pulses have been seen —
+	 * entirely via this counter's own ARR overflow. One IRQ for the whole
+	 * move (on completion), unlike TIM_StepGenerator's per-toggle software
+	 * counting mode.
+	 *
+	 * Use this for a master timer without a Repetition Counter, where
+	 * TIM_StepGenerator::RunSteps() isn't available (returns InitError there).
+	 *
+	 * @param master       Timer whose TRGO drives this counter (as in SetUp()).
+	 * @param steps        Number of master output steps to wait for; 0 is invalid.
+	 * @param on_complete  Called from this counter's IRQ once the target is hit
+	 *                     (nullptr = no callback, just the auto-stop).
+	 * @return InitError if there's no ITR route for this pair, or if @p steps
+	 *         doesn't fit this counter's ARR width (see PeriphInfo::arr_max).
+	 */
+	SysInitStatus RunUntil(TIM& master, uint32_t steps, void (*on_complete)(void) = nullptr);
+
 	/** @brief Raw counter value — increments once per master Update event. */
 	inline uint32_t Count() const { return TIMx->CNT; }
 	inline void     Reset()       { TIMx->CNT = 0; }
+
+private:
+	TIM*  _master      = nullptr;
+	void (*_on_complete)(void) = nullptr;
+
+	/** @brief Shared setup: clock, ITR lookup, TRGO-in via External Clock Mode 1. */
+	SysInitStatus ChainToMaster(TIM& master);
+
+	void HandleIRQ() override;
 };
 
 #endif // TIM_HPP_

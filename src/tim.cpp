@@ -389,10 +389,29 @@ SysInitStatus TIM_StepGenerator::SetUp(uint32_t freq, bool count_in_isr)
 
 SysInitStatus TIM_StepGenerator::SetStepFrequency(uint32_t freq)
 {
+	TIMx->CR1 &= ~TIM_CR1_OPM;  // continuous mode: undo any earlier RunSteps() one-shot
 	// Toggle mode needs two counter overflows per output pulse.
 	SysInitStatus s = SetFrequency(freq * 2);
 	if (s != SysInitStatus::InitOK) return s;
 	*ccr(static_cast<uint32_t>(_step.channel)) = TIMx->ARR >> 1;
+	return SysInitStatus::InitOK;
+}
+
+SysInitStatus TIM_StepGenerator::RunSteps(uint32_t steps)
+{
+	if (!_info || !steps) return SysInitStatus::InitError;
+	if (!_info->has_bdtr) return SysInitStatus::InitError;  // no RCR without BDTR
+
+	// Toggle mode: 2 Update events (periods) per output step.
+	uint32_t events = steps * 2u - 1u;
+	if (events > TIM_RCR_REP_Msk) return SysInitStatus::InitError;  // exceeds this timer's RCR width
+
+	Stop();
+	TIMx->CNT  = 0;
+	TIMx->RCR  = events;
+	TIMx->CR1 |= TIM_CR1_OPM;  // auto-clear CEN once RCR reaches 0
+	TIMx->EGR  = TIM_EGR_UG;   // force the RCR preload into the active counter before the first period
+	Start();
 	return SysInitStatus::InitOK;
 }
 
@@ -406,7 +425,7 @@ void TIM_StepGenerator::HandleIRQ()
 // TIM_HWCounter
 // ---------------------------------------------------------------------------
 
-SysInitStatus TIM_HWCounter::SetUp(TIM& master)
+SysInitStatus TIM_HWCounter::ChainToMaster(TIM& master)
 {
 	SysInitStatus s = Init();
 	if (s != SysInitStatus::InitOK) return s;
@@ -416,8 +435,46 @@ SysInitStatus TIM_HWCounter::SetUp(TIM& master)
 
 	master.EnableTriggerOutput();  // MMS = 010: TRGO on Update event
 
-	TIMx->ARR  = _info->arr_max;                                          // maximise range before wraparound
+	TIMx->CNT  = 0;
 	TIMx->SMCR = (itr << TIM_SMCR_TS_Pos) | (0b111u << TIM_SMCR_SMS_Pos);  // External clock mode 1
+	return SysInitStatus::InitOK;
+}
+
+SysInitStatus TIM_HWCounter::SetUp(TIM& master)
+{
+	SysInitStatus s = ChainToMaster(master);
+	if (s != SysInitStatus::InitOK) return s;
+
+	TIMx->ARR = _info->arr_max;  // maximise range before wraparound
 	Start();
 	return SysInitStatus::InitOK;
+}
+
+SysInitStatus TIM_HWCounter::RunUntil(TIM& master, uint32_t steps, void (*on_complete)(void))
+{
+	if (!steps) return SysInitStatus::InitError;
+
+	SysInitStatus s = ChainToMaster(master);
+	if (s != SysInitStatus::InitOK) return s;
+
+	// Toggle mode: 2 master Update events per output step; ARR+1 events cause
+	// the overflow that fires HandleIRQ().
+	uint32_t arr_value = steps * 2u - 1u;
+	if (arr_value > _info->arr_max) return SysInitStatus::InitError;  // move too long for this counter's width
+
+	_master      = &master;
+	_on_complete = on_complete;
+
+	TIMx->ARR = arr_value;
+	IRQ_en(IRQ::UE, ENABLE);
+	Start();
+	return SysInitStatus::InitOK;
+}
+
+void TIM_HWCounter::HandleIRQ()
+{
+	TIMx->SR = 0;
+	Stop();
+	if (_master) _master->Stop();
+	if (_on_complete) _on_complete();
 }
