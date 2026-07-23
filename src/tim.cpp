@@ -21,6 +21,36 @@ SysInitStatus TIM::Init()
 	return SysInitStatus::InitOK;
 }
 
+void TIM::Deinit()
+{
+	if (!_info) return;
+
+	// Disable+unregister every possible DIER source; IRQ_en() no-ops on bits
+	// that were never set, and only actually unregisters once DIER is fully
+	// clear, so calling all 5 unconditionally is safe regardless of what
+	// this object had enabled.
+	IRQ_en(IRQ::UE,  DISABLE);
+	IRQ_en(IRQ::CC1, DISABLE);
+	IRQ_en(IRQ::CC2, DISABLE);
+	IRQ_en(IRQ::CC3, DISABLE);
+	IRQ_en(IRQ::CC4, DISABLE);
+
+	Stop();
+
+	// Pulse the reset bit: forces every register (CR1/CR2/SMCR/DIER/SR/EGR/
+	// CCMR1/CCMR2/CCER/CNT/PSC/ARR/RCR/CCR1-4/BDTR/DCR/DMAR/OR) back to
+	// power-on-reset state in one shot, regardless of which mode configured
+	// any of them last.
+	*_info->rst_reg |= _info->rst_bit;
+	*_info->rst_reg &= ~_info->rst_bit;
+
+	// Undo Init()'s clock enable.
+	*_info->clk_reg &= ~_info->clk_bit;
+
+	_update_cb = nullptr;
+	_cc_cb[0] = _cc_cb[1] = _cc_cb[2] = _cc_cb[3] = nullptr;
+}
+
 uint8_t TIM::FindITR(TIM_TypeDef* master, TIM_TypeDef* slave)
 {
 	for (const auto& r : itr_table)
@@ -263,74 +293,6 @@ void TIM_PWM::HandleIRQ()
 }
 
 // ---------------------------------------------------------------------------
-// TIM_InputCapture
-// ---------------------------------------------------------------------------
-
-SysInitStatus TIM_InputCapture::SetUp(uint32_t max_freq, void (*cb)(void))
-{
-	if (!_input.pin.IsValid() || !max_freq) return SysInitStatus::InitError;
-
-	SysInitStatus s = Init();
-	if (s != SysInitStatus::InitOK) return s;
-
-	_input.pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
-
-	TIMx->PSC = *_info->bus_clk / max_freq - 1;
-	TIMx->ARR = 0xFFFF;
-
-	uint32_t ch_idx = static_cast<uint32_t>(_input.GetChannel());
-	SetCCMRField(TIM_CCMR1_CC1S_Pos, ch_idx, 0b01u);  // map CCx to this channel's own TI input
-	TIMx->CCER |= TIM_CCER_CC1E << (ch_idx * 4u);
-
-	_cc_cb[ch_idx] = cb;
-	// CC1IE..CC4IE are contiguous DIER bits — same shift trick HandleIRQ() uses for the SR flags.
-	IRQ_en(static_cast<IRQ>(TIM_DIER_CC1IE << ch_idx), ENABLE);
-
-	Start();
-	return SysInitStatus::InitOK;
-}
-
-void TIM_InputCapture::HandleIRQ()
-{
-	uint32_t sr = TIMx->SR;
-	TIMx->SR = ~sr;  // see TIM::HandleIRQ() for why not a blanket `= 0`
-	uint32_t ch_idx = static_cast<uint32_t>(_input.GetChannel());
-	if (sr & (TIM_SR_CC1IF << ch_idx)) {
-		_capture = *ccr(ch_idx);
-		if (_cc_cb[ch_idx]) _cc_cb[ch_idx]();
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TIM_PulseMeasure
-// ---------------------------------------------------------------------------
-
-SysInitStatus TIM_PulseMeasure::SetUp(uint32_t max_freq)
-{
-	uint32_t ch_idx = static_cast<uint32_t>(_input.GetChannel());
-	if (!_input.pin.IsValid() || ch_idx > 1 || !max_freq)
-		return SysInitStatus::InitError;
-
-	SysInitStatus s = Init();
-	if (s != SysInitStatus::InitOK) return s;
-
-	_input.pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
-
-	TIMx->PSC = *_info->bus_clk / max_freq - 1;
-	TIMx->ARR = 0xFFFF;
-
-	// Direct mapping on the selected channel, indirect on the complementary one
-	TIMx->CCMR1 = (0b01u << (ch_idx        * TIM_CCMR1_CC2S_Pos)) |
-	              (0b10u << ((!ch_idx & 1u) * TIM_CCMR1_CC2S_Pos));
-	TIMx->SMCR  = ((5u + ch_idx) << TIM_SMCR_TS_Pos) |
-	              (0b100u         << TIM_SMCR_SMS_Pos);  // reset mode
-	TIMx->CCER  = TIM_CCER_CC1P | TIM_CCER_CC1E | TIM_CCER_CC2E;
-
-	Start();
-	return SysInitStatus::InitOK;
-}
-
-// ---------------------------------------------------------------------------
 // TIM_EncoderGenerator
 // ---------------------------------------------------------------------------
 
@@ -410,10 +372,16 @@ SysInitStatus TIM_StepGenerator::SetUp(uint32_t freq, bool count_in_isr)
 	TIMx->CCMR2 = 0;
 	TIMx->CCER  = 0;
 
-	// Toggle mode (OCxM = 0b011): output flips on every compare match, giving
-	// an exact 50% duty cycle regardless of the CCR value (0 <= CCR <= ARR).
-	SetCCMRField(TIM_CCMR1_OC1M_Pos, idx, 3u);
+	// PWM mode 1 (OC1M=6): HIGH while CNT < CCR, LOW otherwise. CCR is kept
+	// at ARR/2 (see SetStepFrequency()) for an exact 50% duty pulse once per
+	// period — one Update event per step, not two like toggle mode would need.
+	// OC1PE (CCR preload) pairs with ARPE below so a live SetStepFrequency()
+	// call's new ARR and CCR both take effect together at the next Update
+	// event, instead of CCR jumping immediately while ARR is still buffered.
+	SetCCMRField(TIM_CCMR1_OC1M_Pos, idx, 6u);
+	SetCCMRField(TIM_CCMR1_OC1PE_Pos, idx, 1u);
 	TIMx->CCER |= TIM_CCER_CC1E << (idx * 4u);
+	TIMx->CR1 |= TIM_CR1_ARPE;
 
 	if (_info->has_bdtr) TIMx->BDTR = TIM_BDTR_MOE;
 
@@ -426,10 +394,9 @@ SysInitStatus TIM_StepGenerator::SetUp(uint32_t freq, bool count_in_isr)
 SysInitStatus TIM_StepGenerator::SetStepFrequency(uint32_t freq)
 {
 	TIMx->CR1 &= ~TIM_CR1_OPM;  // continuous mode: undo any earlier RunSteps() one-shot
-	// Toggle mode needs two counter overflows per output pulse.
-	SysInitStatus s = SetFrequency(freq * 2);
+	SysInitStatus s = SetFrequency(freq);
 	if (s != SysInitStatus::InitOK) return s;
-	*ccr(static_cast<uint32_t>(_step.GetChannel())) = TIMx->ARR >> 1;
+	*ccr(static_cast<uint32_t>(_step.GetChannel())) = TIMx->ARR >> 1;  // keep the 50% duty in sync with the new ARR
 	return SysInitStatus::InitOK;
 }
 
@@ -438,8 +405,8 @@ SysInitStatus TIM_StepGenerator::RunSteps(uint32_t steps)
 	if (!_info || !steps) return SysInitStatus::InitError;
 	if (!_info->has_bdtr) return SysInitStatus::InitError;  // no RCR without BDTR
 
-	// Toggle mode: 2 Update events (periods) per output step.
-	uint32_t events = steps * 2u - 1u;
+	// One Update event (period) per output step (PWM mode).
+	uint32_t events = steps - 1u;
 	if (events > TIM_RCR_REP_Msk) return SysInitStatus::InitError;  // exceeds this timer's RCR width
 
 	Stop();
@@ -458,10 +425,107 @@ void TIM_StepGenerator::HandleIRQ()
 }
 
 // ---------------------------------------------------------------------------
+// TIM_InputCapture
+// ---------------------------------------------------------------------------
+
+SysInitStatus TIM_InputCapture::SetUp(uint32_t max_freq, void (*cb)(void))
+{
+	if (!_input.pin.IsValid() || !max_freq) return SysInitStatus::InitError;
+
+	SysInitStatus s = Init();
+	if (s != SysInitStatus::InitOK) return s;
+
+	_input.pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
+
+	TIMx->PSC = *_info->bus_clk / max_freq - 1;
+	TIMx->ARR = 0xFFFF;
+
+	uint32_t ch_idx = static_cast<uint32_t>(_input.GetChannel());
+	SetCCMRField(TIM_CCMR1_CC1S_Pos, ch_idx, 0b01u);  // map CCx to this channel's own TI input
+	TIMx->CCER |= TIM_CCER_CC1E << (ch_idx * 4u);
+
+	_cc_cb[ch_idx] = cb;
+	// CC1IE..CC4IE are contiguous DIER bits — same shift trick HandleIRQ() uses for the SR flags.
+	IRQ_en(static_cast<IRQ>(TIM_DIER_CC1IE << ch_idx), ENABLE);
+
+	Start();
+	return SysInitStatus::InitOK;
+}
+
+void TIM_InputCapture::HandleIRQ()
+{
+	uint32_t sr = TIMx->SR;
+	TIMx->SR = ~sr;  // see TIM::HandleIRQ() for why not a blanket `= 0`
+	uint32_t ch_idx = static_cast<uint32_t>(_input.GetChannel());
+	if (sr & (TIM_SR_CC1IF << ch_idx)) {
+		_capture = *ccr(ch_idx);
+		if (_cc_cb[ch_idx]) _cc_cb[ch_idx]();
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TIM_PulseMeasure
+// ---------------------------------------------------------------------------
+
+SysInitStatus TIM_PulseMeasure::SetUp(uint32_t max_freq)
+{
+	uint32_t ch_idx = static_cast<uint32_t>(_input.GetChannel());
+	if (!_input.pin.IsValid() || ch_idx > 1 || !max_freq)
+		return SysInitStatus::InitError;
+
+	SysInitStatus s = Init();
+	if (s != SysInitStatus::InitOK) return s;
+
+	_input.pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
+
+	TIMx->PSC = *_info->bus_clk / max_freq - 1;
+	TIMx->ARR = 0xFFFF;
+
+	// Direct mapping on the selected channel, indirect on the complementary one
+	TIMx->CCMR1 = (0b01u << (ch_idx        * TIM_CCMR1_CC2S_Pos)) |
+	              (0b10u << ((!ch_idx & 1u) * TIM_CCMR1_CC2S_Pos));
+	TIMx->SMCR  = ((5u + ch_idx) << TIM_SMCR_TS_Pos) |
+	              (0b100u         << TIM_SMCR_SMS_Pos);  // reset mode
+	TIMx->CCER  = TIM_CCER_CC1P | TIM_CCER_CC1E | TIM_CCER_CC2E;
+
+	Start();
+	return SysInitStatus::InitOK;
+}
+
+// ---------------------------------------------------------------------------
+// TIM_EncoderReader
+// ---------------------------------------------------------------------------
+
+SysInitStatus TIM_EncoderReader::SetUp(Mode mode)
+{
+	if (!_a.pin.IsValid() || !_b.pin.IsValid()) return SysInitStatus::InitError;
+
+	SysInitStatus s = Init();
+	if (s != SysInitStatus::InitOK) return s;
+
+	_a.pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
+	_b.pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
+
+	// CC1S=01/CC2S=01: map CH1/CH2 to their own TI input, same encoding
+	// TIM_InputCapture uses. Encoder Interface mode reads its edges off this
+	// mapping internally — CCER (capture/output enable) is not needed since
+	// nothing is captured into CCR1/CCR2 or driven onto a pin here, only
+	// counted.
+	TIMx->CCMR1 = (0b01u << TIM_CCMR1_CC1S_Pos) | (0b01u << TIM_CCMR1_CC2S_Pos);
+	TIMx->CCER  = 0;
+	TIMx->CNT   = 0;
+	TIMx->ARR   = _info->arr_max;  // maximise range before wraparound
+	TIMx->SMCR  = static_cast<uint32_t>(mode) << TIM_SMCR_SMS_Pos;
+
+	Start();
+	return SysInitStatus::InitOK;
+}
+
+// ---------------------------------------------------------------------------
 // TIM_HWCounter
 // ---------------------------------------------------------------------------
 
-SysInitStatus TIM_HWCounter::ChainToMaster(TIM& master)
+SysInitStatus TIM_HWCounter::SetUp(TIM& master, void (*on_complete)(void))
 {
 	SysInitStatus s = Init();
 	if (s != SysInitStatus::InitOK) return s;
@@ -470,47 +534,55 @@ SysInitStatus TIM_HWCounter::ChainToMaster(TIM& master)
 	if (itr == 0xFF) return SysInitStatus::InitError;
 
 	master.EnableTriggerOutput();  // MMS = 010: TRGO on Update event
-
-	TIMx->CNT  = 0;
-	TIMx->SMCR = (itr << TIM_SMCR_TS_Pos) | (0b111u << TIM_SMCR_SMS_Pos);  // External clock mode 1
-	return SysInitStatus::InitOK;
-}
-
-SysInitStatus TIM_HWCounter::SetUp(TIM& master)
-{
-	SysInitStatus s = ChainToMaster(master);
-	if (s != SysInitStatus::InitOK) return s;
-
-	TIMx->ARR = _info->arr_max;  // maximise range before wraparound
-	Start();
-	return SysInitStatus::InitOK;
-}
-
-SysInitStatus TIM_HWCounter::RunUntil(TIM& master, uint32_t steps, void (*on_complete)(void))
-{
-	if (!steps) return SysInitStatus::InitError;
-
-	SysInitStatus s = ChainToMaster(master);
-	if (s != SysInitStatus::InitOK) return s;
-
-	// Toggle mode: 2 master Update events per output step; ARR+1 events cause
-	// the overflow that fires HandleIRQ().
-	uint32_t arr_value = steps * 2u - 1u;
-	if (arr_value > _info->arr_max) return SysInitStatus::InitError;  // move too long for this counter's width
-
 	_master      = &master;
 	_on_complete = on_complete;
 
-	TIMx->ARR = arr_value;
-	IRQ_en(IRQ::UE, ENABLE);
+	TIMx->CNT  = 0;
+	TIMx->SMCR = (itr << TIM_SMCR_TS_Pos) | (0b111u << TIM_SMCR_SMS_Pos);  // External clock mode 1
+	TIMx->ARR  = _info->arr_max;  // maximise range before wraparound
+	// Enabled unconditionally, not just when on_complete is non-null: the
+	// master auto-stop from StopAfter()/StopAT() is useful on its own, same
+	// as TIM_PeriodicIRQ::SetCompareIRQ()'s "nullptr = no callback, just the
+	// auto-stop" convention.
+	IRQ_en(IRQ::CC1, ENABLE);
 	Start();
+	return SysInitStatus::InitOK;
+}
+
+SysInitStatus TIM_HWCounter::StopAfter(uint32_t ticks)
+{
+	if (!_info || !ticks) return SysInitStatus::InitError;
+	if (ticks > _info->arr_max) return SysInitStatus::InitError;  // move too long for this counter's width
+
+	// 64-bit: arr_max can be 0xFFFFFFFF (32-bit-ARR timers), where period
+	// itself overflows a uint32_t; the modulo below needs the real period.
+	uint64_t period = static_cast<uint64_t>(_info->arr_max) + 1;
+	bool     down   = IsCountingDown();
+	uint32_t target = down
+		? static_cast<uint32_t>((TIMx->CNT + period - ticks) % period)
+		: static_cast<uint32_t>((TIMx->CNT + ticks) % period);
+
+	*ccr(0) = target;  // CH1, used purely as a pin-free comparator
+	IRQ_en(IRQ::CC1, ENABLE);  // re-arm in case CancelStopAfter() switched it off
+	return SysInitStatus::InitOK;
+}
+
+SysInitStatus TIM_HWCounter::StopAT(uint32_t ticks)
+{
+	if (!_info || !ticks) return SysInitStatus::InitError;
+	if (ticks > _info->arr_max) return SysInitStatus::InitError;  // doesn't fit this counter's width
+
+	*ccr(0) = ticks;  // CH1, used purely as a pin-free comparator
+	IRQ_en(IRQ::CC1, ENABLE);  // re-arm in case CancelStopAfter() switched it off
 	return SysInitStatus::InitOK;
 }
 
 void TIM_HWCounter::HandleIRQ()
 {
-	TIMx->SR = 0;
-	Stop();
-	if (_master) _master->Stop();
-	if (_on_complete) _on_complete();
+	uint32_t sr = TIMx->SR;
+	TIMx->SR = ~sr;  // see TIM::HandleIRQ() for why not a blanket `= 0`
+	if (sr & TIM_SR_CC1IF) {
+		if (_master) _master->Stop();
+		if (_on_complete) _on_complete();
+	}
 }

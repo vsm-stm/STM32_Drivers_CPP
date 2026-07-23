@@ -341,16 +341,26 @@ struct _8 {
 #ifdef TIM_DEFS_CPP
 
 #if defined(STM32G0)
+// rst_reg/rst_bit below (RCC_APBRSTR1_*/RCC_APBRSTR2_*) follow the same
+// naming/bit-position pattern as the already-used RCC_APBENR1_*/APBENR2_*
+// bits, but are NOT verified against an actual STM32G0 CMSIS device header
+// (none is present in this repo, which only has STM32F429's) — confirm
+// against the real RM0444/device header before relying on Deinit() here.
 const TIM::PeriphInfo TIM::tim_table[] = {
-	{ TIM1,  &RCC->APBENR2, RCC_APBENR2_TIM1EN,  &System::TIMxAPB1Clock,
+	{ TIM1,  &RCC->APBENR2, RCC_APBENR2_TIM1EN,  &RCC->APBRSTR2, RCC_APBRSTR2_TIM1RST,
+	  &System::TIMxAPB1Clock,
 	  TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn,  true,  4, 0xFFFF, DMA_Sx::Req::Tim1::UP.ch  },
-	{ TIM3,  &RCC->APBENR1, RCC_APBENR1_TIM3EN,  &System::TIMxAPB1Clock,
+	{ TIM3,  &RCC->APBENR1, RCC_APBENR1_TIM3EN,  &RCC->APBRSTR1, RCC_APBRSTR1_TIM3RST,
+	  &System::TIMxAPB1Clock,
 	  TIM3_IRQn,              TIM3_IRQn,         false, 4, 0xFFFF, DMA_Sx::Req::Tim3::UP.ch  },
-	{ TIM14, &RCC->APBENR2, RCC_APBENR2_TIM14EN, &System::TIMxAPB1Clock,
+	{ TIM14, &RCC->APBENR2, RCC_APBENR2_TIM14EN, &RCC->APBRSTR2, RCC_APBRSTR2_TIM14RST,
+	  &System::TIMxAPB1Clock,
 	  TIM14_IRQn,             TIM14_IRQn,        false, 1, 0xFFFF, 0                          },
-	{ TIM16, &RCC->APBENR2, RCC_APBENR2_TIM16EN, &System::TIMxAPB1Clock,
+	{ TIM16, &RCC->APBENR2, RCC_APBENR2_TIM16EN, &RCC->APBRSTR2, RCC_APBRSTR2_TIM16RST,
+	  &System::TIMxAPB1Clock,
 	  TIM16_IRQn,             TIM16_IRQn,        true,  1, 0xFFFF, DMA_Sx::Req::Tim16::UP.ch },
-	{ TIM17, &RCC->APBENR2, RCC_APBENR2_TIM17EN, &System::TIMxAPB1Clock,
+	{ TIM17, &RCC->APBENR2, RCC_APBENR2_TIM17EN, &RCC->APBRSTR2, RCC_APBRSTR2_TIM17RST,
+	  &System::TIMxAPB1Clock,
 	  TIM17_IRQn,             TIM17_IRQn,        true,  1, 0xFFFF, DMA_Sx::Req::Tim17::UP.ch },
 };
 
@@ -368,33 +378,47 @@ const TIM::ITR_Route TIM::itr_table[] = {
 // undefined) until an F7-specific block is added below with verified
 // RCC enable bits, IRQ vectors and RM0410 ITR routes.
 const TIM::PeriphInfo TIM::tim_table[] = {
-	{ TIM1,  &RCC->APB2ENR, RCC_APB2ENR_TIM1EN,  &System::TIMxAPB2Clock,
+	{ TIM1,  &RCC->APB2ENR, RCC_APB2ENR_TIM1EN,  &RCC->APB2RSTR, RCC_APB2RSTR_TIM1RST,
+	  &System::TIMxAPB2Clock,
 	  TIM1_UP_TIM10_IRQn,      TIM1_CC_IRQn,               true,  4, 0xFFFF,     0 },
-	{ TIM2,  &RCC->APB1ENR, RCC_APB1ENR_TIM2EN,  &System::TIMxAPB1Clock,
+	{ TIM2,  &RCC->APB1ENR, RCC_APB1ENR_TIM2EN,  &RCC->APB1RSTR, RCC_APB1RSTR_TIM2RST,
+	  &System::TIMxAPB1Clock,
 	  TIM2_IRQn,               TIM2_IRQn,                  false, 4, 0xFFFFFFFF, 0 },
-	{ TIM3,  &RCC->APB1ENR, RCC_APB1ENR_TIM3EN,  &System::TIMxAPB1Clock,
+	{ TIM3,  &RCC->APB1ENR, RCC_APB1ENR_TIM3EN,  &RCC->APB1RSTR, RCC_APB1RSTR_TIM3RST,
+	  &System::TIMxAPB1Clock,
 	  TIM3_IRQn,               TIM3_IRQn,                  false, 4, 0xFFFF,     0 },
-	{ TIM4,  &RCC->APB1ENR, RCC_APB1ENR_TIM4EN,  &System::TIMxAPB1Clock,
+	{ TIM4,  &RCC->APB1ENR, RCC_APB1ENR_TIM4EN,  &RCC->APB1RSTR, RCC_APB1RSTR_TIM4RST,
+	  &System::TIMxAPB1Clock,
 	  TIM4_IRQn,               TIM4_IRQn,                  false, 4, 0xFFFF,     0 },
-	{ TIM5,  &RCC->APB1ENR, RCC_APB1ENR_TIM5EN,  &System::TIMxAPB1Clock,
+	{ TIM5,  &RCC->APB1ENR, RCC_APB1ENR_TIM5EN,  &RCC->APB1RSTR, RCC_APB1RSTR_TIM5RST,
+	  &System::TIMxAPB1Clock,
 	  TIM5_IRQn,               TIM5_IRQn,                  false, 4, 0xFFFFFFFF, 0 },
-	{ TIM6,  &RCC->APB1ENR, RCC_APB1ENR_TIM6EN,  &System::TIMxAPB1Clock,
+	{ TIM6,  &RCC->APB1ENR, RCC_APB1ENR_TIM6EN,  &RCC->APB1RSTR, RCC_APB1RSTR_TIM6RST,
+	  &System::TIMxAPB1Clock,
 	  TIM6_DAC_IRQn,           TIM6_DAC_IRQn,              false, 0, 0xFFFF,     0 },
-	{ TIM7,  &RCC->APB1ENR, RCC_APB1ENR_TIM7EN,  &System::TIMxAPB1Clock,
+	{ TIM7,  &RCC->APB1ENR, RCC_APB1ENR_TIM7EN,  &RCC->APB1RSTR, RCC_APB1RSTR_TIM7RST,
+	  &System::TIMxAPB1Clock,
 	  TIM7_IRQn,               TIM7_IRQn,                  false, 0, 0xFFFF,     0 },
-	{ TIM8,  &RCC->APB2ENR, RCC_APB2ENR_TIM8EN,  &System::TIMxAPB2Clock,
+	{ TIM8,  &RCC->APB2ENR, RCC_APB2ENR_TIM8EN,  &RCC->APB2RSTR, RCC_APB2RSTR_TIM8RST,
+	  &System::TIMxAPB2Clock,
 	  TIM8_UP_TIM13_IRQn,      TIM8_CC_IRQn,               true,  4, 0xFFFF,     0 },
-	{ TIM9,  &RCC->APB2ENR, RCC_APB2ENR_TIM9EN,  &System::TIMxAPB2Clock,
+	{ TIM9,  &RCC->APB2ENR, RCC_APB2ENR_TIM9EN,  &RCC->APB2RSTR, RCC_APB2RSTR_TIM9RST,
+	  &System::TIMxAPB2Clock,
 	  TIM1_BRK_TIM9_IRQn,      TIM1_BRK_TIM9_IRQn,         false, 2, 0xFFFF,     0 },
-	{ TIM10, &RCC->APB2ENR, RCC_APB2ENR_TIM10EN, &System::TIMxAPB2Clock,
+	{ TIM10, &RCC->APB2ENR, RCC_APB2ENR_TIM10EN, &RCC->APB2RSTR, RCC_APB2RSTR_TIM10RST,
+	  &System::TIMxAPB2Clock,
 	  TIM1_UP_TIM10_IRQn,      TIM1_UP_TIM10_IRQn,         false, 1, 0xFFFF,     0 },
-	{ TIM11, &RCC->APB2ENR, RCC_APB2ENR_TIM11EN, &System::TIMxAPB2Clock,
+	{ TIM11, &RCC->APB2ENR, RCC_APB2ENR_TIM11EN, &RCC->APB2RSTR, RCC_APB2RSTR_TIM11RST,
+	  &System::TIMxAPB2Clock,
 	  TIM1_TRG_COM_TIM11_IRQn, TIM1_TRG_COM_TIM11_IRQn,   false, 1, 0xFFFF,     0 },
-	{ TIM12, &RCC->APB1ENR, RCC_APB1ENR_TIM12EN, &System::TIMxAPB1Clock,
+	{ TIM12, &RCC->APB1ENR, RCC_APB1ENR_TIM12EN, &RCC->APB1RSTR, RCC_APB1RSTR_TIM12RST,
+	  &System::TIMxAPB1Clock,
 	  TIM8_BRK_TIM12_IRQn,     TIM8_BRK_TIM12_IRQn,        false, 2, 0xFFFF,     0 },
-	{ TIM13, &RCC->APB1ENR, RCC_APB1ENR_TIM13EN, &System::TIMxAPB1Clock,
+	{ TIM13, &RCC->APB1ENR, RCC_APB1ENR_TIM13EN, &RCC->APB1RSTR, RCC_APB1RSTR_TIM13RST,
+	  &System::TIMxAPB1Clock,
 	  TIM8_UP_TIM13_IRQn,      TIM8_UP_TIM13_IRQn,         false, 1, 0xFFFF,     0 },
-	{ TIM14, &RCC->APB1ENR, RCC_APB1ENR_TIM14EN, &System::TIMxAPB1Clock,
+	{ TIM14, &RCC->APB1ENR, RCC_APB1ENR_TIM14EN, &RCC->APB1RSTR, RCC_APB1RSTR_TIM14RST,
+	  &System::TIMxAPB1Clock,
 	  TIM8_TRG_COM_TIM14_IRQn, TIM8_TRG_COM_TIM14_IRQn,   false, 1, 0xFFFF,     0 },
 };
 
