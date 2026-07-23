@@ -20,6 +20,23 @@ bool IRQ_Registry::Register(IRQn_Type irqn, IIRQHandler* handler)
 	return false;
 }
 
+IRQ_Registry::FunctionHandler IRQ_Registry::_function_pool[IRQ_MAX_FUNCTION_HANDLERS];
+int IRQ_Registry::_function_pool_used = 0;
+
+bool IRQ_Registry::Register(IRQn_Type irqn, IRQHandlerFn fn, void* ctx)
+{
+	if (_function_pool_used >= IRQ_MAX_FUNCTION_HANDLERS) {
+		// пул адаптеров исчерпан — увеличьте IRQ_MAX_FUNCTION_HANDLERS
+		__BKPT(0);
+		while (1);
+		return false;
+	}
+
+	FunctionHandler* adapter = &_function_pool[_function_pool_used++];
+	adapter->Bind(fn, ctx);
+	return Register(irqn, adapter);
+}
+
 void IRQ_Registry::Unregister(IRQn_Type irqn)
 {
 	int idx = static_cast<int>(irqn);

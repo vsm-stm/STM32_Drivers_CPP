@@ -12,6 +12,7 @@
 8. [Сравнение с прямым подходом](#8-сравнение-с-прямым-подходом)
 9. [Угловые случаи](#9-угловые-случаи)
 10. [Добавление нового вектора](#10-добавление-нового-вектора)
+11. [Регистрация без наследования (function-обработчики)](#11-регистрация-без-наследования-function-обработчики)
 
 ---
 
@@ -529,6 +530,69 @@ NVIC_EnableIRQ(NEW_PERIPH_IRQn);
 
 ---
 
+## 11. Регистрация без наследования (function-обработчики)
+
+До этого момента единственный способ обработать прерывание — унаследовать `IIRQHandler` и
+реализовать `HandleIRQ()`. Для одноразового или тестового обработчика (не полноценного драйвера)
+заводить отдельный класс избыточно. Для этого есть вторая перегрузка `Register()`:
+
+```cpp
+using IRQHandlerFn = void (*)(void* ctx);
+static bool Register(IRQn_Type irqn, IRQHandlerFn fn, void* ctx = nullptr);
+```
+
+Пример — обычная функция с контекстом:
+
+```cpp
+void OnButtonIrq(void* ctx)
+{
+    auto* btn = static_cast<Button*>(ctx);
+    btn->Poll();
+}
+
+Button my_button;
+IRQ_Registry::Register(EXTI0_IRQn, OnButtonIrq, &my_button);
+NVIC_EnableIRQ(EXTI0_IRQn);
+```
+
+Или non-capturing lambda (context можно игнорировать, если не нужен):
+
+```cpp
+IRQ_Registry::Register(EXTI1_IRQn, [](void* /*ctx*/) {
+    // тело обработчика
+});
+NVIC_EnableIRQ(EXTI1_IRQn);
+```
+
+### Как это устроено
+
+- Внутри `Register(irqn, fn, ctx)` создаётся адаптер `FunctionHandler : IIRQHandler`
+  (приватный вложенный класс `IRQ_Registry`), чей `HandleIRQ()` просто вызывает `fn(ctx)`.
+- Адаптеры берутся по одному из статического пула фиксированного размера
+  `IRQ_MAX_FUNCTION_HANDLERS` (по умолчанию 8; переопределяется `#define`'ом до
+  `#include "irq_registry.hpp"` / `irq_registry_config.h`). Пул один общий для всех
+  IRQ-линий — это не то же самое, что `IRQ_MAX_SHARED` (лимит на одну линию).
+  Слоты пула не освобождаются: `Unregister()` очищает только строку `_table`, как и для
+  обычных `IIRQHandler*`.
+- Дальше адаптер регистрируется обычным способом — через
+  `Register(irqn, IIRQHandler*)`, поэтому действуют те же правила по `IRQ_MAX_SHARED`
+  и тот же `BKPT` при переполнении строки `_table`.
+- Если исчерпан сам пул адаптеров (превышено число function-регистраций
+  `IRQ_MAX_FUNCTION_HANDLERS`) — тоже срабатывает `BKPT`; в этом случае нужно увеличить
+  константу.
+- `fn` и `ctx` должны оставаться валидными вечно — как и любой `IIRQHandler*`,
+  передаваемый в `Register()`.
+
+### Когда использовать
+
+Function-регистрация — быстрый способ повесить обработчик "для одного случая"
+(разовая диагностика, простой callback) без объявления отдельного класса.
+Для полноценных драйверов с несколькими состояниями и методами наследование
+`IIRQHandler` по-прежнему предпочтительнее — оно нагляднее и не расходует слоты
+общего пула.
+
+---
+
 ## Жизненный цикл обработчика
 
 ```
@@ -548,3 +612,117 @@ uart.IRQ_en(RXNE, ENABLE)             Dispatch(27)                  └─ NVIC_
   │   _table[27][0] = &uart              ├─ ISR & RXNE → читаем RDR
   └─ NVIC_EnableIRQ(USART1_IRQn)       └─ return из ISR
 ```
+
+---
+
+## Примеры использования
+
+### Через наследование (реальный драйвер — USART)
+
+Так работают все "настоящие" драйверы в `Drivers/src` (`USART`, `SPI`, `TIM`, `RTC`, `ADC`):
+класс наследует `IIRQHandler`, а регистрация в `IRQ_Registry` спрятана внутри драйвера и
+происходит автоматически при включении конкретного источника прерывания.
+
+```cpp
+// uart.hpp (упрощённо)
+class USART : public IIRQHandler
+{
+public:
+    inline void IRQ_en(IRQ irq, FunctionalState en)
+    {
+        if (en) USARTx->CR1 |= static_cast<uint32_t>(irq);
+        else    USARTx->CR1 &= ~static_cast<uint32_t>(irq);
+
+        // Первое включение любого источника — регистрируемся и включаем NVIC.
+        if (en && !NVIC_GetEnableIRQ(_info->irq)) {
+            IRQ_Registry::Register(_info->irq, this);
+            NVIC_EnableIRQ(_info->irq);
+        }
+        // Последнее выключение — уходим из реестра и из NVIC.
+        else if (!en && /* все источники CR1 выключены */ true) {
+            IRQ_Registry::Unregister(_info->irq);
+            NVIC_DisableIRQ(_info->irq);
+        }
+    }
+
+private:
+    void HandleIRQ() override final;   // вызывается из Dispatch()
+};
+
+// uart.cpp
+void USART::HandleIRQ()
+{
+    if (USARTx->SR & USART_SR_RXNE) {
+        uint8_t byte = USARTx->DR;
+        // ... обработка принятого байта ...
+    }
+}
+```
+
+```cpp
+// main.cpp — пользователю достаточно вызвать SetUp() и включить нужный источник:
+USART uart(USART1, 115200, USART::_1::TX::PA9, USART::_1::RX::PA10);
+uart.SetUp();
+uart.IRQ_en(USART::IRQ::RXNE, ENABLE);   // регистрация в IRQ_Registry — внутри IRQ_en()
+```
+
+Пользователь ни разу не вызывает `IRQ_Registry::Register()` напрямую — за него это делает
+драйвер. Это стандартный путь для периферии, у которой несколько источников прерываний
+и внутреннее состояние (буферы, DMA, флаги).
+
+### Прямая регистрация без наследования (обычная функция)
+
+Для разового обработчика (например, кнопка на EXTI, или диагностика на конкретном
+векторе), когда писать отдельный класс избыточно — вешаем обычную функцию напрямую,
+без единой строчки, связанной с `IIRQHandler`:
+
+```cpp
+// button.cpp
+struct Button { volatile bool pressed = false; };
+Button my_button;
+
+void OnButtonIrq(void* ctx)
+{
+    auto* btn = static_cast<Button*>(ctx);
+    if (EXTI->PR1 & EXTI_PR1_PIF0) {
+        EXTI->PR1 = EXTI_PR1_PIF0;   // сброс флага записью 1
+        btn->pressed = true;
+    }
+}
+
+void SetupButtonIrq()
+{
+    IRQ_Registry::Register(EXTI0_IRQn, OnButtonIrq, &my_button);
+    NVIC_EnableIRQ(EXTI0_IRQn);
+}
+```
+
+Или ещё короче, non-capturing lambda вместо отдельной функции — удобно, когда
+обработчик используется только в одном месте и не нужен снаружи по имени:
+
+```cpp
+IRQ_Registry::Register(EXTI1_IRQn, [](void*) {
+    if (EXTI->PR1 & EXTI_PR1_PIF1) {
+        EXTI->PR1 = EXTI_PR1_PIF1;
+        // ...
+    }
+});
+NVIC_EnableIRQ(EXTI1_IRQn);
+```
+
+Разница с первым примером: никакого класса, никакого `HandleIRQ()` — только функция
+и (опционально) указатель на данные, с которыми она работает. Детали устройства —
+пул адаптеров, лимит `IRQ_MAX_FUNCTION_HANDLERS` — см. [раздел 11](#11-регистрация-без-наследования-function-обработчики).
+
+---
+
+## См. также
+
+- [System.md](System.md) — общесистемная инфраструктура (`SysStatus`, `System::DebugTrap`),
+  на которую опирается всё остальное в этом каталоге.
+- [UART.md](UART.md#5-irq_en--регистрация-по-требованию),
+  [TIM.md](TIM.md#4-irq_en-и-общийраздельный-вектор), [SPI.md](SPI.md), [RTC.md](RTC.md#8-irq_en-и-единый-обработчик-на-все-источники) —
+  четыре драйвера, использующих один и тот же идиом auto-register/auto-unregister через
+  `IRQ_en()` поверх `Register()`/`Unregister()` из этого файла.
+- [DMA.md](DMA.md) — `DMA_Sx` сама не регистрируется в `IRQ_Registry`; это делает периферийный
+  драйвер (`USART`/`SPI`/`TIM_PWM`), владеющий DMA-каналом, регистрируя себя на векторе DMA.

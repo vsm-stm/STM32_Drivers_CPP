@@ -3,6 +3,24 @@
 Универсальная C++ библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4**, **STM32F7**.  
 Поддерживаемые периферийные модули: System, RCC, GPIO, USART, SPI, DMA, TIM, RTC, Flash, IRQ_Registry.
 
+## Подробная документация по модулям
+
+Этот файл даёт обзор и примеры использования каждого модуля. Полное описание внутреннего
+устройства (регистры, тайминги, угловые случаи, разбор кода построчно) — в отдельных файлах:
+
+- [System.md](System.md) — связующая инфраструктура: `SysStatus`/`SysInitStatus`, тактовые
+  переменные, `GetTick()`/`Delay_us()`, `DebugTrap()`.
+- [RCC.md](RCC.md) — дерево тактирования: HSI/HSE/PLL, делители шин, Flash latency.
+- [GPIO.md](GPIO.md) — `PIN`/`PinArray`: кодирование режимов, регистры, bit-banding.
+- [IRQ_Registry.md](IRQ_Registry.md) — единый диспетчер прерываний, регистрация с наследованием
+  и без него, оценка накладных расходов по тактам.
+- [DMA.md](DMA.md) — `DMA_Sx`: потоки (F4/F7) и каналы+DMAMUX (G0), таблицы запросов.
+- [UART.md](UART.md) — `USART`: блокирующий/IRQ/DMA режимы, приём по IDLE-линии.
+- [SPI.md](SPI.md) — `SPI`: роли Master/Slave, Software/Hardware NSS, DMA.
+- [TIM.md](TIM.md) — `TIM` и все 7 подклассов (ШИМ, захват, генераторы шагов, ITR/TRGO).
+- [RTC.md](RTC.md) — `RTC_cl`: BCD-время, WakeUp Timer, будильники, калибровка.
+- [Flash.md](Flash.md) — `flash_base`/`flash_data`: разблокировка, стирание, wear-leveling.
+
 ---
 
 ## Содержание
@@ -66,6 +84,7 @@ USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ## 2. System
 
 **Файлы:** `system.hpp`, `system.cpp`
+**Подробнее:** [System.md](System.md)
 
 Базовый модуль: FPU, Flash-акселератор, SysTick, задержки.
 
@@ -114,6 +133,7 @@ System::TIMxAPB2Clock    // частота для таймеров на APB2
 ## 3. RCC / ClockSystem
 
 **Файлы:** `rcc.hpp`, `rcc.cpp`
+**Подробнее:** [RCC.md](RCC.md)
 
 Конфигурирует систему тактирования: HSI/HSE, PLL, делители шин AHB/APB.
 
@@ -187,6 +207,7 @@ ClockSystem::InitCalcPLL(64*MHz, ClockSystem::PLL_ClockSource::HSE, 16000000);
 ## 4. GPIO / PIN
 
 **Файлы:** `gpio.hpp`, `gpio.cpp`
+**Подробнее:** [GPIO.md](GPIO.md)
 
 ### Создание и настройка пина
 
@@ -267,6 +288,7 @@ uint32_t state = seg_pins.GetLevelAll();  // прочитать все сраз�
 ## 5. IRQ_Registry
 
 **Файлы:** `irq_registry.hpp`, `irq_registry.cpp`, `irq_registry_config.h`
+**Подробнее:** [IRQ_Registry.md](IRQ_Registry.md)
 
 ### Идея
 
@@ -293,6 +315,25 @@ NVIC_EnableIRQ(TIM3_IRQn);
 ```
 
 Большинство драйверов делают это **автоматически** при вызове `IRQ_en()`.
+
+### Регистрация без наследования (обычная функция)
+
+Если писать отдельный класс ради `IIRQHandler` избыточно (разовый обработчик,
+тестовый код), можно зарегистрировать обычную функцию (или non-capturing lambda)
+напрямую, с опциональным контекстом:
+
+```cpp
+void OnButtonIrq(void* ctx) {
+    static_cast<Button*>(ctx)->Poll();
+}
+
+IRQ_Registry::Register(EXTI0_IRQn, OnButtonIrq, &my_button);
+NVIC_EnableIRQ(EXTI0_IRQn);
+```
+
+Под капотом создаётся `IIRQHandler`-адаптер из отдельного статического пула
+(`IRQ_MAX_FUNCTION_HANDLERS`, по умолчанию 8) — подробности и угловые случаи
+в [IRQ_Registry.md](IRQ_Registry.md#11-регистрация-без-наследования-function-обработчики).
 
 ### Отмена регистрации
 
@@ -338,6 +379,7 @@ extern "C" void NEW_IRQHandler() { IRQ_Registry::Dispatch(NEW_IRQn); }
 ## 6. DMA
 
 **Файлы:** `dma.hpp`, `dma.cpp`, `dma_requests.hpp`
+**Подробнее:** [DMA.md](DMA.md)
 
 Поддерживает F4/F7 (потоки, `DMA_Stream_TypeDef`) и G0 (каналы, `DMA_Channel_TypeDef`). API идентичен для обоих семейств.
 
@@ -440,6 +482,7 @@ void HandleIRQ() override {
 ## 7. USART
 
 **Файлы:** `uart.hpp`, `uart.cpp`, `uart_defs.hpp`
+**Подробнее:** [UART.md](UART.md)
 
 ### Базовое использование
 
@@ -508,6 +551,7 @@ uart.SetBaud(9600);
 ## 8. SPI
 
 **Файлы:** `spi.hpp`, `spi.cpp`, `spi_defs.hpp`
+**Подробнее:** [SPI.md](SPI.md)
 
 ### Базовое использование (блокирующий режим)
 
@@ -576,6 +620,7 @@ spi.SendDMA(buf, len);            // неблокирующая передача
 ## 9. TIM
 
 **Файлы:** `tim.hpp`, `tim.cpp`
+**Подробнее:** [TIM.md](TIM.md)
 
 Иерархия классов:
 
@@ -729,6 +774,7 @@ psc = bus_clk / ((arr+1) * freq) - 1
 ## 10. RTC
 
 **Файлы:** `rtc.hpp`, `rtc.cpp`
+**Подробнее:** [RTC.md](RTC.md)
 
 Полностью статический класс — объектов не создаётся. Все методы вызываются как `RTC_cl::SetUp(...)`.
 
@@ -821,6 +867,7 @@ RTC_cl::EnableCOE(true);   // выводит сигнал на вывод RTC_CA
 ## 11. Flash
 
 **Файлы:** `flash.hpp`, `flash.cpp`
+**Подробнее:** [Flash.md](Flash.md)
 
 ### flash_base — низкоуровневый доступ
 

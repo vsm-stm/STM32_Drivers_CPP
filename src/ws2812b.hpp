@@ -78,7 +78,7 @@ inline RGB FromHSV(uint8_t h, uint8_t s, uint8_t v)
 // Usage:
 //   WS2812B_Strip<6> strip(CCR_ONE, CCR_ZERO);
 //   strip.SetAll(RGB::Red());
-//   ws_tim.SendDMA(TIM::TIM_Channel::CH1, strip.Data(), strip.Len());
+//   ws_tim.SendDMA(TIM::Channel::CH1, strip.Data(), strip.Len());
 // ---------------------------------------------------------------------------
 
 template<size_t N_LEDS, size_t RESET_SLOTS = 40>

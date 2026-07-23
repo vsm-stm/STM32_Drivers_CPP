@@ -52,6 +52,7 @@
 // order and assign them to the correct CCMRx/CCERx fields automatically.
 // Zero RAM footprint — all instances are constexpr in flash.
 // ---------------------------------------------------------------------------
+/** @brief GPIO pin bound to a specific timer/channel, used for compile-time pin tables. */
 struct TIM_PIN {
 	uint32_t port     = 0;
 	uint8_t  pin      = 0;
@@ -60,6 +61,17 @@ struct TIM_PIN {
 	uint32_t tim_base = 0;
 
 	constexpr bool IsValid() const { return port != 0; }
+
+	/**
+	 * @brief Converts to a plain PIN for GPIO configuration, carrying over this
+	 * entry's own alternate-function index.
+	 *
+	 * Some timer pins share the same timer but need a different AF index (e.g.
+	 * TIM3 on STM32G0: PA6/PB4 use AF1, PC6 uses AF0) — always go through this
+	 * instead of looking up a single per-timer AF value, which would be wrong
+	 * for those pins.
+	 */
+	inline PIN ToPin() const { return PIN(reinterpret_cast<GPIO_TypeDef*>(port), pin, af); }
 };
 
 // ---------------------------------------------------------------------------
@@ -227,6 +239,81 @@ struct _4 {
 	};
 };
 
+// TIM5, TIM9-TIM13 pin tables below: AF numbers and pins are transcribed
+// from the standard RM0090 "TIMx alternate function mapping" table (the same
+// pattern is already cross-checked once above — TIM2's CH1-4 pins/AF1 here
+// match this file's existing _2 entries). Not yet verified against the exact
+// STM32F429 datasheet AF table by a build on real hardware — double check
+// against RM0090 Table 9 (or the datasheet pinout) before relying on one of
+// these for a new board bring-up, the same way itr_table entries marked
+// unverified elsewhere in this file are treated as "confirm before trusting".
+struct _5 {
+	// TIM5 — general-purpose, 32-bit ARR, AF2. PA0-PA3 are shared with TIM2
+	// (AF1) on the same pins. Also available on PH10-12/PI0-3 on 176-pin
+	// packages; omitted here since those ports aren't fully bonded out on
+	// smaller packages (e.g. LQFP144 such as STM32F429ZI).
+	struct CH1 {
+		static constexpr TIM_PIN PA0  = { GPIOA_BASE,  0, 2, 0, TIM5_BASE };
+	};
+	struct CH2 {
+		static constexpr TIM_PIN PA1  = { GPIOA_BASE,  1, 2, 1, TIM5_BASE };
+	};
+	struct CH3 {
+		static constexpr TIM_PIN PA2  = { GPIOA_BASE,  2, 2, 2, TIM5_BASE };
+	};
+	struct CH4 {
+		static constexpr TIM_PIN PA3  = { GPIOA_BASE,  3, 2, 3, TIM5_BASE };
+	};
+};
+
+struct _9 {
+	// TIM9 — general-purpose, 2 channels, AF3.
+	struct CH1 {
+		static constexpr TIM_PIN PA2  = { GPIOA_BASE,  2, 3, 0, TIM9_BASE };
+		static constexpr TIM_PIN PE5  = { GPIOE_BASE,  5, 3, 0, TIM9_BASE };
+	};
+	struct CH2 {
+		static constexpr TIM_PIN PA3  = { GPIOA_BASE,  3, 3, 1, TIM9_BASE };
+		static constexpr TIM_PIN PE6  = { GPIOE_BASE,  6, 3, 1, TIM9_BASE };
+	};
+};
+
+struct _10 {
+	// TIM10 — general-purpose, single channel, AF3.
+	struct CH1 {
+		static constexpr TIM_PIN PB8  = { GPIOB_BASE,  8, 3, 0, TIM10_BASE };
+		static constexpr TIM_PIN PF6  = { GPIOF_BASE,  6, 3, 0, TIM10_BASE };
+	};
+};
+
+struct _11 {
+	// TIM11 — general-purpose, single channel, AF3.
+	struct CH1 {
+		static constexpr TIM_PIN PB9  = { GPIOB_BASE,  9, 3, 0, TIM11_BASE };
+		static constexpr TIM_PIN PF7  = { GPIOF_BASE,  7, 3, 0, TIM11_BASE };
+	};
+};
+
+struct _12 {
+	// TIM12 — general-purpose, 2 channels, AF9.
+	struct CH1 {
+		static constexpr TIM_PIN PB14 = { GPIOB_BASE, 14, 9, 0, TIM12_BASE };
+		static constexpr TIM_PIN PH6  = { GPIOH_BASE,  6, 9, 0, TIM12_BASE };
+	};
+	struct CH2 {
+		static constexpr TIM_PIN PB15 = { GPIOB_BASE, 15, 9, 1, TIM12_BASE };
+		static constexpr TIM_PIN PH9  = { GPIOH_BASE,  9, 9, 1, TIM12_BASE };
+	};
+};
+
+struct _13 {
+	// TIM13 — general-purpose, single channel, AF9.
+	struct CH1 {
+		static constexpr TIM_PIN PA6  = { GPIOA_BASE,  6, 9, 0, TIM13_BASE };
+		static constexpr TIM_PIN PF8  = { GPIOF_BASE,  8, 9, 0, TIM13_BASE };
+	};
+};
+
 #ifdef TIM8_BASE
 struct _8 {
 	struct CH1 {
@@ -256,15 +343,15 @@ struct _8 {
 #if defined(STM32G0)
 const TIM::PeriphInfo TIM::tim_table[] = {
 	{ TIM1,  &RCC->APBENR2, RCC_APBENR2_TIM1EN,  &System::TIMxAPB1Clock,
-	  TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn,  true,  0xFFFF, 2, DMA_Sx::Req::Tim1::UP.ch  },
+	  TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn,  true,  4, 0xFFFF, DMA_Sx::Req::Tim1::UP.ch  },
 	{ TIM3,  &RCC->APBENR1, RCC_APBENR1_TIM3EN,  &System::TIMxAPB1Clock,
-	  TIM3_IRQn,              TIM3_IRQn,         false, 0xFFFF, 1, DMA_Sx::Req::Tim3::UP.ch  },
+	  TIM3_IRQn,              TIM3_IRQn,         false, 4, 0xFFFF, DMA_Sx::Req::Tim3::UP.ch  },
 	{ TIM14, &RCC->APBENR2, RCC_APBENR2_TIM14EN, &System::TIMxAPB1Clock,
-	  TIM14_IRQn,             TIM14_IRQn,        false, 0xFFFF, 4, 0                          },
+	  TIM14_IRQn,             TIM14_IRQn,        false, 1, 0xFFFF, 0                          },
 	{ TIM16, &RCC->APBENR2, RCC_APBENR2_TIM16EN, &System::TIMxAPB1Clock,
-	  TIM16_IRQn,             TIM16_IRQn,        true,  0xFFFF, 2, DMA_Sx::Req::Tim16::UP.ch },
+	  TIM16_IRQn,             TIM16_IRQn,        true,  1, 0xFFFF, DMA_Sx::Req::Tim16::UP.ch },
 	{ TIM17, &RCC->APBENR2, RCC_APBENR2_TIM17EN, &System::TIMxAPB1Clock,
-	  TIM17_IRQn,             TIM17_IRQn,        true,  0xFFFF, 2, DMA_Sx::Req::Tim17::UP.ch },
+	  TIM17_IRQn,             TIM17_IRQn,        true,  1, 0xFFFF, DMA_Sx::Req::Tim17::UP.ch },
 };
 
 // TODO: verify against RM0444 "TIMx internal trigger connection" before use.
@@ -275,35 +362,40 @@ const TIM::ITR_Route TIM::itr_table[] = {
 	{ TIM1, TIM3, 0xFF },
 };
 #elif defined(STM32F4)
+// TODO: STM32F7 has no tim_table/itr_table here even though Section A above
+// (channel pin tables) already covers it via "defined(STM32F4) || defined(STM32F7)".
+// Building TIM.* for STM32F7 currently fails to link (tim_table/itr_table
+// undefined) until an F7-specific block is added below with verified
+// RCC enable bits, IRQ vectors and RM0410 ITR routes.
 const TIM::PeriphInfo TIM::tim_table[] = {
 	{ TIM1,  &RCC->APB2ENR, RCC_APB2ENR_TIM1EN,  &System::TIMxAPB2Clock,
-	  TIM1_UP_TIM10_IRQn,      TIM1_CC_IRQn,               true,  0xFFFF,     1, 0 },
+	  TIM1_UP_TIM10_IRQn,      TIM1_CC_IRQn,               true,  4, 0xFFFF,     0 },
 	{ TIM2,  &RCC->APB1ENR, RCC_APB1ENR_TIM2EN,  &System::TIMxAPB1Clock,
-	  TIM2_IRQn,               TIM2_IRQn,                  false, 0xFFFFFFFF, 1, 0 },
+	  TIM2_IRQn,               TIM2_IRQn,                  false, 4, 0xFFFFFFFF, 0 },
 	{ TIM3,  &RCC->APB1ENR, RCC_APB1ENR_TIM3EN,  &System::TIMxAPB1Clock,
-	  TIM3_IRQn,               TIM3_IRQn,                  false, 0xFFFF,     2, 0 },
+	  TIM3_IRQn,               TIM3_IRQn,                  false, 4, 0xFFFF,     0 },
 	{ TIM4,  &RCC->APB1ENR, RCC_APB1ENR_TIM4EN,  &System::TIMxAPB1Clock,
-	  TIM4_IRQn,               TIM4_IRQn,                  false, 0xFFFF,     2, 0 },
+	  TIM4_IRQn,               TIM4_IRQn,                  false, 4, 0xFFFF,     0 },
 	{ TIM5,  &RCC->APB1ENR, RCC_APB1ENR_TIM5EN,  &System::TIMxAPB1Clock,
-	  TIM5_IRQn,               TIM5_IRQn,                  false, 0xFFFFFFFF, 2, 0 },
+	  TIM5_IRQn,               TIM5_IRQn,                  false, 4, 0xFFFFFFFF, 0 },
 	{ TIM6,  &RCC->APB1ENR, RCC_APB1ENR_TIM6EN,  &System::TIMxAPB1Clock,
-	  TIM6_DAC_IRQn,           TIM6_DAC_IRQn,              false, 0xFFFF,     0, 0 },
+	  TIM6_DAC_IRQn,           TIM6_DAC_IRQn,              false, 0, 0xFFFF,     0 },
 	{ TIM7,  &RCC->APB1ENR, RCC_APB1ENR_TIM7EN,  &System::TIMxAPB1Clock,
-	  TIM7_IRQn,               TIM7_IRQn,                  false, 0xFFFF,     0, 0 },
+	  TIM7_IRQn,               TIM7_IRQn,                  false, 0, 0xFFFF,     0 },
 	{ TIM8,  &RCC->APB2ENR, RCC_APB2ENR_TIM8EN,  &System::TIMxAPB2Clock,
-	  TIM8_UP_TIM13_IRQn,      TIM8_CC_IRQn,               true,  0xFFFF,     3, 0 },
+	  TIM8_UP_TIM13_IRQn,      TIM8_CC_IRQn,               true,  4, 0xFFFF,     0 },
 	{ TIM9,  &RCC->APB2ENR, RCC_APB2ENR_TIM9EN,  &System::TIMxAPB2Clock,
-	  TIM1_BRK_TIM9_IRQn,      TIM1_BRK_TIM9_IRQn,         false, 0xFFFF,     3, 0 },
+	  TIM1_BRK_TIM9_IRQn,      TIM1_BRK_TIM9_IRQn,         false, 2, 0xFFFF,     0 },
 	{ TIM10, &RCC->APB2ENR, RCC_APB2ENR_TIM10EN, &System::TIMxAPB2Clock,
-	  TIM1_UP_TIM10_IRQn,      TIM1_UP_TIM10_IRQn,         false, 0xFFFF,     3, 0 },
+	  TIM1_UP_TIM10_IRQn,      TIM1_UP_TIM10_IRQn,         false, 1, 0xFFFF,     0 },
 	{ TIM11, &RCC->APB2ENR, RCC_APB2ENR_TIM11EN, &System::TIMxAPB2Clock,
-	  TIM1_TRG_COM_TIM11_IRQn, TIM1_TRG_COM_TIM11_IRQn,   false, 0xFFFF,     3, 0 },
+	  TIM1_TRG_COM_TIM11_IRQn, TIM1_TRG_COM_TIM11_IRQn,   false, 1, 0xFFFF,     0 },
 	{ TIM12, &RCC->APB1ENR, RCC_APB1ENR_TIM12EN, &System::TIMxAPB1Clock,
-	  TIM8_BRK_TIM12_IRQn,     TIM8_BRK_TIM12_IRQn,        false, 0xFFFF,     9, 0 },
+	  TIM8_BRK_TIM12_IRQn,     TIM8_BRK_TIM12_IRQn,        false, 2, 0xFFFF,     0 },
 	{ TIM13, &RCC->APB1ENR, RCC_APB1ENR_TIM13EN, &System::TIMxAPB1Clock,
-	  TIM8_UP_TIM13_IRQn,      TIM8_UP_TIM13_IRQn,         false, 0xFFFF,     9, 0 },
+	  TIM8_UP_TIM13_IRQn,      TIM8_UP_TIM13_IRQn,         false, 1, 0xFFFF,     0 },
 	{ TIM14, &RCC->APB1ENR, RCC_APB1ENR_TIM14EN, &System::TIMxAPB1Clock,
-	  TIM8_TRG_COM_TIM14_IRQn, TIM8_TRG_COM_TIM14_IRQn,   false, 0xFFFF,     9, 0 },
+	  TIM8_TRG_COM_TIM14_IRQn, TIM8_TRG_COM_TIM14_IRQn,   false, 1, 0xFFFF,     0 },
 };
 
 // RM0090 "TIMx internal trigger connection" — TIM1/2/3/4/5/8 (the only ones
