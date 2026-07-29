@@ -358,9 +358,9 @@ void TIM_EncoderGenerator::HandleIRQ()
 // TIM_StepGenerator
 // ---------------------------------------------------------------------------
 
-SysInitStatus TIM_StepGenerator::SetUp(uint32_t freq, bool count_in_isr)
+SysInitStatus TIM_StepGenerator::SetUp(bool count_in_isr)
 {
-	if (!_step.pin.IsValid() || !freq) return SysInitStatus::InitError;
+	if (!_step.pin.IsValid()) return SysInitStatus::InitError;
 
 	SysInitStatus s = Init();
 	if (s != SysInitStatus::InitOK) return s;
@@ -382,13 +382,15 @@ SysInitStatus TIM_StepGenerator::SetUp(uint32_t freq, bool count_in_isr)
 	SetCCMRField(TIM_CCMR1_OC1PE_Pos, idx, 1u);
 	TIMx->CCER |= TIM_CCER_CC1E << (idx * 4u);
 	TIMx->CR1 |= TIM_CR1_ARPE;
+	TIMx->ARR = 0;
+	TIMx->PSC = 0;
 
 	if (_info->has_bdtr) TIMx->BDTR = TIM_BDTR_MOE;
 
 	// Only pay for the Update IRQ when software step counting was asked for;
 	// with a TIM_HWCounter attached instead, no IRQ is needed at all.
 	if (count_in_isr) IRQ_en(IRQ::UE, ENABLE);
-	return SetStepFrequency(freq);
+	return SysInitStatus::InitOK;//SetStepFrequency(freq);
 }
 
 SysInitStatus TIM_StepGenerator::SetStepFrequency(uint32_t freq)

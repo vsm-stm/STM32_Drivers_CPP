@@ -113,10 +113,12 @@ public:
 	 */
 	void IRQ_en(IRQ irq, FunctionalState en);
 
+	/** @brief Start()/Stop() as one state, for callers that track "running" as a bool. */
+	inline void SetEnable(bool on) { TIMx->CR1 = (TIMx->CR1 & ~ TIM_CR1_CEN) | (on << TIM_CR1_CEN_Pos); }
 	/** @brief Enables the counter (sets CEN). */
-	inline void Start() { TIMx->CR1 |=  TIM_CR1_CEN; }
+	inline void Start() { SetEnable(true); }
 	/** @brief Disables the counter (clears CEN). */
-	inline void Stop()  { TIMx->CR1 &= ~TIM_CR1_CEN; }
+	inline void Stop()  { SetEnable(false); }
 
 	/** @brief Routes the Update event to TRGO (useful for ADC/DAC triggering). */
 	inline void EnableTriggerOutput() { TIMx->CR2 |= 2u << TIM_CR2_MMS_Pos; }
@@ -694,7 +696,7 @@ public:
 	 *                      TIM_HWCounter chained to this timer's TRGO instead
 	 *                      (GetStepCount() then stays at 0, it isn't updated).
 	 */
-	SysInitStatus SetUp(uint32_t freq, bool count_in_isr = true);
+	SysInitStatus SetUp(bool count_in_isr = false);// SysInitStatus SetUp(uint32_t freq, bool count_in_isr = true);
 
 	/**
 	 * @brief Changes the step frequency, at rest or while running.
@@ -1023,10 +1025,7 @@ public:
 	 * StopAfter(), which just uses whatever direction is set at the time
 	 * it's called to compute its target.
 	 */
-	inline void SetDirection(bool down) {
-		if (down) TIMx->CR1 |=  TIM_CR1_DIR;
-		else      TIMx->CR1 &= ~TIM_CR1_DIR;
-	}
+	inline void SetDirection(bool down) { TIMx->CR1 = (TIMx->CR1 & ~TIM_CR1_DIR) | (down << TIM_CR1_DIR_Pos); }
 	/** @brief True if currently set to count down (see SetDirection()). */
 	inline bool IsCountingDown() const { return (TIMx->CR1 & TIM_CR1_DIR) != 0; }
 
