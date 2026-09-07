@@ -18,7 +18,8 @@
 # Two headers this library needs are DRIVERS-ONLY, so they're generated HERE,
 # not by the platform: flash_config.h (the sector map, read by flash.*) and
 # irq_registry_config.h (the IRQ dispatch stubs - won't even compile without
-# IRQ_Registry, which is ours). They land in this target's build dir.
+# IRQ_Registry, which is ours). They land in cmsis-core/drivers_gen/ in the
+# consuming project tree (vendored, same as the platform's downloads/.ld).
 #
 # Configuration is entirely external, through ONE input:
 #   STM32_DRIVERS_REQUESTED   ';'-separated optional module names, e.g.
@@ -118,8 +119,12 @@ function(stm32_gen_irq_handlers VECTOR_FILE TEMPLATE OUT_FILE)
 endfunction()
 
 # ---- pick the flash-config template, fetch templates, generate -------------
-set(_dl  "${CMAKE_CURRENT_BINARY_DIR}/dl")         # downloaded .h.in templates
-set(_gen "${CMAKE_CURRENT_BINARY_DIR}/generated")  # generated headers
+# Templates are downloads -> alongside the platform's other downloads.
+# Our generated headers -> cmsis-core/drivers_gen/ in the project tree
+# (meant to be committed/vendored in a final project, same as download_files/
+# and the .ld - not left in build/).
+set(_dl  "${CMAKE_SOURCE_DIR}/cmsis-core/download_files/cmake")
+set(_gen "${CMAKE_SOURCE_DIR}/cmsis-core/drivers_gen")
 
 # Families with single/dual variants: F4, F7, G4, H7. F1 has an XL variant
 # (>512K). Everything else: one template, no suffix.
