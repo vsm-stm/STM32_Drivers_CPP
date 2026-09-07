@@ -135,4 +135,5 @@ target_compile_options(stm32_drivers PUBLIC
 target_include_directories(stm32_drivers PUBLIC
 	${CMAKE_SOURCE_DIR}/cmsis-core/Include
 	${CMAKE_SOURCE_DIR}/cmsis-core/download_files/Device/Include
+	${CMAKE_SOURCE_DIR}/cmsis-core/generated
 )
