@@ -8,7 +8,7 @@
 # cmake/cmsis-download.cmake, which by then has already:
 #   - called project() and resolved the arm-none-eabi toolchain,
 #   - resolved DEVICE into STM32_CORE / STM32_DEVICE_UC / c_target,
-#   - generated Device/Include/flash_config.h and irq_registry_config.h.
+#   - generated cmsis-core/generated/Include/flash_config.h + irq_registry_config.h.
 # add_subdirectory() inherits the caller's variables as they stand at the
 # point of the call, so those are simply read below - see cmsis-download.cmake
 # for where they come from.
@@ -135,5 +135,5 @@ target_compile_options(stm32_drivers PUBLIC
 target_include_directories(stm32_drivers PUBLIC
 	${CMAKE_SOURCE_DIR}/cmsis-core/Include
 	${CMAKE_SOURCE_DIR}/cmsis-core/download_files/Device/Include
-	${CMAKE_SOURCE_DIR}/cmsis-core/generated
+	${CMAKE_SOURCE_DIR}/cmsis-core/generated/Include
 )
