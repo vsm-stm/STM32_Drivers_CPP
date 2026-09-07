@@ -2,37 +2,153 @@
 # STM32_Drivers_CPP — stm32_drivers library target
 # ============================================================================
 #
-# This is NOT a standalone CMake project (no project()/toolchain here) - it is
-# always add_subdirectory()'d by whichever project fetches this repo, today
-# via FetchContent_MakeAvailable(Drivers) at the end of stm32_cmake_base's
-# cmake/cmsis-download.cmake, which by then has already:
+# NOT a standalone CMake project (no project()/toolchain here) - always
+# add_subdirectory()'d by whichever project pulls this repo in (today
+# stm32_cmake_base, from its CMakeLists.txt DRIVERS section), which by then
+# has already:
 #   - called project() and resolved the arm-none-eabi toolchain,
-#   - resolved DEVICE into STM32_CORE / STM32_DEVICE_UC / c_target,
-#   - generated cmsis-core/generated/Include/flash_config.h + irq_registry_config.h.
-# add_subdirectory() inherits the caller's variables as they stand at the
-# point of the call, so those are simply read below - see cmsis-download.cmake
-# for where they come from.
+#   - defined the INTERFACE target `stm32_platform` (CMSIS/device include
+#     dirs, device defines, cpu/fpu flags),
+#   - resolved the chip facts these drivers generate config from:
+#     STM32_CORE, STM32_FLASH, STM32_SERIES_UC, STM32_VECTOR_FILE,
+#     ${STM32_CORE}_SECTOR_MAP, STM32_DUAL_BANK,
+#   - made download_one() / k_to_int() available (functions are global once
+#     defined; see stm32_cmake_base/cmake/functions.cmake).
+#
+# Two headers this library needs are DRIVERS-ONLY, so they're generated HERE,
+# not by the platform: flash_config.h (the sector map, read by flash.*) and
+# irq_registry_config.h (the IRQ dispatch stubs - won't even compile without
+# IRQ_Registry, which is ours). They land in this target's build dir.
 #
 # Configuration is entirely external, through ONE input:
+#   STM32_DRIVERS_REQUESTED   ';'-separated optional module names, e.g.
+#                             "UART;SPI;DMA;TIM" - set by stm32_project(DRIVERS
+#                             ...) upstream, or -DSTM32_DRIVERS_REQUESTED=...
 #
-#   STM32_DRIVERS_REQUESTED   ';'-separated list of optional module names,
-#                             e.g. "UART;SPI;DMA;TIM"
-#
-# set by stm32_cmake_base's stm32_project(DRIVERS ...) upstream, or directly
-# with -DSTM32_DRIVERS_REQUESTED=... for a standalone build. There are no
-# per-module option()s and no separate "known modules" list - the module
-# table below is the single source of truth: the set of valid names is
-# exactly what stm32_drivers_module() is called with.
-#
-# Consumer side, once linked in:
-#     target_link_libraries(<your-firmware-target> PRIVATE stm32_drivers)
+# Consumer side: target_link_libraries(<firmware> PRIVATE stm32_drivers)
 # ============================================================================
 
 add_library(stm32_drivers STATIC)
 add_library(stm32::drivers ALIAS stm32_drivers)
+target_link_libraries(stm32_drivers PUBLIC stm32_platform)
 
 set(STM32_DRIVERS_REQUESTED "${STM32_DRIVERS_REQUESTED}" CACHE STRING
 	"Optional driver modules to compile (';'-separated, e.g. UART;SPI;DMA). Normally set by stm32_project(DRIVERS ...).")
+
+# ############################################################################
+# Generated config headers (flash_config.h, irq_registry_config.h)
+# ############################################################################
+
+# Uniform-page families: flash pages all one size, sector list is a formula.
+# Families not listed here use a ${SERIES}_SECTOR_MAP from the downloaded
+# STM32<family>-map.cmake instead.
+set(STM32G0_PAGE_SIZE 2048)
+set(STM32C0_PAGE_SIZE 2048)
+
+# stm32_gen_flash_config(SERIES FLASH_STR DEVICE_NAME TEMPLATE OUT_FILE)
+#   Sector-map mode (${SERIES}_SECTOR_MAP defined): look up FLASH_KB -> count,
+#   doubled when STM32_DUAL_BANK. Uniform-page mode (${SERIES}_PAGE_SIZE):
+#   count = flash / page, and build the {address,size} list for the template.
+function(stm32_gen_flash_config SERIES FLASH_STR DEVICE_NAME TEMPLATE OUT_FILE)
+	k_to_int("${FLASH_STR}" _kb)
+	set(_map     "${${SERIES}_SECTOR_MAP}")
+	set(_page_sz "${${SERIES}_PAGE_SIZE}")
+	set(FLASH_CFG_SECTORS_LIST "")
+
+	if(_map)
+		list(FIND _map "${_kb}" _idx)
+		if(_idx LESS 0)
+			message(FATAL_ERROR "stm32_gen_flash_config: no entry for ${_kb}K in ${SERIES}_SECTOR_MAP")
+		endif()
+		math(EXPR _i1 "${_idx} + 1")
+		list(GET _map ${_i1} FLASH_CFG_COUNT)
+		if(STM32_DUAL_BANK)
+			math(EXPR FLASH_CFG_COUNT "${FLASH_CFG_COUNT} * 2")
+		endif()
+		set(_mode "sectors")
+	elseif(_page_sz)
+		math(EXPR FLASH_CFG_COUNT "${_kb} * 1024 / ${_page_sz}")
+		math(EXPR _last "${FLASH_CFG_COUNT} - 1")
+		foreach(_i RANGE 0 ${_last})
+			math(EXPR _addr "0x08000000 + ${_i} * ${_page_sz}" OUTPUT_FORMAT HEXADECIMAL)
+			string(APPEND FLASH_CFG_SECTORS_LIST
+				"    { ${_addr}UL, ${_page_sz}UL }, // Sector ${_i}\n")
+		endforeach()
+		set(_mode "pages (${_page_sz} B each)")
+	else()
+		message(FATAL_ERROR
+			"stm32_gen_flash_config: neither ${SERIES}_SECTOR_MAP nor ${SERIES}_PAGE_SIZE is defined")
+	endif()
+
+	set(FLASH_CFG_DEVICE    "${DEVICE_NAME}")
+	set(FLASH_CFG_FLASH_STR "${FLASH_STR}")
+	configure_file("${TEMPLATE}" "${OUT_FILE}" @ONLY)
+	message(STATUS "Flash config generated: ${OUT_FILE}  (${FLASH_CFG_COUNT} ${_mode}, dual_bank=${STM32_DUAL_BANK})")
+endfunction()
+
+# stm32_gen_irq_handlers(VECTOR_FILE TEMPLATE OUT_FILE)
+#   Text-scrapes the vector table: IRQ_TABLE_SIZE from the entry count, and one
+#   `extern "C" void X_IRQHandler(){ IRQ_Registry::Dispatch(X_IRQn); }` per
+#   *_IRQHandler found. Depends on vector_<device>.c keeping its formatting.
+function(stm32_gen_irq_handlers VECTOR_FILE TEMPLATE OUT_FILE)
+	file(STRINGS "${VECTOR_FILE}" _all_entries REGEX "\\(uint32_t\\)")
+	list(LENGTH _all_entries _total)
+	math(EXPR IRQ_TABLE_SIZE "${_total} - 16")
+
+	if(STM32_SERIES_UC MATCHES "STM32G0")
+		set(IRQ_MAX_SHARED 3)   # DMA1_Ch4_5_DMAMUX1_OVR
+	else()
+		set(IRQ_MAX_SHARED 2)   # timer pairs on F4/F7; safe default elsewhere
+	endif()
+
+	file(STRINGS "${VECTOR_FILE}" _handler_lines REGEX "void [A-Za-z0-9_]+_IRQHandler\\(void\\)")
+	set(IRQ_HANDLERS_CODE "")
+	foreach(_line ${_handler_lines})
+		string(REGEX MATCH "void ([A-Za-z0-9_]+_IRQHandler)" _match "${_line}")
+		if(CMAKE_MATCH_1)
+			set(_h "${CMAKE_MATCH_1}")
+			string(REPLACE "_IRQHandler" "_IRQn" _irqn "${_h}")
+			string(APPEND IRQ_HANDLERS_CODE
+				"extern \"C\" void ${_h}() { IRQ_Registry::Dispatch(${_irqn}); }\n")
+		endif()
+	endforeach()
+
+	configure_file("${TEMPLATE}" "${OUT_FILE}" @ONLY)
+	message(STATUS "IRQ registry generated: ${OUT_FILE}  (IRQ_TABLE_SIZE=${IRQ_TABLE_SIZE}, IRQ_MAX_SHARED=${IRQ_MAX_SHARED})")
+endfunction()
+
+# ---- pick the flash-config template, fetch templates, generate -------------
+set(_dl  "${CMAKE_CURRENT_BINARY_DIR}/dl")         # downloaded .h.in templates
+set(_gen "${CMAKE_CURRENT_BINARY_DIR}/generated")  # generated headers
+
+# Families with single/dual variants: F4, F7, G4, H7. F1 has an XL variant
+# (>512K). Everything else: one template, no suffix.
+k_to_int("${STM32_FLASH}" _flash_kb)
+if("${STM32_CORE}" MATCHES "^STM32(F4|F7|G4|H7)$")
+	if(STM32_DUAL_BANK)
+		set(_flash_tmpl "${STM32_CORE}_flash_config_dual.h.in")
+	else()
+		set(_flash_tmpl "${STM32_CORE}_flash_config_single.h.in")
+	endif()
+elseif(STM32_CORE STREQUAL "STM32F1" AND _flash_kb GREATER 512)
+	set(_flash_tmpl "STM32F1_flash_config_xl.h.in")
+else()
+	set(_flash_tmpl "${STM32_CORE}_flash_config.h.in")
+endif()
+
+download_one("${_flash_tmpl}"           "${_dl}" "cmake/${_flash_tmpl}")
+download_one("irq_registry_config.h.in" "${_dl}" "cmake/irq_registry_config.h.in")
+
+stm32_gen_flash_config("${STM32_CORE}" "${STM32_FLASH}" "${STM32_DEVICE_UC}"
+	"${_dl}/${_flash_tmpl}" "${_gen}/flash_config.h")
+stm32_gen_irq_handlers("${STM32_VECTOR_FILE}"
+	"${_dl}/irq_registry_config.h.in" "${_gen}/irq_registry_config.h")
+
+target_include_directories(stm32_drivers PUBLIC "${_gen}")
+
+# ############################################################################
+# Sources
+# ############################################################################
 
 # ---- always-on core -------------------------------------------------------
 # System / RCC / GPIO / Flash / IRQ_Registry are load-bearing - almost nothing
@@ -48,10 +164,9 @@ target_include_directories(stm32_drivers PUBLIC src)
 
 # ---- module table --------------------------------------------------------
 # stm32_drivers_module(NAME [SOURCES ...] [INCLUDE ...])
-#   Declares one optional module. If NAME is in STM32_DRIVERS_REQUESTED its
-#   SOURCES are compiled into stm32_drivers and its INCLUDE dirs added PUBLIC.
-#   Every NAME declared here is automatically the full set of valid module
-#   names - nothing else to keep in sync. Paths are relative to this file.
+#   If NAME is in STM32_DRIVERS_REQUESTED its SOURCES/INCLUDE are added.
+#   The set of NAMEs declared here IS the set of valid module names - the
+#   typo check below derives its list from these calls, nothing to sync.
 #
 # Adding / renaming / removing a module = editing exactly one line here.
 set(_stm32_drivers_declared "")
@@ -101,8 +216,7 @@ stm32_drivers_module(FASTMATH INCLUDE math SOURCES
 
 # Interface_SPI/Interface_DMA (DMA-driven UART/SPI transfers) live in old/ -
 # they reference a DMA_Sx_ns namespace that no longer exists in dma.hpp
-# (DMA_Sx is a flat class now) and have never compiled. No module until
-# someone rewrites them against the current DMA_Sx API.
+# (DMA_Sx is a flat class now) and have never compiled.
 
 # ---- reject a typo in the requested list --------------------------------
 foreach(_req ${STM32_DRIVERS_REQUESTED})
@@ -112,28 +226,3 @@ foreach(_req ${STM32_DRIVERS_REQUESTED})
 			"(via stm32_project(DRIVERS ...)). Known: ${_stm32_drivers_declared}")
 	endif()
 endforeach()
-
-# ---- MCU selection: inherited from whichever project pulled us in ---------
-# STM32_CORE (e.g. STM32F4), STM32_DEVICE_UC (e.g. STM32F446RE), c_target
-# (e.g. STM32F446xx), and main_cpu_PARAMS/cpu_PARAMS (e.g. -mcpu=cortex-m4
-# -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard, from the downloaded
-# STM32<family>-map.cmake) are all read as plain variables inherited from the
-# caller's scope at add_subdirectory() time - see the file banner above.
-# The cpu/fpu flags are PUBLIC, not just used locally: without -mthumb, the
-# assembler defaults to ARM mode and rejects plain Thumb-2 instructions
-# (cpsid, dsb, bkpt, ...) that this code uses everywhere.
-target_compile_definitions(stm32_drivers PUBLIC
-	${STM32_CORE}
-	${STM32_DEVICE_UC}
-	${c_target}
-)
-target_compile_options(stm32_drivers PUBLIC
-	-mthumb
-	${main_cpu_PARAMS}
-	${cpu_PARAMS}
-)
-target_include_directories(stm32_drivers PUBLIC
-	${CMAKE_SOURCE_DIR}/cmsis-core/Include
-	${CMAKE_SOURCE_DIR}/cmsis-core/download_files/Device/Include
-	${CMAKE_SOURCE_DIR}/cmsis-core/generated/Include
-)
