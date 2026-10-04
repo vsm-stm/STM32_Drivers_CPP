@@ -1,34 +1,34 @@
 # ============================================================================
-# STM32_Drivers_CPP — цель библиотеки stm32_drivers
+# STM32_Drivers_CPP - the stm32_drivers library target
 # ============================================================================
 #
-# НЕ самостоятельный CMake-проект (здесь нет ни project(), ни тулчейна) —
-# всегда add_subdirectory()-ится тем проектом, который тянет этот репозиторий
-# (сегодня — stm32_cmake_base, из его CMakeLists.txt), а тот к этому моменту
-# уже:
-#   - вызвал project() и разрешил тулчейн arm-none-eabi,
-#   - создал INTERFACE-цель `stm32_platform` (include-каталоги CMSIS/устройства,
-#     дефайны устройства, все флаги компилятора и линкера),
-#   - разрешил факты о чипе, из которых драйверы генерируют свой конфиг:
+# NOT a standalone CMake project (no project(), no toolchain here) - always
+# add_subdirectory()'d by whichever project pulls in this repository (today:
+# stm32_cmake_base, from its own CMakeLists.txt), which by this point has
+# already:
+#   - called project() and resolved the arm-none-eabi toolchain,
+#   - created the INTERFACE target `stm32_platform` (CMSIS/device include
+#     directories, device defines, every compiler and linker flag),
+#   - resolved the chip facts the drivers generate their own config from:
 #     STM32_CORE, STM32_FLASH, STM32_SERIES_UC, STM32_NAME, STM32_VECTOR_FILE,
 #     STM32_FLASH_SECTORS, STM32_DUAL_BANK,
-#   - сделал доступными download_one() / k_to_int() (функции глобальны сразу
-#     после определения; см. stm32_cmake_base/cmake/functions.cmake).
+#   - made download_one() / k_to_int() available (functions are global as
+#     soon as defined; see stm32_cmake_base/cmake/functions.cmake).
 #
-# Два нужных этой библиотеке заголовка — ТОЛЬКО ДЛЯ ДРАЙВЕРОВ, поэтому
-# генерируются ЗДЕСЬ, а не платформой: flash_config.h (карта секторов, читает
-# flash.*) и irq_registry_config.h (заглушки диспетчера IRQ — вообще не
-# скомпилируются без IRQ_Registry, а он наш). Ложатся в
-# cmsis-core/drivers_gen/ в дереве конечного проекта (vendored, как и
-# скачанный шаблон линкер-скрипта платформы).
+# Two headers this library needs are DRIVERS-ONLY, so they are generated
+# HERE rather than by the platform: flash_config.h (the sector map, read by
+# flash.*) and irq_registry_config.h (IRQ dispatcher stubs - will not even
+# compile without IRQ_Registry, which is ours). They land in
+# cmsis-core/drivers_gen/ in the consuming project's own tree (vendored,
+# just like the platform's downloaded linker script template).
 #
-# Конфигурация полностью внешняя, через ОДИН вход:
-#   STM32_DRIVERS_REQUESTED   имена опциональных модулей через ';', напр.
-#                             "UART;SPI;DMA;TIM" — stm32_cmake_base задаёт его
-#                             из "drivers" в project.json; можно и вручную
-#                             -DSTM32_DRIVERS_REQUESTED=...
+# Configuration is entirely external, through ONE input:
+#   STM32_DRIVERS_REQUESTED   optional module names, ';'-separated, e.g.
+#                             "UART;SPI;DMA;TIM" - stm32_cmake_base sets it
+#                             from "drivers" in project.json; can also be set
+#                             manually with -DSTM32_DRIVERS_REQUESTED=...
 #
-# Со стороны потребителя: target_link_libraries(<прошивка> PRIVATE stm32_drivers)
+# From the consumer side: target_link_libraries(<firmware> PRIVATE stm32_drivers)
 # ============================================================================
 
 add_library(stm32_drivers STATIC)
@@ -36,17 +36,16 @@ add_library(stm32::drivers ALIAS stm32_drivers)
 target_link_libraries(stm32_drivers PUBLIC stm32_platform)
 
 set(STM32_DRIVERS_REQUESTED "${STM32_DRIVERS_REQUESTED}" CACHE STRING
-	"Опциональные модули драйверов (';'-разделённые, напр. UART;SPI;DMA). Обычно задаётся из \"drivers\" в project.json.")
+	"Optional driver modules (';'-separated, e.g. UART;SPI;DMA). Normally set from \"drivers\" in project.json.")
 
 # ############################################################################
-# Генерируемые заголовки конфига (flash_config.h, irq_registry_config.h)
+# Generated config headers (flash_config.h, irq_registry_config.h)
 # ############################################################################
 
 # stm32_gen_irq_handlers(VECTOR_FILE TEMPLATE OUT_FILE)
-#   Парсит таблицу векторов текстом: IRQ_TABLE_SIZE из числа записей и по одной
-#   `extern "C" void X_IRQHandler(){ IRQ_Registry::Dispatch(X_IRQn); }` на
-#   каждый найденный *_IRQHandler. Зависит от того, что vector_<device>.c
-#   сохраняет своё форматирование.
+#   Parses the vector table as text: IRQ_TABLE_SIZE from the entry count, and
+#   one `extern "C" void X_IRQHandler(){ IRQ_Registry::Dispatch(X_IRQn); }`
+#   per *_IRQHandler found. Relies on vector_<device>.c keeping its formatting.
 function(stm32_gen_irq_handlers VECTOR_FILE TEMPLATE OUT_FILE)
 	file(STRINGS "${VECTOR_FILE}" _all_entries REGEX "\\(uint32_t\\)")
 	list(LENGTH _all_entries _total)
@@ -55,7 +54,7 @@ function(stm32_gen_irq_handlers VECTOR_FILE TEMPLATE OUT_FILE)
 	if(STM32_SERIES_UC MATCHES "STM32G0")
 		set(IRQ_MAX_SHARED 3)   # DMA1_Ch4_5_DMAMUX1_OVR
 	else()
-		set(IRQ_MAX_SHARED 2)   # пары таймеров на F4/F7; безопасное значение по умолчанию
+		set(IRQ_MAX_SHARED 2)   # timer pairs on F4/F7; a safe default
 	endif()
 
 	file(STRINGS "${VECTOR_FILE}" _handler_lines REGEX "void [A-Za-z0-9_]+_IRQHandler\\(void\\)")
@@ -74,21 +73,22 @@ function(stm32_gen_irq_handlers VECTOR_FILE TEMPLATE OUT_FILE)
 	message(STATUS "IRQ registry generated: ${OUT_FILE}  (IRQ_TABLE_SIZE=${IRQ_TABLE_SIZE}, IRQ_MAX_SHARED=${IRQ_MAX_SHARED})")
 endfunction()
 
-# ---- качаем два общих шаблона, генерируем два заголовка --------------------
-# Шаблоны — загрузки -> рядом с прочими загрузками платформы.
-# Наши сгенерированные заголовки -> cmsis-core/drivers_gen/ в дереве проекта.
+# ---- download two shared templates, generate two headers -------------------
+# Templates - downloads -> next to the platform's other downloads.
+# Our generated headers -> cmsis-core/drivers_gen/ in the project tree.
 set(_dl  "${CMAKE_SOURCE_DIR}/cmsis-core/download_files/cmake")
 set(_gen "${CMAKE_SOURCE_DIR}/cmsis-core/drivers_gen")
 
 download_one("flash_config.h.in"        "${_dl}" "cmake/flash_config.h.in")
 download_one("irq_registry_config.h.in" "${_dl}" "cmake/irq_registry_config.h.in")
 
-# flash_config.h — список секторов стирания для этого конкретного устройства
-# уже готовый CMake-список в скачанном STM32<F>-map.cmake (сгенерирован
-# STM32-base_files/flash_sectors.py). Здесь ничего не вычисляется: берём его
-# по объёму флеша чипа и форматируем в @FLASH_CFG_SECTORS_LIST@ шаблона.
-set(_sect_var "${STM32_CORE}_SECTORS_${STM32_FLASH}")       # напр. STM32F4_SECTORS_512K
-set(_sectors  "${${_sect_var}}")                            # напр. 0x08000000;16384;...
+# flash_config.h - the erase-sector list for this specific device is already
+# a ready-made CMake list in the downloaded STM32<F>-map.cmake (generated by
+# STM32-base_files/flash_sectors.py). Nothing is computed here: we just look
+# it up by the chip's flash size and format it into the template's
+# @FLASH_CFG_SECTORS_LIST@.
+set(_sect_var "${STM32_CORE}_SECTORS_${STM32_FLASH}")       # e.g. STM32F4_SECTORS_512K
+set(_sectors  "${${_sect_var}}")                            # e.g. 0x08000000;16384;...
 if(NOT _sectors)
 	message(FATAL_ERROR
 		"stm32_drivers: ${_sect_var} not found for ${STM32_DEVICE_UC} (${STM32_FLASH}). "
@@ -122,12 +122,12 @@ stm32_gen_irq_handlers("${STM32_VECTOR_FILE}"
 target_include_directories(stm32_drivers PUBLIC "${_gen}")
 
 # ############################################################################
-# Исходники
+# Sources
 # ############################################################################
 
-# ---- всегда включённое ядро ---------------------------------------------
-# System / RCC / GPIO / Flash / IRQ_Registry — несущие: без них почти ничего
-# не работает (загрузчик в том числе), поэтому они никогда не опциональны.
+# ---- always-on core ------------------------------------------------------
+# System / RCC / GPIO / Flash / IRQ_Registry - load-bearing: almost nothing
+# works without them (the bootloader included), so they are never optional.
 target_sources(stm32_drivers PRIVATE
 	src/system.cpp
 	src/rcc.cpp
@@ -137,14 +137,14 @@ target_sources(stm32_drivers PRIVATE
 )
 target_include_directories(stm32_drivers PUBLIC src)
 
-# ---- таблица модулей ---------------------------------------------------
+# ---- module table -------------------------------------------------------
 # stm32_drivers_module(NAME [SOURCES ...] [INCLUDE ...])
-#   Если NAME есть в STM32_DRIVERS_REQUESTED — его SOURCES/INCLUDE добавляются.
-#   Набор объявленных здесь NAME И ЕСТЬ набор допустимых имён модулей —
-#   проверка опечаток ниже строит свой список из этих вызовов, синхронизировать
-#   нечего.
+#   If NAME is in STM32_DRIVERS_REQUESTED, its SOURCES/INCLUDE get added.
+#   The set of NAMEs declared here IS the set of valid module names - the
+#   typo check below builds its own list from these calls, there is nothing
+#   to keep in sync separately.
 #
-# Добавить / переименовать / убрать модуль = правка ровно одной строки здесь.
+# Adding / renaming / removing a module = editing exactly one line here.
 set(_stm32_drivers_declared "")
 function(stm32_drivers_module NAME)
 	cmake_parse_arguments(M "" "" "SOURCES;INCLUDE" ${ARGN})
@@ -172,21 +172,27 @@ stm32_drivers_module(TIM    SOURCES src/tim.cpp)
 stm32_drivers_module(RTC    SOURCES src/rtc.cpp)
 stm32_drivers_module(ADC    SOURCES src/adc.cpp)
 stm32_drivers_module(DAC    SOURCES src/dac.cpp)
-# i2c.hpp делает `#include <i2c_timing_utility.h>` (угловые скобки) — src/tools
-# должен быть настоящим include-каталогом, а не просто include из той же папки.
+# i2c.hpp does `#include <i2c_timing_utility.h>` (angle brackets) - src/tools
+# must be a real include directory, not just an include from the same folder.
 stm32_drivers_module(I2C    SOURCES src/i2c.cpp src/tools/i2c_timing_utility.c  INCLUDE src/tools)
 stm32_drivers_module(MODBUS SOURCES Interfaces/Modbus-slave.cpp                 INCLUDE Interfaces)
-stm32_drivers_module(CONTAINERS INCLUDE Containers)          # только заголовки
-# PID — собственный регулятор автора (math/PID.*): переменный dT, мёртвая зона,
-# антивиндап. Простая рекуррентная альтернатива — arm_pid_* в модуле DSP.
+stm32_drivers_module(CONTAINERS INCLUDE Containers)          # headers only
+# PID - the author's own controller (math/PID.*): variable dT, dead zone,
+# anti-windup. A simpler recurrence-based alternative is arm_pid_* in the DSP module.
 stm32_drivers_module(PID    SOURCES math/PID.c                        INCLUDE math)
+# CRC32 - portable software implementation (no HW peripheral, no lookup table),
+# see crc/crc32.h for why. Can also be fetched as a single file without the rest
+# of the driver library - stm32-bootloader does this itself, in its own
+# CMakeLists.txt, for standalone builds where "drivers" is off.
+stm32_drivers_module(CRC    SOURCES crc/crc32.c                       INCLUDE crc)
 
-# ---- DSP: подмножество актуального CMSIS-DSP от Arm (Apache-2.0) ---------
-# Быстрая математика (sin/cos/sqrt/atan2/...), регуляторы (PID) и общие
-# таблицы. Не копируется в репозиторий, а подтягивается FetchContent-ом по
-# тегу (в _deps/ build-каталога). Весь CMSIS-DSP не собирается — только эти
-# каталоги; f16-ядра отключены. Регистрируем имя в списке допустимых модулей,
-# чтобы опечатка в "drivers" ловилась так же, как у остальных.
+# ---- DSP: a subset of Arm's current CMSIS-DSP (Apache-2.0) ---------------
+# Fast math (sin/cos/sqrt/atan2/...), controllers (PID), and common tables.
+# Not vendored into the repository, pulled in via FetchContent by tag
+# (into _deps/ in the build directory). The whole of CMSIS-DSP is not built -
+# only these directories; f16 kernels are excluded. The name is registered
+# in the list of valid modules so a typo in "drivers" is caught the same way
+# as for every other one.
 list(APPEND _stm32_drivers_declared DSP)
 if("DSP" IN_LIST STM32_DRIVERS_REQUESTED)
 	include(FetchContent)
@@ -194,7 +200,7 @@ if("DSP" IN_LIST STM32_DRIVERS_REQUESTED)
 		GIT_REPOSITORY https://github.com/ARM-software/CMSIS-DSP.git
 		GIT_TAG        v1.16.2
 		GIT_SHALLOW    TRUE
-		SOURCE_SUBDIR  _no_cmake_here_   # только клонируем, его CMakeLists не запускаем
+		SOURCE_SUBDIR  _no_cmake_here_   # clone only, its own CMakeLists is not run
 	)
 	FetchContent_MakeAvailable(cmsis_dsp)
 
@@ -213,11 +219,11 @@ if("DSP" IN_LIST STM32_DRIVERS_REQUESTED)
 		PRIVATE "${_dsp}/PrivateInclude")
 endif()
 
-# ---- ловим опечатку в запрошенном списке -------------------------------
+# ---- catch a typo in the requested list ---------------------------------
 foreach(_req ${STM32_DRIVERS_REQUESTED})
 	if(NOT "${_req}" IN_LIST _stm32_drivers_declared)
 		message(FATAL_ERROR
 			"stm32_drivers: unknown module '${_req}' in STM32_DRIVERS_REQUESTED "
-			"(из \"drivers\" в project.json). Known: ${_stm32_drivers_declared}")
+			"(from \"drivers\" in project.json). Known: ${_stm32_drivers_declared}")
 	endif()
 endforeach()

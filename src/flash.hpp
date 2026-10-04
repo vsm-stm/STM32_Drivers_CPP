@@ -98,10 +98,10 @@ void flash_base::write(uint32_t addr, T *data, uint32_t size)
 
 	__disable_irq();
 		
-	FLASH->CR |= FLASH_CR_PG; //Разрешаем программирование флеша
+	FLASH->CR |= FLASH_CR_PG; // allow flash programming
 
 #if defined(STM32G0)
-	// G0: только 64-битная запись двумя последовательными 32-битными словами
+	// G0: 64-bit write only, as two consecutive 32-bit words
 	const uint32_t total = size * sizeof(T);
 	const uint8_t* src = reinterpret_cast<const uint8_t*>(data);
 
@@ -134,7 +134,7 @@ void flash_base::write(uint32_t addr, T *data, uint32_t size)
 	FLASH->CR &= ~(FLASH_CR_PSIZE_Msk);
 	FLASH->CR |= ((sz == 8)? 3 : (sz >> 1)) << FLASH_CR_PSIZE_Pos;
 
-	while(!ready()){}; //Ожидаем готовности флеша к записи
+	while(!ready()){}; // wait for flash to be ready to write
 
 	for(uint32_t i = 0;i<size;i++)
 	{
@@ -145,7 +145,7 @@ void flash_base::write(uint32_t addr, T *data, uint32_t size)
 
 #endif
 
-	FLASH->CR &= ~(FLASH_CR_PG); //Запрещаем программирование флеша
+	FLASH->CR &= ~(FLASH_CR_PG); // forbid flash programming
 
 	__enable_irq();
 }

@@ -20,20 +20,20 @@ class StaticSList {
 
 public:
 	StaticSList() {
-		// формируем список свободных
+		// build the free list
 		for (int i = 0; i < (int)N - 1; i++) {
 			pool[i].next = i + 1;
 		}
 		pool[N - 1].next = -1;
 	}
 
-	// доступ к началу
+	// access the front
 	T* front() {
 		if (head == -1) return nullptr;
 		return &pool[head].value;
 	}
 
-	// переход к следующему
+	// move to the next one
 	T* next(const T* cur) {
 		const Node* n = reinterpret_cast<const Node*>(
 			reinterpret_cast<const char*>(cur) - offsetof(Node, value));
@@ -44,7 +44,7 @@ public:
 		return &pool[next_idx].value;
 	}
 
-	// вставка в конец
+	// insert at the back
 	bool push_back(const T& val) {
 		if (free_head == -1) return false;
 		int idx = free_head;
@@ -64,7 +64,7 @@ public:
 		return true;
 	}
 
-	// удаление по условию
+	// remove by condition
 	template<typename Pred>
 	bool erase_if(Pred&& pred) {
 		int prev = -1;
@@ -78,7 +78,7 @@ public:
 
 				if (idx == tail) tail = prev;
 
-				// вернуть в свободный список
+				// return it to the free list
 				pool[idx].used = false;
 				pool[idx].next = free_head;
 				free_head = idx;
