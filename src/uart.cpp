@@ -292,7 +292,7 @@ void USART::HandleIRQ() {
 // ---------------------------------------------------------------------------
 
 void USART::OnTxEmpty(){
-	while (tx_data.size && (Status_reg() & ISR_TXE)) {  // ISR_TXE = TXFNF в FIFO-режиме
+	while (tx_data.size && (Status_reg() & ISR_TXE)) {  // ISR_TXE = TXFNF in FIFO mode
 		TXD() = *tx_data.data_ptr++;
 		tx_data.size--;
 	}
