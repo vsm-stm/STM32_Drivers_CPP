@@ -14,7 +14,7 @@ bool IRQ_Registry::Register(IRQn_Type irqn, IIRQHandler* handler)
 		}
 	}
 
-	// все слоты заняты — ошибка конфигурации
+	// all slots are taken - a configuration error
 	__BKPT(0);
 	while (1);
 	return false;
@@ -26,7 +26,7 @@ int IRQ_Registry::_function_pool_used = 0;
 bool IRQ_Registry::Register(IRQn_Type irqn, IRQHandlerFn fn, void* ctx)
 {
 	if (_function_pool_used >= IRQ_MAX_FUNCTION_HANDLERS) {
-		// пул адаптеров исчерпан — увеличьте IRQ_MAX_FUNCTION_HANDLERS
+		// the adapter pool is exhausted - increase IRQ_MAX_FUNCTION_HANDLERS
 		__BKPT(0);
 		while (1);
 		return false;
