@@ -36,7 +36,7 @@ private:
 	}
 	void free_node(index_type i) {
 		nodes[i].used = false;
-		nodes[i].next = free_head;   // в стек свободных
+		nodes[i].next = free_head;   // onto the free stack
 		nodes[i].prev = npos;
 		free_head = i;
 	}
@@ -52,12 +52,12 @@ public:
 	StaticDList() : head_idx(npos), tail_idx(npos), free_head(0), sz(0) {
 		for (index_type i = 0; i < N; ++i) {
 			nodes[i].used = false;
-			nodes[i].next = (i + 1 < N) ? (i + 1) : npos; // свободные как стек
+			nodes[i].next = (i + 1 < N) ? (i + 1) : npos; // free nodes as a stack
 			nodes[i].prev = npos;
 		}
 	}
 
-	// базовый API
+	// basic API
 	bool        empty() const { return sz == 0; }
 	bool        full()  const { return sz == N; }
 	size_t      size()  const { return sz; }
@@ -69,7 +69,7 @@ public:
 	const T&    ref (index_type i) const { return nodes[i].value; }
 	bool        valid(index_type i) const { return (i < N) && nodes[i].used; }
 
-	// добавление в хвост
+	// append at the tail
 	bool push_back(const T& v, index_type* out_idx = nullptr) {
 		index_type i = alloc_node();
 		if (i == npos) return false;
@@ -84,7 +84,7 @@ public:
 		return true;
 	}
 
-	// перенос узла i в хвост (O(1))
+	// move node i to the tail (O(1))
 	void move_to_tail(index_type i) {
 		if (i == npos || !nodes[i].used || i == tail_idx) return;
 		unlink(i);
@@ -95,7 +95,7 @@ public:
 		if (head_idx == npos) head_idx = i;
 	}
 
-	// обычное удаление (unlink + free)
+	// ordinary removal (unlink + free)
 	bool erase(index_type i) {
 		if (i == npos || !nodes[i].used) return false;
 		unlink(i);
@@ -104,15 +104,15 @@ public:
 		return true;
 	}
 
-	// УДОБНО ДЛЯ ИТЕРАЦИИ: вернуть индекс следующего узла ПОСЛЕ удаления i.
-	// Гарантирует корректный шаг во внешнем for.
+	// CONVENIENT FOR ITERATION: returns the index of the node AFTER erasing i.
+	// Guarantees a correct step in an external for loop.
 	index_type erase_and_next(index_type i) {
 		if (i == npos || !nodes[i].used) return npos;
-		index_type n = nodes[i].next; // сохранить next ДО unlink
+		index_type n = nodes[i].next; // save next BEFORE unlinking
 		unlink(i);
 		free_node(i);
 		--sz;
-		return n; // безопасно продолжать с n
+		return n; // safe to continue with n
 	}
 };
 
