@@ -38,10 +38,11 @@ Only **compilation** has been checked (release, one module at a time; F446RE, F7
 | Module | Files | F4 (F446) | F7 (F746) | G0 (G071) |
 |---|---|---|---|---|
 | Core: System, RCC, GPIO, Flash, IRQ_Registry | `src/system.*`, `rcc.*`, `gpio.*`, `flash.*`, `irq_registry.*` | ok | ok | ok |
-| UART, SPI, TIM | `src/uart.*`, `spi.*`, `tim.*` | ok | not tested | ok |
-| DMA | `src/dma.*` | ok | not tested | **error**: `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (on G071 the vector is `Ch4_7`) |
+| UART, SPI | `src/uart.*`, `spi.*` | ok | not tested | ok |
+| TIM | `src/tim.*` | ok¹ (all F4) | ok¹ (all F7) | ok¹ (all G0) |
+| DMA | `src/dma.*` | ok | ok¹ | ok¹ (all G0, incl. DMA1 ch6-7 and DMA2 on G0Bx/G0Cx) |
 | RTC | `src/rtc.*` | **not ported** (`ICSR`) | not ported | ok |
-| ADC | `src/adc.*` | **not ported** (`SMPL::CYC_12_5`) | not tested | **error**: `ADC1_IRQn` |
+| ADC | `src/adc.*` | ok¹ (all F4) | ok¹ (all F7) | ok¹ (all G0) |
 | DAC | `src/dac.*` | **error**: `SYS_StatusTypeDef` not defined | not tested | not tested |
 | I2C, MODBUS | `src/i2c.*`, `Interfaces/` | ok | not tested | I2C ok |
 | CONTAINERS | `Containers/` (headers) | included | — | — |
@@ -49,7 +50,9 @@ Only **compilation** has been checked (release, one module at a time; F446RE, F7
 | DSP | subset of CMSIS-DSP v1.16.2 | ok | not tested | not tested |
 | CRC | `crc/crc32.*` (no tables, no HW peripheral — portable to any family) | ok | ok | ok |
 
-The list of known gaps (RTC/ADC/DAC, DMA on G071) is tracked as a backlog — they ship into the release "as is".
+¹ Syntax check (`-fsyntax-only -Wall -Wextra`) against every CMSIS device header of the family; not yet built as part of a project.
+
+The list of known gaps (RTC/DAC) is tracked as a backlog — they ship into the release "as is".
 
 Families other than F4 / F7 / G0 (including G4) are not supported by the drivers: set `"drivers": null` and write directly against the registers, or port the library (see "Adding a new MCU").
 
@@ -66,7 +69,8 @@ This file gives an overview and usage examples for each module. The full descrip
 - [DMA.md](DMA.md) — `DMA_Sx`: streams (F4/F7) and channels+DMAMUX (G0), request tables.
 - [UART.md](UART.md) — `USART`: blocking/IRQ/DMA modes, reception on the IDLE line.
 - [SPI.md](SPI.md) — `SPI`: Master/Slave roles, Software/Hardware NSS, DMA.
-- [TIM.md](TIM.md) — `TIM` and all 7 subclasses (PWM, capture, step generators, ITR/TRGO).
+- [ADC.md](ADC.md) — `ADC_N`: pin tables for all G0/F4/F7, triggers, circular DMA, shared IRQ lines.
+- [TIM.md](TIM.md) — `TIM` and all subclasses (PWM, capture, step generators, trigger generator, ITR/TRGO).
 - [RTC.md](RTC.md) — `RTC_cl`: BCD time, WakeUp Timer, alarms, calibration.
 - [Flash.md](Flash.md) — `flash_base`/`flash_data`: unlocking, erasing, wear-leveling.
 
@@ -518,9 +522,12 @@ void HandleIRQ() override {
 |---|---|
 | CH1 | `DMA1_Channel1_IRQn` (exclusive) |
 | CH2, CH3 | `DMA1_Channel2_3_IRQn` (shared) |
-| CH4, CH5 | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (shared) |
+| CH4, CH5 (G030/G031/G041) | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (shared) |
+| CH4–CH7 (G05x/G06x/G07x/G08x) | `DMA1_Ch4_7_DMAMUX1_OVR_IRQn` (shared) |
+| DMA1 CH4–CH7 + DMA2 CH1–CH5 (G0Bx/G0Cx) | `DMA1_Ch4_7_DMA2_Ch1_5_DMAMUX1_OVR_IRQn` (shared) |
 
-Two channels on one vector is not a problem: `IRQ_Registry` supports a chain of handlers.
+Several channels on one vector is not a problem: `IRQ_Registry` supports a chain of handlers
+(`IRQ_MAX_SHARED = 4` on G0).
 
 ---
 
@@ -1048,10 +1055,11 @@ system.hpp
 | Модуль | Файлы | F4 (F446) | F7 (F746) | G0 (G071) |
 |---|---|---|---|---|
 | Ядро: System, RCC, GPIO, Flash, IRQ_Registry | `src/system.*`, `rcc.*`, `gpio.*`, `flash.*`, `irq_registry.*` | ок | ок | ок |
-| UART, SPI, TIM | `src/uart.*`, `spi.*`, `tim.*` | ок | не проверялось | ок |
-| DMA | `src/dma.*` | ок | не проверялось | **ошибка**: `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (у G071 вектор `Ch4_7`) |
+| UART, SPI | `src/uart.*`, `spi.*` | ок | не проверялось | ок |
+| TIM | `src/tim.*` | ок¹ (все F4) | ок¹ (все F7) | ок¹ (все G0) |
+| DMA | `src/dma.*` | ок | ок¹ | ок¹ (все G0, вкл. DMA1 кан. 6-7 и DMA2 на G0Bx/G0Cx) |
 | RTC | `src/rtc.*` | **не портирован** (`ICSR`) | не портирован | ок |
-| ADC | `src/adc.*` | **не портирован** (`SMPL::CYC_12_5`) | не проверялось | **ошибка**: `ADC1_IRQn` |
+| ADC | `src/adc.*` | ок¹ (все F4) | ок¹ (все F7) | ок¹ (все G0) |
 | DAC | `src/dac.*` | **ошибка**: `SYS_StatusTypeDef` не определён | не проверялось | не проверялось |
 | I2C, MODBUS | `src/i2c.*`, `Interfaces/` | ок | не проверялось | I2C ок |
 | CONTAINERS | `Containers/` (заголовки) | подключаются | — | — |
@@ -1059,7 +1067,9 @@ system.hpp
 | DSP | подмножество CMSIS-DSP v1.16.2 | ок | не проверялось | не проверялось |
 | CRC | `crc/crc32.*` (без таблиц, без HW-периферии — переносимо на любое семейство) | ок | ок | ок |
 
-Список известных недоработок (RTC/ADC/DAC, DMA на G071) ведётся как бэклог — в релиз они входят «как есть».
+¹ Проверка синтаксиса (`-fsyntax-only -Wall -Wextra`) со всеми заголовками CMSIS семейства; в составе проекта ещё не собиралось.
+
+Список известных недоработок (RTC/DAC) ведётся как бэклог — в релиз они входят «как есть».
 
 Семейства, отличные от F4 / F7 / G0 (в т.ч. G4), драйверами не поддерживаются: ставьте `"drivers": null` и пишите под регистры, либо портируйте (см. «Добавление нового МК»).
 
@@ -1079,7 +1089,8 @@ system.hpp
 - [DMA.md](DMA.md) — `DMA_Sx`: потоки (F4/F7) и каналы+DMAMUX (G0), таблицы запросов.
 - [UART.md](UART.md) — `USART`: блокирующий/IRQ/DMA режимы, приём по IDLE-линии.
 - [SPI.md](SPI.md) — `SPI`: роли Master/Slave, Software/Hardware NSS, DMA.
-- [TIM.md](TIM.md) — `TIM` и все 7 подклассов (ШИМ, захват, генераторы шагов, ITR/TRGO).
+- [ADC.md](ADC.md) — `ADC_N`: таблицы пинов для всех G0/F4/F7, триггеры, циклический DMA, общие линии IRQ.
+- [TIM.md](TIM.md) — `TIM` и все подклассы (ШИМ, захват, генераторы шагов, генератор триггера, ITR/TRGO).
 - [RTC.md](RTC.md) — `RTC_cl`: BCD-время, WakeUp Timer, будильники, калибровка.
 - [Flash.md](Flash.md) — `flash_base`/`flash_data`: разблокировка, стирание, wear-leveling.
 
@@ -1535,9 +1546,12 @@ void HandleIRQ() override {
 |---|---|
 | CH1 | `DMA1_Channel1_IRQn` (эксклюзивный) |
 | CH2, CH3 | `DMA1_Channel2_3_IRQn` (общий) |
-| CH4, CH5 | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (общий) |
+| CH4, CH5 (G030/G031/G041) | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (общий) |
+| CH4–CH7 (G05x/G06x/G07x/G08x) | `DMA1_Ch4_7_DMAMUX1_OVR_IRQn` (общий) |
+| DMA1 CH4–CH7 + DMA2 CH1–CH5 (G0Bx/G0Cx) | `DMA1_Ch4_7_DMA2_Ch1_5_DMAMUX1_OVR_IRQn` (общий) |
 
-Два канала на одном векторе — не проблема: `IRQ_Registry` поддерживает цепочку обработчиков.
+Несколько каналов на одном векторе — не проблема: `IRQ_Registry` поддерживает цепочку обработчиков
+(`IRQ_MAX_SHARED = 4` на G0).
 
 ---
 

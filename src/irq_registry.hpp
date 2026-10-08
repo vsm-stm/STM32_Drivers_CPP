@@ -143,6 +143,21 @@ public:
 	static void Unregister(IRQn_Type irqn);
 
 	/**
+	 * @brief Unregisters one handler, leaving other handlers on the same line intact.
+	 * @param irqn    Peripheral IRQ number.
+	 * @param handler Handler previously passed to Register().
+	 */
+	static void Unregister(IRQn_Type irqn, IIRQHandler* handler);
+
+	/**
+	 * @brief True if at least one handler is registered for irqn.
+	 *
+	 * Lets a driver on a shared line decide whether it may mask the NVIC
+	 * after removing itself.
+	 */
+	static bool HasHandlers(IRQn_Type irqn);
+
+	/**
 	 * @brief Calls all handlers registered for irqn, in registration order.
 	 *
 	 * Called from the auto-generated extern "C" ISR stubs.

@@ -43,8 +43,8 @@
  *           Both fields are required; stream encodes which DMA/stream to use.
  *
  *  - G0:    DMAMUX1 request ID only (RM0444 Table 37).
- *           The DMA channel is chosen separately by the user (any of the five
- *           DMA1 channels may serve any peripheral via DMAMUX1).
+ *           The DMA channel is chosen separately by the user (any DMA channel
+ *           may serve any peripheral via DMAMUX1).
  */
 struct DMAReq {
 #if defined(STM32F4) || defined(STM32F7)
@@ -94,6 +94,14 @@ struct Req {
 					static constexpr DMAReq TRIG = { 24U };
 					static constexpr DMAReq UP   = { 25U };
 	};
+	struct Tim2 {	// G031/G041/G051/G061/G071/G081/G0B1/G0C1
+					static constexpr DMAReq CH1  = { 26U };
+					static constexpr DMAReq CH2  = { 27U };
+					static constexpr DMAReq CH3  = { 28U };
+					static constexpr DMAReq CH4  = { 29U };
+					static constexpr DMAReq TRIG = { 30U };
+					static constexpr DMAReq UP   = { 31U };
+	};
 	struct Tim3 {
 					static constexpr DMAReq CH1  = { 32U };
 					static constexpr DMAReq CH2  = { 33U };
@@ -102,6 +110,19 @@ struct Req {
 					static constexpr DMAReq TRIG = { 36U };
 					static constexpr DMAReq UP   = { 37U };
 	};
+	struct Tim4 {	// G0B0/G0B1/G0C1
+					static constexpr DMAReq CH1  = { 68U };
+					static constexpr DMAReq CH2  = { 69U };
+					static constexpr DMAReq CH3  = { 70U };
+					static constexpr DMAReq CH4  = { 71U };
+					static constexpr DMAReq TRIG = { 72U };
+					static constexpr DMAReq UP   = { 73U };
+	};
+	struct Tim6  {	static constexpr DMAReq UP  = { 38U }; };
+	struct Tim7  {	static constexpr DMAReq UP  = { 39U }; };
+	struct Tim15 {	static constexpr DMAReq CH1 = { 40U };
+					static constexpr DMAReq CH2 = { 41U };
+					static constexpr DMAReq UP  = { 43U }; };
 
 	struct Tim16 {	static constexpr DMAReq CH1 = { 44U };
 					static constexpr DMAReq COM = { 45U };

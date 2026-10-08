@@ -38,6 +38,26 @@ target_link_libraries(stm32_drivers PUBLIC stm32_platform)
 set(STM32_DRIVERS_REQUESTED "${STM32_DRIVERS_REQUESTED}" CACHE STRING
 	"Optional driver modules (';'-separated, e.g. UART;SPI;DMA). Normally set from \"drivers\" in project.json.")
 
+# Module dependencies: a module whose code calls into another module's .cpp
+# pulls that module in, so e.g. "drivers": ["ADC"] links without listing
+# DMA/TIM by hand. Resolved into a local copy of the list (the cache entry
+# keeps what the user asked for).
+set(_stm32_drivers_deps_UART DMA)
+set(_stm32_drivers_deps_SPI  DMA)
+set(_stm32_drivers_deps_TIM  DMA)
+set(_stm32_drivers_deps_ADC  DMA TIM)
+set(_stm32_drivers_req ${STM32_DRIVERS_REQUESTED})
+foreach(_m ${STM32_DRIVERS_REQUESTED})
+	list(APPEND _stm32_drivers_req ${_stm32_drivers_deps_${_m}})
+endforeach()
+foreach(_m ${_stm32_drivers_req})          # second level: ADC -> TIM -> DMA
+	list(APPEND _stm32_drivers_req ${_stm32_drivers_deps_${_m}})
+endforeach()
+if(_stm32_drivers_req)
+	list(REMOVE_DUPLICATES _stm32_drivers_req)
+endif()
+set(STM32_DRIVERS_REQUESTED ${_stm32_drivers_req})
+
 # ############################################################################
 # Generated config headers (flash_config.h, irq_registry_config.h)
 # ############################################################################
@@ -52,9 +72,9 @@ function(stm32_gen_irq_handlers VECTOR_FILE TEMPLATE OUT_FILE)
 	math(EXPR IRQ_TABLE_SIZE "${_total} - 16")
 
 	if(STM32_SERIES_UC MATCHES "STM32G0")
-		set(IRQ_MAX_SHARED 3)   # DMA1_Ch4_5_DMAMUX1_OVR
+		set(IRQ_MAX_SHARED 4)   # DMA1_Ch4_7(_DMA2_Ch1_5)_DMAMUX1_OVR
 	else()
-		set(IRQ_MAX_SHARED 2)   # timer pairs on F4/F7; a safe default
+		set(IRQ_MAX_SHARED 3)   # ADC_IRQn shared by ADC1/2/3 on F4/F7
 	endif()
 
 	file(STRINGS "${VECTOR_FILE}" _handler_lines REGEX "void [A-Za-z0-9_]+_IRQHandler\\(void\\)")

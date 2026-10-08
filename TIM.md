@@ -25,6 +25,7 @@
      - [7.6 TIM_PulseMeasure](#76-tim_pulsemeasure)
      - [7.7 TIM_EncoderReader](#77-tim_encoderreader)
      - [7.8 TIM_HWCounter](#78-tim_hwcounter)
+   - [7.9 TIM_TriggerGenerator](#79-tim_triggergenerator)
 8. [ITR / TRGO — Cascading Timers in Hardware](#8-itr--trgo--cascading-timers-in-hardware)
 9. [Usage Examples](#9-usage-examples)
 10. [Edge Cases](#10-edge-cases)
@@ -187,19 +188,30 @@ Compare events can sit on **two different** NVIC vectors (`irq_up` != `irq_cc`, 
 registers **both** vectors (if they differ) on the same `this`:
 
 ```cpp
-if (en && !NVIC_GetEnableIRQ(_info->irq_up)) {
+if (any && !_irq_registered) {
     IRQ_Registry::Register(_info->irq_up, this);
     NVIC_EnableIRQ(_info->irq_up);
     if (_info->irq_cc != _info->irq_up) {
         IRQ_Registry::Register(_info->irq_cc, this);
         NVIC_EnableIRQ(_info->irq_cc);
     }
+    _irq_registered = true;
 }
 ```
 
-and symmetrically unregisters both when the last source is disabled (`!(TIMx->DIER & all)`, where
-`all` is the mask of all 5 IE bits). On timers with a shared vector (`irq_up == irq_cc`, most
-general-purpose timers), the second `Register()` simply isn't executed — it isn't needed.
+and symmetrically removes itself when the last source is disabled (`any` = any of the 5 IE bits set
+in `DIER`). On timers with one vector for both (`irq_up == irq_cc`, most general-purpose timers), the
+second `Register()` simply isn't executed.
+
+**Vectors shared between timers.** Many lines serve more than one peripheral: `TIM1_UP_TIM10_IRQn`,
+`TIM8_UP_TIM13_IRQn`, `TIM1_BRK_TIM9_IRQn` (F4/F7), `TIM3_TIM4_IRQn` (G0Bx/G0Cx),
+`TIM6_DAC_LPTIM1_IRQn`, `TIM7_LPTIM2_IRQn` (G0). Therefore `IRQ_en()`:
+
+- tracks its **own** registration (`_irq_registered`) instead of looking at the NVIC — otherwise the
+  second timer on a line that is already enabled would never be registered;
+- on disable removes **only itself** (`IRQ_Registry::Unregister(irqn, this)`), not every handler on
+  the line;
+- masks the NVIC only if `IRQ_Registry::HasHandlers(irqn)` says nobody is left.
 
 ---
 
@@ -208,8 +220,8 @@ general-purpose timers), the second `Register()` simply isn't executed — it is
 ```cpp
 void TIM::HandleIRQ()
 {
-    uint32_t sr = TIMx->SR;
-    TIMx->SR = ~sr;   // see below — not "= 0"
+    uint32_t sr = TIMx->SR & TIMx->DIER & (UIF | CC1IF | CC2IF | CC3IF | CC4IF);
+    if (sr) TIMx->SR = ~sr;   // see below — not "= 0"
     if ((sr & TIM_SR_UIF)   && _update_cb) _update_cb();
     if ((sr & TIM_SR_CC1IF) && _cc_cb[0])  _cc_cb[0]();
     if ((sr & TIM_SR_CC2IF) && _cc_cb[1])  _cc_cb[1]();
@@ -218,9 +230,15 @@ void TIM::HandleIRQ()
 }
 ```
 
-Two non-obvious decisions, both commented directly in the code and worth knowing when
+Three non-obvious decisions, all commented directly in the code and worth knowing when
 reading/editing it:
 
+- **Flags are masked with `DIER`.** The `UIE`/`CCxIE` bits sit at the same positions as
+  `UIF`/`CCxIF`. Hardware sets `UIF`/`CCxIF` whether or not the interrupt is enabled, and the vector
+  may be shared with another timer (§4) — without the mask a foreign interrupt would call this
+  timer's callbacks and clear flags the application polls. The subclasses' own `HandleIRQ()`
+  (`TIM_EncoderGenerator`, `TIM_StepGenerator`, `TIM_InputCapture`, `TIM_HWCounter`) do the same and
+  clear only their own flag.
 - **`TIMx->SR = ~sr`, not `TIMx->SR = 0`.** `SR` is "write-0-to-clear, write-1-is-no-op": writing
   the inverted mask clears exactly the flags that were read, and leaves the rest alone.
   `SR = 0` would clear **all** flags at once — including one that hardware managed to set in the
@@ -305,6 +323,7 @@ it.
 | `TIM_PulseMeasure` | Measurer | Period + pulse width (PWM input, reset mode) | No — purely hardware, no callback |
 | `TIM_EncoderReader` | Measurer | Hardware reading of a real quadrature encoder | No — purely hardware, no interrupts |
 | `TIM_HWCounter` | Measurer | Hardware counter of another timer's pulses via ITR, no CPU | Yes — auto-stop on reaching the target |
+| `TIM_TriggerGenerator` | — | Trigger (TRGO/TRGO2/CCx) for the ADC, created with a request like a DMA stream, no pins | No — no interrupts at all |
 
 ### 7.1 TIM_PeriodicIRQ
 
@@ -591,6 +610,44 @@ counter.StopAfter(300);             // another 300 steps from the current CNT
 counter.StopAT(5000);               // ...or straight to absolute position 5000
 ```
 
+### 7.9 TIM_TriggerGenerator
+
+```cpp
+TIM_TriggerGenerator(TIM_TypeDef* timx, TrigReq req);
+SysInitStatus SetUp(uint32_t freq);                                    // TRGO / TRGO2 request
+SysInitStatus SetUp(uint32_t freq, uint32_t period, uint32_t compare); // CCx request
+const TrigReq& GetReq() const;
+uint32_t GetPeriod() const;
+```
+
+A timer that only produces a trigger for another peripheral (the ADC) — no pins, no interrupts. It
+is created like a DMA stream: the timer plus a request that says what it triggers.
+
+```cpp
+TIM_TriggerGenerator trg(TIM3, TIM_TriggerGenerator::Req::Adc::TIM3_TRGO);   // cf. DMA_Sx(ch, Req)
+trg.SetUp(10000);                     // TRGO: the frequency is enough
+
+TIM_TriggerGenerator cc(TIM1, TIM_TriggerGenerator::Req::Adc::TIM1_CC1);
+cc.SetUp(10000, 1000, 250);           // CCx: frequency, period in ticks, compare point
+
+adc.AttachTrig(&trg);                 // the consumer checks the request is meant for it
+```
+
+The requests live in [tim_trig_defs.hpp](src/tim_trig_defs.hpp) (included in the class body, like
+`dma_requests.hpp` in `DMA_Sx`). A `TrigReq` holds the producing timer, the consumer
+(`TrigTarget::Adc`), the timer event (`TrigSource::TRGO`, `TRGO2`, `CC1`…`CC4`) and the consumer's
+EXTSEL value; each request exists only on the families/devices where it is valid.
+
+- The constructor checks that the request belongs to `timx` (`System::DebugTrap()` otherwise).
+- `SetUp(freq)` — TRGO/TRGO2 requests: PSC/ARR for `freq`, loaded by a forced update **before** the
+  trigger is routed (so `SetUp()` itself fires no trigger), then `MMS = 010` (Update → TRGO) or
+  `MMS2 = 0010` (Update → TRGO2). `InitError` for a CCx request.
+- `SetUp(freq, period, compare)` — CCx requests: `period` ticks at `freq`, the channel as output
+  compare in PWM mode 2 (OCxREF rises at the match), `CCRx = compare`. `InitError` for a TRGO
+  request or if `compare >= period`.
+- The timer is not started by `SetUp()`; its consumer starts and stops it (`ADC_N::StartTrig()` /
+  `Stop()`), or `Start()`/`Stop()`.
+
 ---
 
 ## 8. ITR / TRGO — Cascading Timers in Hardware
@@ -608,19 +665,20 @@ linear search, `0xFF` means "there's no verified entry for this pair, treat it a
 so `TIM_HWCounter::SetUp()` refuses to work instead of silently connecting to the wrong ITR index.
 
 On F4 the table is filled in for `TIM1/2/3/4/5/8` (the only timers with a full-featured SMCR per
-RM0090). On STM32G0 both entries (`TIM3→TIM1`, `TIM1→TIM3`) deliberately carry `itr = 0xFF` —
-they haven't been checked against RM0444 yet, so `TIM_HWCounter` on G0 currently always returns
-`InitError` until someone confirms and sets the real index.
+RM0090); rows whose timers are missing on the device (F401/F410/F411) are compiled out. On STM32G0
+and STM32F7 the routes are not yet checked against RM0444 / RM0385/RM0410 and carry `itr = 0xFF`, so
+`TIM_HWCounter` there currently always returns `InitError` until someone confirms the real indices.
 
 ```text
 TIM_StepGenerator (master, STEP on its own CH)  ──TRGO (Update)──▶  ITRx  ──▶  TIM_HWCounter (slave)
         EnableTriggerOutput(): MMS=010                 SMCR: TS=itr, SMS=111 (External Clock Mode 1)
 ```
 
-> STM32F7 isn't covered at all in this same sense — Section A of `tim_defs.hpp` (pin tables) is
-> already conditionally compiled under `STM32F4 || STM32F7`, but `tim_table`/`itr_table` (Section
-> B) are filled in only for `STM32F4`. Building `TIM.*` for F7 currently won't link until someone
-> adds a verified block with RCC bits/IRQ vectors/ITR routes per RM0410.
+> Supported devices: every G0 (G030 … G0C1), F4 (F401 … F479) and F7 (F722 … F779) part. The pin
+> tables in Section A of `tim_defs.hpp` are generated from the STM32CubeMX GPIO data; a pin whose AF
+> exists only on some lines is guarded by `TIM_LINE_*`, and every timer/port by `TIMx_BASE` /
+> `GPIOx_BASE`. Shared vector names (`TIM3_TIM4_IRQn`, `TIM6_DAC_LPTIM1_IRQn`, `TIM1_UP_IRQn` on F410,
+> …) are picked in Section B from the peripherals present on the device.
 
 ---
 
@@ -632,6 +690,7 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
 | Task | Class |
 |--------|-------|
 | Periodic tick + extra events without a pin | `TIM_PeriodicIRQ` |
+| Trigger for the ADC | `TIM_TriggerGenerator` |
 | PWM (motors, LEDs, WS2812B) | `TIM_PWM` (+ `AttachDMA` for protocols like WS2812B) |
 | Emulate a quadrature signal (tests) | `TIM_EncoderGenerator` |
 | STEP/DIR pulses, low frequency, software counting | `TIM_StepGenerator(count_in_isr=true)` |
@@ -649,7 +708,7 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
 - **`TIM6`/`TIM7` (F4) — 0 channels** (`channel_count = 0`): suitable only for
   `TIM_PeriodicIRQ` (the Update event) — all other subclasses require at least one CC channel and
   either won't compile (no required pin table) or `SetUp()` will return `InitError`.
-- **16-bit vs. 32-bit ARR** — only `TIM2`/`TIM5` on F4/F7 have `arr_max = 0xFFFFFFFF`; all
+- **16-bit vs. 32-bit ARR** — only `TIM2`/`TIM5` on F4/F7 and `TIM2` on G0 have `arr_max = 0xFFFFFFFF`; all
   others are limited to `0xFFFF`. `SetDuty()` warns in its doc comment: for ARR values near the
   32-bit limit, use `SetCCR()` directly, not percentages.
 - **`has_bdtr`** — not just "an advanced timer": it's the single indicator of the presence of
@@ -712,6 +771,7 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
      - [7.6 TIM_PulseMeasure](#76-tim_pulsemeasure)
      - [7.7 TIM_EncoderReader](#77-tim_encoderreader)
      - [7.8 TIM_HWCounter](#78-tim_hwcounter)
+   - [7.9 TIM_TriggerGenerator](#79-tim_triggergenerator)
 8. [ITR / TRGO — каскадирование таймеров в железе](#8-itr--trgo--каскадирование-таймеров-в-железе)
 9. [Примеры использования](#9-примеры-использования)
 10. [Угловые случаи](#10-угловые-случаи)
@@ -867,19 +927,30 @@ void TIM::IRQ_en(IRQ irq, FunctionalState en)   // public — намеренно
 и тот же `this`:
 
 ```cpp
-if (en && !NVIC_GetEnableIRQ(_info->irq_up)) {
+if (any && !_irq_registered) {
     IRQ_Registry::Register(_info->irq_up, this);
     NVIC_EnableIRQ(_info->irq_up);
     if (_info->irq_cc != _info->irq_up) {
         IRQ_Registry::Register(_info->irq_cc, this);
         NVIC_EnableIRQ(_info->irq_cc);
     }
+    _irq_registered = true;
 }
 ```
 
-и симметрично отменяет регистрацию на обоих при выключении последнего источника (`!(TIMx->DIER & all)`,
-где `all` — маска всех 5 IE-битов). На таймерах с общим вектором (`irq_up == irq_cc`, большинство
-general-purpose таймеров) второй `Register()` просто не выполняется — не нужен.
+и симметрично снимает себя при выключении последнего источника (`any` — установлен хоть один из 5
+IE-битов в `DIER`). На таймерах с одним вектором на оба события (`irq_up == irq_cc`, большинство
+таймеров общего назначения) второй `Register()` просто не выполняется.
+
+**Векторы, общие для нескольких таймеров.** Многие линии обслуживают больше одной периферии:
+`TIM1_UP_TIM10_IRQn`, `TIM8_UP_TIM13_IRQn`, `TIM1_BRK_TIM9_IRQn` (F4/F7), `TIM3_TIM4_IRQn`
+(G0Bx/G0Cx), `TIM6_DAC_LPTIM1_IRQn`, `TIM7_LPTIM2_IRQn` (G0). Поэтому `IRQ_en()`:
+
+- следит за **своей** регистрацией (`_irq_registered`), а не смотрит на NVIC — иначе второй таймер
+  на уже включённой линии никогда бы не зарегистрировался;
+- при выключении снимает **только себя** (`IRQ_Registry::Unregister(irqn, this)`), а не всех
+  обработчиков линии;
+- маскирует NVIC, только если `IRQ_Registry::HasHandlers(irqn)` говорит, что никого не осталось.
 
 ---
 
@@ -888,8 +959,8 @@ general-purpose таймеров) второй `Register()` просто не в
 ```cpp
 void TIM::HandleIRQ()
 {
-    uint32_t sr = TIMx->SR;
-    TIMx->SR = ~sr;   // см. ниже — не "= 0"
+    uint32_t sr = TIMx->SR & TIMx->DIER & (UIF | CC1IF | CC2IF | CC3IF | CC4IF);
+    if (sr) TIMx->SR = ~sr;   // см. ниже — не "= 0"
     if ((sr & TIM_SR_UIF)   && _update_cb) _update_cb();
     if ((sr & TIM_SR_CC1IF) && _cc_cb[0])  _cc_cb[0]();
     if ((sr & TIM_SR_CC2IF) && _cc_cb[1])  _cc_cb[1]();
@@ -898,8 +969,13 @@ void TIM::HandleIRQ()
 }
 ```
 
-Два неочевидных решения, оба закомментированы прямо в коде и стоит знать при чтении/правке:
+Три неочевидных решения, все закомментированы прямо в коде и стоит знать при чтении/правке:
 
+- **Флаги маскируются по `DIER`.** Биты `UIE`/`CCxIE` стоят на тех же позициях, что `UIF`/`CCxIF`.
+  Железо взводит `UIF`/`CCxIF` независимо от того, разрешено ли прерывание, а вектор может быть общим
+  с другим таймером (§4) — без маски чужое прерывание вызвало бы колбэки этого таймера и стёрло
+  флаги, которые опрашивает приложение. Собственные `HandleIRQ()` подклассов (`TIM_EncoderGenerator`,
+  `TIM_StepGenerator`, `TIM_InputCapture`, `TIM_HWCounter`) делают то же и сбрасывают только свой флаг.
 - **`TIMx->SR = ~sr`, а не `TIMx->SR = 0`.** `SR` — "write-0-to-clear, write-1-is-no-op": запись
   инвертированной маски снимает ровно те флаги, что были прочитаны, и не трогает остальные.
   Блок `SR = 0` снял бы **все** флаги разом — включая тот, что аппаратура могла успеть выставить
@@ -983,6 +1059,7 @@ step.Start();          // тот же TIM3, теперь как генерато
 | `TIM_PulseMeasure` | Measurer | Период+ширина импульса (PWM input, reset mode) | Нет — чисто аппаратный, без колбэка |
 | `TIM_EncoderReader` | Measurer | Аппаратное чтение реального квадратурного энкодера | Нет — чисто аппаратный, без прерываний |
 | `TIM_HWCounter` | Measurer | Аппаратный счётчик чужих импульсов через ITR, без CPU | Да — авто-стоп по достижении цели |
+| `TIM_TriggerGenerator` | — | Триггер (TRGO/TRGO2/CCx) для ADC, создаётся с запросом, как поток DMA, без пинов | Нет — прерываний нет вообще |
 
 ### 7.1 TIM_PeriodicIRQ
 
@@ -1264,6 +1341,44 @@ counter.StopAfter(300);             // ещё 300 шагов от текущег
 counter.StopAT(5000);               // ...или сразу в абсолютную позицию 5000
 ```
 
+### 7.9 TIM_TriggerGenerator
+
+```cpp
+TIM_TriggerGenerator(TIM_TypeDef* timx, TrigReq req);
+SysInitStatus SetUp(uint32_t freq);                                    // запрос TRGO / TRGO2
+SysInitStatus SetUp(uint32_t freq, uint32_t period, uint32_t compare); // запрос CCx
+const TrigReq& GetReq() const;
+uint32_t GetPeriod() const;
+```
+
+Таймер, который только выдаёт триггер для другой периферии (ADC) — без пинов и прерываний.
+Создаётся так же, как поток DMA: таймер плюс запрос, который говорит, что он запускает.
+
+```cpp
+TIM_TriggerGenerator trg(TIM3, TIM_TriggerGenerator::Req::Adc::TIM3_TRGO);   // ср. DMA_Sx(ch, Req)
+trg.SetUp(10000);                     // TRGO: достаточно частоты
+
+TIM_TriggerGenerator cc(TIM1, TIM_TriggerGenerator::Req::Adc::TIM1_CC1);
+cc.SetUp(10000, 1000, 250);           // CCx: частота, период в тактах, точка сравнения
+
+adc.AttachTrig(&trg);                 // потребитель проверяет, что запрос для него
+```
+
+Запросы лежат в [tim_trig_defs.hpp](src/tim_trig_defs.hpp) (подключается внутрь класса, как
+`dma_requests.hpp` в `DMA_Sx`). `TrigReq` хранит таймер-источник, потребителя (`TrigTarget::Adc`),
+событие таймера (`TrigSource::TRGO`, `TRGO2`, `CC1`…`CC4`) и значение EXTSEL потребителя; каждый
+запрос есть только на тех семействах/кристаллах, где он допустим.
+
+- Конструктор проверяет, что запрос относится к `timx` (иначе `System::DebugTrap()`).
+- `SetUp(freq)` — запросы TRGO/TRGO2: PSC/ARR под `freq`, загрузка принудительным обновлением **до**
+  подключения триггера (так что сам `SetUp()` триггер не выдаёт), затем `MMS = 010` (Update → TRGO)
+  или `MMS2 = 0010` (Update → TRGO2). Для запроса CCx — `InitError`.
+- `SetUp(freq, period, compare)` — запросы CCx: `period` тактов на частоте `freq`, канал в режиме
+  сравнения PWM mode 2 (OCxREF поднимается в момент совпадения), `CCRx = compare`. Для запроса TRGO
+  или при `compare >= period` — `InitError`.
+- `SetUp()` таймер не запускает; его запускает и останавливает потребитель (`ADC_N::StartTrig()` /
+  `Stop()`), либо `Start()`/`Stop()`.
+
 ---
 
 ## 8. ITR / TRGO — каскадирование таймеров в железе
@@ -1281,20 +1396,21 @@ Controller (`SMCR`/`TS`) другого — это то, на чём строи�
 неподдерживаемой" — так `TIM_HWCounter::SetUp()` отказывается работать, а не молча подключается к
 неправильному ITR-индексу.
 
-На F4 таблица заполнена для `TIM1/2/3/4/5/8` (единственные таймеры с полноценным SMCR по RM0090).
-На STM32G0 обе записи (`TIM3→TIM1`, `TIM1→TIM3`) стоят с `itr = 0xFF` намеренно — они ещё не
-сверены с RM0444, поэтому `TIM_HWCounter` на G0 сейчас всегда возвращает `InitError`, пока кто-то
-не подтвердит и не проставит реальный индекс.
+На F4 таблица заполнена для `TIM1/2/3/4/5/8` (единственные таймеры с полноценным SMCR по RM0090);
+строки с таймерами, которых нет на кристалле (F401/F410/F411), выключены. На STM32G0 и STM32F7
+маршруты ещё не сверены с RM0444 / RM0385/RM0410 и стоят с `itr = 0xFF`, поэтому `TIM_HWCounter`
+там сейчас всегда возвращает `InitError`, пока кто-то не подтвердит реальные индексы.
 
 ```text
 TIM_StepGenerator (master, STEP на своём CH)  ──TRGO (Update)──▶  ITRx  ──▶  TIM_HWCounter (slave)
         EnableTriggerOutput(): MMS=010                 SMCR: TS=itr, SMS=111 (External Clock Mode 1)
 ```
 
-> STM32F7 в этом же смысле не покрыт вообще — Section A `tim_defs.hpp` (таблицы пинов) уже условно
-> собирается под `STM32F4 || STM32F7`, но `tim_table`/`itr_table` (Section B) заполнены только для
-> `STM32F4`. Сборка `TIM.*` под F7 сейчас не слинкуется, пока кто-то не добавит верифицированный
-> блок с RCC-битами/IRQ-векторами/ITR-маршрутами по RM0410.
+> Поддерживаемые кристаллы: все G0 (G030 … G0C1), F4 (F401 … F479) и F7 (F722 … F779). Таблицы пинов
+> в Section A `tim_defs.hpp` сгенерированы из GPIO-данных STM32CubeMX; пин, чья AF есть только на части
+> линеек, закрыт `TIM_LINE_*`, а каждый таймер/порт — `TIMx_BASE` / `GPIOx_BASE`. Имена общих векторов
+> (`TIM3_TIM4_IRQn`, `TIM6_DAC_LPTIM1_IRQn`, `TIM1_UP_IRQn` на F410, …) выбираются в Section B по
+> наличию периферии на кристалле.
 
 ---
 
@@ -1306,6 +1422,7 @@ TIM_StepGenerator (master, STEP на своём CH)  ──TRGO (Update)──�
 | Задача | Класс |
 |--------|-------|
 | Периодический тик + доп. события без пина | `TIM_PeriodicIRQ` |
+| Триггер для ADC | `TIM_TriggerGenerator` |
 | ШИМ (моторы, LED, WS2812B) | `TIM_PWM` (+ `AttachDMA` для протоколов вроде WS2812B) |
 | Эмулировать квадратурный сигнал (тесты) | `TIM_EncoderGenerator` |
 | STEP/DIR импульсы, малая частота, программный счёт | `TIM_StepGenerator(count_in_isr=true)` |
@@ -1323,7 +1440,7 @@ TIM_StepGenerator (master, STEP на своём CH)  ──TRGO (Update)──�
 - **`TIM6`/`TIM7` (F4) — 0 каналов** (`channel_count = 0`): годятся только для
   `TIM_PeriodicIRQ` (Update-событие) — все остальные подклассы требуют хотя бы один CC-канал и
   либо не скомпилируются (нет нужной таблицы пинов), либо `SetUp()` вернёт `InitError`.
-- **16-бит vs 32-бит ARR** — только `TIM2`/`TIM5` на F4/F7 имеют `arr_max = 0xFFFFFFFF`; все
+- **16-бит vs 32-бит ARR** — только `TIM2`/`TIM5` на F4/F7 и `TIM2` на G0 имеют `arr_max = 0xFFFFFFFF`; все
   остальные ограничены `0xFFFF`. `SetDuty()` предупреждает в своём doc-комментарии: для ARR
   вблизи 32-битного предела использовать `SetCCR()` напрямую, не проценты.
 - **`has_bdtr`** — не просто "продвинутый таймер": это единственный признак наличия `BDTR`/`MOE`

@@ -102,8 +102,9 @@
  * -----
  *  - SetUp() must be called before AttachDMA() on every DMA_Sx instance.
  *  - Each DMA_Sx instance can only be SetUp() once (guarded by the `used` flag).
- *  - On G0, any of the 5 DMA1 channels can serve any peripheral via DMAMUX1.
- *    Choose channels so that peripherals sharing an IRQ line (ch2-3, ch4-5)
+ *  - On G0, any DMA channel (DMA1 ch1-5 or ch1-7, plus DMA2 ch1-5 on G0Bx/G0Cx)
+ *    can serve any peripheral via DMAMUX1.
+ *    Choose channels so that peripherals sharing an IRQ line (ch2-3, ch4+)
  *    do not conflict — or ensure both are handled by the same IRQ handler.
  *  - On F4/F7, stream + CHSEL are hardware-fixed; use the Req:: table to pick
  *    the correct combination. Alternate streams are named ::TX_alt / ::RX_alt.
@@ -270,6 +271,11 @@ public:
 	/** @brief Clears all status flags for this stream/channel. */
 	inline void ClearFlags() {
 		*_info->ifcr = FLAG_ALL << _info->if_offset;
+	}
+
+	/** @brief Clears only the Transfer Complete flag (IFCR bits mirror ISR). */
+	inline void ClearTC_Flag() {
+		*_info->ifcr = FLAG_TC << _info->if_offset;
 	}
 
 	/** @brief Returns true if the Transfer Complete flag is set. */

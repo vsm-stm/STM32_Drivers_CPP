@@ -108,8 +108,10 @@ public:
 
 	/**
 	 * @brief Enables or disables one DIER interrupt source.
-	 * On first enable: registers in IRQ_Registry and unmasks NVIC.
-	 * On last disable: unregisters and masks NVIC.
+	 * On first enable: registers this object in IRQ_Registry and unmasks NVIC.
+	 * On last disable: unregisters only this object; the NVIC line is masked
+	 * only if no other handler remains on it (vectors such as TIM1_UP_TIM10,
+	 * TIM3_TIM4 or TIM6_DAC_LPTIM1 are shared).
 	 */
 	void IRQ_en(IRQ irq, FunctionalState en);
 
@@ -121,7 +123,7 @@ public:
 	inline void Stop()  { SetEnable(false); }
 
 	/** @brief Routes the Update event to TRGO (useful for ADC/DAC triggering). */
-	inline void EnableTriggerOutput() { TIMx->CR2 |= 2u << TIM_CR2_MMS_Pos; }
+	inline void EnableTriggerOutput() { TIMx->CR2 = (TIMx->CR2 & ~TIM_CR2_MMS) | (2u << TIM_CR2_MMS_Pos); }
 
 	/** @brief Sets the callback invoked from HandleIRQ() on a Update event. */
 	inline void SetUpdateCallback(void (*cb)(void))                { _update_cb = cb; }
@@ -252,6 +254,7 @@ protected:
 	static uint8_t FindITR(TIM_TypeDef* master, TIM_TypeDef* slave);
 
 	const PeriphInfo* _info = nullptr;      ///< Set by Init(); nullptr until then.
+	bool _irq_registered = false;           ///< This object is registered on irq_up/irq_cc (IRQ_en()).
 	void (*_update_cb)(void)  = nullptr;    ///< Called from HandleIRQ() on a Update event.
 	void (*_cc_cb[4])(void)   = {};         ///< Per-channel callbacks, called from HandleIRQ() on CCxIF.
 
@@ -372,6 +375,87 @@ public:
 	 *         @p ch at all (see PeriphInfo::channel_count).
 	 */
 	SysInitStatus SetCompareIRQ(Channel ch, uint32_t compare, void (*cb)(void));
+};
+
+// ---------------------------------------------------------------------------
+// TIM_TriggerGenerator — timer as a trigger source for another peripheral
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief A timer that only produces a trigger for another peripheral (the
+ * ADC) — no pins, no interrupts.
+ *
+ * Created like a DMA stream: the timer plus a request that says what it
+ * triggers. The request comes from Req (tim_trig_defs.hpp); the constructor
+ * checks it belongs to this timer, the consumer (ADC_N::AttachTrig()) checks
+ * it is meant for that consumer.
+ *
+ * @code
+ *   // TRGO trigger: the period is enough
+ *   TIM_TriggerGenerator trg(TIM3, TIM_TriggerGenerator::Req::Adc::TIM3_TRGO);
+ *   trg.SetUp(10000);                        // 10 kHz
+ *
+ *   // compare-channel trigger: period and compare point
+ *   TIM_TriggerGenerator trg1(TIM1, TIM_TriggerGenerator::Req::Adc::TIM1_CC1);
+ *   trg1.SetUp(10000, 1000, 250);            // 10 kHz, 1000 ticks, trigger at tick 250
+ * @endcode
+ *
+ * The timer is started and stopped by its consumer (ADC_N::StartTrig() /
+ * Stop()), or by Start()/Stop() of its own.
+ */
+class TIM_TriggerGenerator : public TIM
+{
+public:
+	// TrigTarget, TrigSource, TrigReq, Req::Adc::...
+#include "tim_trig_defs.hpp"
+
+	/**
+	 * @param timx  Timer peripheral.
+	 * @param req   What this timer triggers, from Req. System::DebugTrap() if
+	 *              the request belongs to another timer.
+	 */
+	TIM_TriggerGenerator(TIM_TypeDef* timx, TrigReq req) : TIM(timx), _req(req)
+	{
+		if (req.tim_base != reinterpret_cast<uint32_t>(timx))
+			System::DebugTrap("TIM_TriggerGenerator: request belongs to another timer");
+	}
+
+	/**
+	 * @brief TRGO / TRGO2 request: one trigger per period at @p freq.
+	 *
+	 * Sizes PSC/ARR (TIM::SetFrequency()), loads them, then routes Update to
+	 * TRGO (MMS) or TRGO2 (MMS2). Does not start the timer.
+	 *
+	 * @return InitError for a compare-channel request (use the other
+	 *         overload) or if @p freq is unreachable.
+	 */
+	SysInitStatus SetUp(uint32_t freq);
+
+	/**
+	 * @brief Compare-channel request (CCx): one trigger per period, at
+	 *        counter value @p compare.
+	 *
+	 * @param freq     Trigger rate in Hz.
+	 * @param period   Period in timer ticks (counter runs 0..period-1).
+	 * @param compare  Tick within the period at which the trigger fires
+	 *                 (< @p period).
+	 * @return InitError for a TRGO/TRGO2 request (use the other overload),
+	 *         if @p compare >= @p period, or if @p freq/@p period is
+	 *         unreachable.
+	 */
+	SysInitStatus SetUp(uint32_t freq, uint32_t period, uint32_t compare);
+
+	/** @brief The request given at construction. */
+	inline const TrigReq& GetReq() const { return _req; }
+
+	/** @brief Timer period in ticks (ARR+1), as configured. */
+	inline uint32_t GetPeriod() const { return TIMx->ARR + 1; }
+
+private:
+	const TrigReq _req;
+
+	/** @brief Common part of both SetUp(): clock, PSC/ARR, outputs cleared. */
+	SysInitStatus SetUpBase(uint32_t freq, uint32_t period);
 };
 
 // ===========================================================================

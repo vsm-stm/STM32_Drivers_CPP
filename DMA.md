@@ -61,9 +61,15 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
 On F4/F7 the "stream ↔ peripheral" pairing is part of the silicon (for example, `USART1_TX` is **always**
 `DMA2_Stream7` or `DMA2_Stream5`, never anything else); `DMA_Sx::Req::Usart1::TX`/`::TX_alt` in the
 `Req::` table (§5) simply name these fixed pairs. On G0, `DMAMUX1` is a separate hardware
-block between DMA1 and the peripheral: **any** of the 5 `DMA1_Channel1..5` channels can be routed to
-**any** peripheral by writing the request ID into `DMAMUX1_ChannelN->CCR`; the choice of channel is
-entirely up to the calling code, not the silicon.
+block between the DMA controllers and the peripheral: **any** channel can be routed to **any**
+peripheral by writing the request ID into `DMAMUX1_ChannelN->CCR`; the choice of channel is
+entirely up to the calling code, not the silicon. The number of channels depends on the line:
+
+| G0 line | Channels | Shared vector for ch4+ |
+|---|---|---|
+| G030/G031/G041 | `DMA1_Channel1..5` | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` |
+| G050/G051/G061/G070/G071/G081 | `DMA1_Channel1..7` | `DMA1_Ch4_7_DMAMUX1_OVR_IRQn` |
+| G0B0/G0B1/G0C1 | `DMA1_Channel1..7` + `DMA2_Channel1..5` | `DMA1_Ch4_7_DMA2_Ch1_5_DMAMUX1_OVR_IRQn` |
 
 ---
 
@@ -100,8 +106,10 @@ struct dma_sets_typedef {
 };
 ```
 
-16 entries on F4/F7 (`DMA1`/`DMA2` × 8 streams each), 5 on G0 (`DMA1_Channel1..5`). The row
-index for a specific `_stream` is **not stored**, but computed on the fly via
+16 entries on F4/F7 (`DMA1`/`DMA2` × 8 streams each); on G0 5, 7 or 12 entries depending on the line
+(§2) — the rows for `DMA1_Channel6/7` and `DMA2_Channel1..5` are compiled in under
+`#if defined(DMA1_Channel6)` / `#if defined(DMA2_Channel1)`, and the shared ch4+ vector name is picked
+the same way. The row index for a specific `_stream` is **not stored**, but computed on the fly via
 `GetStreamIndex()` — pointer arithmetic relative to the base address of the first stream/channel:
 
 ```cpp
@@ -109,9 +117,13 @@ index for a specific `_stream` is **not stored**, but computed on the fly via
 if (base >= dma1_base && base <= dma1_end) return (base - dma1_base) / 0x18;       // register stride of one stream
 if (base >= dma2_base && base <= dma2_end) return 8 + (base - dma2_base) / 0x18;   // DMA2 continues indexing from 8
 
-// G0:
-if (base >= ch1_base && base < ch1_base + kStreamCount * 0x14) return (base - ch1_base) / 0x14;
+// G0 (G0Bx/G0Cx: DMA2 channels continue indexing from 7):
+if (base >= dma2_base && base < dma2_base + 5 * 0x14) return 7 + (base - dma2_base) / 0x14;
+if (base >= ch1_base  && base < ch1_base + dma1_count * 0x14) return (base - ch1_base) / 0x14;
 ```
+
+On G0 the table index is also the `DMAMUX1` channel index: DMAMUX1 channels 0–6 serve DMA1, 7–11
+serve DMA2.
 
 `SetUp()` finds the needed entry via `GetStreamIndex()` and checks the `used` flag — **each
 `DMA_Sx` object can be configured (`SetUp()`) only once**; calling it again on a stream/channel that is
@@ -156,7 +168,7 @@ SysInitStatus SetUp(const StreamSettings& settings);
    → immediate `InitError`.
 2. Enable the DMA controller clock (`RCC->AHB1ENR` on F4/F7 — `DMA1EN`/`DMA2EN` depending on
    which controller the stream belongs to; `RCC->AHBENR |= DMA1EN` on G0 — the same bit also enables
-   `DMAMUX1` at the same time).
+   `DMAMUX1` at the same time; for a `DMA2` channel on G0Bx/G0Cx `DMA2EN` is set as well).
 3. Clear `EN` and **wait** until the hardware resets it itself (`while (_CR() & CR_EN) {}`) — DMA
    does not allow changing most `CR`/`CCR` fields while the stream is active; trying to configure it
    "on the fly" without this wait would result in a register write where part of it is ignored by the
@@ -169,7 +181,7 @@ SysInitStatus SetUp(const StreamSettings& settings);
 6. Assemble `CR`/`CCR` — direction, element size (the same for memory and peripheral — there is no
    separate "resize" case in this driver), `MINC`/`PINC`/`CIRC`. On G0, `DMAMUX1_ChannelN->CCR = eff_ch`
    is written separately (access to DMAMUX uses the same index `idx` as the channel itself — they are
-   physically aligned 1:1).
+   physically aligned 1:1, including DMA2 → DMAMUX1 channels 7–11).
 7. Write `_CR()`, `_PAR()`, `_MAR()`, `_NDTR()` from `settings` (the addresses/count can be left as
    zero here and set later via `SetMemAddr()`/`SetPerAddr()`/`SetCount()` — typical for peripheral
    drivers that configure the channel once in `AttachDMA()` and pass the address/length on every
@@ -184,19 +196,25 @@ packed into one register in groups of a few bits each — hence the `if_offset` 
 table:
 
 ```cpp
-inline void ClearFlags() { *_info->ifcr = FLAG_ALL << _info->if_offset; }
-inline bool GetTC_Flag() { return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0; }
+inline void ClearFlags()   { *_info->ifcr = FLAG_ALL << _info->if_offset; }
+inline void ClearTC_Flag() { *_info->ifcr = FLAG_TC  << _info->if_offset; }
+inline bool GetTC_Flag()   { return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0; }
 ```
+
+`ClearTC_Flag()` clears only TC (the IFCR bit positions mirror ISR) — for circular transfers that keep
+running after each TC, where `ClearFlags()` would also drop an HT/TE flag that has not been handled yet
+(used by [ADC](ADC.md#4-running-start-startdma-starttrig-startcont-stop)).
 
 On F4/F7 the group occupies 6 bits, but the offsets go `0, 6, 16, 22` (not `0, 6, 12, 18` — bits
 15:12 inside `LISR`/`HISR` are reserved by hardware), so the offsets in the `dma_streams[]` table are
 written explicitly for each stream rather than computed by a formula. On G0 the group is 4 bits,
-`if_offset = (channel_number - 1) * 4`, more evenly.
+`if_offset = (channel_number - 1) * 4` within the controller's own `ISR` (`DMA1->ISR` or `DMA2->ISR`).
 
 **A shared vector for several streams/channels** — on G0, `DMA1_Channel2_3_IRQn` serves both
-channels 2 and 3, and `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` serves channels 4, 5 and the DMAMUX overrun all at
-once (this is exactly why [`IRQ_Registry`](IRQ_Registry.md) supports several handlers on one IRQ line,
-`IRQ_MAX_SHARED = 3` for G0 — see [IRQ_Registry.md §9.3](IRQ_Registry.md#93-dmamux1-overrun-g0-специфика)).
+channels 2 and 3, and one more vector serves channel 4 and up plus the DMAMUX overrun (up to 9 channels
+on G0Bx/G0Cx, see the table in §2). This is exactly why [`IRQ_Registry`](IRQ_Registry.md) supports
+several handlers on one IRQ line, `IRQ_MAX_SHARED = 4` for G0 — see
+[IRQ_Registry.md §9.3](IRQ_Registry.md#93-dmamux1-overrun-g0-специфика).
 `GetTC_Flag()` of each `DMA_Sx` object checks **its own** `if_offset` within the shared `ISR`, so sharing
 one vector between several channels is safe — `Dispatch()` will call `HandleIRQ()` on both registered
 objects, but each will see only its own bit.
@@ -288,7 +306,7 @@ a.Send_DMA(buf, len);
   are set and do not match.
 - **On F4/F7, `settings.channel > 7` causes `InitError`** immediately in `SetUp()` (CHSEL is a
   3-bit field); on G0 there is no such check (the DMAMUX1 request ID is wider, up to 63).
-- **Shared vectors on G0** (`DMA1_Channel2_3_IRQn`, `DMA1_Ch4_5_DMAMUX1_OVR_IRQn`) require
+- **Shared vectors on G0** (`DMA1_Channel2_3_IRQn` and the ch4+ vector — §2) require
   careful selection of the channel pair for two independent peripherals that must not interfere with
   each other's response time — see the warning at the very beginning of `dma.hpp` (the "Notes" section of
   the file's doc comment).
@@ -363,9 +381,15 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
 На F4/F7 связка "стрим ↔ периферия" — часть кремния (например, `USART1_TX` **всегда**
 `DMA2_Stream7` или `DMA2_Stream5`, никак иначе); `DMA_Sx::Req::Usart1::TX`/`::TX_alt` в таблице
 `Req::` (§5) просто называют эти зафиксированные пары. На G0 `DMAMUX1` — отдельный аппаратный
-блок между DMA1 и периферией: **любой** из 5 каналов `DMA1_Channel1..5` можно направить на
-**любую** периферию, записав ID запроса в `DMAMUX1_ChannelN->CCR`; выбор канала — целиком на
-усмотрение вызывающего кода, а не кремния.
+блок между контроллерами DMA и периферией: **любой** канал можно направить на **любую**
+периферию, записав ID запроса в `DMAMUX1_ChannelN->CCR`; выбор канала — целиком на усмотрение
+вызывающего кода, а не кремния. Число каналов зависит от линейки:
+
+| Линейка G0 | Каналы | Общий вектор для кан. 4+ |
+|---|---|---|
+| G030/G031/G041 | `DMA1_Channel1..5` | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` |
+| G050/G051/G061/G070/G071/G081 | `DMA1_Channel1..7` | `DMA1_Ch4_7_DMAMUX1_OVR_IRQn` |
+| G0B0/G0B1/G0C1 | `DMA1_Channel1..7` + `DMA2_Channel1..5` | `DMA1_Ch4_7_DMA2_Ch1_5_DMAMUX1_OVR_IRQn` |
 
 ---
 
@@ -402,8 +426,10 @@ struct dma_sets_typedef {
 };
 ```
 
-16 записей на F4/F7 (`DMA1`/`DMA2` × 8 стримов каждый), 5 на G0 (`DMA1_Channel1..5`). Индекс
-строки для конкретного `_stream` **не хранится**, а вычисляется на лету через
+16 записей на F4/F7 (`DMA1`/`DMA2` × 8 стримов каждый); на G0 — 5, 7 или 12 в зависимости от
+линейки (§2): строки `DMA1_Channel6/7` и `DMA2_Channel1..5` включаются через
+`#if defined(DMA1_Channel6)` / `#if defined(DMA2_Channel1)`, так же выбирается имя общего вектора
+для кан. 4+. Индекс строки для конкретного `_stream` **не хранится**, а вычисляется на лету через
 `GetStreamIndex()` — арифметика указателей относительно базового адреса первого стрима/канала:
 
 ```cpp
@@ -411,9 +437,13 @@ struct dma_sets_typedef {
 if (base >= dma1_base && base <= dma1_end) return (base - dma1_base) / 0x18;       // шаг регистров одного стрима
 if (base >= dma2_base && base <= dma2_end) return 8 + (base - dma2_base) / 0x18;   // DMA2 продолжает индексацию с 8
 
-// G0:
-if (base >= ch1_base && base < ch1_base + kStreamCount * 0x14) return (base - ch1_base) / 0x14;
+// G0 (G0Bx/G0Cx: каналы DMA2 продолжают индексацию с 7):
+if (base >= dma2_base && base < dma2_base + 5 * 0x14) return 7 + (base - dma2_base) / 0x14;
+if (base >= ch1_base  && base < ch1_base + dma1_count * 0x14) return (base - ch1_base) / 0x14;
 ```
+
+На G0 индекс в таблице совпадает с номером канала `DMAMUX1`: каналы DMAMUX1 0–6 обслуживают DMA1,
+7–11 — DMA2.
 
 `SetUp()` находит нужную запись через `GetStreamIndex()` и проверяет флаг `used` — **каждый
 `DMA_Sx`-объект можно настроить (`SetUp()`) только один раз**; повторный вызов на уже
@@ -458,7 +488,8 @@ SysInitStatus SetUp(const StreamSettings& settings);
    → `InitError` немедленно.
 2. Включить тактирование контроллера DMA (`RCC->AHB1ENR` на F4/F7 — `DMA1EN`/`DMA2EN` в
    зависимости от того, какому контроллеру принадлежит стрим; `RCC->AHBENR |= DMA1EN` на G0 —
-   этот же бит заодно включает и `DMAMUX1`).
+   этот же бит заодно включает и `DMAMUX1`; для канала `DMA2` на G0Bx/G0Cx дополнительно ставится
+   `DMA2EN`).
 3. Снять `EN` и **дождаться**, пока хардвер сам его сбросит (`while (_CR() & CR_EN) {}`) — DMA
    не позволяет менять большинство полей `CR`/`CCR`, пока стрим активен; попытка настроить его
    "на лету" без этого ожидания привела бы к записи в регистр, часть которой хардвер
@@ -472,7 +503,7 @@ SysInitStatus SetUp(const StreamSettings& settings);
 6. Собрать `CR`/`CCR` — направление, размер элемента (одинаковый для памяти и периферии — нет
    отдельного случая "переразмерить" в этом драйвере), `MINC`/`PINC`/`CIRC`. На G0 отдельно
    пишется `DMAMUX1_ChannelN->CCR = eff_ch` (доступ к DMAMUX идёт по тому же индексу `idx`, что
-   и сам канал — они физически выровнены 1:1).
+   и сам канал — они физически выровнены 1:1, включая DMA2 → каналы DMAMUX1 7–11).
 7. Записать `_CR()`, `_PAR()`, `_MAR()`, `_NDTR()` из `settings` (адреса/счётчик можно оставить
    нулями здесь и задать позже через `SetMemAddr()`/`SetPerAddr()`/`SetCount()` — типично для
    периферийных драйверов, которые конфигурируют канал один раз в `AttachDMA()`, а адрес/длину
@@ -486,19 +517,25 @@ SysInitStatus SetUp(const StreamSettings& settings);
 один регистр группами по несколько бит — отсюда поле `if_offset` в таблице дескрипторов:
 
 ```cpp
-inline void ClearFlags() { *_info->ifcr = FLAG_ALL << _info->if_offset; }
-inline bool GetTC_Flag() { return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0; }
+inline void ClearFlags()   { *_info->ifcr = FLAG_ALL << _info->if_offset; }
+inline void ClearTC_Flag() { *_info->ifcr = FLAG_TC  << _info->if_offset; }
+inline bool GetTC_Flag()   { return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0; }
 ```
+
+`ClearTC_Flag()` сбрасывает только TC (позиции бит в IFCR совпадают с ISR) — для циклических
+передач, которые продолжаются после каждого TC; `ClearFlags()` там заодно стёр бы ещё не
+обработанный флаг HT/TE (используется в [ADC](ADC.md#4-запуск-start-startdma-starttrig-startcont-stop)).
 
 На F4/F7 группа занимает 6 бит, но смещения идут `0, 6, 16, 22` (не `0, 6, 12, 18` — биты 15:12
 внутри `LISR`/`HISR` зарезервированы аппаратно), поэтому смещения в таблице `dma_streams[]`
 прописаны явно для каждого стрима, а не вычисляются формулой. На G0 группа — 4 бита,
-`if_offset = (channel_number - 1) * 4`, ровнее.
+`if_offset = (channel_number - 1) * 4` внутри `ISR` своего контроллера (`DMA1->ISR` или `DMA2->ISR`).
 
 **Общий вектор на несколько стримов/каналов** — на G0 `DMA1_Channel2_3_IRQn` обслуживает оба
-канала 2 и 3, а `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` — каналы 4, 5 и переполнение DMAMUX разом (это и
-есть повод, почему [`IRQ_Registry`](IRQ_Registry.md) поддерживает несколько обработчиков на одной
-IRQ-линии, `IRQ_MAX_SHARED = 3` для G0 — см. [IRQ_Registry.md §9.3](IRQ_Registry.md#93-dmamux1-overrun-g0-специфика)).
+канала 2 и 3, а ещё один вектор — канал 4 и выше плюс переполнение DMAMUX (до 9 каналов на
+G0Bx/G0Cx, см. таблицу в §2). Именно поэтому [`IRQ_Registry`](IRQ_Registry.md) поддерживает
+несколько обработчиков на одной IRQ-линии, `IRQ_MAX_SHARED = 4` для G0 — см.
+[IRQ_Registry.md §9.3](IRQ_Registry.md#93-dmamux1-overrun-g0-специфика).
 `GetTC_Flag()` каждого `DMA_Sx`-объекта проверяет **свой** `if_offset` внутри общего `ISR`, так
 что делить один вектор между несколькими каналами безопасно — `Dispatch()` вызовет `HandleIRQ()`
 у обоих зарегистрированных объектов, но каждый увидит только свой бит.
@@ -590,7 +627,7 @@ a.Send_DMA(buf, len);
   заданы и не совпадают.
 - **На F4/F7 `settings.channel > 7` — `InitError`** сразу в `SetUp()` (CHSEL — 3-битное поле);
   на G0 такой проверки нет (DMAMUX1 request ID шире, до 63).
-- **Расшаренные вектора на G0** (`DMA1_Channel2_3_IRQn`, `DMA1_Ch4_5_DMAMUX1_OVR_IRQn`) требуют
+- **Расшаренные вектора на G0** (`DMA1_Channel2_3_IRQn` и вектор кан. 4+ — §2) требуют
   осторожного выбора пары каналов для двух независимых периферий, которые не должны мешать друг
   другу по времени реакции — см. предупреждение в самом начале `dma.hpp` (раздел "Notes" в
   doc-комментарии файла).

@@ -123,7 +123,7 @@ The handler can be swapped at runtime. Two objects sharing one vector is support
 cmake/functions.cmake
   └─ stm32_generate_irq_handlers()
        ├─ computes IRQ_TABLE_SIZE from the MCU's vector table
-       ├─ picks IRQ_MAX_SHARED by family (G0→3, F4/F7→2)
+       ├─ picks IRQ_MAX_SHARED by family (G0→4, F4/F7→3)
        └─ generates irq_registry_config.h via configure_file()
 
 cmsis-core/.../cmake/irq_registry_config.h.in    ← template
@@ -136,7 +136,7 @@ cmsis-core/.../cmake/irq_registry_config.h.in    ← template
 
 cmsis-core/.../Device/Include/irq_registry_config.h    ← generated file
   #define IRQ_TABLE_SIZE 30   ← exact vector count for STM32G030
-  #define IRQ_MAX_SHARED 3    ← maximum for G0
+  #define IRQ_MAX_SHARED 4    ← value for G0 (F4/F7: 3)
   (all stubs substituted in)
 
 Drivers/src/irq_registry.hpp    ← driver, untouched by CMake
@@ -190,12 +190,14 @@ _table[IRQ_TABLE_SIZE][IRQ_MAX_SHARED]
 
 | Family | Value | Reason |
 |-----------|----------|---------|
-| STM32G0 | **3** | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` = ch4 + ch5 + DMAMUX overrun |
-| STM32F4 | **2** | Timer pairs: `TIM1_UP_TIM10`, `TIM8_UP_TIM13`, ... DMA has separate vectors |
-| STM32F7 | **2** | Same as F4 |
-| Default | **2** | A safe fallback value |
+| STM32G0 | **4** | `DMA1_Ch4_5/Ch4_7(_DMA2_Ch1_5)_DMAMUX1_OVR_IRQn` = DMA ch4+ (and DMA2 on G0Bx/G0Cx) + DMAMUX overrun |
+| STM32F4 | **3** | `ADC_IRQn` shared by ADC1/2/3; timer pairs `TIM1_UP_TIM10`, `TIM8_UP_TIM13`, ... |
+| STM32F7 | **3** | Same as F4 |
+| Default | **3** | A safe fallback value |
 
-The overall maximum across all families = **3** (used as the default in `irq_registry.hpp`).
+To leave a shared line, a driver calls `Unregister(irqn, this)` (removes only its own slot) and
+masks the NVIC only if `HasHandlers(irqn)` returns false — see [ADC.md §6](ADC.md#6-interrupts-and-callbacks).
+`Unregister(irqn)` without a handler clears the whole row.
 
 ---
 
@@ -498,14 +500,18 @@ Dispatch(10):
 
 #### 9.3 DMAMUX1 Overrun (G0-specific)
 
-The vector `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` combines three sources.
-`IRQ_MAX_SHARED = 3` makes it possible to register all three:
+On G030/G031/G041 the vector `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` combines DMA channels 4, 5 and the
+DMAMUX overrun; on G05x–G08x it is `DMA1_Ch4_7_...` (channels 4–7), on G0Bx/G0Cx
+`DMA1_Ch4_7_DMA2_Ch1_5_...` (9 channels). `IRQ_MAX_SHARED = 4` allows four handlers on it:
 
 ```cpp
 Register(DMA1_Ch4_5_DMAMUX1_OVR_IRQn, &spi_handler);    // slot[0]
 Register(DMA1_Ch4_5_DMAMUX1_OVR_IRQn, &i2c_handler);    // slot[1]
 Register(DMA1_Ch4_5_DMAMUX1_OVR_IRQn, &dmamux_handler); // slot[2]
 ```
+
+On G0Bx/G0Cx with more than four drivers on DMA channels 4+ the limit must be raised in
+`CMakeLists.txt`.
 
 ---
 
@@ -537,10 +543,10 @@ IRQ_Registry::Register(NEW_PERIPH_IRQn, this);
 NVIC_EnableIRQ(NEW_PERIPH_IRQn);
 ```
 
-#### If a third handler is needed on a shared vector
+#### If another handler is needed on a shared vector
 
-`IRQ_MAX_SHARED = 3` already supports this. Just call `Register` once more — slot [2] gets
-filled. If all three are already taken, attempting to register a fourth triggers `BKPT`.
+`IRQ_MAX_SHARED` (3 on F4/F7, 4 on G0) already allows several. Just call `Register` once more — the
+next free slot gets filled. If all slots are taken, the next registration triggers `BKPT`.
 
 ---
 
@@ -863,7 +869,7 @@ extern "C" void DMA1_Channel2_3_IRQHandler(void) { IRQ_Registry::Dispatch(DMA1_C
 cmake/functions.cmake
   └─ stm32_generate_irq_handlers()
        ├─ считает IRQ_TABLE_SIZE из таблицы векторов МК
-       ├─ выбирает IRQ_MAX_SHARED по семейству (G0→3, F4/F7→2)
+       ├─ выбирает IRQ_MAX_SHARED по семейству (G0→4, F4/F7→3)
        └─ генерирует irq_registry_config.h через configure_file()
 
 cmsis-core/.../cmake/irq_registry_config.h.in    ← шаблон
@@ -876,7 +882,7 @@ cmsis-core/.../cmake/irq_registry_config.h.in    ← шаблон
 
 cmsis-core/.../Device/Include/irq_registry_config.h    ← сгенерированный файл
   #define IRQ_TABLE_SIZE 30   ← точное число векторов для STM32G030
-  #define IRQ_MAX_SHARED 3    ← максимум для G0
+  #define IRQ_MAX_SHARED 4    ← значение для G0 (F4/F7: 3)
   (подставлены все стабы)
 
 Drivers/src/irq_registry.hpp    ← драйвер, не трогается CMake
@@ -930,12 +936,14 @@ _table[IRQ_TABLE_SIZE][IRQ_MAX_SHARED]
 
 | Семейство | Значение | Причина |
 |-----------|----------|---------|
-| STM32G0 | **3** | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` = ch4 + ch5 + DMAMUX overrun |
-| STM32F4 | **2** | Пары таймеров: `TIM1_UP_TIM10`, `TIM8_UP_TIM13`, ... DMA имеет отдельные векторы |
-| STM32F7 | **2** | Аналогично F4 |
-| Default | **2** | Безопасное значение |
+| STM32G0 | **4** | `DMA1_Ch4_5/Ch4_7(_DMA2_Ch1_5)_DMAMUX1_OVR_IRQn` = DMA кан. 4+ (и DMA2 на G0Bx/G0Cx) + DMAMUX overrun |
+| STM32F4 | **3** | `ADC_IRQn` общий для ADC1/2/3; пары таймеров `TIM1_UP_TIM10`, `TIM8_UP_TIM13`, ... |
+| STM32F7 | **3** | Аналогично F4 |
+| Default | **3** | Безопасное значение |
 
-Общий максимум по всем семействам = **3** (используется как дефолт в `irq_registry.hpp`).
+Чтобы уйти с общей линии, драйвер вызывает `Unregister(irqn, this)` (снимает только свой слот) и
+маскирует NVIC, только если `HasHandlers(irqn)` вернул false — см. [ADC.md §6](ADC.md#6-прерывания-и-колбэки).
+`Unregister(irqn)` без обработчика очищает всю строку.
 
 ---
 
@@ -1232,14 +1240,18 @@ Dispatch(10):
 
 #### 9.3 DMAMUX1 Overrun (G0 специфика)
 
-Вектор `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` объединяет три источника.
-`IRQ_MAX_SHARED = 3` позволяет зарегистрировать все три:
+На G030/G031/G041 вектор `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` объединяет каналы DMA 4, 5 и переполнение
+DMAMUX; на G05x–G08x это `DMA1_Ch4_7_...` (каналы 4–7), на G0Bx/G0Cx — `DMA1_Ch4_7_DMA2_Ch1_5_...`
+(9 каналов). `IRQ_MAX_SHARED = 4` позволяет повесить на него четыре обработчика:
 
 ```cpp
 Register(DMA1_Ch4_5_DMAMUX1_OVR_IRQn, &spi_handler);    // slot[0]
 Register(DMA1_Ch4_5_DMAMUX1_OVR_IRQn, &i2c_handler);    // slot[1]
 Register(DMA1_Ch4_5_DMAMUX1_OVR_IRQn, &dmamux_handler); // slot[2]
 ```
+
+На G0Bx/G0Cx при больше чем четырёх драйверах на каналах DMA 4+ лимит нужно поднять в
+`CMakeLists.txt`.
 
 ---
 
@@ -1271,10 +1283,10 @@ IRQ_Registry::Register(NEW_PERIPH_IRQn, this);
 NVIC_EnableIRQ(NEW_PERIPH_IRQn);
 ```
 
-#### Если нужен третий обработчик на общем векторе
+#### Если нужен ещё один обработчик на общем векторе
 
-`IRQ_MAX_SHARED = 3` уже поддерживает это. Просто вызвать `Register` ещё раз — слот [2] заполнится.
-Если все три уже заняты — при попытке зарегистрировать четвёртый сработает `BKPT`.
+`IRQ_MAX_SHARED` (3 на F4/F7, 4 на G0) уже допускает несколько. Просто вызвать `Register` ещё раз —
+заполнится следующий свободный слот. Если все слоты заняты — следующая регистрация вызовет `BKPT`.
 
 ---
 

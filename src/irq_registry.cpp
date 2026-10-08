@@ -46,6 +46,28 @@ void IRQ_Registry::Unregister(IRQn_Type irqn)
 		_table[idx][s] = nullptr;
 }
 
+void IRQ_Registry::Unregister(IRQn_Type irqn, IIRQHandler* handler)
+{
+	int idx = static_cast<int>(irqn);
+
+	if (idx < 0 || idx >= IRQ_TABLE_SIZE) return;
+	for (int s = 0; s < MAX_PER_IRQ; ++s) {
+		if (_table[idx][s] == handler)
+			_table[idx][s] = nullptr;
+	}
+}
+
+bool IRQ_Registry::HasHandlers(IRQn_Type irqn)
+{
+	int idx = static_cast<int>(irqn);
+
+	if (idx < 0 || idx >= IRQ_TABLE_SIZE) return false;
+	for (int s = 0; s < MAX_PER_IRQ; ++s) {
+		if (_table[idx][s]) return true;
+	}
+	return false;
+}
+
 void IRQ_Registry::Dispatch(IRQn_Type irqn)
 {
 	int idx = static_cast<int>(irqn);

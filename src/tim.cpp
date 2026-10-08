@@ -103,33 +103,46 @@ void TIM::IRQ_en(IRQ irq, FunctionalState en)
 
 	constexpr uint32_t all = TIM_DIER_UIE | TIM_DIER_CC1IE | TIM_DIER_CC2IE |
 	                         TIM_DIER_CC3IE | TIM_DIER_CC4IE;
-	if (en && !NVIC_GetEnableIRQ(_info->irq_up)) {
+	const bool any = (TIMx->DIER & all) != 0u;
+
+	// Vectors are often shared (TIM1_UP_TIM10, TIM3_TIM4, TIM6_DAC_LPTIM1, ...),
+	// so track this object's own registration instead of the NVIC state, remove
+	// only this object, and mask the NVIC only when nobody is left on the line.
+	if (any && !_irq_registered) {
 		IRQ_Registry::Register(_info->irq_up, this);
 		NVIC_EnableIRQ(_info->irq_up);
 		if (_info->irq_cc != _info->irq_up) {
 			IRQ_Registry::Register(_info->irq_cc, this);
 			NVIC_EnableIRQ(_info->irq_cc);
 		}
-	} else if (!en && !(TIMx->DIER & all)) {
-		IRQ_Registry::Unregister(_info->irq_up);
-		NVIC_DisableIRQ(_info->irq_up);
+		_irq_registered = true;
+	} else if (!any && _irq_registered) {
+		IRQ_Registry::Unregister(_info->irq_up, this);
+		if (!IRQ_Registry::HasHandlers(_info->irq_up)) NVIC_DisableIRQ(_info->irq_up);
 		if (_info->irq_cc != _info->irq_up) {
-			IRQ_Registry::Unregister(_info->irq_cc);
-			NVIC_DisableIRQ(_info->irq_cc);
+			IRQ_Registry::Unregister(_info->irq_cc, this);
+			if (!IRQ_Registry::HasHandlers(_info->irq_cc)) NVIC_DisableIRQ(_info->irq_cc);
 		}
+		_irq_registered = false;
 	}
 }
 
 void TIM::HandleIRQ()
 {
-	uint32_t sr = TIMx->SR;
+	// Only sources enabled in DIER are handled (DIER UIE/CCxIE sit at the same
+	// bit positions as SR UIF/CCxIF): the vector may be shared with another
+	// timer, and UIF/CCxIF are set by hardware whether or not their interrupt
+	// is enabled — without the mask a foreign interrupt would fire our
+	// callbacks and clear flags the application polls.
+	uint32_t sr = TIMx->SR & TIMx->DIER &
+	              (TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF | TIM_SR_CC4IF);
 	// SR is write-0-to-clear/write-1-is-no-op, so `~sr` clears exactly the
-	// flags we just read and leaves everything else untouched. A blanket
+	// flags handled here and leaves everything else untouched. A blanket
 	// `SR = 0` would also wipe out any flag hardware sets in the gap between
-	// this read and the write (e.g. CC2 firing while CC1's callback below is
+	// the read and the write (e.g. CC2 firing while CC1's callback below is
 	// still running) — silently dropping that event instead of just leaving
 	// it set for the next entry (re-triggered via tail-chaining, not lost).
-	TIMx->SR = ~sr;
+	if (sr) TIMx->SR = ~sr;
 	// Always checking all 4 CC flags (rather than looping to _info->channel_count)
 	// is intentional: on timers with fewer channels the missing SR bits are
 	// hardwired to 0 per the reference manual, so the extra checks are both
@@ -168,6 +181,71 @@ SysInitStatus TIM_PeriodicIRQ::SetCompareIRQ(Channel ch, uint32_t compare, void 
 	SetCCCallback(ch, cb);
 	// CC1IE..CC4IE are contiguous DIER bits — same shift trick used elsewhere in this file.
 	IRQ_en(static_cast<IRQ>(TIM_DIER_CC1IE << ch_idx), ENABLE);
+	return SysInitStatus::InitOK;
+}
+
+// ---------------------------------------------------------------------------
+// TIM_TriggerGenerator
+// ---------------------------------------------------------------------------
+
+SysInitStatus TIM_TriggerGenerator::SetUpBase(uint32_t freq, uint32_t period)
+{
+	SysInitStatus s = Init();
+	if (s != SysInitStatus::InitOK) return s;
+
+	Stop();
+	s = SetFrequency(freq, period);
+	if (s != SysInitStatus::InitOK) return s;
+
+	// No trigger routed yet: the forced update below (loads the preloaded
+	// PSC/ARR) must not reach the consumer.
+	TIMx->CR2 &= ~TIM_CR2_MMS;
+#if defined(TIM_CR2_MMS2)
+	TIMx->CR2 &= ~TIM_CR2_MMS2;
+#endif
+	TIMx->CR1 |= TIM_CR1_ARPE;
+	TIMx->EGR  = TIM_EGR_UG;
+	TIMx->SR   = 0;
+	return SysInitStatus::InitOK;
+}
+
+SysInitStatus TIM_TriggerGenerator::SetUp(uint32_t freq)
+{
+	if (_req.source != TrigSource::TRGO && _req.source != TrigSource::TRGO2)
+		return SysInitStatus::InitError;
+
+	SysInitStatus s = SetUpBase(freq, 0);
+	if (s != SysInitStatus::InitOK) return s;
+
+	if (_req.source == TrigSource::TRGO)
+		TIMx->CR2 |= 2u << TIM_CR2_MMS_Pos;            // MMS = 010: Update -> TRGO
+#if defined(TIM_CR2_MMS2)
+	else
+		TIMx->CR2 |= 2u << TIM_CR2_MMS2_Pos;           // MMS2 = 0010: Update -> TRGO2
+#endif
+	return SysInitStatus::InitOK;
+}
+
+SysInitStatus TIM_TriggerGenerator::SetUp(uint32_t freq, uint32_t period, uint32_t compare)
+{
+	if (_req.source == TrigSource::TRGO || _req.source == TrigSource::TRGO2)
+		return SysInitStatus::InitError;
+	if (!period || compare >= period) return SysInitStatus::InitError;
+
+	SysInitStatus s = SetUpBase(freq, period);
+	if (s != SysInitStatus::InitOK) return s;
+
+	// Channel as output compare, PWM mode 2 (OCxREF rises at the compare
+	// match) with CCR preload; the pin is not used.
+	const uint32_t ch    = static_cast<uint32_t>(_req.source) - static_cast<uint32_t>(TrigSource::CC1);
+	const uint32_t shift = (ch & 1u) * 8u;
+	volatile uint32_t& ccmr = (ch < 2) ? TIMx->CCMR1 : TIMx->CCMR2;
+	ccmr = (ccmr & ~(0xFFu << shift))
+	     | (7u << (TIM_CCMR1_OC1M_Pos + shift))
+	     | (1u << (TIM_CCMR1_OC1PE_Pos + shift));
+	*ccr(ch) = compare;
+	TIMx->EGR = TIM_EGR_UG;   // load the preloaded CCR
+	TIMx->SR  = 0;
 	return SysInitStatus::InitOK;
 }
 
@@ -345,7 +423,9 @@ void TIM_EncoderGenerator::GenPulse(int32_t pulses)
 
 void TIM_EncoderGenerator::HandleIRQ()
 {
-	TIMx->SR = 0;
+	// The vector may be shared with another timer: count only our own Update
+	if (!(TIMx->SR & TIMx->DIER & TIM_SR_UIF)) return;
+	TIMx->SR = ~TIM_SR_UIF;
 	int32_t p = _pulses - 1;
 	_pulses = p;
 	if (p <= 0) {
@@ -422,7 +502,9 @@ SysInitStatus TIM_StepGenerator::RunSteps(uint32_t steps)
 
 void TIM_StepGenerator::HandleIRQ()
 {
-	TIMx->SR = 0;
+	// The vector may be shared with another timer: count only our own Update
+	if (!(TIMx->SR & TIMx->DIER & TIM_SR_UIF)) return;
+	TIMx->SR = ~TIM_SR_UIF;
 	_step_count = _step_count + 1;
 }
 
@@ -456,10 +538,10 @@ SysInitStatus TIM_InputCapture::SetUp(uint32_t max_freq, void (*cb)(void))
 
 void TIM_InputCapture::HandleIRQ()
 {
-	uint32_t sr = TIMx->SR;
-	TIMx->SR = ~sr;  // see TIM::HandleIRQ() for why not a blanket `= 0`
 	uint32_t ch_idx = static_cast<uint32_t>(_input.GetChannel());
-	if (sr & (TIM_SR_CC1IF << ch_idx)) {
+	uint32_t sr = TIMx->SR & TIMx->DIER & (TIM_SR_CC1IF << ch_idx);   // see TIM::HandleIRQ()
+	if (sr) {
+		TIMx->SR = ~sr;
 		_capture = *ccr(ch_idx);
 		if (_cc_cb[ch_idx]) _cc_cb[ch_idx]();
 	}
@@ -581,9 +663,9 @@ SysInitStatus TIM_HWCounter::StopAT(uint32_t ticks)
 
 void TIM_HWCounter::HandleIRQ()
 {
-	uint32_t sr = TIMx->SR;
-	TIMx->SR = ~sr;  // see TIM::HandleIRQ() for why not a blanket `= 0`
-	if (sr & TIM_SR_CC1IF) {
+	uint32_t sr = TIMx->SR & TIMx->DIER & TIM_SR_CC1IF;   // see TIM::HandleIRQ()
+	if (sr) {
+		TIMx->SR = ~sr;
 		if (_master) _master->Stop();
 		if (_on_complete) _on_complete();
 	}
