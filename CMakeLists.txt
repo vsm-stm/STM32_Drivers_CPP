@@ -32,6 +32,7 @@
 # ============================================================================
 
 add_library(stm32_drivers STATIC)
+set_property(TARGET stm32_drivers PROPERTY STM32_DMA_REGIONS_SUPPORTED TRUE)
 add_library(stm32::drivers ALIAS stm32_drivers)
 target_link_libraries(stm32_drivers PUBLIC stm32_platform)
 

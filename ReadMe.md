@@ -140,10 +140,25 @@ The base module: FPU, Flash accelerator, SysTick, delays.
 ### Initialization
 
 ```cpp
-System::Init();  // enables the FPU, configures Flash latency, starts SysTick (1 kHz)
+System::Init();  // restores HSI clocking and Flash latency, starts SysTick (1 kHz)
 ```
 
 Must be called **first** in `main()`, before `ClockSystem::Init()`.
+
+On F4/F7/G0, selects HSI 16 MHz and sets bus dividers /1;
+G0 also restores VOS Range 1 before Flash 0 WS.
+HSI readiness and the initial source switch wait without a timeout. Subsequent
+waits use SysTick (VOS/Flash: 100 ms), so interrupts must be
+enabled. PLL/HSE settings and RCC interrupts are retained.
+Check the returned `SysInitStatus`. L0 retains its legacy 16 MHz HSI
+assumption and does not restore the hardware clock configuration.
+
+The base defines `STM32_STARTUP_ENABLES_FPU`, so `System::Init()` skips the FPU
+setup already performed by startup. With another startup, omit this definition
+unless it initializes FPU itself. On F7 the core caches remain enabled;
+cache maintenance will be added to DMA drivers during their individual reviews.
+MPU region setup and external-memory access permissions are described in
+[System.md](System.md#mpu-on-stm32f7).
 
 ### Working with time
 
@@ -163,7 +178,27 @@ System::Enable_CYCCNT();   // once at startup
 System::Delay_us(10);      // 10 us delay via DWT
 ```
 
-On **STM32G0** the DWT is unavailable — `Delay_us` does not exist.
+`Delay_ms()` requires a running SysTick that can interrupt the caller: it cannot
+wait with ticks masked or from an IRQ with equal/higher priority. `GetTick()`
+itself only reads the counter. The `Delay_ms()` wait, including its compensating
+tick, is capped at `0x7FFFFFFF` ticks (about 24.9 days at 1 kHz).
+`Delay_us()` uses 64-bit arithmetic and clamps
+to `0x7FFFFFFF` core cycles; its maximum duration depends on the current clock.
+On **STM32G0/L0** the DWT is unavailable — `Delay_us` does not exist.
+
+On F4/F7, `SWOTrace()` is nonblocking and returns the actual byte count accepted
+by ITM. In DEBUG, `DebugTrap()` saves the diagnostic pointer, writes through
+blocking SWO when enabled, executes BKPT and halts. Configure SWO in the debugger.
+`SetDebugOutput()` has been removed. Release only halts; string elimination
+depends on compiler/linker optimization.
+
+### Non-cacheable DMA areas
+
+F7 projects can reserve non-cacheable DMA buffers through the base's
+`dma_regions` setting (`name`, `size`, `memory`: SRAM1/SRAM2, `mpu_region`).
+Addresses are automatic; startup zeros the buffers, and `System::Init()` applies
+their MPU attributes before enabling D-cache. Place buffers in `.dma.<name>`.
+For the configuration, limits and initialization order, see [System.md](System.md).
 
 ### Bus frequency variables
 
@@ -1153,10 +1188,24 @@ USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ### Инициализация
 
 ```cpp
-System::Init();  // включает FPU, настраивает Flash latency, запускает SysTick (1 кГц)
+System::Init();  // возвращает HSI и Flash latency, запускает SysTick (1 кГц)
 ```
 
 Должен вызываться **первым** в `main()`, до `ClockSystem::Init()`.
+
+На F4/F7/G0 выбирает HSI 16 МГц и делители шин /1;
+G0 также возвращает VOS Range 1 перед Flash 0 WS.
+Готовность HSI и первое переключение источника ожидаются без таймаута. Дальнейшие
+ожидания используют SysTick (VOS/Flash: 100 мс), поэтому прерывания
+должны быть разрешены. Настройки PLL/HSE и RCC-прерывания сохраняются.
+Проверяйте возвращённый `SysInitStatus`. На L0 сохранено
+прежнее предположение о HSI 16 МГц без восстановления аппаратного тактирования.
+
+Base определяет `STM32_STARTUP_ENABLES_FPU`: `System::Init()` пропускает настройку
+FPU, выполненную startup. При другом startup уберите это определение, если он
+сам не включает FPU. На F7 кеши ядра остаются включёнными; обслуживание кеша
+добавим в DMA-драйверы при их отдельном разборе. Настройка MPU и разрешение
+доступа к внешней памяти описаны в [System.md](System.md#mpu-на-stm32f7).
 
 ### Работа со временем
 
@@ -1176,7 +1225,27 @@ System::Enable_CYCCNT();   // один раз при старте
 System::Delay_us(10);      // задержка 10 мкс через DWT
 ```
 
-На **STM32G0** DWT недоступен — `Delay_us` не существует.
+`Delay_ms()` требует работающего SysTick, способного прервать вызывающий код:
+нельзя ждать при маскировке тиков или из IRQ с равным/более высоким приоритетом.
+Сам `GetTick()` только читает счётчик. Ожидание `Delay_ms()` вместе с компенсирующим
+тиком ограничено `0x7FFFFFFF` тиками (около 24,9 суток при 1 кГц).
+`Delay_us()` использует 64-битную арифметику
+и ограничен `0x7FFFFFFF` тактами ядра; предел длительности зависит от частоты.
+На **STM32G0/L0** DWT недоступен — `Delay_us` не существует.
+
+На F4/F7 `SWOTrace()` неблокирующий и возвращает число байтов, принятых ITM.
+В DEBUG `DebugTrap()` сохраняет указатель сообщения, выводит его через
+блокирующий SWO при включённой трассировке, выполняет BKPT и останавливается.
+SWO настраивается в отладчике. `SetDebugOutput()` удалён. Release только
+останавливается; удаление строк зависит от оптимизации компилятора/линкера.
+
+### Некешируемые DMA-области
+
+В проектах F7 настройка базы `dma_regions` резервирует некешируемые DMA-буферы
+(`name`, `size`, `memory`: SRAM1/SRAM2, `mpu_region`). Адреса вычисляются
+автоматически; startup обнуляет буферы, а `System::Init()` настраивает MPU до
+включения D-cache. Буферы размещаются в `.dma.<name>`. Настройка, ограничения
+и порядок инициализации описаны в [System.md](System.md).
 
 ### Переменные частот шин
 

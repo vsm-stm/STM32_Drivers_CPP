@@ -65,7 +65,7 @@ public:
 	index_type  tail()  const { return tail_idx; }
 	index_type  next(index_type i) const { return (i < N) ? nodes[i].next : npos; }
 	index_type  prev(index_type i) const { return (i < N) ? nodes[i].prev : npos; }
-		  T&    ref (index_type i)       { return nodes[i].value; }
+		  T&    ref (index_type i)       { return nodes[i].value; }   // precondition: valid(i)
 	const T&    ref (index_type i) const { return nodes[i].value; }
 	bool        valid(index_type i) const { return (i < N) && nodes[i].used; }
 
@@ -86,7 +86,7 @@ public:
 
 	// move node i to the tail (O(1))
 	void move_to_tail(index_type i) {
-		if (i == npos || !nodes[i].used || i == tail_idx) return;
+		if (!valid(i) || i == tail_idx) return;
 		unlink(i);
 		nodes[i].prev = tail_idx;
 		nodes[i].next = npos;
@@ -97,7 +97,7 @@ public:
 
 	// ordinary removal (unlink + free)
 	bool erase(index_type i) {
-		if (i == npos || !nodes[i].used) return false;
+		if (!valid(i)) return false;
 		unlink(i);
 		free_node(i);
 		--sz;
@@ -107,7 +107,7 @@ public:
 	// CONVENIENT FOR ITERATION: returns the index of the node AFTER erasing i.
 	// Guarantees a correct step in an external for loop.
 	index_type erase_and_next(index_type i) {
-		if (i == npos || !nodes[i].used) return npos;
+		if (!valid(i)) return npos;
 		index_type n = nodes[i].next; // save next BEFORE unlinking
 		unlink(i);
 		free_node(i);

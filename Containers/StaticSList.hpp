@@ -6,6 +6,8 @@
 
 template<typename T, size_t N>
 class StaticSList {
+	static_assert(N > 0, "StaticSList: N must be > 0");
+
 	struct Node {
 		T value;
 		int next = -1;
@@ -33,12 +35,13 @@ public:
 		return &pool[head].value;
 	}
 
-	// move to the next one
+	// move to the next one; cur must be an element of this list (from front()/next())
 	T* next(const T* cur) {
+		if (!cur) return nullptr;
 		const Node* n = reinterpret_cast<const Node*>(
 			reinterpret_cast<const char*>(cur) - offsetof(Node, value));
 		int idx = (int)(n - pool);
-		if (idx < 0 || idx >= (int)N) return nullptr;
+		if (idx < 0 || idx >= (int)N || !pool[idx].used) return nullptr;
 		int next_idx = pool[idx].next;
 		if (next_idx == -1) return nullptr;
 		return &pool[next_idx].value;

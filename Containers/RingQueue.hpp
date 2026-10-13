@@ -1,8 +1,11 @@
 #ifndef RING_QUEUE_HPP
 #define RING_QUEUE_HPP
 
-#include <cstddef> 
+#include <cstddef>
 
+// Single-context FIFO, usable capacity N-1. No ISR/main synchronization:
+// sharing it between an interrupt and the main loop needs an external
+// contract (e.g. IrqLock around push/pop on the non-ISR side).
 template<typename T, size_t N>
 class RingQueue {
 	static_assert(N > 1, "Queue size must be > 1");
@@ -42,7 +45,7 @@ public:
 
 	inline bool empty() const { return head == tail; };
 	inline bool full() const { return next_index(head) == tail; };
-	inline uint32_t size() const {
+	inline size_t size() const {
 		if (head >= tail) return head - tail;
 		return N - tail + head; // wrap case
 	}

@@ -64,7 +64,7 @@ class System
 {
 public:
 	/**
-	 * @brief System Core Clock frequency (AHB / core / GPIO / DMA / USB).
+	 * @brief Core/AHB frequency. Peripheral kernel clocks such as USB are separate.
 	 */
 	static uint32_t SystemCoreClock;
 
@@ -89,12 +89,23 @@ public:
 	static uint32_t TIMxAPB2Clock;
 
 	/**
-	 * @brief Initialise core system features: FPU, Flash accelerator, SysTick.
+	 * @brief Initialise HSI system clocking, FPU, Flash/cache and SysTick.
+	 * @note F4/F7/G0: waits for HSI and the initial SYSCLK switch without a
+	 *       timeout, restores bus dividers /1 and starts SysTick at 16 MHz.
+	 *       Sets Flash latency 0; G0 first restores VOS Range 1. These waits
+	 *       require serviceable SysTick and return InitError on timeout (100 ms).
+	 *       PLL/HSE configuration and RCC interrupts are retained.
+	 *       Call at the beginning of main with interrupts enabled, before
+	 *       peripheral setup. L0 retains its legacy assumption of 16 MHz HSI;
+	 *       it does not restore RCC, power or Flash settings.
+	 *       F7 applies project DMA areas to their MPU regions before enabling
+	 *       D-cache. An already enabled D-cache is disabled with clean/invalidate
+	 *       first. Call before DMA starts; other MPU regions are retained.
 	 */
 	static SysInitStatus Init();
 
 	/**
-	 * @brief Configure and start the SysTick timer.
+	 * @brief Configure SysTick at TICK_BASE Hz and its fixed lowest IRQ priority.
 	 */
 	static SysInitStatus InitTicks();
 
@@ -109,15 +120,20 @@ public:
 	static uint32_t GetTick();
 
 	/**
-	 * @brief Blocking delay using the SysTick counter.
+	 * @brief Blocking delay using a running SysTick counter.
 	 * @param delay  Delay in milliseconds.
+	 * @note The wait includes one compensating tick and is capped at
+	 *       0x7FFFFFFF ticks (about 24.9 days at the default 1 kHz tick rate).
+	 * @note SysTick must be able to run during this call: do not call with
+	 *       IRQs masked or from an IRQ of equal/higher preemption priority.
+	 *       The counter loses elapsed ticks while interrupts are masked for
+	 *       multiple periods. No IPSR/PRIMASK checks or fallback timer are used.
 	 */
 	static void Delay_ms(uint32_t delay);
 
 	/**
 	 * @brief Enable the DWT cycle counter (required before Delay_us).
-	 * @note  Not available on Cortex-M0/M0+ (STM32L0). A compile-time
-	 *        warning is emitted if called on an unsupported target.
+	 * @note Not declared on STM32G0/L0 (Cortex-M0+). This does not configure SWO.
 	 */
 #if not defined(STM32L0) && not defined(STM32G0)
 	static void Enable_CYCCNT();
@@ -125,23 +141,31 @@ public:
 	/**
 	 * @brief Blocking delay using the DWT cycle counter.
 	 * @param delay  Delay in microseconds.
-	 * @note  Enable_CYCCNT() must be called before using this function.
-	 *        Handles counter wrap-around correctly.
+	 * @note Enable_CYCCNT() must be called first; SystemCoreClock must be current.
+	 *       Rounds up fractional cycles and clamps to 0x7FFFFFFF core cycles.
+	 *       The clock must remain unchanged during the delay. Counter subtraction
+	 *       handles wrap-around provided polling resumes within half the counter range.
 	 */
 	static void Delay_us(uint32_t delay);
 
 	/**
-	 * @brief Write bytes to the ITM/SWO trace port.
-	 * @param ptr  Pointer to data buffer (must not be nullptr).
-	 * @param len  Number of bytes to send.
-	 * @return     Number of bytes written.
+	 * @brief Non-blocking write to ITM channel 0. Stops at the first unready port.
+	 * @param ptr Pointer to data; nullptr returns zero.
+	 * @param len Number of bytes requested.
+	 * @return Number of bytes written into ITM, possibly fewer than len.
+	 * @note The debugger must configure and enable ITM/SWO. Does not wait
+	 *       for transmission or use SysTick; hardware receipt is not confirmed.
 	 */
 	static uint32_t SWOTrace(const uint8_t *ptr, uint32_t len);
 #endif
 
 #if defined(STM32F7)
 	/**
-	 * @brief Initialise the MPU for STM32F7 targets.
+	 * @brief Guard unused external memory addresses on STM32F7 using MPU region 0.
+	 * @note Blocks 0x60000000..0xDFFFFFFF. Configure higher-numbered regions
+	 *       for external memory you use, before enabling caches. Other regions
+	 *       are retained. Does not create a non-cacheable DMA memory area.
+	 *       See System.md for the memory map and a region configuration example.
 	 */
 	static void MPU_Init();
 #endif
@@ -151,45 +175,18 @@ public:
 	// ---------------------------------------------------------------------------
 
 	/**
-	 * @brief Stores @p msg in a debugger-visible variable, invokes the
-	 *        registered output callback (if any), triggers a software
-	 *        breakpoint, then halts.
-	 *
-	 * In debug builds (DEBUG defined by CMake for the Debug configuration):
-	 *   - @p msg is written to the volatile @c _debug_trap_msg symbol so it
-	 *     appears in the debugger's Watch / Memory window even without a
-	 *     call-stack.
-	 *   - If a callback was registered via SetDebugOutput() it is called with
-	 *     @p msg so the message reaches e.g. a USART terminal.
-	 *   - @c __BKPT(0) halts the core immediately.
-	 *
-	 * In release builds the body collapses to @c while(1) — no overhead,
-	 * no string literals in flash.
+	 * @brief Stop execution after reporting a diagnostic in a DEBUG build.
+	 * @note DEBUG saves the message pointer in _debug_trap_msg, sends it through
+	 *       blocking ITM channel 0 on F4/F7 when trace is enabled, then executes
+	 *       BKPT and loops forever. The debugger must configure SWO; an enabled
+	 *       but stalled ITM port can hold this call before BKPT. G0/L0 have no SWO.
+	 *       Release ignores the message and loops forever; elimination of the
+	 *       caller's string literals depends on compiler/linker optimisation.
 	 *
 	 * @param msg  Null-terminated ASCII description of the fault.
-	 *             Must point to a string with static storage duration.
+	 *             Must remain readable; nullptr skips the output.
 	 */
 	[[noreturn]] static void DebugTrap(const char* msg);
-
-#ifdef DEBUG
-	/**
-	 * @brief Registers a function that DebugTrap uses to emit the error
-	 *        message (e.g. a USART send wrapper).
-	 *
-	 * Call once after your debug peripheral is initialised:
-	 * @code
-	 *   System::SetDebugOutput([](const char* s) {
-	 *       debug_usart.Send((uint8_t*)s, strlen(s));
-	 *   });
-	 * @endcode
-	 *
-	 * Only available in debug builds.  The linker removes the symbol entirely
-	 * in release.
-	 *
-	 * @param fn  Callback to invoke; pass nullptr to unregister.
-	 */
-	static void SetDebugOutput(void (*fn)(const char*));
-#endif
 };
 
 // ---------------------------------------------------------------------------
