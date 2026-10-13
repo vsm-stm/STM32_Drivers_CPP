@@ -58,13 +58,17 @@ Three things that `System` gives to all other drivers:
    used by literally every `.hpp` in `Drivers/src` (see §7) — a single "success/error/busy/
    timeout" vocabulary instead of each driver inventing its own set of codes.
 2. **Clock variables** (`SystemCoreClock`, `APB1BusClock`, ...) — written by
-   [`ClockSystem::Init()`](RCC.md), read by `UART`/`TIM`/`SPI` to calculate dividers/BRR
+   [`ClockSystem::Init<config>()`](RCC.md), read by `UART`/`TIM`/`SPI` to calculate dividers/BRR
    (see §3).
 3. **`System::GetTick()`/`Delay_ms()`/`Delay_us()`** — timeouts for blocking operations
-   (`USART::Send()`, `SPI::Send()`, the HSE/PLL waits in `ClockSystem::Init()`) are all built
+   (`USART::Send()`, `SPI::Send()`, the HSE/PLL waits in `ClockSystem::Init<config>()`) are all built
    on the same millisecond counter (§4).
 
 ---
+
+SysTick periods use integer HCLK cycles. If HCLK is not divisible by 1000,
+GetTick/Delay_ms/timeouts inherit the resulting rate error; for G0 LSE at
+32768 Hz, AHB /1, the rate is 1024 ticks/s. See [RCC.md](RCC.md).
 
 ### 2. System::Init() — what gets configured at startup
 
@@ -80,16 +84,18 @@ Configures low-level things that don't belong to any particular peripheral:
    DSB/ISB. The current base exports that definition because startup enables
    FPU before constructors. An alternate startup must omit the definition
    unless it performs that initialization itself.
-2. **Restore system clocking (F4/F7/G0)** — enable HSI and wait for readiness
-   without a timeout, select HSI and wait for the actual source switch without
-   a timeout. Preserve bus dividers during that switch, then restore AHB/APB
-   dividers to /1 (and G0 HSIDIV to /1).
-   Update the frequency variables and start SysTick at 16 MHz. On G0 the APB2
-   and APB2 timer frequencies are zero because that bus does not exist.
-3. **Power and Flash latency with tick timeouts** — G0 restores VOS Range 1
-   (100 ms). Finally reduce Flash latency to 0 WS and check the register
-   (100 ms). A failed timed wait returns `InitError`;
-   initialization stops at that step, with SYSCLK already on HSI.
+2. **Clock state and SysTick** — update the frequency variables and start
+   SysTick at 16 MHz. On G0 the APB2 and APB2 timer frequencies are zero because
+   that bus does not exist. Without `STM32_USE_BOOTLOADER`, call once after
+   hardware reset, before changing clocks, power or Flash latency.
+3. **Preparation after a bootloader (F4/F7/G0)** — compiled only with
+   `STM32_USE_BOOTLOADER`. The base defines it automatically when `bootloader`
+   is configured in project.json; it reaches both images and their shared
+   driver library. `InitAfterBootloader()` enables HSI, waits for readiness
+   and the actual source switch without a timeout, then restores bus dividers
+   /1 (including G0 HSIDIV). It starts SysTick through `InitClockState()`,
+   restores G0 VOS Range 1, then sets Flash latency to 0 WS. VOS and latency
+   waits retain their 100 ms timeouts; failure returns `InitError`.
 4. **Flash accelerator/cache** — family-specific:
    - F4: `PRFTEN` (prefetch) + `ICEN`/`DCEN` (instruction/data cache).
    - F7: `PRFTEN` + `ARTEN` (ART Accelerator) + `SCB_EnableICache()`/`SCB_EnableDCache()`
@@ -100,15 +106,17 @@ Configures low-level things that don't belong to any particular peripheral:
 
 Call with interrupts enabled, outside interrupt handlers, so the newly started
 SysTick can service the timed waits. No IPSR/PRIMASK checks or alternate timer
-are added. The initial HSI waits deliberately have no timeout; HSI failure can
-keep initialization there. G0 temporarily raises 0 WS to 1 WS before selecting
+are added. With `STM32_USE_BOOTLOADER`, the initial HSI waits deliberately have
+no timeout; HSI failure can keep initialization there. G0 temporarily raises
+0 WS to 1 WS before selecting
 16 MHz, so a previous VOS Range 2 configuration remains safe until Range 1 is ready.
 
-This is a startup operation, before peripheral setup. It selects HSI and changes
-bus dividers; PLL/HSE enable and configuration, HSI trim, MCO, RCC interrupts,
+This is a startup operation, before peripheral setup. With `STM32_USE_BOOTLOADER`
+it selects HSI and changes bus dividers; PLL/HSE enable and configuration,
+HSI trim, MCO, RCC interrupts,
 peripheral enable/reset registers, RTC, LSE/LSI, other peripheral clock muxes
 and the tick count are retained. After a later clock change, `ClockSystem`
-updates the frequencies and calls `InitTicks()` again.
+applies the selected frequencies and calls `InitTicks(ticks)` with a precomputed period.
 
 **L0 limitation:** its existing path is retained. It only sets the software
 frequencies to 16 MHz and initializes SysTick; it assumes hardware already uses
@@ -117,7 +125,9 @@ HSI at that frequency. RCC, power and Flash latency are not restored on L0.
 ```cpp
 int main() {
     System::Init();                                    // FPU, Flash/cache, SysTick @ HSI
-    ClockSystem::InitCalcPLL(180'000'000, ..., 8'000'000); // changes the frequency, calls InitTicks() itself
+    constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+        System::DebugTrap("Clock init");
     System::Enable_CYCCNT();                            // for Delay_us(), see §5
     ...
 }
@@ -139,8 +149,9 @@ static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (taking the "x2" rule into 
 static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 ```
 
-These are not constants but ordinary static variables — **`ClockSystem::Init()`/
-`InitCalcPLL()` are the only places that write them** (see [RCC.md](RCC.md)); every other
+These are ordinary static variables: System::Init() assigns the initial HSI
+values, and **ClockSystem::Init<config>() applies the configured frequencies**
+(see [RCC.md](RCC.md)); every other
 driver only reads them:
 
 - `USART::SetUp()` — `USARTx->BRR = *_info->bus_clk / BaudRate;` (where `bus_clk` points to
@@ -150,7 +161,7 @@ driver only reads them:
   `TIMxAPB1Clock`/`TIMxAPB2Clock` (see [TIM.md](TIM.md)).
 - `SPI` — calculates `BaudRate` through a clock divider the same way.
 
-So the order of calls in `main()` matters: `ClockSystem::Init()` must run **before**
+So the order of calls in `main()` matters: `ClockSystem::Init<config>()` must run **before**
 `SetUp()` of any peripheral driver — otherwise `USART::SetUp()` will compute `BRR` from
 16 MHz (HSI, the default value set by `System::Init()`) instead of the real post-PLL
 frequency.
@@ -159,14 +170,23 @@ frequency.
 
 ### 4. SysTick and the millisecond counter
 
+`System::WaitBits(reg, mask, value, timeout)` waits for `(reg & mask) == value`.
+Use value=0 for cleared bits, value=mask for all bits set, or an encoded field
+value. Returns true on a match and false on timeout, measured with GetTick.
+A zero timeout checks the condition once. SysTick must be able to interrupt
+the caller, just as for Delay_ms. RCC uses this shared function for hardware waits.
+
 ```cpp
 static SysInitStatus InitTicks();   // SysTick_Config(SystemCoreClock / TICK_BASE)
+static SysInitStatus InitTicks(uint32_t ticks); // Precomputed HCLK cycles
 static void          TickIncrease(); // called from SysTick_Handler
 static uint32_t      GetTick();
+static bool          WaitBits(volatile uint32_t& reg, uint32_t mask, uint32_t value, uint32_t timeout);
 static void          Delay_ms(uint32_t delay);
 ```
 
-`TICK_BASE = 1 kHz` — SysTick is configured to interrupt once every 1 ms.
+`TICK_BASE = 1 kHz` is the target rate. Integer reload gives exactly 1 ms only
+when HCLK is divisible by TICK_BASE; see [RCC.md](RCC.md) for the quantization error.
 `SysTick_Config()` assigns its fixed lowest priority on each call, including
 reconfiguration after a clock change. The handler:
 
@@ -195,7 +215,7 @@ Subtraction instead of a direct comparison is the same "wrap-around safe" reason
 correctly even when `Tick` manages to wrap around (after ~49.7 days of continuous operation)
 right in the middle of a wait — `target - tick_start` stays the correct distance in ticks,
 while `GetTick() < target` would give a wrong answer at that moment. All timeouts in the
-project (`USART::Send`, the HSE/PLL/CLOCKSWITCH timeouts in `ClockSystem::Init`, ...) use this
+project (`USART::Send`, the HSE/PLL/CLOCKSWITCH timeouts in `ClockSystem::Init<config>()`, ...) use this
 same `GetTick() - tick_start > timeout` pattern instead of storing an absolute "deadline".
 
 ---
@@ -453,7 +473,9 @@ rather than a GPIO-specific one.
 ```cpp
 int main() {
     System::Init();
-    ClockSystem::InitCalcPLL(180'000'000, ClockSystem::PLL_ClockSource::HSE, 8'000'000);
+    constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+        System::DebugTrap("Clock init");
     System::Enable_CYCCNT();   // required before the first Delay_us()
 
     uint32_t tick = System::GetTick();
@@ -488,8 +510,8 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
 ### 9. Edge cases
 
 - **Call order matters**: `System::Init()` →
-  `ClockSystem::Init()`/`InitCalcPLL()` → `System::Enable_CYCCNT()` → `SetUp()` of any
-  peripheral drivers. A peripheral `SetUp()` called before `ClockSystem::Init()` will compute
+  `ClockSystem::Init<config>()` → `System::Enable_CYCCNT()` → `SetUp()` of any
+  peripheral drivers. A peripheral `SetUp()` called before `ClockSystem::Init<config>()` will compute
   dividers from HSI (16 MHz) rather than the real frequency (see §3).
 - **`Enable_CYCCNT()`/`Delay_us()`/`SWOTrace()` are unavailable on STM32L0/G0** — both use
   Cortex-M0/M0+, which has no DWT block with `CYCCNT`. Calling them on these targets is a
@@ -572,13 +594,17 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
    которые использует буквально каждый `.hpp` в `Drivers/src` (см. §7) — единый словарь
    "успех/ошибка/занято/таймаут" вместо своего набора кодов в каждом драйвере.
 2. **Тактовые переменные** (`SystemCoreClock`, `APB1BusClock`, ...) — записываются
-   [`ClockSystem::Init()`](RCC.md), читаются `UART`/`TIM`/`SPI` для расчёта делителей/BRR
+   [`ClockSystem::Init<config>()`](RCC.md), читаются `UART`/`TIM`/`SPI` для расчёта делителей/BRR
    (см. §3).
 3. **`System::GetTick()`/`Delay_ms()`/`Delay_us()`** — таймауты блокирующих операций
-   (`USART::Send()`, `SPI::Send()`, `ClockSystem::Init()`'s HSE/PLL ожидания) все построены
+   (`USART::Send()`, `SPI::Send()`, `ClockSystem::Init<config>()`'s HSE/PLL ожидания) все построены
    на одном и том же миллисекундном счётчике (§4).
 
 ---
+
+Период SysTick задаётся целым числом тактов HCLK. Если HCLK не кратна 1000,
+GetTick/Delay_ms/таймауты имеют погрешность частоты тика; для G0 LSE 32768 Гц
+с AHB /1 это 1024 тика/с. Подробности — [RCC.md](RCC.md).
 
 ### 2. System::Init() — что настраивается при старте
 
@@ -594,15 +620,18 @@ static SysInitStatus Init();
    Текущий base передаёт это определение, поскольку startup включает FPU до
    конструкторов. При другом startup определение следует убрать, если он
    самостоятельно не выполняет эту инициализацию.
-2. **Возврат системного тактирования (F4/F7/G0)** — включить HSI и дождаться
-   готовности без таймаута, выбрать HSI и дождаться фактического переключения
-   без таймаута. До подтверждения переключения сохранить делители шин, затем
-   вернуть AHB/APB к /1 (HSIDIV G0 тоже к /1). Обновить переменные частот и запустить SysTick
+2. **Переменные частот и SysTick** — обновить частоты и запустить SysTick
    на 16 МГц. На G0 частоты APB2 и её таймеров равны нулю: этой шины нет.
-3. **Питание и Flash latency с таймаутами по тикам** — на G0 вернуть
-   VOS Range 1 (100 мс). Затем снизить Flash latency до 0 WS
-   и проверить регистр (100 мс). Таймаут возвращает `InitError`; инициализация
-   прекращается на этом шаге, SYSCLK к этому моменту уже работает от HSI.
+   Без `STM32_USE_BOOTLOADER` вызывать один раз после аппаратного сброса,
+   до изменения тактирования, питания или Flash latency.
+3. **Подготовка после загрузчика (F4/F7/G0)** — компилируется только при
+   `STM32_USE_BOOTLOADER`. База автоматически задаёт макрос при настроенном
+   `bootloader` в project.json; он передаётся обоим образам и общей библиотеке
+   драйверов. `InitAfterBootloader()` включает HSI, ждёт готовности и фактического
+   переключения без таймаута, затем возвращает делители шин /1 (включая HSIDIV G0).
+   Через `InitClockState()` запускается SysTick, затем восстанавливаются
+   VOS Range 1 на G0 и Flash latency 0 WS. Таймауты VOS и latency сохраняются
+   по 100 мс; ошибка возвращает `InitError`.
 4. **Flash-акселератор/кэш** — по семействам:
    - F4: `PRFTEN` (prefetch) + `ICEN`/`DCEN` (инструкционный/данных кэш).
    - F7: `PRFTEN` + `ARTEN` (ART Accelerator) + `SCB_EnableICache()`/`SCB_EnableDCache()`
@@ -613,15 +642,17 @@ static SysInitStatus Init();
 
 Вызывать с разрешёнными прерываниями, вне обработчиков, чтобы запущенный
 SysTick обслуживал таймауты. Проверок IPSR/PRIMASK и дополнительного таймера
-нет. Первые ожидания HSI намеренно без таймаута: неисправный HSI может оставить
+нет. При `STM32_USE_BOOTLOADER` первые ожидания HSI намеренно без таймаута:
+неисправный HSI может оставить
 инициализацию на этом этапе. На G0 перед переходом к 16 МГц значение 0 WS
 временно повышается до 1 WS для безопасной работы при оставшемся VOS Range 2.
 
-Это операция старта до настройки периферии. Выбирается HSI и меняются делители
-шин; включение и настройки PLL/HSE, подстройка HSI, MCO, RCC-прерывания,
+Это операция старта до настройки периферии. При `STM32_USE_BOOTLOADER`
+выбирается HSI и меняются делители шин; включение и настройки PLL/HSE,
+подстройка HSI, MCO, RCC-прерывания,
 регистры включения/сброса периферии, RTC, LSE/LSI, отдельные мультиплексоры
 периферийных тактов и счётчик тиков сохраняются. После дальнейшей смены частоты
-`ClockSystem` обновляет переменные и повторно вызывает `InitTicks()`.
+`ClockSystem` применяет выбранные частоты и вызывает `InitTicks(ticks)` с готовым периодом.
 
 **Ограничение L0:** прежняя ветка сохранена. Она только записывает программные
 частоты 16 МГц и запускает SysTick, предполагая, что аппаратно уже выбран HSI
@@ -630,7 +661,9 @@ SysTick обслуживал таймауты. Проверок IPSR/PRIMASK и 
 ```cpp
 int main() {
     System::Init();                                    // FPU, Flash/cache, SysTick @ HSI
-    ClockSystem::InitCalcPLL(180'000'000, ..., 8'000'000); // меняет частоту, сам вызывает InitTicks()
+    constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+        System::DebugTrap("Clock init");
     System::Enable_CYCCNT();                            // для Delay_us(), см. §5
     ...
 }
@@ -648,8 +681,9 @@ static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (с учётом прави
 static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 ```
 
-Это не константы, а обычные статические переменные — **`ClockSystem::Init()`/`InitCalcPLL()`
-единственные места, которые их пишут** (см. [RCC.md](RCC.md)); все остальные драйверы только
+Это обычные статические переменные: System::Init() задаёт начальные значения
+HSI, а **ClockSystem::Init<config>() применяет выбранные частоты**
+(см. [RCC.md](RCC.md)); все остальные драйверы только
 читают:
 
 - `USART::SetUp()` — `USARTx->BRR = *_info->bus_clk / BaudRate;` (где `bus_clk` указывает на
@@ -659,7 +693,7 @@ static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
   `TIMxAPB2Clock` (см. [TIM.md](TIM.md)).
 - `SPI` — расчёт `BaudRate` через делитель тактовой БД аналогично.
 
-Так что порядок вызовов в `main()` важен: `ClockSystem::Init()` должен отработать **до**
+Так что порядок вызовов в `main()` важен: `ClockSystem::Init<config>()` должен отработать **до**
 `SetUp()` любого периферийного драйвера — иначе `USART::SetUp()` посчитает `BRR` от 16 МГц
 (HSI, значение по умолчанию из `System::Init()`), а не от реальной частоты после PLL.
 
@@ -667,14 +701,24 @@ static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 
 ### 4. SysTick и миллисекундный счётчик
 
+`System::WaitBits(reg, mask, value, timeout)` ожидает `(reg & mask) == value`.
+Для сброса битов value=0, для установки всех битов value=mask; для поля регистра
+задаётся его ожидаемое закодированное значение. Возвращает true при совпадении,
+false при таймауте по GetTick. Нулевой таймаут проверяет условие один раз.
+Как и для Delay_ms, SysTick должен прерывать вызывающий код. RCC использует
+эту общую функцию для аппаратных ожиданий.
+
 ```cpp
 static SysInitStatus InitTicks();   // SysTick_Config(SystemCoreClock / TICK_BASE)
+static SysInitStatus InitTicks(uint32_t ticks); // Precomputed HCLK cycles
 static void          TickIncrease(); // вызывается из SysTick_Handler
 static uint32_t      GetTick();
+static bool          WaitBits(volatile uint32_t& reg, uint32_t mask, uint32_t value, uint32_t timeout);
 static void          Delay_ms(uint32_t delay);
 ```
 
-`TICK_BASE = 1 кГц` — SysTick настроен прерываться раз в 1 мс.
+`TICK_BASE = 1 кГц` — целевая частота. Целочисленный reload даёт ровно 1 мс
+только при HCLK, кратной TICK_BASE; погрешность описана в [RCC.md](RCC.md).
 `SysTick_Config()` при каждом вызове назначает ему фиксированный самый низкий
 приоритет, в том числе после изменения частоты. Обработчик:
 
@@ -704,7 +748,7 @@ while ((GetTick() - tick_start) < wait) {}
 работает даже когда `Tick` успевает переполниться (после ~49.7 суток непрерывной работы) прямо
 посреди ожидания — `target - tick_start` останется верным расстоянием в тиках, а `GetTick() <
 target` в этот момент дало бы неверный результат. Все таймауты в проекте (`USART::Send`,
-`ClockSystem::Init`'s HSE/PLL/CLOCKSWITCH таймауты, ...) используют этот же паттерн
+`ClockSystem::Init<config>()`'s HSE/PLL/CLOCKSWITCH таймауты, ...) используют этот же паттерн
 `GetTick() - tick_start > timeout`, а не хранят абсолютный "дедлайн".
 
 ---
@@ -964,7 +1008,9 @@ bit-banding и почему она доступна только на F4 — в 
 ```cpp
 int main() {
     System::Init();
-    ClockSystem::InitCalcPLL(180'000'000, ClockSystem::PLL_ClockSource::HSE, 8'000'000);
+    constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+        System::DebugTrap("Clock init");
     System::Enable_CYCCNT();   // требуется перед первым Delay_us()
 
     uint32_t tick = System::GetTick();
@@ -999,8 +1045,8 @@ System::DebugTrap("Invalid peripheral pin"); // блокирующий выво�
 ### 9. Угловые случаи
 
 - **Порядок вызовов важен**: `System::Init()` →
-  `ClockSystem::Init()`/`InitCalcPLL()` → `System::Enable_CYCCNT()` → `SetUp()` любых
-  периферийных драйверов. Периферийный `SetUp()` до `ClockSystem::Init()` посчитает делители
+  `ClockSystem::Init<config>()` → `System::Enable_CYCCNT()` → `SetUp()` любых
+  периферийных драйверов. Периферийный `SetUp()` до `ClockSystem::Init<config>()` посчитает делители
   от HSI (16 МГц), а не от реальной частоты (см. §3).
 - **`Enable_CYCCNT()`/`Delay_us()`/`SWOTrace()` недоступны на STM32L0/G0** — оба используют
   Cortex-M0/M0+, где нет блока DWT с `CYCCNT`. Вызов на этих целях — ошибка компиляции

@@ -72,7 +72,7 @@ static SysInitStatus InitClockState()
 #else
 	System::APB2BusClock = System::TIMxAPB2Clock = HSI_Clock;
 #endif
-	return System::InitTicks();
+	return System::InitTicks(HSI_Clock / TICK_BASE);
 }
 
 #if defined(STM32_USE_BOOTLOADER) && (defined(STM32F4) || defined(STM32F7) || defined(STM32G0))
@@ -192,7 +192,12 @@ SysInitStatus System::Init()
 
 SysInitStatus System::InitTicks()
 {
-	if (SysTick_Config(SystemCoreClock / TICK_BASE) > 0U)
+	return InitTicks(SystemCoreClock / TICK_BASE);
+}
+
+SysInitStatus System::InitTicks(uint32_t ticks)
+{
+	if (SysTick_Config(ticks) > 0U)
 		return SysInitStatus::InitError;
 
 	return SysInitStatus::InitOK;
@@ -213,12 +218,20 @@ uint32_t System::GetTick()
 	return static_cast<uint32_t>(Tick);
 }
 
+bool System::WaitBits(volatile uint32_t& reg, uint32_t mask, uint32_t value, uint32_t timeout)
+{
+	const uint32_t start = GetTick();
+	while ((reg & mask) != value)
+		if ((GetTick() - start) >= timeout) return false;
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // System::Delay_ms
 // ---------------------------------------------------------------------------
 
 /**
- * @brief Blocking millisecond delay.
+ * @brief Blocking delay in nominal milliseconds.
  *
  * SysTick must be running and able to interrupt this call. In particular,
  * do not wait here from an IRQ with equal/higher priority than SysTick, or

@@ -24,7 +24,7 @@ extern "C"
 static constexpr uint32_t kHz = 1000U;
 static constexpr uint32_t MHz = 1000000U;
 
-/// SysTick interrupt frequency in Hz (1 kHz → 1 ms resolution).
+/// Target SysTick frequency in Hz; integer reload can change the actual rate.
 static constexpr uint32_t TICK_BASE = 1*kHz;
 
 /// Default HSI oscillator frequency.
@@ -106,22 +106,38 @@ public:
 	static SysInitStatus Init();
 
 	/**
-	 * @brief Configure SysTick at TICK_BASE Hz and its fixed lowest IRQ priority.
+	 * @brief Configure SysTick using floor(SystemCoreClock/TICK_BASE) cycles.
+	 * @note Uses the lowest IRQ priority. A non-integer division changes the
+	 *       actual tick rate; see RCC.md for the LSE and low-HCLK cases.
 	 */
 	static SysInitStatus InitTicks();
 
 	/**
-	 * @brief Increment the millisecond tick counter — call from SysTick_Handler.
+	 * @brief Configure SysTick with a precomputed number of HCLK cycles per tick.
+	 * @note Used by RCC to keep frequency division at compile time.
+	 */
+	static SysInitStatus InitTicks(uint32_t ticks);
+
+	/**
+	 * @brief Increment the software tick counter — call from SysTick_Handler.
 	 */
 	static void TickIncrease();
 
 	/**
-	 * @brief Return the current millisecond tick count.
+	 * @brief Return the software tick count (nominally milliseconds).
 	 */
 	static uint32_t GetTick();
 
 	/**
-	 * @brief Blocking delay using a running SysTick counter.
+	 * @brief Wait until (reg & mask) equals value; return false on timeout.
+	 * @param value Expected masked value: 0 for cleared bits, mask for all set.
+	 * @param timeout Maximum wait in nominal milliseconds; 0 checks once.
+	 * @note SysTick must run during the wait, as required by Delay_ms().
+	 */
+	static bool WaitBits(volatile uint32_t& reg, uint32_t mask, uint32_t value, uint32_t timeout);
+
+	/**
+	 * @brief Blocking delay in nominal milliseconds using a running SysTick.
 	 * @param delay  Delay in milliseconds.
 	 * @note The wait includes one compensating tick and is capped at
 	 *       0x7FFFFFFF ticks (about 24.9 days at the default 1 kHz tick rate).
