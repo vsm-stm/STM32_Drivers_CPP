@@ -30,27 +30,55 @@ uint32_t System::APB2BusClock   { HSI_Clock };
 uint32_t System::TIMxAPB1Clock  { HSI_Clock };
 uint32_t System::TIMxAPB2Clock  { HSI_Clock };
 
-// ---------------------------------------------------------------------------
-// System::Init
-// ---------------------------------------------------------------------------
-
-/**
- * @brief Restore HSI system clocking, then initialise core features and SysTick.
- * HSI startup and the initial source switch precede the usable time base.
- * Subsequent hardware waits use GetTick(); SysTick must be able to run.
- */
-SysInitStatus System::Init()
+#if defined(STM32F7)
+// Apply the project's non-cacheable DMA regions before enabling D-cache.
+static void InitDMARegions()
 {
-	// --- FPU (Cortex-M4/M7 only) ---
-#ifndef STM32_STARTUP_ENABLES_FPU
-#if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
-	SCB->CPACR |= (3UL << (10U * 2U)) | (3UL << (11U * 2U)); // CP10 + CP11 full access
+	if (!__stm32_dma_regions_start__ || !__stm32_dma_regions_end__
+	 || &__stm32_dma_regions_start__[0] == &__stm32_dma_regions_end__[0])
+		return;
+
+	// CMSIS cleans/invalidates D-cache when disabling it, retaining dirty data.
+	if (SCB->CCR & SCB_CCR_DC_Msk)
+		SCB_DisableDCache();
+
+	const uint32_t mpu_ctrl = MPU->CTRL;
+	__DMB();
+	MPU->CTRL = 0U;
+	for (const uint32_t* p = __stm32_dma_regions_start__;
+		 p != __stm32_dma_regions_end__; p += 3) {
+		MPU->RNR = p[0];
+		MPU->RBAR = p[1];
+		// Project configuration checks power-of-two sizes and base alignment.
+		MPU->RASR = MPU_RASR_ENABLE_Msk
+			| ((30U - __CLZ(p[2])) << MPU_RASR_SIZE_Pos)
+			| (3U << MPU_RASR_AP_Pos)  // Full read/write access
+			| (1U << MPU_RASR_TEX_Pos) // Normal, non-cacheable (C=0, B=0)
+			| MPU_RASR_S_Msk | MPU_RASR_XN_Msk;
+	}
+	// Retain other regions and control flags; enable the privileged default map.
+	MPU->CTRL = mpu_ctrl | MPU_CTRL_ENABLE_Msk | MPU_CTRL_PRIVDEFENA_Msk;
 	__DSB();
 	__ISB();
-#endif
+}
 #endif
 
-#if defined(STM32F4) || defined(STM32F7) || defined(STM32G0)
+// Publish HSI frequencies and start the millisecond time base.
+static SysInitStatus InitClockState()
+{
+	System::SystemCoreClock = System::APB1BusClock = System::TIMxAPB1Clock = HSI_Clock;
+#if defined(STM32G0)
+	System::APB2BusClock = System::TIMxAPB2Clock = 0U; // G0 has no APB2 bus
+#else
+	System::APB2BusClock = System::TIMxAPB2Clock = HSI_Clock;
+#endif
+	return System::InitTicks();
+}
+
+#if defined(STM32_USE_BOOTLOADER) && (defined(STM32F4) || defined(STM32F7) || defined(STM32G0))
+// Restore HSI, bus dividers, G0 power and Flash latency after the bootloader.
+static SysInitStatus InitAfterBootloader()
+{
 	// Stop the previous time base while its input clock is being changed.
 	SysTick->CTRL = 0U;
 	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
@@ -75,18 +103,9 @@ SysInitStatus System::Init()
 #else
 	RCC->CFGR &= ~(RCC_CFGR_HPRE_Msk | RCC_CFGR_PPRE1_Msk | RCC_CFGR_PPRE2_Msk);
 #endif
-#endif
-
-	SystemCoreClock = APB1BusClock = TIMxAPB1Clock = HSI_Clock;
-#if defined(STM32G0)
-	APB2BusClock = TIMxAPB2Clock = 0U; // G0 has no APB2 bus
-#else
-	APB2BusClock = TIMxAPB2Clock = HSI_Clock;
-#endif
-	if (InitTicks() != SysInitStatus::InitOK)
+	if (InitClockState() != SysInitStatus::InitOK)
 		return SysInitStatus::InitError;
 
-#if defined(STM32F4) || defined(STM32F7) || defined(STM32G0)
 	static constexpr uint32_t INIT_TIMEOUT_MS = 100U;
 	uint32_t tick_start;
 
@@ -94,20 +113,51 @@ SysInitStatus System::Init()
 	RCC->APBENR1 |= RCC_APBENR1_PWREN;
 	(void)RCC->APBENR1; // Allow the PWR clock enable to reach the peripheral.
 	PWR->CR1 = (PWR->CR1 & ~PWR_CR1_VOS_Msk) | PWR_CR1_VOS_0;
-	tick_start = GetTick();
+	tick_start = System::GetTick();
 	while (PWR->SR2 & PWR_SR2_VOSF) {
-		if ((GetTick() - tick_start) > INIT_TIMEOUT_MS)
+		if ((System::GetTick() - tick_start) > INIT_TIMEOUT_MS)
 			return SysInitStatus::InitError;
 	}
 #endif
 
 	// Reduce wait states only after HSI /1 and (on G0) VOS Range 1 are ready.
 	FLASH->ACR &= ~FLASH_ACR_LATENCY_Msk;
-	tick_start = GetTick();
+	tick_start = System::GetTick();
 	while (FLASH->ACR & FLASH_ACR_LATENCY_Msk) {
-		if ((GetTick() - tick_start) > INIT_TIMEOUT_MS)
+		if ((System::GetTick() - tick_start) > INIT_TIMEOUT_MS)
 			return SysInitStatus::InitError;
 	}
+
+	return SysInitStatus::InitOK;
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// System::Init
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Initialise reset clock state, SysTick and core features.
+ * With STM32_USE_BOOTLOADER, restore HSI clocking and power/latency first.
+ * Otherwise the first call must follow hardware reset, before clock setup.
+ */
+SysInitStatus System::Init()
+{
+	// --- FPU (Cortex-M4/M7 only) ---
+#ifndef STM32_STARTUP_ENABLES_FPU
+#if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
+	SCB->CPACR |= (3UL << (10U * 2U)) | (3UL << (11U * 2U)); // CP10 + CP11 full access
+	__DSB();
+	__ISB();
+#endif
+#endif
+
+#if defined(STM32_USE_BOOTLOADER) && (defined(STM32F4) || defined(STM32F7) || defined(STM32G0))
+	if (InitAfterBootloader() != SysInitStatus::InitOK)
+		return SysInitStatus::InitError;
+#else
+	if (InitClockState() != SysInitStatus::InitOK)
+		return SysInitStatus::InitError;
 #endif
 
 	// --- Flash accelerator & cache configuration ---
@@ -120,32 +170,7 @@ SysInitStatus System::Init()
 	FLASH->ACR |= FLASH_ACR_PRFTEN  // Prefetch buffer
 				| FLASH_ACR_ARTEN;  // Adaptive real-time accelerator (ART)
 
-	if (__stm32_dma_regions_start__ && __stm32_dma_regions_end__
-	 && &__stm32_dma_regions_start__[0] != &__stm32_dma_regions_end__[0]) {
-		// CMSIS disables D-cache and cleans/invalidates it, retaining dirty data.
-		// Init is called before peripherals/DMA start using these buffers.
-		if (SCB->CCR & SCB_CCR_DC_Msk)
-			SCB_DisableDCache();
-
-		const uint32_t mpu_ctrl = MPU->CTRL;
-		__DMB();
-		MPU->CTRL = 0U;
-		for (const uint32_t* p = __stm32_dma_regions_start__;
-			 p != __stm32_dma_regions_end__; p += 3) {
-			MPU->RNR = p[0];
-			MPU->RBAR = p[1];
-			// Project configuration checks power-of-two sizes and base alignment.
-			MPU->RASR = MPU_RASR_ENABLE_Msk
-				| ((30U - __CLZ(p[2])) << MPU_RASR_SIZE_Pos)
-				| (3U << MPU_RASR_AP_Pos)  // Full read/write access
-				| (1U << MPU_RASR_TEX_Pos) // Normal, non-cacheable (C=0, B=0)
-				| MPU_RASR_S_Msk | MPU_RASR_XN_Msk;
-		}
-		// Retain other regions and control flags; enable the privileged default map.
-		MPU->CTRL = mpu_ctrl | MPU_CTRL_ENABLE_Msk | MPU_CTRL_PRIVDEFENA_Msk;
-		__DSB();
-		__ISB();
-	}
+	InitDMARegions();
 
 	SCB_EnableICache();              // Enable instruction cache
 	SCB_EnableDCache();              // Enable data cache

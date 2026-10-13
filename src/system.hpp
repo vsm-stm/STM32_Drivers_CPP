@@ -89,12 +89,13 @@ public:
 	static uint32_t TIMxAPB2Clock;
 
 	/**
-	 * @brief Initialise HSI system clocking, FPU, Flash/cache and SysTick.
-	 * @note F4/F7/G0: waits for HSI and the initial SYSCLK switch without a
-	 *       timeout, restores bus dividers /1 and starts SysTick at 16 MHz.
-	 *       Sets Flash latency 0; G0 first restores VOS Range 1. These waits
-	 *       require serviceable SysTick and return InitError on timeout (100 ms).
-	 *       PLL/HSE configuration and RCC interrupts are retained.
+	 * @brief Initialise clock state, FPU, Flash/cache and SysTick at 16 MHz.
+	 * @note With STM32_USE_BOOTLOADER on F4/F7/G0, restores HSI and dividers /1;
+	 *       HSI readiness and source switch wait without a timeout. G0 restores
+	 *       VOS Range 1, then Flash latency becomes 0; VOS/latency waits have
+	 *       a 100 ms timeout. PLL/HSE configuration and RCC interrupts remain.
+	 *       Without that definition, assumes the reset clock/power/latency state;
+	 *       call once after hardware reset, before changing clock settings.
 	 *       Call at the beginning of main with interrupts enabled, before
 	 *       peripheral setup. L0 retains its legacy assumption of 16 MHz HSI;
 	 *       it does not restore RCC, power or Flash settings.

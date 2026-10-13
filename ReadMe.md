@@ -140,12 +140,15 @@ The base module: FPU, Flash accelerator, SysTick, delays.
 ### Initialization
 
 ```cpp
-System::Init();  // restores HSI clocking and Flash latency, starts SysTick (1 kHz)
+System::Init();  // initializes core features and SysTick (1 kHz)
 ```
 
 Must be called **first** in `main()`, before `ClockSystem::Init()`.
 
-On F4/F7/G0, selects HSI 16 MHz and sets bus dividers /1;
+Without `STM32_USE_BOOTLOADER`, assumes hardware-reset clock/power/latency state;
+call once at the start of main, before changing clock settings.
+The base defines `STM32_USE_BOOTLOADER` automatically when `bootloader` is
+configured in project.json. With it, F4/F7/G0 select HSI 16 MHz and bus dividers /1;
 G0 also restores VOS Range 1 before Flash 0 WS.
 HSI readiness and the initial source switch wait without a timeout. Subsequent
 waits use SysTick (VOS/Flash: 100 ms), so interrupts must be
@@ -968,6 +971,10 @@ flash_base::erase_sector(3);
 
 On **STM32G0** writes are always 64-bit (two consecutive 32-bit operations). On **F4**, 8/16/32/64-bit writes are supported with automatic `PSIZE` configuration.
 
+`flash_bank_mode` is selected by project.json/device geometry. The driver uses
+that same map for both banks; init/SetUp return SysInitStatus and reject a
+hardware mode mismatch or active bank swap. See [Flash.md](Flash.md).
+
 ### flash_data — storing structures in Flash
 
 ```cpp
@@ -976,7 +983,7 @@ flash_data settings(7,            // sector number
                     settings_buf, // data buffer in RAM
                     sizeof(settings_buf));
 
-settings.SetUp();
+if (settings.SetUp() != SysInitStatus::InitOK) System::DebugTrap("Flash bank configuration");
 
 // Read the last saved data
 auto status = settings.read_data();
@@ -1188,12 +1195,16 @@ USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ### Инициализация
 
 ```cpp
-System::Init();  // возвращает HSI и Flash latency, запускает SysTick (1 кГц)
+System::Init();  // настраивает ядро и запускает SysTick (1 кГц)
 ```
 
 Должен вызываться **первым** в `main()`, до `ClockSystem::Init()`.
 
-На F4/F7/G0 выбирает HSI 16 МГц и делители шин /1;
+Без `STM32_USE_BOOTLOADER` предполагает исходное состояние тактирования,
+питания и latency после аппаратного сброса; вызывайте один раз в начале main,
+до изменения частот. База автоматически задаёт `STM32_USE_BOOTLOADER`, когда
+в project.json настроен `bootloader`. С макросом на F4/F7/G0 выбирает HSI 16 МГц
+и делители шин /1;
 G0 также возвращает VOS Range 1 перед Flash 0 WS.
 Готовность HSI и первое переключение источника ожидаются без таймаута. Дальнейшие
 ожидания используют SysTick (VOS/Flash: 100 мс), поэтому прерывания
@@ -2002,6 +2013,10 @@ RTC_cl::EnableCOE(true);   // выводит сигнал на вывод RTC_CA
 
 ### flash_base — низкоуровневый доступ
 
+Режим `flash_bank_mode` выбирается project.json/геометрией МК. Драйвер использует
+ту же карту обоих банков; init/SetUp возвращают SysInitStatus и отклоняют
+несовпадение аппаратного режима или активный bank swap. См. [Flash.md](Flash.md).
+
 ```cpp
 flash_base::init();
 flash_base::enable_access();  // разблокировать запись (ключи KEYR)
@@ -2027,7 +2042,7 @@ flash_data settings(7,            // номер сектора
                     settings_buf, // буфер данных в RAM
                     sizeof(settings_buf));
 
-settings.SetUp();
+if (settings.SetUp() != SysInitStatus::InitOK) System::DebugTrap("Flash bank configuration");
 
 // Чтение последних сохранённых данных
 auto status = settings.read_data();
