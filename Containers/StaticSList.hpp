@@ -3,10 +3,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
+// Fixed-capacity list. Concurrent access must be serialized by the caller.
+// T must be standard-layout, default-constructible and copy-assignable.
+// All slot values exist for the list's lifetime; erasing an element does not
+// destroy its value or release its resources. An erased element's pointer
+// must no longer be used, even if a later insertion reuses the same address.
 template<typename T, size_t N>
 class StaticSList {
 	static_assert(N > 0, "StaticSList: N must be > 0");
+	static_assert(std::is_standard_layout<T>::value,
+		"StaticSList: T must be standard-layout for next()");
 
 	struct Node {
 		T value;
@@ -35,7 +43,8 @@ public:
 		return &pool[head].value;
 	}
 
-	// move to the next one; cur must be an element of this list (from front()/next())
+	// cur must be nullptr or a live element of this list from front()/next().
+	// Foreign pointers and pointers to erased elements are not accepted.
 	T* next(const T* cur) {
 		if (!cur) return nullptr;
 		const Node* n = reinterpret_cast<const Node*>(
@@ -67,9 +76,9 @@ public:
 		return true;
 	}
 
-	// remove by condition
+	// Remove the first matching element; return whether an element was removed.
 	template<typename Pred>
-	bool erase_if(Pred&& pred) {
+	bool erase_first_if(Pred&& pred) {
 		int prev = -1;
 		int idx = head;
 		while (idx != -1) {

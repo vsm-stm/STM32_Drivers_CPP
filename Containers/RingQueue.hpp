@@ -3,9 +3,11 @@
 
 #include <cstddef>
 
-// Single-context FIFO, usable capacity N-1. No ISR/main synchronization:
-// sharing it between an interrupt and the main loop needs an external
-// contract (e.g. IrqLock around push/pop on the non-ISR side).
+// Single-context FIFO with usable capacity N-1. Concurrent access, including
+// interrupt/main-loop access, must be serialized by the caller.
+// T must be default-constructible and copy-assignable. All slots exist for the
+// queue's lifetime; pop() does not destroy the stored value or release its
+// resources. A slot's value is replaced when that slot is reused.
 template<typename T, size_t N>
 class RingQueue {
 	static_assert(N > 1, "Queue size must be > 1");
@@ -43,8 +45,8 @@ public:
 		return true;
 	}
 
-	inline bool empty() const { return head == tail; };
-	inline bool full() const { return next_index(head) == tail; };
+	inline bool empty() const { return head == tail; }
+	inline bool full() const { return next_index(head) == tail; }
 	inline size_t size() const {
 		if (head >= tail) return head - tail;
 		return N - tail + head; // wrap case

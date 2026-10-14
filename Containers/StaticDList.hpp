@@ -4,6 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 
+// Fixed-capacity list. Concurrent access must be serialized by the caller.
+// T must be default-constructible and copy-assignable. All slot values exist
+// for the list's lifetime; erase does not destroy a value or release its
+// resources. Erasing an element invalidates its index and references;
+// a later insertion may reuse that index for a different element.
 template<typename T, size_t N>
 class StaticDList {
 public:
@@ -63,10 +68,11 @@ public:
 	size_t      size()  const { return sz; }
 	index_type  head()  const { return head_idx; }
 	index_type  tail()  const { return tail_idx; }
-	index_type  next(index_type i) const { return (i < N) ? nodes[i].next : npos; }
-	index_type  prev(index_type i) const { return (i < N) ? nodes[i].prev : npos; }
+	// Out-of-range and unused indices return npos.
+	index_type  next(index_type i) const { return valid(i) ? nodes[i].next : npos; }
+	index_type  prev(index_type i) const { return valid(i) ? nodes[i].prev : npos; }
 		  T&    ref (index_type i)       { return nodes[i].value; }   // precondition: valid(i)
-	const T&    ref (index_type i) const { return nodes[i].value; }
+	const T&    ref (index_type i) const { return nodes[i].value; } // precondition: valid(i)
 	bool        valid(index_type i) const { return (i < N) && nodes[i].used; }
 
 	// append at the tail

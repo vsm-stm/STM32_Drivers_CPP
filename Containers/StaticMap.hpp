@@ -2,10 +2,14 @@
 #define STATIC_MAP_HPP
 
 #include <cstddef>
-#include <type_traits>
 
 // Fixed-capacity map with unique keys: insert() of an existing key replaces
-// its value.
+// its value. Concurrent access must be serialized by the caller.
+// Key and Value must be default-constructible and copy-assignable; keys must
+// support equality comparison. All slots exist for the map's lifetime;
+// erase()/clear() do not destroy keys or values or release their resources.
+// A pointer returned by find() must no longer be used after erasing that key
+// or clearing the map, even if a later insertion reuses the same address.
 template <typename Key, typename Value, size_t N>
 class StaticMap {
 	static_assert(N > 0, "StaticMap: N must be > 0");
@@ -16,7 +20,10 @@ public:
 		bool used = false;
 	};
 
-	// raw entries access
+	// Direct access to capacity() slots; read key/value only in used slots.
+	// The caller must preserve unique keys among used entries and the number
+	// of used entries. Raw changes are not checked; changing used does not
+	// update size(). Use insert()/erase()/clear() to change occupancy.
 	Entry* raw_entries() { return entries; }
 	const Entry* raw_entries() const { return entries; }
 	size_t capacity() const { return N; }
@@ -78,19 +85,6 @@ public :
 		return used_count;
 	}
 
-	// template <typename F>
-	// void for_each_value(F&& fn) {
-	// 	for (auto& e : entries) {
-	// 		if (e.used) fn(e.value);
-	// 	}
-	// }
-
-	// template <typename F>
-	// void for_each_entry(F&& fn) {
-	// 	for (auto& e : entries) {
-	// 		if (e.used) fn(*this, e.key, e.value);
-	// 	}
-	// }
 };
 
 #endif // STATIC_MAP_HPP
