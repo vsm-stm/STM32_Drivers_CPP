@@ -132,6 +132,10 @@ public:
 		}
 	}
 
+	// Direct CMSIS GPIO pointer; the caller supplies pin/AF in 0..15.
+	PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept
+		: _port_base(reinterpret_cast<uintptr_t>(port)), pin(p), af(a) {}
+
 	GPIO_TypeDef* PORT() const noexcept
 	{
 		return reinterpret_cast<GPIO_TypeDef*>(_port_base);
