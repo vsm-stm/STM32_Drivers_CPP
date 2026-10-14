@@ -1,6 +1,12 @@
 #include "flash.hpp"
 
 namespace {
+#if defined(STM32G0)
+constexpr uint32_t record_header_size = 2U * sizeof(status_t);
+#else
+constexpr uint32_t record_header_size = sizeof(status_t);
+#endif
+
 #if defined(STM32F4) || defined(STM32F7)
 constexpr uint32_t flash_timeout_ms = 50000U;
 constexpr uint32_t busy_mask = FLASH_SR_BSY;
@@ -343,8 +349,8 @@ template SysStatus flash_base::program<4U>(uint32_t, const void*, uint32_t);
 #endif
 
 // One sector contains full, fixed-size slots:
-// [status_t][payload][padding], stride = unit + ceil(size / unit) * unit.
-// The status is separate from the data and uses the minimum programming unit.
+// F4/F7: [status byte][payload]. G0: [commit word][invalid word][payload][padding].
+// G0 leaves the invalid word erased until a newer record has been committed.
 SysInitStatus flash_data::SetUp(bank_type tb)
 {
     stride = 0;
@@ -353,8 +359,8 @@ SysInitStatus flash_data::SetUp(bank_type tb)
     const uint32_t unit = sizeof(status_t);
     if (size > UINT32_MAX - (unit - 1U)) return SysInitStatus::InitError;
     const uint32_t rounded = (size + unit - 1U) & ~(unit - 1U);
-    if (rounded > UINT32_MAX - unit) return SysInitStatus::InitError;
-    const uint32_t record_size = unit + rounded;
+    if (rounded > UINT32_MAX - record_header_size) return SysInitStatus::InitError;
+    const uint32_t record_size = record_header_size + rounded;
     if (record_size > flash_sectors[sector].size || (flash_sectors[sector].address & (unit - 1U)))
         return SysInitStatus::InitError;
     if (init(tb) != SysInitStatus::InitOK || enable_access() != SysStatus::OK)
@@ -367,9 +373,9 @@ SysInitStatus flash_data::SetUp(bank_type tb)
 
 flash_data::Data_Status flash_data::read_data()
 {
-    if (!stride) return Data_Status::DATA_CORRUPT;
+    if (!stride) return Data_Status::DATA_NOT_VALID;
     if (status == Data_Status::DATA_OK) {
-        const uint32_t addr = flash_sectors[sector].address + offset + sizeof(status_t);
+        const uint32_t addr = flash_sectors[sector].address + offset + record_header_size;
         memcpy(data, reinterpret_cast<const uint8_t*>(addr), size);
     }
     return status;
@@ -385,7 +391,7 @@ SysStatus flash_data::write_data()
         const SysStatus erased = erase_sector(sector);
         if (erased != SysStatus::OK) {
             stride = 0; // A failed erase may already have destroyed old data.
-            status = Data_Status::DATA_CORRUPT;
+            status = Data_Status::DATA_NOT_VALID;
             return erased;
         }
         offset = 0;
@@ -397,21 +403,28 @@ SysStatus flash_data::write_data()
     const uint32_t candidate = next_offset;
     next_offset += stride;
     const uint32_t addr = flash_sectors[sector].address + candidate;
-    if (status != Data_Status::DATA_OK) status = Data_Status::DATA_CORRUPT;
-    const status_t writing = static_cast<status_t>(Data_Status::DATA_WRITING);
-    SysStatus result = write(addr, &writing);
+    if (status != Data_Status::DATA_OK) status = Data_Status::DATA_NOT_VALID;
+    Data_Status marker = Data_Status::DATA_WRITING;
+    SysStatus result = write(addr, &marker);
     if (result != SysStatus::OK) return result;
-    result = write(addr + sizeof(status_t), data, size);
+    result = write(addr + record_header_size, data, size);
     if (result != SysStatus::OK) return result;
-    const status_t ok = static_cast<status_t>(Data_Status::DATA_OK);
-    result = write(addr, &ok);
+    // G0 permits reprogramming an occupied main-Flash word with a full zero.
+    marker = Data_Status::DATA_OK;
+    result = write(addr, &marker);
     if (result != SysStatus::OK) return result;
 
-    // Publish the new record only after all three operations succeeded.
-    // Previous completed records remain readable until the sector is erased.
+    // Invalidate the previous record only after the new commit succeeded.
+    if (status == Data_Status::DATA_OK) {
+        // Last header unit: the second word on G0, the status byte on F4/F7.
+        marker = Data_Status::DATA_NOT_VALID;
+        result = write(flash_sectors[sector].address + offset + record_header_size - sizeof(status_t),
+                       &marker);
+    }
+    // The new record remains selected even if invalidating the old one failed.
     offset = candidate;
     status = Data_Status::DATA_OK;
-    return SysStatus::OK;
+    return result;
 }
 
 void flash_data::find_offset()
@@ -421,16 +434,24 @@ void flash_data::find_offset()
     status = Data_Status::NO_DATA;
     const uint32_t last_offset = flash_sectors[sector].size - stride;
     for (uint32_t pos = 0; pos <= last_offset; pos += stride) {
-        const Data_Status marker = static_cast<Data_Status>(
-            read<status_t>(flash_sectors[sector].address + pos));
+        const uint32_t addr = flash_sectors[sector].address + pos;
+#if defined(STM32G0)
+        // The invalidation word takes priority over the commit word.
+        if (read<Data_Status>(addr + sizeof(status_t)) != Data_Status::NO_DATA) {
+            next_offset = pos + stride;
+            if (status != Data_Status::DATA_OK) status = Data_Status::DATA_NOT_VALID;
+            continue;
+        }
+#endif
+        const Data_Status marker = read<Data_Status>(addr);
         if (marker == Data_Status::NO_DATA) continue;
-        // Skip an entire incomplete/corrupt/legacy-invalid record by stride.
+        // Skip the entire occupied record, including its payload and padding.
         next_offset = pos + stride;
         if (marker == Data_Status::DATA_OK) {
             offset = pos;
             status = Data_Status::DATA_OK;
         } else if (status != Data_Status::DATA_OK) {
-            status = Data_Status::DATA_CORRUPT;
+            status = Data_Status::DATA_NOT_VALID;
         }
     }
 }

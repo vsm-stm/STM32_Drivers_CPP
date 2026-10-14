@@ -54,19 +54,20 @@ class flash_data : private flash_base
 
 public:
 
+	// Flash encoding and API states share these values.
+	// G0: WRITING/OK use the first word; NOT_VALID uses the second word.
 	enum class Data_Status : status_t
 	{
 		NO_DATA = static_cast<status_t>(-1),
 #if defined(STM32G0)
-		// Keep the agreed status encoding for the hardware check. On G0,
-		// a second nonzero programming of this ECC block can raise PROGERR.
-		DATA_WRITING = 0x00FFFFFFFFFFFFFFULL,
+		DATA_WRITING = 0x00000000FFFFFFFFULL,
+		DATA_OK = 0x0000000000000000ULL,
+		DATA_NOT_VALID = 0xFFFFFFFF00000000ULL
 #else
 		DATA_WRITING = 0x7F,
-#endif
-		DATA_OK = static_cast<status_t>(static_cast<status_t>(-1) >> (sizeof(status_t) * 4)),
-		DATA_CORRUPT = 0x1,
+		DATA_OK = 0x0F,
 		DATA_NOT_VALID = 0
+#endif
 	};
 
 	flash_data(uint32_t sec, uint8_t *_data, uint32_t sz) :
