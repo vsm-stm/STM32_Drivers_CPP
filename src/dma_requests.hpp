@@ -14,11 +14,11 @@
  *
  * G0 notes
  * --------
- * DMAMUX1 allows any DMA1 channel to be routed to any peripheral.
+ * DMAMUX1 routes each available DMA1/DMA2 channel to a request source.
  * The channel is chosen by the user; only the DMAMUX1 request ID is encoded
  * here.  Pass these to DMA_Sx(DMA_Channel_TypeDef*, DMAReq).
  *
- * Request IDs: RM0444 Table 37 (STM32G0x0 — G030/G050/G070).
+ * Request IDs and peripheral availability must match the selected G0 device.
  *
  * F4/F7 notes
  * -----------
@@ -43,17 +43,16 @@
  *           Both fields are required; stream encodes which DMA/stream to use.
  *
  *  - G0:    DMAMUX1 request ID only (RM0444 Table 37).
- *           The DMA channel is chosen separately by the user (any of the five
- *           DMA1 channels may serve any peripheral via DMAMUX1).
+ *           The DMA channel is chosen separately from those present on the MCU.
  */
 struct DMAReq {
 #if defined(STM32F4) || defined(STM32F7)
 	DMA_Stream_TypeDef* stream;
 	uint32_t            ch;     ///< CHSEL field for DMA_SxCR (0–7)
-	constexpr bool IsValid() const noexcept { return stream != nullptr; }
+	constexpr bool IsValid() const noexcept { return stream != nullptr && ch <= 7U; }
 #elif defined(STM32G0)
 	uint32_t ch;                ///< DMAMUX1 request ID (0 = invalid / mem-to-mem)
-	constexpr bool IsValid() const noexcept { return ch != 0; }
+	constexpr bool IsValid() const noexcept { return ch != 0 && (ch & ~DMAMUX_CxCR_DMAREQ_ID_Msk) == 0; }
 #endif
 };
 
@@ -73,7 +72,7 @@ struct Req {
 
 #if defined(STM32G0)
 
-	// Request IDs for STM32G0x0 (G030/G050/G070) — RM0444 Table 37.
+	// Common G0 request IDs; the peripheral driver checks device availability.
 	struct Adc1  { static constexpr DMAReq RX = {  5U }; };
 
 	struct I2c1  {	static constexpr DMAReq RX = { 10U };

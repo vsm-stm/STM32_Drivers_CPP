@@ -7,7 +7,7 @@
 //   Flag offset within LISR/HISR: bits 15:12 are reserved, so the pattern
 //   is 0, 6, 16, 22 (not evenly spaced).
 //
-// G0: 5 entries (DMA1 channels 1-5 on G030/G031/G041).
+// G0: DMA1 channels present in the device header, plus DMA2 when present.
 //   Channels 2-3 share one NVIC line; channels 4-7 share another.
 //   Flag offset = (channel_number - 1) * 4.
 // ---------------------------------------------------------------------------
@@ -35,12 +35,31 @@ static dma_sets_typedef dma_streams[16] = {
 
 #elif defined(STM32G0)
 
+#if defined(DMA2_Channel1)
+static constexpr IRQn_Type kSharedDMA_IRQn = DMA1_Ch4_7_DMA2_Ch1_5_DMAMUX1_OVR_IRQn;
+#elif defined(DMA1_Channel7)
+static constexpr IRQn_Type kSharedDMA_IRQn = DMA1_Ch4_7_DMAMUX1_OVR_IRQn;
+#else
+static constexpr IRQn_Type kSharedDMA_IRQn = DMA1_Ch4_5_DMAMUX1_OVR_IRQn;
+#endif
+
 static dma_sets_typedef dma_streams[] = {
 	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  0, DMA1_Channel1_IRQn,           false },
 	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  4, DMA1_Channel2_3_IRQn,         false },
 	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  8, DMA1_Channel2_3_IRQn,         false },
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 12, DMA1_Ch4_5_DMAMUX1_OVR_IRQn, false },
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 16, DMA1_Ch4_5_DMAMUX1_OVR_IRQn, false },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 12, kSharedDMA_IRQn, false },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 16, kSharedDMA_IRQn, false },
+#if defined(DMA1_Channel7)
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 20, kSharedDMA_IRQn, false },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 24, kSharedDMA_IRQn, false },
+#endif
+#if defined(DMA2_Channel1)
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  0, kSharedDMA_IRQn, false },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  4, kSharedDMA_IRQn, false },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  8, kSharedDMA_IRQn, false },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR, 12, kSharedDMA_IRQn, false },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR, 16, kSharedDMA_IRQn, false },
+#endif
 };
 
 #endif
@@ -55,21 +74,34 @@ int32_t DMA_Sx::GetStreamIndex(void* s)
 	uintptr_t base = reinterpret_cast<uintptr_t>(s);
 
 #if defined(STM32F4) || defined(STM32F7)
+	static constexpr uintptr_t stride = DMA1_Stream1_BASE - DMA1_Stream0_BASE;
 	uintptr_t dma1_base = reinterpret_cast<uintptr_t>(DMA1_Stream0);
 	uintptr_t dma1_end  = reinterpret_cast<uintptr_t>(DMA1_Stream7);
 	uintptr_t dma2_base = reinterpret_cast<uintptr_t>(DMA2_Stream0);
 	uintptr_t dma2_end  = reinterpret_cast<uintptr_t>(DMA2_Stream7);
 
-	if (base >= dma1_base && base <= dma1_end)
-		return (base - dma1_base) / 0x18;
-	if (base >= dma2_base && base <= dma2_end)
-		return 8 + (base - dma2_base) / 0x18;
+	if (base >= dma1_base && base <= dma1_end && (base - dma1_base) % stride == 0U)
+		return (base - dma1_base) / stride;
+	if (base >= dma2_base && base <= dma2_end && (base - dma2_base) % stride == 0U)
+		return 8 + (base - dma2_base) / stride;
 
 #elif defined(STM32G0)
+	static constexpr uintptr_t stride = DMA1_Channel2_BASE - DMA1_Channel1_BASE;
 	uintptr_t ch1_base = reinterpret_cast<uintptr_t>(DMA1_Channel1);
+#if defined(DMA1_Channel7)
+	uintptr_t ch1_end = reinterpret_cast<uintptr_t>(DMA1_Channel7);
+#else
+	uintptr_t ch1_end = reinterpret_cast<uintptr_t>(DMA1_Channel5);
+#endif
 
-	if (base >= ch1_base && base < ch1_base + kStreamCount * 0x14)
-		return (base - ch1_base) / 0x14;
+	if (base >= ch1_base && base <= ch1_end && (base - ch1_base) % stride == 0U)
+		return (base - ch1_base) / stride;
+#if defined(DMA2_Channel1)
+	uintptr_t ch2_base = reinterpret_cast<uintptr_t>(DMA2_Channel1);
+	uintptr_t ch2_end = reinterpret_cast<uintptr_t>(DMA2_Channel5);
+	if (base >= ch2_base && base <= ch2_end && (base - ch2_base) % stride == 0U)
+		return 7 + (base - ch2_base) / stride;
+#endif
 #endif
 
 	return -1;
@@ -82,11 +114,23 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 	int32_t idx = GetStreamIndex(_stream);
 	if (idx < 0 || idx >= kStreamCount)
 		return SysInitStatus::InitError;
+	if (settings.count > MAX_COUNT
+	 || static_cast<uint32_t>(settings.direction) > static_cast<uint32_t>(DIR::Mem_To_Mem)
+	 || static_cast<uint32_t>(settings.data_size) > static_cast<uint32_t>(SIZE::Word)
+	 || (settings.direction == DIR::Mem_To_Mem && settings.circ))
+		return SysInitStatus::InitError;
 
+	const uint32_t eff_ch = _has_preset ? _preset_ch : settings.channel;
 #if defined(STM32F4) || defined(STM32F7)
-	if (settings.channel > 7)
+	if (eff_ch > 7U || settings.direction == DIR::Mem_To_Mem)
+		return SysInitStatus::InitError;
+#elif defined(STM32G0)
+	if (eff_ch & ~DMAMUX_CxCR_DMAREQ_ID_Msk)
 		return SysInitStatus::InitError;
 #endif
+	const uint32_t alignment_mask = (1U << static_cast<uint32_t>(settings.data_size)) - 1U;
+	if ((settings.per_address | settings.mem_address) & alignment_mask)
+		return SysInitStatus::InitError;
 
 	dma_sets_typedef& info = dma_streams[idx];
 	if (info.used)
@@ -98,17 +142,19 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 	// Enable DMA clock
 #if defined(STM32F4) || defined(STM32F7)
 	RCC->AHB1ENR |= (_info->ctrl == DMA1) ? RCC_AHB1ENR_DMA1EN : RCC_AHB1ENR_DMA2EN;
+	(void)RCC->AHB1ENR; // Complete the clock-enable write before accessing DMA.
 #elif defined(STM32G0)
-	RCC->AHBENR |= RCC_AHBENR_DMA1EN;  // also enables DMAMUX1 on G0
+#if defined(DMA2_Channel1)
+	RCC->AHBENR |= (_info->ctrl == DMA1) ? RCC_AHBENR_DMA1EN : RCC_AHBENR_DMA2EN;
+#else
+	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
+#endif
+	(void)RCC->AHBENR; // Either DMA enable also clocks DMAMUX1.
 #endif
 
 	// Disable stream and wait for hardware to clear EN
-	_CR() &= ~CR_EN;
-	while (_CR() & CR_EN) {}
+	Stream_EN(DISABLE);
 	ClearFlags();
-
-	// Effective channel/request: preset from DMAReq constructor takes priority.
-	const uint32_t eff_ch = _has_preset ? _preset_ch : settings.channel;
 
 	// Build control register value
 	uint32_t cr = 0;
@@ -136,7 +182,7 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 	cr |= settings.circ << DMA_CCR_CIRC_Pos;
 
 	// Map peripheral request via DMAMUX1 (channel index matches DMA channel index)
-	(DMAMUX1_Channel0 + idx)->CCR = eff_ch & DMAMUX_CxCR_DMAREQ_ID;
+	(DMAMUX1_Channel0 + idx)->CCR = settings.direction == DIR::Mem_To_Mem ? 0U : eff_ch;
 #endif
 
 	_CR()   = cr;
@@ -145,4 +191,26 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 	_NDTR() = settings.count;
 
 	return SysInitStatus::InitOK;
+}
+
+SysStatus DMA_Sx::Release()
+{
+	if (!_info) return SysStatus::NotInit;
+	Stream_EN(DISABLE);
+	_CR() = 0U; // Disable this stream/channel's interrupt sources and configuration.
+	ClearFlags();
+	_NDTR() = 0U;
+	_PAR() = 0U;
+	_MAR() = 0U;
+#if defined(STM32F4) || defined(STM32F7)
+	_stream->M1AR = 0U;
+	_stream->FCR = DMA_SxFCR_FTH_0; // Reset writable FIFO fields; status bits are read-only.
+#elif defined(STM32G0)
+	const int32_t idx = GetStreamIndex(_stream);
+	(DMAMUX1_Channel0 + idx)->CCR = 0U;
+	DMAMUX1_ChannelStatus->CFR = 1U << idx;
+#endif
+	_info->used = false;
+	_info = nullptr;
+	return SysStatus::OK;
 }

@@ -30,7 +30,7 @@
  *
  *    b) Channel + raw DMAMUX1 request ID  [when Req:: table has no entry]
  *       @code
- *         DMA_Sx dma(DMA1_Channel3, 48u);  // 48 = USART1_TX per RM0444
+ *         DMA_Sx dma(DMA1_Channel3, 51u);  // USART1_TX request
  *       @endcode
  *
  *    c) Channel only  [request ID supplied later via StreamSettings::channel]
@@ -78,7 +78,9 @@
  * Usage — DMA attached to a peripheral driver (e.g. USART)
  * ============================================================================
  *
- * The peripheral driver takes ownership of the DMA channel via AttachDMA().
+ * The DMA_Sx object owns the hardware channel after successful SetUp().
+ * A peripheral driver retains the object through AttachDMA(); do not share
+ * one configured object between different peripherals.
  * The driver registers itself as the IRQ handler for the DMA interrupt line
  * and calls Stream_EN / ClearFlags / GetTC_Flag internally.
  *
@@ -100,13 +102,22 @@
  *
  * Notes
  * -----
- *  - SetUp() must be called before AttachDMA() on every DMA_Sx instance.
- *  - Each DMA_Sx instance can only be SetUp() once (guarded by the `used` flag).
- *  - On G0, any of the 5 DMA1 channels can serve any peripheral via DMAMUX1.
- *    Choose channels so that peripherals sharing an IRQ line (ch2-3, ch4-5)
- *    do not conflict — or ensure both are handled by the same IRQ handler.
+ *  - For standalone transfers, call DMA SetUp() once. AttachDMA() in current
+ *    peripheral drivers calls it internally; do not call it beforehand.
+ *  - Repeated SetUp() is InitError until Release(), including on the same object.
+ *  - SetUp() permits count=0 and address=0 for preparation without a start.
+ *    SetCount() accepts 1..65535 elements; check its returned status.
+ *  - SetMemAddr/SetPerAddr/SetCount require an owned, stopped channel. Stop
+ *    through Stream_EN(DISABLE), which waits for EN=0 without a timeout.
+ *  - On G0, DMA1 has 5 or 7 channels; some models also have DMA2 with 5 channels.
+ *    Shared IRQ lines require enough IRQ_Registry slots for their consumers.
  *  - On F4/F7, stream + CHSEL are hardware-fixed; use the Req:: table to pick
  *    the correct combination. Alternate streams are named ::TX_alt / ::RX_alt.
+ *  - The peripheral driver checks the route; DMA validates register fields.
+ *  - DMA does not perform cache maintenance. The consumer calls System's cache
+ *    operations at buffer handover; direct DMA callers do this themselves.
+ *  - SetUp/Release and changes of ownership are performed in the main loop.
+ *    Serialize accesses to the same resource externally; no internal locks.
  */
 
 #ifndef DMA_H_
@@ -122,7 +133,7 @@ struct dma_sets_typedef {
 	volatile uint32_t*  ifcr;      ///< Clear register  (LIFCR/HIFCR on F4, IFCR on G0)
 	uint8_t             if_offset; ///< Bit offset of this stream's flag group
 	IRQn_Type           irqn;      ///< NVIC IRQ number
-	bool                used;      ///< Set by SetUp() — prevents double-init
+	bool                used;      ///< Owned after SetUp(); cleared by the owner's Release()
 };
 
 // ---------------------------------------------------------------------------
@@ -142,6 +153,10 @@ private:
 	static constexpr uint32_t CR_MINC = DMA_SxCR_MINC;
 	static constexpr uint32_t CR_PINC = DMA_SxCR_PINC;
 	static constexpr uint32_t CR_CIRC = DMA_SxCR_CIRC;
+	static constexpr uint32_t CR_MSIZE_Msk = DMA_SxCR_MSIZE_Msk;
+	static constexpr uint32_t CR_MSIZE_Pos = DMA_SxCR_MSIZE_Pos;
+	static constexpr uint32_t CR_PSIZE_Msk = DMA_SxCR_PSIZE_Msk;
+	static constexpr uint32_t CR_PSIZE_Pos = DMA_SxCR_PSIZE_Pos;
 	// TCIF0 sits at bit 5 within each 6-bit group in LISR/HISR
 	static constexpr uint32_t FLAG_TC  = DMA_LISR_TCIF0;
 	static constexpr uint32_t FLAG_ALL = DMA_LIFCR_CTCIF0 | DMA_LIFCR_CHTIF0 |
@@ -157,12 +172,17 @@ private:
 	static constexpr uint32_t CR_MINC = DMA_CCR_MINC;
 	static constexpr uint32_t CR_PINC = DMA_CCR_PINC;
 	static constexpr uint32_t CR_CIRC = DMA_CCR_CIRC;
+	static constexpr uint32_t CR_MSIZE_Msk = DMA_CCR_MSIZE_Msk;
+	static constexpr uint32_t CR_MSIZE_Pos = DMA_CCR_MSIZE_Pos;
+	static constexpr uint32_t CR_PSIZE_Msk = DMA_CCR_PSIZE_Msk;
+	static constexpr uint32_t CR_PSIZE_Pos = DMA_CCR_PSIZE_Pos;
 	// TCIF1 sits at bit 1 within each 4-bit group in ISR
 	static constexpr uint32_t FLAG_TC  = DMA_ISR_TCIF1;
 	static constexpr uint32_t FLAG_ALL = 0xFu; // GIF+TCIF+HTIF+TEIF per channel
 #endif
 
 	dma_sets_typedef* _info    = nullptr;
+	static constexpr uint32_t MAX_COUNT = 0xFFFFU;
 	uint32_t          _preset_ch  = 0;
 	bool              _has_preset = false;
 	static int32_t GetStreamIndex(void* s);
@@ -172,7 +192,7 @@ public:
 	enum class DIR {
 		From_Per,   ///< Peripheral → memory
 		To_Per,     ///< Memory → peripheral
-		Mem_To_Mem  ///< Memory → memory
+		Mem_To_Mem  ///< Memory → memory on G0; SetUp rejects it on F4/F7.
 	};
 
 	/** @brief Transfer element width. */
@@ -207,7 +227,10 @@ public:
 	 *
 	 * The @p channel field has different semantics per family:
 	 *  - F4/F7: DMA channel selection (CHSEL bits, 0–7)
-	 *  - G0:    DMAMUX peripheral request ID (0–63)
+	 *  - G0:    DMAMUX request ID fitting the selected device's DMAREQ_ID field
+	 *           (6 or 7 bits); the peripheral driver checks the actual route.
+	 * Count is in elements, 0..65535. Zero addresses/count are permitted here
+	 * for deferred preparation. Nonzero addresses must match data_size alignment.
 	 */
 	struct StreamSettings {
 		uint32_t channel{0};
@@ -218,7 +241,7 @@ public:
 		bool     circ{false};
 		uint32_t per_address{0};
 		uint32_t mem_address{0};
-		uint32_t count{0};
+		uint32_t count{0}; // Zero means preparation without a start.
 	};
 
 	// DMAReq and Req are defined in dma_requests.hpp and become nested types here.
@@ -244,23 +267,48 @@ public:
 	 * @brief Initialises the DMA stream/channel from a StreamSettings descriptor.
 	 * @return SysInitStatus::InitOK on success, InitError if the stream is
 	 *         unknown, already in use, or the settings are invalid.
+	 * @note Constructor request takes precedence over settings.channel.
+	 *       Does not start DMA. Repeated setup requires prior Release().
+	 *       Mem_To_Mem is currently unsupported on F4/F7 and returns InitError.
 	 */
 	SysInitStatus SetUp(const StreamSettings& settings);
 
+	/**
+	 * @brief Stop and reset this object's hardware resource, then release ownership.
+	 * @return OK when released; NotInit if this object does not own a resource.
+	 * @note Disable peripheral DMA requests and unregister its handler first.
+	 *       Waits for EN=0 without a timeout. Does not disable a shared NVIC line
+	 *       or the controller clock. Constructor stream/request selection is retained.
+	 */
+	SysStatus Release();
+
+	/** @brief Set an aligned address while stopped; NotInit, Busy or Error on failure. */
 	inline SysStatus SetMemAddr(uint32_t addr) {
-		if (!addr) return SysStatus::Error;
+		if (!_info) return SysStatus::NotInit;
+		const uint32_t cr = _CR();
+		if (cr & CR_EN) return SysStatus::Busy;
+		if (!addr || (addr & ((1U << ((cr & CR_MSIZE_Msk) >> CR_MSIZE_Pos)) - 1U)))
+			return SysStatus::Error;
 		_MAR() = addr;
 		return SysStatus::OK;
 	}
 
+	/** @brief Set an aligned address while stopped; NotInit, Busy or Error on failure. */
 	inline SysStatus SetPerAddr(uint32_t addr) {
-		if (!addr) return SysStatus::Error;
+		if (!_info) return SysStatus::NotInit;
+		const uint32_t cr = _CR();
+		if (cr & CR_EN) return SysStatus::Busy;
+		if (!addr || (addr & ((1U << ((cr & CR_PSIZE_Msk) >> CR_PSIZE_Pos)) - 1U)))
+			return SysStatus::Error;
 		_PAR() = addr;
 		return SysStatus::OK;
 	}
 
+	/** @brief Set 1..65535 elements while stopped; rejected values leave the count unchanged. */
 	inline SysStatus SetCount(uint32_t n) {
-		if (!n) return SysStatus::Error;
+		if (!_info) return SysStatus::NotInit;
+		if (_CR() & CR_EN) return SysStatus::Busy;
+		if (!n || n > MAX_COUNT) return SysStatus::Error;
 		_NDTR() = n;
 		return SysStatus::OK;
 	}
@@ -299,9 +347,20 @@ public:
 		if (en) _CR() |=  CR_CIRC; else _CR() &= ~CR_CIRC;
 	}
 
-	/** @brief Enables or disables the stream/channel (EN bit). */
+	/**
+	 * @brief Enable the prepared transfer or stop and wait for EN=0.
+	 * @note SetUp() must have succeeded. Stop has no timeout and can be used
+	 *       from IRQ. The caller prepares valid addresses/count before starting.
+	 */
 	inline void Stream_EN(FunctionalState en) {
-		if (en) _CR() |=  CR_EN; else _CR() &= ~CR_EN;
+		if (en) {
+			__DMB(); // Publish preceding buffer writes before starting DMA.
+			_CR() |= CR_EN;
+		} else {
+			_CR() &= ~CR_EN;
+			while (_CR() & CR_EN) {}
+			__DMB(); // Keep subsequent buffer accesses after the confirmed stop.
+		}
 	}
 
 	/** @brief Returns the NVIC IRQ number for this stream/channel, or -1 if not set up. */
