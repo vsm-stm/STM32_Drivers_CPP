@@ -29,7 +29,7 @@ peripheral module with such-and-such AF") or as a **runtime object** (for ordina
 button).
 
 ```cpp
-PIN led(GPIOA, 5);                      // runtime — as in main.cpp
+PIN led(GPIOA, 5);                 // ordinary GPIO object
 led.SetUp(PIN::TYPE::OUTPUT_PushPull);
 led.SetLevel(true);
 
@@ -37,7 +37,9 @@ led.SetLevel(true);
 static constexpr PIN PA9 = { GPIOA_BASE, 9, 7, USART1_BASE };  // AF7, "belongs to" USART1
 ```
 
-Both variants are one and the same `PIN` type, just different constructors (see section 6).
+The pointer constructor supports ordinary GPIO objects such as PIN(GPIOA, 5).
+Compile-time tables use the consteval constructor with GPIOx_BASE; it validates
+their port, pin number and stored AF at build time. C++20 or later is required.
 
 ---
 
@@ -69,7 +71,8 @@ combinations (for example "ANALOG + PullUp") simply do not exist in the type its
 ## 3. SetUp() — What Actually Gets Written to the Registers
 
 ```cpp
-SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override);
+SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override,
+                    LVL initial_level = LVL::LOW);
 ```
 
 The order of operations in `gpio.cpp` — **first unpack `TYPE` into three fields**, then:
@@ -79,9 +82,10 @@ The order of operations in `gpio.cpp` — **first unpack `TYPE` into three field
    gpio_id = (_port_base - GPIOA_BASE) / (GPIOB_BASE - GPIOA_BASE);  // 0=A, 1=B, 2=C, ...
    RCC_GPIO_EN_REG |= (RCC_GPIOA_EN << gpio_id);
    ```
-   This works because `GPIOx_BASE` is laid out consecutively with the same stride in all supported
-   families — if that weren't the case, an explicit table would be needed (as in
-   `usart_table`/`tim_table`).
+   GPIO ports occupy 0x400-byte slots on F4/F7/G0; absent ports can leave gaps.
+   The stride is taken from the CMSIS base addresses. GCC 13.3.1 generates the
+   same instructions as an explicit shift for F429/F767/G031 with -O0/-Og/-Os;
+   no software division helper is called. No additional port index is stored.
 
 2. **Clearing before writing** — each of `MODER`/`PUPDR`/`OTYPER`/`OSPEEDR`/`AFR[]` is first
    cleared with a mask for this pin, and only then is the new value written. This matters when
@@ -98,9 +102,14 @@ The order of operations in `gpio.cpp` — **first unpack `TYPE` into three field
 5. **`AFR[]` is written only for AF** — `pin >> 3` selects `AFR[0]` (pins 0-7) or `AFR[1]`
    (pins 8-15), `(pin & 0x7) * 4` is the shift of the 4-bit field within the register.
 
-6. **`MODER` is written last** — this is the only step that actually switches the pin into
-   the new mode; all other registers are already ready by this point, so there is no moment where the
-   pin ends up, for example, in OUTPUT mode with `OTYPER` not yet configured.
+6. **Initial OUTPUT level** is written through BSRR before the final MODER write.
+   It defaults to LOW, including repeated OUTPUT setup. INPUT, AF and ANALOG do
+   not change the output latch. The initial MODER clear temporarily selects INPUT;
+   the final write enables the requested mode after configuring its attributes.
+
+```cpp
+led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
+```
 
 ---
 
@@ -124,8 +133,11 @@ branching the code into two separate cases. This eliminates a data race: if `Set
 back someone else's change to the same register (another pin of the same port, changed inside an
 ISR) — `BSRR` doesn't read `ODR` at all, so there is no such race.
 
-`TogglePin()` is the **only** operation that goes through `ODR ^=` (not atomically) —
-toggling fundamentally requires the "current value", and `BSRR` is not suited for that.
+`TogglePin()` retains `ODR ^=`: it reads and rewrites the whole output register.
+Do not modify any output on the same port from an IRQ between that read and write.
+A toggle implemented as ODR read plus BSRR write could preserve other bits, but
+would still not make concurrent toggles of the same pin atomic. No cycle counts
+have been measured for these alternatives.
 
 ---
 
@@ -147,35 +159,53 @@ word atomically sets/clears exactly one bit of the original register, with no re
 all — meaning `SetLevel_BB()` physically cannot race with a change to a neighboring bit of the same
 `ODR`, even without using `BSRR`.
 
-The practical difference from the ordinary `SetLevel()`/`BSRR`: the `BSRR` path is already
-atomic for **setting**, but `TogglePin_BB()` provides an atomic **toggle** — that is, exactly where
-`TogglePin()` (via `ODR ^=`) is theoretically vulnerable to a race, `TogglePin_BB()` eliminates it at
-the cost of being available only on F4.
+`TogglePin_BB()` consists of a separate bit read and bit write. Each access
+affects only the selected bit, but the combined toggle is not atomic: another
+operation on the same pin can occur between them. A whole-port ODR write can
+also overwrite a bit changed through bit-banding.
 
 ---
 
 ## 6. Constexpr Pin Tables and Protection Against Typos
 
 ```cpp
-constexpr PIN(uintptr_t port_base, uint8_t p, uint8_t a = 0, uint32_t periph = 0) noexcept;
+consteval PIN(uintptr_t port_base, uint32_t p, uint32_t a = 0,
+              uint32_t periph = 0) noexcept;
 ```
 
-This constructor is used in all compile-time tables (`USART::_1::TX::PA9`,
-`TIM::_3::CH1::PA6`, ...). The fourth parameter (`periph`) is not for configuring the pin itself, but
-a "stamp" in the spirit of "this pin is physically routed for precisely this peripheral module". The
-drivers (`USART`, `TIM`, `SPI`) compare it in their constructor:
+The consteval constructor accepts GPIOx_BASE and rejects an unavailable GPIO port, a pin
+number outside 0..15 or an AF outside 0..15 at compile time. The numeric arguments
+are checked before a value can be accepted in the stored 8-bit fields, so values
+such as 256 cannot silently wrap into valid definitions. No runtime checks,
+BKPT or waiting loops are added.
+
+Port, pin number and stored AF are private const fields. The public const
+`periph_base` is read-only metadata for the existing USART/SPI/I2C binding checks;
+it is not the GPIO port address. Copy/move construction is allowed, but assigning
+another PIN is deleted: an existing object's physical binding cannot be changed.
+Assignment of bool still sets the output level.
+
+`SetUp(type, speed)` uses the stored AF. An explicit `af_override` selects an AF
+at runtime without changing the stored field; the caller supplies a value in
+0..15. These range checks do not verify every MCU-specific pin/function combination.
+
+USART/SPI/I2C pin tables keep their existing `{GPIOx_BASE, pin, af, peripheral}`
+format. Their checks that a pin belongs to the selected peripheral remain in
+those drivers; no changes to those modules are included here.
+
+The ordinary constructor is retained:
 
 ```cpp
-if (tx.IsValid() && tx.periph_base && tx.periph_base != (uint32_t)usartx)
-    System::DebugTrap("USART: TX pin belongs to wrong peripheral");
+PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept;
+PIN led(GPIOA, 5);
 ```
 
-In other words: if a pin from the `USART::_2::TX` table is mistakenly passed to the
-`USART` constructor, while the object itself is created on `USART1` — this is caught by `DebugTrap()`
-(a breakpoint + infinite loop) immediately when the object is constructed, rather than as a silently
-non-working UART at runtime. The second, runtime constructor (`PIN(GPIO_TypeDef*, uint8_t, uint8_t)`)
-has no such stamp (`periph_base` = 0 by default) — for ordinary user GPIO this check is unnecessary
-and doesn't get in the way.
+It binds the supplied GPIO pointer, pin and AF without runtime checks or traps;
+the caller supplies a supported GPIO port and pin/AF in 0..15. This overload is
+not consteval. ADC/TIM can keep their existing pointer-based construction.
+Their migration to USART-style pin definitions/tables remains scheduled for
+their own module reviews. DAC can also construct PIN from a GPIO pointer, but
+its assignment of a whole PIN still needs migration because binding is immutable.
 
 ---
 
@@ -201,6 +231,9 @@ you pay for one register access per pin, but get one call and one 32-bit value i
 packing/unpacking bit by bit in the application code.
 
 `N` is limited to `[1, 32]` (`static_assert`) — the bus value is packed into a `uint32_t`.
+Array elements are copy-constructed directly; they are not rebound by assignment.
+`SetUpAll()` configures every element and returns the first non-InitOK status
+without converting it to NotInit. OUTPUT setup uses the default initial LOW.
 
 ---
 
@@ -230,19 +263,19 @@ PIN pa9(GPIOA, 9);
 pa9.SetUp(PIN::TYPE::AF_PushPull, /*af_override=*/7);   // AF7 = USART1_TX on F4
 ```
 
-### Bit-Banding on F4 — Toggling a Pin from an ISR Without a Race
+### Bit-Banding on F4 — Access to One Output Bit
 
 ```cpp
 PIN strobe(GPIOB, 0);
 strobe.SetUp(PIN::TYPE::OUTPUT_PushPull);
-strobe.TogglePin_BB();   // atomic, safe even if the main code also touches GPIOB->ODR
+strobe.TogglePin_BB();   // separate bit read/write; do not concurrently change this pin
 ```
 
 ### PinArray — a 4-Bit Bus for a Segment Display
 
 ```cpp
 static constexpr PIN seg_pins_raw[] = {
-    PIN(GPIOB, 0), PIN(GPIOB, 1), PIN(GPIOB, 4), PIN(GPIOB, 5)
+    PIN(GPIOB_BASE, 0), PIN(GPIOB_BASE, 1), PIN(GPIOB_BASE, 4), PIN(GPIOB_BASE, 5)
 };
 PinArray<4> seg_pins(seg_pins_raw);
 
@@ -266,9 +299,9 @@ struct MySpiPins {
 
 ## 9. Edge Cases
 
-- **`PIN(GPIO_TypeDef*, uint8_t, uint8_t)` (the runtime constructor) checks `p < 16`** —
-  a breakpoint trap (`__BKPT(0); while(1)`) on an invalid pin number; the compile-time constructor
-  does not perform this check (the values there are already constants known at build time).
+- **Two constructors** — GPIOx_BASE uses compile-time validation; GPIO_TypeDef*
+  supports ordinary pointer-based construction without runtime validation.
+  `PIN{}` represents an absent optional signal; do not call SetUp or level access on it.
 - **`Reset()` (a private method) puts the pin into `INPUT_NO_Pull`** — it is not called
   automatically anywhere in the current code of the `PIN` class; it is meant to be called explicitly
   if the calling code needs it (for example, when deinitializing a peripheral).
@@ -319,7 +352,7 @@ struct MySpiPins {
 периферийному модулю с таким-то AF") и как **runtime-объект** (для обычных GPIO — LED, кнопка).
 
 ```cpp
-PIN led(GPIOA, 5);                      // runtime — как в main.cpp
+PIN led(GPIOA, 5);                 // обычный объект GPIO
 led.SetUp(PIN::TYPE::OUTPUT_PushPull);
 led.SetLevel(true);
 
@@ -327,7 +360,9 @@ led.SetLevel(true);
 static constexpr PIN PA9 = { GPIOA_BASE, 9, 7, USART1_BASE };  // AF7, "принадлежит" USART1
 ```
 
-Оба варианта — один и тот же тип `PIN`, просто разные конструкторы (см. раздел 6).
+Конструктор с указателем используется для обычных объектов, например PIN(GPIOA, 5).
+Для compile-time таблиц используется consteval-конструктор с GPIOx_BASE: он
+проверяет порт, номер и сохранённый AF при сборке. Требуется C++20 или новее.
 
 ---
 
@@ -359,7 +394,8 @@ OUTPUT_OD_PulUp = (OUTPUT << mode_pos) | (OpenDrain << output_type_pos) | (PullU
 ## 3. SetUp() — что реально пишется в регистры
 
 ```cpp
-SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override);
+SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override,
+                    LVL initial_level = LVL::LOW);
 ```
 
 Порядок операций в `gpio.cpp` — **сначала распаковать `TYPE` в три поля**, потом:
@@ -369,8 +405,10 @@ SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override);
    gpio_id = (_port_base - GPIOA_BASE) / (GPIOB_BASE - GPIOA_BASE);  // 0=A, 1=B, 2=C, ...
    RCC_GPIO_EN_REG |= (RCC_GPIOA_EN << gpio_id);
    ```
-   Работает, потому что `GPIOx_BASE` во всех поддерживаемых семействах идут подряд с одинаковым
-   шагом — если бы это было не так, потребовалась бы явная таблица (как в `usart_table`/`tim_table`).
+   Порты F4/F7/G0 занимают адресные позиции с шагом 0x400; отсутствующие порты
+   могут оставлять пропуски. Шаг берётся из адресов CMSIS. GCC 13.3.1 выдаёт тот же
+   машинный код, что и явный сдвиг, для F429/F767/G031 с -O0/-Og/-Os;
+   вызова программного деления нет. Дополнительный индекс порта не хранится.
 
 2. **Очистка перед записью** — каждое из `MODER`/`PUPDR`/`OTYPER`/`OSPEEDR`/`AFR[]` сначала
    обнуляется маской для этого пина, только потом записывается новое значение. Это важно при
@@ -387,9 +425,14 @@ SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override);
 5. **`AFR[]` пишется только для AF** — `pin >> 3` выбирает `AFR[0]` (пины 0-7) или `AFR[1]`
    (пины 8-15), `(pin & 0x7) * 4` — сдвиг 4-битного поля внутри регистра.
 
-6. **`MODER` пишется последним** — это единственный шаг, который реально переключает вывод в
-   новый режим; все остальные регистры к этому моменту уже готовы, так что нет момента, когда
-   вывод оказывается, например, в режиме OUTPUT с ещё не настроенным `OTYPER`.
+6. **Начальный уровень OUTPUT** записывается через BSRR перед итоговой записью
+   MODER. По умолчанию LOW, в том числе при повторной настройке OUTPUT.
+   INPUT, AF и ANALOG не меняют выходную защёлку. Начальная очистка MODER временно
+   выбирает INPUT; итоговая запись включает заданный режим после настройки атрибутов.
+
+```cpp
+led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
+```
 
 ---
 
@@ -413,8 +456,11 @@ inline void TogglePin() { PORT()->ODR ^= (0x1u << pin); }
 `ODR` могло бы откатить чужое изменение того же регистра (другой вывод того же порта, изменённый
 внутри ISR) — `BSRR` не читает `ODR` вообще, поэтому такой гонки нет.
 
-`TogglePin()` **единственная** операция, которая идёт через `ODR ^=` (не атомарно) — переключение
-принципиально требует "текущее значение", `BSRR` для этого не подходит.
+`TogglePin()` сохраняет `ODR ^=`: читает и перезаписывает весь выходной регистр.
+Нельзя менять выводы того же порта из IRQ между этим чтением и записью.
+Toggle через чтение ODR и запись BSRR мог бы сохранять остальные биты, но
+одновременные переключения одного пина всё равно не стали бы атомарными.
+Сравнение этих вариантов по тактам не выполнялось.
 
 ---
 
@@ -436,33 +482,54 @@ Bit-banding — аппаратная возможность Cortex-M3/M4 (ест
 read-modify-write вообще — то есть `SetLevel_BB()` физически не может гоняться с изменением
 соседнего бита того же `ODR` даже без использования `BSRR`.
 
-Практическая разница с обычным `SetLevel()`/`BSRR`: `BSRR`-путь уже атомарен для **установки**,
-но `TogglePin_BB()` даёт атомарное **переключение** — то есть именно там, где `TogglePin()` (через
-`ODR ^=`) теоретически уязвим к гонке, `TogglePin_BB()` устраняет её ценой доступности только на F4.
+`TogglePin_BB()` состоит из отдельного чтения и записи бита. Каждое обращение
+затрагивает только выбранный бит, но переключение в целом не атомарно: между
+чтением и записью другой код может изменить тот же пин. Запись всего ODR также
+может затереть изменение, сделанное через bit-banding.
 
 ---
 
 ## 6. Constexpr-таблицы пинов и защита от опечаток
 
 ```cpp
-constexpr PIN(uintptr_t port_base, uint8_t p, uint8_t a = 0, uint32_t periph = 0) noexcept;
+consteval PIN(uintptr_t port_base, uint32_t p, uint32_t a = 0,
+              uint32_t periph = 0) noexcept;
 ```
 
-Этот конструктор используется во всех compile-time таблицах (`USART::_1::TX::PA9`,
-`TIM::_3::CH1::PA6`, ...). Четвёртый параметр (`periph`) — не для настройки самого пина, а
-"клеймо" в духе "этот пин физически разведён под именно этот периферийный модуль". Драйверы
-(`USART`, `TIM`, `SPI`) сравнивают его в конструкторе:
+Consteval-конструктор принимает GPIOx_BASE и при компиляции отклоняет отсутствующий
+GPIO-порт, номер вне 0..15 и AF вне 0..15. Аргументы проверяются до принятия
+значений в 8-битные поля: например, 256 не может незаметно превратиться в ноль.
+Runtime-проверки, BKPT и циклы ожидания не добавляются.
+
+Порт, номер и сохранённый AF — private const. Публичный const `periph_base`
+остаётся доступным только для чтения существующими проверками USART/SPI/I2C;
+это адрес периферии, а не GPIO-порта. Копирующий/перемещающий конструкторы
+сохранены, присваивание другого PIN запрещено: физическую привязку созданного
+объекта менять нельзя. Присваивание bool по-прежнему меняет выходной уровень.
+
+`SetUp(type, speed)` использует сохранённый AF. Явный `af_override` выбирает AF
+во время выполнения, не меняя сохранённое поле; значение 0..15 обеспечивает
+вызывающий код. Проверки диапазона не проверяют каждую конкретную комбинацию
+вывода и функции выбранного МК.
+
+Таблицы USART/SPI/I2C сохраняют формат `{GPIOx_BASE, pin, af, peripheral}`.
+Проверка принадлежности пина выбранной периферии остаётся в этих драйверах;
+их код в текущей работе не меняется.
+
+Обычный конструктор сохранён:
 
 ```cpp
-if (tx.IsValid() && tx.periph_base && tx.periph_base != (uint32_t)usartx)
-    System::DebugTrap("USART: TX pin belongs to wrong peripheral");
+PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept;
+PIN led(GPIOA, 5);
 ```
 
-Иначе говоря: если по ошибке передать в конструктор `USART` пин из таблицы `USART::_2::TX`, а сам
-объект создать на `USART1` — это поймается `DebugTrap()` (breakpoint + бесконечный цикл) сразу
-при конструировании объекта, а не тихим неработающим UART в рантайме. Второй, runtime-конструктор
-(`PIN(GPIO_TypeDef*, uint8_t, uint8_t)`) такого клейма не имеет (`periph_base` = 0 по умолчанию) —
-для обычных пользовательских GPIO эта проверка не нужна и не мешает.
+Он закрепляет GPIO-указатель, номер и AF без runtime-проверок и остановов;
+вызывающий код передаёт поддерживаемый GPIO-порт и номер/AF в диапазоне 0..15.
+Эта перегрузка не consteval. Существующие вызовы ADC/TIM через указатель
+сохраняются. Их переход на описания/таблицы пинов по образцу USART остаётся
+задачей соответствующих модулей. Создание PIN через указатель в DAC также
+поддерживается; его присваивание целого PIN ещё требует изменения, поскольку
+привязка объекта неизменна.
 
 ---
 
@@ -489,6 +556,9 @@ uint32_t GetLevelAll() const {
 ручной упаковки/распаковки бит за битом в коде приложения.
 
 `N` ограничен `[1, 32]` (`static_assert`) — значение шины пакуется в `uint32_t`.
+Элементы массива сразу создаются копирующими конструкторами, без перепривязки
+присваиванием. `SetUpAll()` настраивает все элементы и возвращает первый статус, отличный от
+InitOK, без преобразования в NotInit. OUTPUT получает начальный LOW по умолчанию.
 
 ---
 
@@ -518,19 +588,19 @@ PIN pa9(GPIOA, 9);
 pa9.SetUp(PIN::TYPE::AF_PushPull, /*af_override=*/7);   // AF7 = USART1_TX на F4
 ```
 
-### Bit-banding на F4 — переключение вывода из ISR без гонки
+### Bit-banding на F4 — доступ к одному выходному биту
 
 ```cpp
 PIN strobe(GPIOB, 0);
 strobe.SetUp(PIN::TYPE::OUTPUT_PushPull);
-strobe.TogglePin_BB();   // атомарно, безопасно даже если основной код тоже трогает GPIOB->ODR
+strobe.TogglePin_BB();   // отдельные чтение/запись; не менять этот пин параллельно
 ```
 
 ### PinArray — 4-битная шина сегментного индикатора
 
 ```cpp
 static constexpr PIN seg_pins_raw[] = {
-    PIN(GPIOB, 0), PIN(GPIOB, 1), PIN(GPIOB, 4), PIN(GPIOB, 5)
+    PIN(GPIOB_BASE, 0), PIN(GPIOB_BASE, 1), PIN(GPIOB_BASE, 4), PIN(GPIOB_BASE, 5)
 };
 PinArray<4> seg_pins(seg_pins_raw);
 
@@ -554,9 +624,9 @@ struct MySpiPins {
 
 ## 9. Угловые случаи
 
-- **`PIN(GPIO_TypeDef*, uint8_t, uint8_t)` (runtime-конструктор) проверяет `p < 16`** —
-  breakpoint-ловушка (`__BKPT(0); while(1)`) при недопустимом номере пина; compile-time
-  конструктор такой проверки не делает (значения там и так константы, известные на этапе сборки).
+- **Два конструктора** — GPIOx_BASE используется с проверкой при компиляции;
+  GPIO_TypeDef* — для обычного создания через указатель без runtime-проверки.
+  `PIN{}` обозначает отсутствующий сигнал; его нельзя настраивать или читать/менять уровень.
 - **`Reset()` (приватный метод) переводит пин в `INPUT_NO_Pull`** — не вызывается автоматически
   нигде в текущем коде класса `PIN`; предназначен для явного вызова, если он понадобится
   вызывающему коду (например, при деинициализации периферии).

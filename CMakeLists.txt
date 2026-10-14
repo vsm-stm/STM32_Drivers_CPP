@@ -146,8 +146,8 @@ target_sources(stm32_drivers PRIVATE
 target_include_directories(stm32_drivers PUBLIC src)
 
 # ---- module table -------------------------------------------------------
-# stm32_drivers_module(NAME [SOURCES ...] [INCLUDE ...])
-#   If NAME is in STM32_DRIVERS_REQUESTED, its SOURCES/INCLUDE get added.
+# stm32_drivers_module(NAME [SOURCES ...] [INCLUDE ...] [DEPENDS ...])
+#   Register the module; sources are added after resolving dependencies.
 #   The set of NAMEs declared here IS the set of valid module names - the
 #   typo check below builds its own list from these calls, there is nothing
 #   to keep in sync separately.
@@ -155,35 +155,27 @@ target_include_directories(stm32_drivers PUBLIC src)
 # Adding / renaming / removing a module = editing exactly one line here.
 set(_stm32_drivers_declared "")
 function(stm32_drivers_module NAME)
-	cmake_parse_arguments(M "" "" "SOURCES;INCLUDE" ${ARGN})
+	cmake_parse_arguments(M "" "" "SOURCES;INCLUDE;DEPENDS" ${ARGN})
 
 	list(APPEND _stm32_drivers_declared "${NAME}")
 	set(_stm32_drivers_declared "${_stm32_drivers_declared}" PARENT_SCOPE)
 
-	if(NOT "${NAME}" IN_LIST STM32_DRIVERS_REQUESTED)
-		return()
-	endif()
-
-	if(M_SOURCES)
-		list(TRANSFORM M_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
-		target_sources(stm32_drivers PRIVATE ${M_SOURCES})
-	endif()
-	foreach(_inc ${M_INCLUDE})
-		target_include_directories(stm32_drivers PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/${_inc}")
-	endforeach()
+	set(_stm32_module_${NAME}_SOURCES "${M_SOURCES}" PARENT_SCOPE)
+	set(_stm32_module_${NAME}_INCLUDE "${M_INCLUDE}" PARENT_SCOPE)
+	set(_stm32_module_${NAME}_DEPENDS "${M_DEPENDS}" PARENT_SCOPE)
 endfunction()
 
-stm32_drivers_module(UART   SOURCES src/uart.cpp)
-stm32_drivers_module(SPI    SOURCES src/spi.cpp)
+stm32_drivers_module(UART   SOURCES src/uart.cpp DEPENDS DMA)
+stm32_drivers_module(SPI    SOURCES src/spi.cpp DEPENDS DMA)
 stm32_drivers_module(DMA    SOURCES src/dma.cpp)
-stm32_drivers_module(TIM    SOURCES src/tim.cpp)
+stm32_drivers_module(TIM    SOURCES src/tim.cpp DEPENDS DMA)
 stm32_drivers_module(RTC    SOURCES src/rtc.cpp)
-stm32_drivers_module(ADC    SOURCES src/adc.cpp)
+stm32_drivers_module(ADC    SOURCES src/adc.cpp DEPENDS DMA TIM)
 stm32_drivers_module(DAC    SOURCES src/dac.cpp)
 # i2c.hpp does `#include <i2c_timing_utility.h>` (angle brackets) - src/tools
 # must be a real include directory, not just an include from the same folder.
-stm32_drivers_module(I2C    SOURCES src/i2c.cpp src/tools/i2c_timing_utility.c  INCLUDE src/tools)
-stm32_drivers_module(MODBUS SOURCES Interfaces/Modbus-slave.cpp                 INCLUDE Interfaces)
+stm32_drivers_module(I2C    SOURCES src/i2c.cpp src/tools/i2c_timing_utility.c  INCLUDE src/tools DEPENDS DMA)
+stm32_drivers_module(MODBUS SOURCES Interfaces/Modbus-slave.cpp                 INCLUDE Interfaces DEPENDS UART DMA)
 stm32_drivers_module(CONTAINERS INCLUDE Containers)          # headers only
 # PID - the author's own controller (math/PID.*): variable dT, dead zone,
 # anti-windup. A simpler recurrence-based alternative is arm_pid_* in the DSP module.
@@ -201,8 +193,39 @@ stm32_drivers_module(CRC    SOURCES crc/crc32.c                       INCLUDE cr
 # only these directories; f16 kernels are excluded. The name is registered
 # in the list of valid modules so a typo in "drivers" is caught the same way
 # as for every other one.
-list(APPEND _stm32_drivers_declared DSP)
-if("DSP" IN_LIST STM32_DRIVERS_REQUESTED)
+stm32_drivers_module(DSP)
+
+# Resolve direct and transitive dependencies once, regardless of declaration order.
+# Keep the user's requested list unchanged, including its cache value.
+set(_stm32_pending ${STM32_DRIVERS_REQUESTED})
+set(_stm32_modules "")
+while(NOT "${_stm32_pending}" STREQUAL "")
+	list(POP_FRONT _stm32_pending _module)
+	if(NOT _module IN_LIST _stm32_drivers_declared)
+		message(FATAL_ERROR
+			"stm32_drivers: unknown module '${_module}' in STM32_DRIVERS_REQUESTED "
+			"(from \"drivers\" in project.json). Known: ${_stm32_drivers_declared}")
+	endif()
+	if(_module IN_LIST _stm32_modules)
+		continue()
+	endif()
+	list(APPEND _stm32_modules "${_module}")
+	list(APPEND _stm32_pending ${_stm32_module_${_module}_DEPENDS})
+endwhile()
+message(STATUS "Drivers modules: ${_stm32_modules}")
+
+foreach(_module IN LISTS _stm32_modules)
+	set(_sources ${_stm32_module_${_module}_SOURCES})
+	if(_sources)
+		list(TRANSFORM _sources PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
+		target_sources(stm32_drivers PRIVATE ${_sources})
+	endif()
+	foreach(_inc IN LISTS _stm32_module_${_module}_INCLUDE)
+		target_include_directories(stm32_drivers PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/${_inc}")
+	endforeach()
+endforeach()
+
+if("DSP" IN_LIST _stm32_modules)
 	include(FetchContent)
 	FetchContent_Declare(cmsis_dsp
 		GIT_REPOSITORY https://github.com/ARM-software/CMSIS-DSP.git
@@ -226,12 +249,3 @@ if("DSP" IN_LIST STM32_DRIVERS_REQUESTED)
 		PUBLIC  "${_dsp}/Include"
 		PRIVATE "${_dsp}/PrivateInclude")
 endif()
-
-# ---- catch a typo in the requested list ---------------------------------
-foreach(_req ${STM32_DRIVERS_REQUESTED})
-	if(NOT "${_req}" IN_LIST _stm32_drivers_declared)
-		message(FATAL_ERROR
-			"stm32_drivers: unknown module '${_req}' in STM32_DRIVERS_REQUESTED "
-			"(from \"drivers\" in project.json). Known: ${_stm32_drivers_declared}")
-	endif()
-endforeach()

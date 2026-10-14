@@ -14,7 +14,7 @@
 
 **Место:** [src/i2c.hpp](../src/i2c.hpp), строка 193.
 
-**Проблема:** RequestSet не объявлен в DMA. В cpp используются SetUp(cfg,request), Release, CacheRxOk/Clean/Invalidate, GetTE_Flag/ClearTC_Flag, адресное Unregister/HasHandlers и несуществующий в текущих headers IrqLock. Таблицы ссылаются на отсутствующие I2c1::TX_alt, I2c3::RX_alt, I2c4; G0 I2c3 тоже отсутствует.
+**Проблема:** RequestSet не объявлен в DMA. В cpp используются SetUp(cfg,request), Release, CacheRxOk/Clean/Invalidate, GetTE_Flag/ClearTC_Flag и несуществующий в текущих headers IrqLock. Адресное Unregister/HasHandlers в IRQ Registry уже реализованы. Таблицы ссылаются на отсутствующие I2c1::TX_alt, I2c3::RX_alt, I2c4; G0 I2c3 тоже отсутствует.
 
 **Последствие / условие:** Текущая версия I2C не компилируется с текущими DMA/IRQ files; это рассогласование модулей, а не ошибка CMake include paths.
 
@@ -122,3 +122,15 @@
 
 Проверять этот модуль вместе с base и его фактическими зависимостями на поддерживаемых MCU; отдельно пройти обычный запуск, повторный запуск, ошибки и завершение операций. Не считать успешную компиляцию подтверждением работы на плате.
 
+
+## Проверка интеграции с base — 14.10.2026
+
+Подключение UART+SPI+I2C к текущей базе проверено в Debug и Release на
+F446/F767/G031. Все конфигурации CMake проходят, I2C не компилируется.
+Подтверждены I2C-1: нет DMA_Sx::RequestSet, требуемых DMA методов и IrqLock;
+на F4/F7 отсутствуют также элементы DMA request tables. Наличие адресного
+Unregister/HasHandlers в IRQ Registry подтверждено; эту зависимость закрыли
+предыдущие правки IRQ. Ошибка GPIO в этих сборках не обнаружена.
+
+Исходники I2C/DMA/System не менялись. Аппаратная работа не проверялась.
+Подробные ошибки и логи: [Build.md](Build.md).

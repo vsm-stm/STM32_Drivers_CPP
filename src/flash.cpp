@@ -114,7 +114,7 @@ void invalidate_flash(uint32_t addr, uint32_t bytes)
     if (SCB->CCR & SCB_CCR_DC_Msk) {
         const uint32_t first = addr & ~31U;
         const uint32_t length = (addr - first + bytes + 31U) & ~31U;
-        SCB_InvalidateDCache_byAddr(reinterpret_cast<uint32_t*>(first), static_cast<int32_t>(length));
+        SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(first), static_cast<int32_t>(length));
     }
     if (FLASH->ACR & FLASH_ACR_ARTEN) {
         FLASH->ACR &= ~FLASH_ACR_ARTEN;

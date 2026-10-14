@@ -143,7 +143,7 @@ The base module: FPU, Flash accelerator, SysTick, delays.
 System::Init();  // initializes core features and SysTick (1 kHz)
 ```
 
-Must be called **first** in `main()`, before `ClockSystem::Init()`.
+Must be called **first** in `main()`, before `ClockSystem::Init<config>()`.
 
 Without `STM32_USE_BOOTLOADER`, assumes hardware-reset clock/power/latency state;
 call once at the start of main, before changing clock settings.
@@ -205,7 +205,7 @@ For the configuration, limits and initialization order, see [System.md](System.m
 
 ### Bus frequency variables
 
-After `ClockSystem::Init()`, these are available:
+After `ClockSystem::Init<config>()`, these are available:
 
 ```cpp
 System::SystemCoreClock  // core frequency (AHB)
@@ -219,75 +219,62 @@ System::TIMxAPB2Clock    // frequency for timers on APB2
 
 ## 3. RCC / ClockSystem
 
-**Files:** `rcc.hpp`, `rcc.cpp`
+**Files:** `rcc.hpp`, `rcc.cpp`, `rcc_defs.hpp`
 **Details:** [RCC.md](RCC.md)
 
-Configures the clock system: HSI/HSE, PLL, AHB/APB bus dividers.
+One clock setup per hardware reset. Configuration and calculations are constant
+expressions; `Init<config>()` validates them at compile time. Call System::Init()
+first, before peripheral setup.
 
-### Simple startup (HSI without PLL)
-
-```cpp
-ClockSystem::Init();  // HSI 16 MHz, DIV1 dividers
-```
-
-### Startup with PLL (recommended)
-
-Example: STM32G0, a 16 MHz crystal on the input, SYSCLK = 64 MHz:
+### HSI without PLL
 
 ```cpp
-ClockSystem::Init(
-    ClockSystem::SystemClockSource::PLL,
-    16000000,  // HSE crystal frequency
-    ClockSystem::BusDividers{
-        ClockSystem::AHB_Divider::DIV1,
-        ClockSystem::APB_Divider::DIV1,
-        ClockSystem::APB_Divider::DIV1
-    },
-    ClockSystem::PLL_CFGR{
-        ClockSystem::PLL_ClockSource::HSE,
-        1,   // M
-        16,  // N  → VCO = 16 MHz / 1 * 16 = 256 MHz
-        2,   // P
-        2,   // Q
-        4    // R  → SYSCLK = 256 / 4 = 64 MHz
-    }
-);
+constexpr ClockSystem::Config clocks{};
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-Example: STM32F407, HSE 8 MHz, SYSCLK = 168 MHz:
+### Exact automatic PLL selection
+
+Example: G0, SYSCLK 64 MHz from HSI:
 
 ```cpp
-ClockSystem::Init(
-    ClockSystem::SystemClockSource::PLL,
-    8000000,
-    ClockSystem::BusDividers{
-        ClockSystem::AHB_Divider::DIV1,
-        ClockSystem::APB_Divider::DIV4,   // APB1 ≤ 42 MHz
-        ClockSystem::APB_Divider::DIV2    // APB2 ≤ 84 MHz
-    },
-    ClockSystem::PLL_CFGR{
-        ClockSystem::PLL_ClockSource::HSE,
-        4,    // M → VCO_in = 2 MHz
-        168,  // N → VCO = 336 MHz
-        2,    // P → SYSCLK = 168 MHz
-        7,    // Q → USB/SDIO = 48 MHz
-        2
-    }
-);
+constexpr auto clocks = ClockSystem::CalcPLL(
+    64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-### Automatic PLL calculation
+For HSE supply its nominal frequency as the third argument. The fourth argument
+is Q (default 2). CalcPLL chooses exact SYSCLK, AHB /1 and legal APB dividers.
+Among exact solutions it prefers the highest legal PLL input frequency, then
+the smallest P/R. No exact solution produces a build error at Init<clocks>().
+
+### Manual configuration
+
+F407, HSE 8 MHz, SYSCLK/HCLK 168 MHz, APB1 42 MHz, APB2 84 MHz:
 
 ```cpp
-// I want 64 MHz, source — HSE 16 MHz
-ClockSystem::InitCalcPLL(64*MHz, ClockSystem::PLL_ClockSource::HSE, 16000000);
+constexpr ClockSystem::Config clocks{
+    .ClkSrc = ClockSystem::SystemClockSource::PLL,
+    .HSE_Clk = 8 * MHz,
+    .BusDiv = {ClockSystem::AHB_Divider::DIV1,
+               ClockSystem::APB_Divider::DIV4,
+               ClockSystem::APB_Divider::DIV2},
+    .PLLCfgr = {ClockSystem::PLL_ClockSource::HSE, 4, 168, 2, 7, 2},
+};
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-`InitCalcPLL` picks M/N/R/P on its own.
+Supported: all F4/F7 selectors in STM32-base_files and G0. G0 also supports
+LSI/LSE. VDD is fixed at 3.0 V (same timing band at 3.3 V); power scaling,
+overdrive and latency follow the device/HCLK limits. Runtime errors are
+hardware timeouts or a repeated attempt. A failed attempt also requires reset.
 
-### Limits
-
-`Init()` checks all frequency limits for the specific MCU and returns `SysInitStatus::InitError` if they are exceeded. Flash latency is configured automatically.
+SysTick uses a whole number of HCLK cycles. At LSE 32768 Hz and AHB /1 it runs
+at 1024 ticks/s; Delay_ms and timeouts inherit that quantization error. See
+RCC.md for limits, ordering and migration from Init(...)/InitCalcPLL(...).
 
 ---
 
@@ -295,6 +282,14 @@ ClockSystem::InitCalcPLL(64*MHz, ClockSystem::PLL_ClockSource::HSE, 16000000);
 
 **Files:** `gpio.hpp`, `gpio.cpp`
 **Details:** [GPIO.md](GPIO.md)
+
+Use PIN(GPIOA, 5) for ordinary GPIO. The pointer constructor binds the supplied
+port/pin/AF without runtime validation. Compile-time tables use GPIOx_BASE with
+the consteval constructor, which checks port, pin number and stored AF.
+Port/number/stored AF are private const; periph_base is read-only. Copy construction
+is supported, but an existing PIN cannot be rebound by assignment. AF override
+remains in SetUp. ADC/TIM migration to USART-style tables is deferred to their reviews;
+their existing pointer-based construction remains supported.
 
 ### Creating and configuring a pin
 
@@ -332,14 +327,26 @@ bool state = btn.GetLevel();   // read the state
 led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::High);
 ```
 
+OUTPUT setup defaults to LOW, written through BSRR before enabling the mode.
+To start HIGH:
+
+```cpp
+led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
+```
+
+`TogglePin()` uses ODR read-modify-write. Do not change outputs on the same port
+from IRQ during that operation. The port index in SetUp divides the address
+offset by the constant stride GPIOB_BASE - GPIOA_BASE. On the checked GCC 13.3.1
+builds for F429/F767/G031 this produces the same code as an explicit shift.
+
 ### Alternate function
 
 ```cpp
 PIN sck(GPIOA, 5);
-sck.SetUp(PIN::TYPE::AF_PushPull, 5);   // AF5 = SPI1 on most F4/G0 parts
+sck.SetUp(PIN::TYPE::AF_PushPull, 5);   // AF5 = SPI1 on STM32F429
 ```
 
-Drivers (USART, SPI, TIM) call `SetUp(AF_PushPull, af)` automatically.
+USART/SPI use the stored AF when configuring their pins. TIM migration is pending.
 
 ### Assignment and conversion operator
 
@@ -370,92 +377,55 @@ seg_pins.SetLevelAll(0b1010);    // set by bits
 uint32_t state = seg_pins.GetLevelAll();  // read all at once
 ```
 
+`SetUpAll()` configures every element and returns the first initialization error unchanged.
+
 ---
 
 ## 5. IRQ_Registry
 
-**Files:** `irq_registry.hpp`, `irq_registry.cpp`, `irq_registry_config.h`
+**Files:** `irq_registry.hpp`, `irq_registry.cpp`, `irq_registry_settings.hpp`; generated `irq_registry_config.h`.
 **Details:** [IRQ_Registry.md](IRQ_Registry.md)
 
-### The idea
+Generated ISR stubs call Dispatch(irqn), which invokes registered IIRQHandler
+objects or static adapters for plain functions. A peripheral uses one handler
+object for its sources; separate peripherals can share an IRQ line.
 
-Instead of `extern "C" void USART1_IRQHandler() { my_usart.HandleIRQ(); }` for every peripheral, there's a single object-registration mechanism. The stubs in `irq_registry_config.h` always call `IRQ_Registry::Dispatch(IRQn)`, which delegates to the registered object.
-
-### IIRQHandler
-
-Any class that wants to handle interrupts inherits from `IIRQHandler`:
-
-```cpp
-class MyHandler : public IIRQHandler {
-    void HandleIRQ() override {
-        // called from the ISR
-    }
-};
-```
-
-### Manual registration
+Register returns SysInitStatus::InitOK or InitError. Invalid/null input,
+duplicate object/function on the same IRQ and capacity exhaustion return
+InitError. A different ctx does not permit registering the same function twice.
+Change a registration through cancellation followed by Register.
 
 ```cpp
-MyHandler handler;
-IRQ_Registry::Register(TIM3_IRQn, &handler);
-NVIC_EnableIRQ(TIM3_IRQn);
-```
+if (IRQ_Registry::Register(TIM3_IRQn, &handler) == SysInitStatus::InitOK)
+    NVIC_EnableIRQ(TIM3_IRQn);
 
-Most drivers do this **automatically** when `IRQ_en()` is called.
-
-### Registration without inheritance (a plain function)
-
-If writing a separate class just for `IIRQHandler` is overkill (a one-off handler, test code), you can register a plain function (or a non-capturing lambda) directly, with an optional context:
-
-```cpp
-void OnButtonIrq(void* ctx) {
-    static_cast<Button*>(ctx)->Poll();
-}
-
-IRQ_Registry::Register(EXTI0_IRQn, OnButtonIrq, &my_button);
-NVIC_EnableIRQ(EXTI0_IRQn);
-```
-
-Under the hood, this creates an `IIRQHandler` adapter from a separate static pool (`IRQ_MAX_FUNCTION_HANDLERS`, 8 by default) — details and edge cases are in [IRQ_Registry.md](IRQ_Registry.md#11-регистрация-без-наследования-function-обработчики).
-
-### Unregistering
-
-```cpp
-IRQ_Registry::Unregister(TIM3_IRQn);
+// Later, from main, with this owner's sources disabled:
 NVIC_DisableIRQ(TIM3_IRQn);
+IRQ_Registry::Unregister(TIM3_IRQn, &handler);
+if (IRQ_Registry::HasHandlers(TIM3_IRQn)) NVIC_EnableIRQ(TIM3_IRQn);
 ```
 
-### Shared IRQ lines (one vector for multiple channels)
+Functions use Register(irqn, fn, ctx); ctx is an opaque data pointer passed to
+fn(ctx). Cancel with Unregister(irqn, fn); its adapter becomes reusable.
+The existing Unregister(irqn) overload explicitly clears the entire row.
 
-On STM32G0, channels DMA1_Channel2 and DMA1_Channel3 share one vector, `DMA1_Channel2_3_IRQn`.
-`IRQ_Registry` supports a **linked list of handlers** on a single line:
+Register/Unregister are forbidden from HandleIRQ and its callbacks. Modify
+the registry from main with the affected IRQ masked. Callback completion may
+disable the peripheral source and keep its registration until cleanup from main.
+Existing peripheral call sites are updated during their separate module reviews.
+
+### Handler capacity per IRQ
+
+Settings are edited in `Drivers/src/irq_registry_settings.hpp`, shared by all
+source files. IRQ_MAX_SHARED defaults to 3 for F4/F7/G0; for five handlers:
 
 ```cpp
-// First registration — creates the head of the list
-IRQ_Registry::Register(DMA1_Channel2_3_IRQn, &handler_ch2);
-// Second — appended to the end of the chain, BKPT does not fire
-IRQ_Registry::Register(DMA1_Channel2_3_IRQn, &handler_ch3);
+#define IRQ_MAX_SHARED 5
 ```
 
-`Dispatch` calls **both** handlers in turn. Each one checks its own TC flag:
-
-```cpp
-void HandleIRQ() override {
-    if (_dma->GetTC_Flag()) {   // only if it was specifically my channel that fired
-        // ...
-    }
-}
-```
-
-### Adding a new vector
-
-Add a line to `irq_registry_config.h`:
-
-```cpp
-extern "C" void NEW_IRQHandler() { IRQ_Registry::Dispatch(NEW_IRQn); }
-```
-
-And increase `IRQ_TABLE_SIZE` if `NEW_IRQn` is larger than the current maximum.
+Each extra slot adds IRQ_TABLE_SIZE * 4 bytes on these MCUs. The separate
+IRQ_MAX_FUNCTION_HANDLERS pool defaults to 8. Rebuild the library and images
+after changing settings; see the detailed documentation for template updates.
 
 ---
 
@@ -950,53 +920,74 @@ The methods manage the protection automatically. The unlock sequence: write `0xC
 ## 11. Flash
 
 **Files:** `flash.hpp`, `flash.cpp`
+
 **Details:** [Flash.md](Flash.md)
 
 ### flash_base — low-level access
 
+F4/F7/G0 are supported. `init()` checks the generated bank map against the
+hardware mode and rejects bank swap; it does not change option bytes.
+`erase_sector()` uses a map index. `mass_erase()` takes 1/2/3 for bank 1/2/both.
+
 ```cpp
-flash_base::init();
-flash_base::enable_access();  // unlock writing (KEYR keys)
+if (flash_base::init() != SysInitStatus::InitOK) return;
+if (flash_base::enable_access() != SysStatus::OK) return;
 
-// Read any type
-uint32_t val = flash_base::read<uint32_t>(0x08010000);
-
-// Write
-uint32_t data[] = {0x12345678, 0xDEADBEEF};
-flash_base::write(0x08010000, data, 2);
-
-// Erase a sector
-flash_base::erase_sector(3);
+// Use a sector reserved by the project, not one containing code.
+if (flash_base::erase_sector(settings_sector) != SysStatus::OK) return;
+const uint32_t address = flash_sectors[settings_sector].address;
+const uint32_t values[] = {0x12345678, 0xDEADBEEF};
+const SysStatus written = flash_base::write(address, values, 2);
+if (written != SysStatus::OK) return;
+const uint32_t value = flash_base::read<uint32_t>(address);
 ```
 
-On **STM32G0** writes are always 64-bit (two consecutive 32-bit operations). On **F4**, 8/16/32/64-bit writes are supported with automatic `PSIZE` configuration.
+Unlock/write/erase return `SysStatus`. Call from the main loop with SysTick
+running, outside interrupts and critical sections. Timeouts per hardware
+operation: **50 s on F4/F7, 1 s on G0**. Fetching from the busy bank can stall
+SysTick, so these do not guarantee a real-time deadline.
 
-`flash_bank_mode` is selected by project.json/device geometry. The driver uses
-that same map for both banks; init/SetUp return SysInitStatus and reject a
-hardware mode mismatch or active bank swap. See [Flash.md](Flash.md).
+G0 writes 64 bits with an 8-byte aligned destination; source alignment is not
+required, and a partial last block is padded with FF. F4/F7 at 3–3.3 V use
+8/16/32-bit writes; 64-bit input is split into two 32-bit operations without VPP.
+Modified Flash cache contents are invalidated; SRAM D-cache is not globally cleared.
+Check `init()` once before direct operations. Direct `write()` assumes the caller
+has validated the source, size/rounding overflow, destination range and alignment.
+Hardware width is selected at compile time; log bounds are checked in `SetUp()`.
 
-### flash_data — storing structures in Flash
+### flash_data — storing a structure in one sector
 
 ```cpp
-uint8_t settings_buf[32];
-flash_data settings(7,            // sector number
-                    settings_buf, // data buffer in RAM
-                    sizeof(settings_buf));
-
-if (settings.SetUp() != SysInitStatus::InitOK) System::DebugTrap("Flash bank configuration");
-
-// Read the last saved data
-auto status = settings.read_data();
-if (status == flash_data::Data_Status::DATA_OK) {
-    // settings_buf contains the current data
+uint8_t settings_buf[32]{};
+flash_data settings(settings_sector, settings_buf, sizeof(settings_buf));
+if (settings.SetUp() != SysInitStatus::InitOK) return;
+const auto loaded = settings.read_data();
+// Update settings_buf, then check the save result.
+const SysStatus saved = settings.write_data();
+if (saved != SysStatus::OK) {
+    const uint32_t flags = FLASH->SR;
+    (void)flags; // Inspect before starting another Flash operation.
 }
-
-// Write new data (append-log inside the sector)
-memcpy(settings_buf, &my_config, sizeof(my_config));
-settings.write_data();
 ```
 
-`flash_data` uses wear-leveling within a single sector: each write is appended at the end, and `find_offset()` finds the last valid entry during initialization.
+Each record is written as **DATA_WRITING → payload → DATA_OK**. Only after the
+new commit succeeds is the previous ready record marked invalid. Scanning selects
+the last ready record and skips incomplete/invalid slots. A full sector is erased,
+so power loss during erase/rewrite can lose the last saved version.
+
+F4/F7 keep a one-byte header: `FF → 7F → 0F`, then `00` for invalidation.
+G0 uses a **16-byte header**: the first word goes from all FF to
+`00000000FFFFFFFF` to full zero; the second remains all FF until invalidation,
+when it is programmed with `FFFFFFFF00000000`. Its invalidation marker takes priority.
+All values are defined once in `Data_Status`; programming and scanning use that enum.
+G0 enum values have changed; compare named enumerators rather than numeric constants.
+`DATA_CORRUPT` is removed; incomplete/invalid records use `DATA_NOT_VALID`.
+If invalidating the old record fails, `write_data()` returns the error, but the
+new committed record remains selected.
+
+The old 8-byte G0 header is incompatible: use an erased log sector before testing
+the new format. Hardware verification is performed by the user.
+See [Flash.md](Flash.md) for the format, timeout and ECC/NMI limitations.
 
 ---
 
@@ -1006,8 +997,9 @@ settings.write_data();
 int main() {
     System::Init();      // 1. FPU, Flash latency, SysTick
 
-    ClockSystem::Init(   // 2. Clocking
-        ClockSystem::SystemClockSource::PLL, ...);
+    constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+        System::DebugTrap("Clock init");
 
     // 3. Peripherals — in any order
     uart.SetUp();
@@ -1051,7 +1043,7 @@ system.hpp
 1. Add `#include "stm32xxxx.h"` to `system.hpp`.
 2. Add entries to the `PeriphInfo` tables in `uart.cpp`, `spi.cpp`, `tim.cpp`, `dma.cpp`.
 3. Add stubs to `irq_registry_config.h`.
-4. Add frequency limits to `rcc.hpp` (`SYS_CLK_LIMIT`, `APB1_CLK_LIMIT`, etc.).
+4. Add verified frequency/PLL/power limits to `rcc_defs.hpp`.
 5. If needed, add register-abstraction macros (e.g. `RCC_GPIO_EN_REG` in `gpio.hpp`).
 
 ---
@@ -1198,7 +1190,7 @@ USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 System::Init();  // настраивает ядро и запускает SysTick (1 кГц)
 ```
 
-Должен вызываться **первым** в `main()`, до `ClockSystem::Init()`.
+Должен вызываться **первым** в `main()`, до `ClockSystem::Init<config>()`.
 
 Без `STM32_USE_BOOTLOADER` предполагает исходное состояние тактирования,
 питания и latency после аппаратного сброса; вызывайте один раз в начале main,
@@ -1260,7 +1252,7 @@ SWO настраивается в отладчике. `SetDebugOutput()` уда�
 
 ### Переменные частот шин
 
-После `ClockSystem::Init()` доступны:
+После `ClockSystem::Init<config>()` доступны:
 
 ```cpp
 System::SystemCoreClock  // частота ядра (AHB)
@@ -1274,75 +1266,62 @@ System::TIMxAPB2Clock    // частота для таймеров на APB2
 
 ## 3. RCC / ClockSystem
 
-**Файлы:** `rcc.hpp`, `rcc.cpp`
+**Файлы:** `rcc.hpp`, `rcc.cpp`, `rcc_defs.hpp`
 **Подробнее:** [RCC.md](RCC.md)
 
-Конфигурирует систему тактирования: HSI/HSE, PLL, делители шин AHB/APB.
+Одна настройка тактирования после аппаратного сброса. Конфигурация и расчёты —
+константные выражения; Init<config>() проверяет их при компиляции. Сначала
+System::Init(), затем RCC, затем настройка периферии.
 
-### Простой запуск (HSI без PLL)
-
-```cpp
-ClockSystem::Init();  // HSI 16 МГц, делители DIV1
-```
-
-### Запуск с PLL (рекомендуется)
-
-Пример: STM32G0, кварц 16 МГц на входе, SYSCLK = 64 МГц:
+### HSI без PLL
 
 ```cpp
-ClockSystem::Init(
-    ClockSystem::SystemClockSource::PLL,
-    16000000,  // частота HSE кварца
-    ClockSystem::BusDividers{
-        ClockSystem::AHB_Divider::DIV1,
-        ClockSystem::APB_Divider::DIV1,
-        ClockSystem::APB_Divider::DIV1
-    },
-    ClockSystem::PLL_CFGR{
-        ClockSystem::PLL_ClockSource::HSE,
-        1,   // M
-        16,  // N  → VCO = 16 МГц / 1 * 16 = 256 МГц
-        2,   // P
-        2,   // Q
-        4    // R  → SYSCLK = 256 / 4 = 64 МГц
-    }
-);
+constexpr ClockSystem::Config clocks{};
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-Пример: STM32F407, HSE 8 МГц, SYSCLK = 168 МГц:
+### Точный автоподбор PLL
+
+Пример: G0, SYSCLK 64 МГц от HSI:
 
 ```cpp
-ClockSystem::Init(
-    ClockSystem::SystemClockSource::PLL,
-    8000000,
-    ClockSystem::BusDividers{
-        ClockSystem::AHB_Divider::DIV1,
-        ClockSystem::APB_Divider::DIV4,   // APB1 ≤ 42 МГц
-        ClockSystem::APB_Divider::DIV2    // APB2 ≤ 84 МГц
-    },
-    ClockSystem::PLL_CFGR{
-        ClockSystem::PLL_ClockSource::HSE,
-        4,    // M → VCO_in = 2 МГц
-        168,  // N → VCO = 336 МГц
-        2,    // P → SYSCLK = 168 МГц
-        7,    // Q → USB/SDIO = 48 МГц
-        2
-    }
-);
+constexpr auto clocks = ClockSystem::CalcPLL(
+    64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-### Автоматический расчёт PLL
+Для HSE третий аргумент задаёт номинальную частоту, четвёртый — Q (по умолчанию 2).
+CalcPLL выбирает точный SYSCLK, AHB /1 и допустимые делители APB. Среди точных
+решений приоритет максимальной допустимой частоте входа PLL, затем минимальному
+P/R. Если решения нет, Init<clocks>() выдаёт ошибку сборки.
+
+### Ручная конфигурация
+
+F407, HSE 8 МГц, SYSCLK/HCLK 168 МГц, APB1 42 МГц, APB2 84 МГц:
 
 ```cpp
-// Хочу 64 МГц, источник — HSE 16 МГц
-ClockSystem::InitCalcPLL(64*MHz, ClockSystem::PLL_ClockSource::HSE, 16000000);
+constexpr ClockSystem::Config clocks{
+    .ClkSrc = ClockSystem::SystemClockSource::PLL,
+    .HSE_Clk = 8 * MHz,
+    .BusDiv = {ClockSystem::AHB_Divider::DIV1,
+               ClockSystem::APB_Divider::DIV4,
+               ClockSystem::APB_Divider::DIV2},
+    .PLLCfgr = {ClockSystem::PLL_ClockSource::HSE, 4, 168, 2, 7, 2},
+};
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-`InitCalcPLL` сам подберёт M/N/R/P.
+Поддерживаются все F4/F7 из карт STM32-base_files и G0. На G0 также доступны
+LSI/LSE. VDD фиксирован: 3,0 В, тот же диапазон timing при 3,3 В. Питание,
+overdrive и latency выбираются по модели/HCLK. Ошибки во время исполнения —
+таймаут аппаратуры или повторная попытка. После ошибки также требуется сброс.
 
-### Ограничения
-
-`Init()` проверяет все частотные лимиты для конкретного МК и возвращает `SysInitStatus::InitError` при выходе за допустимые значения. Flash latency настраивается автоматически.
+SysTick использует целое число тактов HCLK. При LSE 32768 Гц и AHB /1 получается
+1024 тика/с; Delay_ms и таймауты имеют ту же погрешность. Ограничения, порядок
+переключения и переход со старых Init(...)/InitCalcPLL(...) описаны в RCC.md.
 
 ---
 
@@ -1350,6 +1329,15 @@ ClockSystem::InitCalcPLL(64*MHz, ClockSystem::PLL_ClockSource::HSE, 16000000);
 
 **Файлы:** `gpio.hpp`, `gpio.cpp`
 **Подробнее:** [GPIO.md](GPIO.md)
+
+Для обычного GPIO используйте PIN(GPIOA, 5): конструктор с указателем закрепляет
+порт/номер/AF без runtime-проверок. Для compile-time таблиц используется GPIOx_BASE
+и consteval-конструктор с проверкой порта, номера и сохранённого AF.
+Порт/номер/сохранённый AF закрыты и неизменны, periph_base доступен только для чтения.
+Копирование при создании разрешено, перепривязка существующего PIN присваиванием
+запрещена. Явный AF можно передать в SetUp. ADC/TIM будут переведены на таблицы
+по образцу USART при разборе этих модулей; их существующее создание PIN через
+указатель поддерживается.
 
 ### Создание и настройка пина
 
@@ -1387,14 +1375,26 @@ bool state = btn.GetLevel();   // читаем состояние
 led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::High);
 ```
 
+OUTPUT по умолчанию начинается с LOW: уровень записывается через BSRR до
+включения режима. Для начального HIGH:
+
+```cpp
+led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
+```
+
+`TogglePin()` использует чтение и перезапись ODR. Во время этой операции нельзя
+менять выводы того же порта из IRQ. Индекс порта в SetUp вычисляется делением
+смещения на константу GPIOB_BASE - GPIOA_BASE. В проверенных сборках GCC 13.3.1
+для F429/F767/G031 машинный код совпадает с вариантом явного сдвига.
+
 ### Альтернативная функция
 
 ```cpp
 PIN sck(GPIOA, 5);
-sck.SetUp(PIN::TYPE::AF_PushPull, 5);   // AF5 = SPI1 на большинстве F4/G0
+sck.SetUp(PIN::TYPE::AF_PushPull, 5);   // AF5 = SPI1 на STM32F429
 ```
 
-Драйверы (USART, SPI, TIM) вызывают `SetUp(AF_PushPull, af)` автоматически.
+USART/SPI используют сохранённый AF при настройке пинов. Миграция TIM отложена.
 
 ### Оператор присваивания и преобразования
 
@@ -1425,96 +1425,57 @@ seg_pins.SetLevelAll(0b1010);    // установить по битам
 uint32_t state = seg_pins.GetLevelAll();  // прочитать все сразу
 ```
 
+`SetUpAll()` настраивает все элементы и возвращает первый статус ошибки без преобразования.
+
 ---
 
 ## 5. IRQ_Registry
 
-**Файлы:** `irq_registry.hpp`, `irq_registry.cpp`, `irq_registry_config.h`
+**Файлы:** `irq_registry.hpp`, `irq_registry.cpp`, `irq_registry_settings.hpp`; сгенерированный `irq_registry_config.h`.
 **Подробнее:** [IRQ_Registry.md](IRQ_Registry.md)
 
-### Идея
+Сгенерированные ISR вызывают Dispatch(irqn), который вызывает зарегистрированные
+объекты IIRQHandler или статические адаптеры обычных функций. Источники одной
+периферии обслуживает один объект; разные периферийные объекты могут делить IRQ.
 
-Вместо `extern "C" void USART1_IRQHandler() { my_usart.HandleIRQ(); }` для каждой периферии — единый механизм регистрации объектов. Стабы в `irq_registry_config.h` всегда зовут `IRQ_Registry::Dispatch(IRQn)`, который делегирует зарегистрированному объекту.
-
-### IIRQHandler
-
-Любой класс, который хочет обрабатывать прерывания, наследует `IIRQHandler`:
-
-```cpp
-class MyHandler : public IIRQHandler {
-    void HandleIRQ() override {
-        // вызывается из ISR
-    }
-};
-```
-
-### Регистрация вручную
+Register возвращает SysInitStatus::InitOK или InitError. Неверный/нулевой параметр,
+повтор объекта/функции на том же IRQ и заполнение таблицы/пула дают InitError.
+Другой ctx не разрешает повтор той же функции. Изменение регистрации выполняется
+через отмену и новый Register.
 
 ```cpp
-MyHandler handler;
-IRQ_Registry::Register(TIM3_IRQn, &handler);
-NVIC_EnableIRQ(TIM3_IRQn);
-```
+if (IRQ_Registry::Register(TIM3_IRQn, &handler) == SysInitStatus::InitOK)
+    NVIC_EnableIRQ(TIM3_IRQn);
 
-Большинство драйверов делают это **автоматически** при вызове `IRQ_en()`.
-
-### Регистрация без наследования (обычная функция)
-
-Если писать отдельный класс ради `IIRQHandler` избыточно (разовый обработчик,
-тестовый код), можно зарегистрировать обычную функцию (или non-capturing lambda)
-напрямую, с опциональным контекстом:
-
-```cpp
-void OnButtonIrq(void* ctx) {
-    static_cast<Button*>(ctx)->Poll();
-}
-
-IRQ_Registry::Register(EXTI0_IRQn, OnButtonIrq, &my_button);
-NVIC_EnableIRQ(EXTI0_IRQn);
-```
-
-Под капотом создаётся `IIRQHandler`-адаптер из отдельного статического пула
-(`IRQ_MAX_FUNCTION_HANDLERS`, по умолчанию 8) — подробности и угловые случаи
-в [IRQ_Registry.md](IRQ_Registry.md#11-регистрация-без-наследования-function-обработчики).
-
-### Отмена регистрации
-
-```cpp
-IRQ_Registry::Unregister(TIM3_IRQn);
+// Позже, из main, при отключённых источниках этого владельца:
 NVIC_DisableIRQ(TIM3_IRQn);
+IRQ_Registry::Unregister(TIM3_IRQn, &handler);
+if (IRQ_Registry::HasHandlers(TIM3_IRQn)) NVIC_EnableIRQ(TIM3_IRQn);
 ```
 
-### Разделяемые IRQ-линии (общий вектор для нескольких каналов)
+Для функций используется Register(irqn, fn, ctx); ctx — указатель на данные,
+передаваемый в fn(ctx). Отмена — Unregister(irqn, fn), адаптер освобождается.
+Существующая перегрузка Unregister(irqn) явно очищает всю строку.
 
-На STM32G0 каналы DMA1_Channel2 и DMA1_Channel3 делят один вектор `DMA1_Channel2_3_IRQn`.  
-`IRQ_Registry` поддерживает **связный список обработчиков** на одной линии:
+Register/Unregister запрещены из HandleIRQ и его callback. Изменения выполняются
+из main при замаскированной затронутой IRQ-линии. При завершении callback может
+отключить источник периферии, сохранив регистрацию до отмены из main.
+Существующие вызовы в периферийных драйверах обновляются при разборе их модулей.
+
+### Число обработчиков на один IRQ
+
+Настройки изменяются в общем для всех исходных файлов заголовке
+`Drivers/src/irq_registry_settings.hpp`. IRQ_MAX_SHARED по умолчанию равен 3
+для F4/F7/G0; для пяти обработчиков:
 
 ```cpp
-// Первая регистрация — создаёт голову списка
-IRQ_Registry::Register(DMA1_Channel2_3_IRQn, &handler_ch2);
-// Вторая — добавляется в конец цепочки, BKPT не срабатывает
-IRQ_Registry::Register(DMA1_Channel2_3_IRQn, &handler_ch3);
+#define IRQ_MAX_SHARED 5
 ```
 
-`Dispatch` вызывает **оба** обработчика по очереди. Каждый сам проверяет свой TC-флаг:
-
-```cpp
-void HandleIRQ() override {
-    if (_dma->GetTC_Flag()) {   // только если именно мой канал сработал
-        // ...
-    }
-}
-```
-
-### Добавление нового вектора
-
-В `irq_registry_config.h` добавить строку:
-
-```cpp
-extern "C" void NEW_IRQHandler() { IRQ_Registry::Dispatch(NEW_IRQn); }
-```
-
-И увеличить `IRQ_TABLE_SIZE` если `NEW_IRQn` больше текущего максимума.
+Каждое дополнительное место требует IRQ_TABLE_SIZE * 4 байта на этих МК.
+Отдельный пул IRQ_MAX_FUNCTION_HANDLERS по умолчанию равен 8. После изменения
+пересоберите библиотеку и образы; обновление сохранённых шаблонов описано
+в подробной документации.
 
 ---
 
@@ -2009,53 +1970,74 @@ RTC_cl::EnableCOE(true);   // выводит сигнал на вывод RTC_CA
 ## 11. Flash
 
 **Файлы:** `flash.hpp`, `flash.cpp`
+
 **Подробнее:** [Flash.md](Flash.md)
 
 ### flash_base — низкоуровневый доступ
 
-Режим `flash_bank_mode` выбирается project.json/геометрией МК. Драйвер использует
-ту же карту обоих банков; init/SetUp возвращают SysInitStatus и отклоняют
-несовпадение аппаратного режима или активный bank swap. См. [Flash.md](Flash.md).
+Поддерживаются F4/F7/G0. `init()` сверяет карту банков с аппаратным режимом и
+отклоняет bank swap; option bytes не меняет. `erase_sector()` принимает индекс
+карты. `mass_erase()` принимает 1/2/3 для первого/второго/обоих банков.
 
 ```cpp
-flash_base::init();
-flash_base::enable_access();  // разблокировать запись (ключи KEYR)
+if (flash_base::init() != SysInitStatus::InitOK) return;
+if (flash_base::enable_access() != SysStatus::OK) return;
 
-// Чтение любого типа
-uint32_t val = flash_base::read<uint32_t>(0x08010000);
-
-// Запись
-uint32_t data[] = {0x12345678, 0xDEADBEEF};
-flash_base::write(0x08010000, data, 2);
-
-// Стирание сектора
-flash_base::erase_sector(3);
+// Сектор должен быть зарезервирован проектом, без кода.
+if (flash_base::erase_sector(settings_sector) != SysStatus::OK) return;
+const uint32_t address = flash_sectors[settings_sector].address;
+const uint32_t values[] = {0x12345678, 0xDEADBEEF};
+const SysStatus written = flash_base::write(address, values, 2);
+if (written != SysStatus::OK) return;
+const uint32_t value = flash_base::read<uint32_t>(address);
 ```
 
-На **STM32G0** запись всегда 64-битная (две 32-битных операции подряд). На **F4** поддерживается 8/16/32/64-битная запись с автонастройкой `PSIZE`.
+Разблокировка, запись и стирание возвращают `SysStatus`. Вызовы — из main loop
+при работающем SysTick, вне прерываний и критических секций. Предел на каждую
+аппаратную операцию: **F4/F7 — 50 с, G0 — 1 с**. Выборка кода из занятого банка
+может остановить SysTick, поэтому реальное время таймаута не гарантируется.
 
-### flash_data — хранение структур во Flash
+G0 записывает 64 бита, назначение выровнено на 8 байт; источник может быть
+невыровненным, хвост дополняется FF. F4/F7 при 3–3,3 В записывают 8/16/32 бита;
+64-битный вход разбивается на две операции по 32 бита без VPP. Кеш изменяемой
+Flash инвалидируется; глобальная очистка D-cache SRAM не выполняется.
+Перед прямыми операциями `init()` проверяется один раз. Аргументы прямого `write()`
+проверяет вызывающий код: источник, переполнение размера/округления, диапазон и
+выравнивание. Ширина выбирается при компиляции; область журнала проверяет `SetUp()`.
+
+### flash_data — структура в одном секторе
 
 ```cpp
-uint8_t settings_buf[32];
-flash_data settings(7,            // номер сектора
-                    settings_buf, // буфер данных в RAM
-                    sizeof(settings_buf));
-
-if (settings.SetUp() != SysInitStatus::InitOK) System::DebugTrap("Flash bank configuration");
-
-// Чтение последних сохранённых данных
-auto status = settings.read_data();
-if (status == flash_data::Data_Status::DATA_OK) {
-    // settings_buf содержит актуальные данные
+uint8_t settings_buf[32]{};
+flash_data settings(settings_sector, settings_buf, sizeof(settings_buf));
+if (settings.SetUp() != SysInitStatus::InitOK) return;
+const auto loaded = settings.read_data();
+// Изменить settings_buf, затем проверить результат сохранения.
+const SysStatus saved = settings.write_data();
+if (saved != SysStatus::OK) {
+    const uint32_t flags = FLASH->SR;
+    (void)flags; // Посмотреть до начала следующей операции Flash.
 }
-
-// Запись новых данных (append-журнал внутри сектора)
-memcpy(settings_buf, &my_config, sizeof(my_config));
-settings.write_data();
 ```
 
-`flash_data` использует wear-leveling внутри одного сектора: каждая запись добавляется в конец, `find_offset()` находит последнюю валидную запись при инициализации.
+Порядок записи: **DATA_WRITING → данные → DATA_OK**. Только после успешного
+сохранения новой записи предыдущая помечается невалидной. Поиск выбирает последнюю
+готовую и пропускает незавершённые/невалидные слоты. При заполнении сектор стирается:
+потеря питания во время стирания/перезаписи может уничтожить последнюю версию.
+
+F4/F7 сохраняют однобайтный заголовок: `FF → 7F → 0F`, затем `00` для инвалидации.
+G0 использует **16-байтный заголовок**: первый блок — все FF → `00000000FFFFFFFF`
+→ полный ноль; второй остаётся FF до инвалидации, затем в него записывается
+`FFFFFFFF00000000`. Маркер второго блока имеет приоритет.
+Все значения определены один раз в `Data_Status`; запись и поиск используют этот enum.
+Численные значения enum G0 изменены; сравнивайте именованные значения, а не числа.
+`DATA_CORRUPT` удалён, незавершённые/невалидные записи дают `DATA_NOT_VALID`.
+При ошибке инвалидации предыдущей записи `write_data()` возвращает ошибку,
+но новая готовая запись остаётся выбранной.
+
+Прежний 8-байтный заголовок G0 несовместим: для проверки нового формата нужен
+стёртый сектор журнала. Проверку на железе выполняет пользователь.
+Формат, ограничения таймаута и ECC/NMI описаны в [Flash.md](Flash.md).
 
 ---
 
@@ -2065,8 +2047,9 @@ settings.write_data();
 int main() {
     System::Init();      // 1. FPU, Flash latency, SysTick
 
-    ClockSystem::Init(   // 2. Тактирование
-        ClockSystem::SystemClockSource::PLL, ...);
+    constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+        System::DebugTrap("Clock init");
 
     // 3. Периферия — в любом порядке
     uart.SetUp();
@@ -2110,6 +2093,6 @@ system.hpp
 1. Добавить `#include "stm32xxxx.h"` в `system.hpp`.
 2. Добавить записи в `PeriphInfo`-таблицы в `uart.cpp`, `spi.cpp`, `tim.cpp`, `dma.cpp`.
 3. Добавить стабы в `irq_registry_config.h`.
-4. Добавить частотные лимиты в `rcc.hpp` (`SYS_CLK_LIMIT`, `APB1_CLK_LIMIT` и т.д.).
+4. Добавить проверенные частотные лимиты и особенности PLL/VOS в `rcc_defs.hpp`.
 5. При необходимости добавить макросы регистровых абстракций (например `RCC_GPIO_EN_REG` в `gpio.hpp`).
 </content>
