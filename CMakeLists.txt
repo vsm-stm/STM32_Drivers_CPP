@@ -236,9 +236,11 @@ if("DSP" IN_LIST _stm32_modules)
 	FetchContent_MakeAvailable(cmsis_dsp)
 
 	set(_dsp "${cmsis_dsp_SOURCE_DIR}")
+	# Individual kernels only: the aggregate *.c files include those same
+	# kernels again, and FastMathFunctionsF16.c bypasses the _f16.c filter.
 	file(GLOB _dsp_src
-		"${_dsp}/Source/FastMathFunctions/*.c"
-		"${_dsp}/Source/ControllerFunctions/*.c"
+		"${_dsp}/Source/FastMathFunctions/arm_*.c"
+		"${_dsp}/Source/ControllerFunctions/arm_*.c"
 		"${_dsp}/Source/CommonTables/arm_common_tables.c"
 		"${_dsp}/Source/CommonTables/arm_const_structs.c"
 	)

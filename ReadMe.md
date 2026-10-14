@@ -13,7 +13,29 @@ The library is not a standalone CMake project: it is cloned and wired in by the 
 
 Additionally, the **`DSP`** module: a subset of Arm's current CMSIS-DSP (fast math `arm_sin_f32`/`arm_cos_f32`/`arm_sqrt_q31`/`arm_atan2_*`, controllers `arm_pid_*`, shared tables). Not part of the repository — pulled in at configuration time (`FetchContent`, tag v1.16.2). Enabled the same way as the other optional modules — by adding `"DSP"` to the project's `"drivers"` list. Third-party licenses are in `THIRD_PARTY.md`.
 
-The **`PID`** module — an in-house PID controller (`math/PID.*`): variable step `dT`, dead zone `e_lim`, integral-term clamp `max_ki_I`, a helper `PID_get_quality` (overshoot, settling time).
+The module provides the following API from CMSIS-DSP v1.16.2:
+
+| Group | Functions | Types |
+|---|---|---|
+| Trigonometry | `arm_sin_*`, `arm_cos_*` | `f32`, `q15`, `q31` |
+| Square root | `arm_sqrt_*` | `f32` (inline), `q15`, `q31` |
+| Angle | `arm_atan2_*` | `f32`, `q15`, `q31` |
+| Division | `arm_divide_*` | `q15`, `q31` |
+| Vector logarithm | `arm_vlog_*` | `f32`, `f64`, `q15`, `q31` |
+| Vector exponential | `arm_vexp_*` | `f32`, `f64` |
+| Combined sine/cosine | `arm_sin_cos_*` | `f32`, `q31` |
+| PID | `arm_pid_init_*`, `arm_pid_reset_*`, `arm_pid_*` (step, inline) | `f32`, `q15`, `q31` |
+| Clarke/Park transforms | `arm_clarke_*`, `arm_inv_clarke_*`, `arm_park_*`, `arm_inv_park_*` (inline) | `f32`, `q31` |
+
+Use `dsp/fast_math_functions.h` and `dsp/controller_functions.h` for these groups. The general `arm_math.h` also declares functions from groups whose sources are absent from this module: FFT, FIR/IIR filters, statistics and other groups are not linked; their declarations alone do not provide implementations. Float16 kernels are excluded. Shared tables are built once with the individual kernels; aggregate source files are excluded.
+
+`arm_sin_f32`/`arm_cos_f32` take radians; `arm_sin_cos_f32` takes degrees. Initialize each CMSIS PID instance with `arm_pid_init_*(..., 1)` before its first step. Check the returned `arm_status` for square root, division and atan2. Parameter ranges and fixed-point formats are described in Arm's [FastMath header](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/fast_math_functions.h) and [Controller header](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/controller_functions.h).
+
+The **`PID`** module — an in-house PID controller (`math/PID.*`): variable step `dT`, dead zone `e_lim`, symmetric integral-term clamp `max_ki_I`, and a helper `PID_get_quality` (relative peak deviation and accumulated time). Its C API can be called directly from C++.
+
+Zero-initialize the controller state or call `zero_PID_I_D()` before use. Set `e` on each step; `dT` is in seconds. Inputs must be finite, `dT > 0`, and `e_lim`/`max_ki_I >= 0`; `dT == 0` returns zero without updating state. With `ki == 0`, `I` is held. Inside `|e| <= e_lim`, `I` is held, `D` is zero and `e_old` is updated; the proportional term remains active.
+
+Reset `PID_get_quality` with `get=0` before a measurement and when changing the setpoint or mode. For `get=1`, `e` is a percentage for nonzero `u`, or the absolute error `y-u` for zero `u`; `t_time` sums time outside the ±5% corridor. For `get=2`, `e` is absolute and `t_time` sums every supplied `dt`. This is accumulated time, not settling time. `max_y` tracks the maximum response for `u >= 0` and the minimum for `u < 0`, starting from zero after reset; `sigma=(max_y-u)/u` is a ratio, and is zero at `u=0`.
 
 ## Integration and build
 
@@ -1057,7 +1079,29 @@ system.hpp
 
 Дополнительно — модуль **`DSP`**: подмножество актуального CMSIS-DSP от Arm (быстрая математика `arm_sin_f32`/`arm_cos_f32`/`arm_sqrt_q31`/`arm_atan2_*`, регуляторы `arm_pid_*`, общие таблицы). Не входит в репозиторий, подтягивается при конфигурации (`FetchContent`, тег v1.16.2). Включается так же, как остальные опциональные модули — добавлением `"DSP"` в список `"drivers"` проекта. Лицензии сторонних частей — в `THIRD_PARTY.md`.
 
-Модуль **`PID`** — собственный ПИД-регулятор (`math/PID.*`): переменный шаг `dT`, мёртвая зона `e_lim`, ограничение интегральной составляющей `max_ki_I`, вспомогательная `PID_get_quality` (перерегулирование, время переходного процесса).
+Модуль предоставляет следующий API CMSIS-DSP v1.16.2:
+
+| Группа | Функции | Типы |
+|---|---|---|
+| Тригонометрия | `arm_sin_*`, `arm_cos_*` | `f32`, `q15`, `q31` |
+| Квадратный корень | `arm_sqrt_*` | `f32` (inline), `q15`, `q31` |
+| Угол | `arm_atan2_*` | `f32`, `q15`, `q31` |
+| Деление | `arm_divide_*` | `q15`, `q31` |
+| Векторный логарифм | `arm_vlog_*` | `f32`, `f64`, `q15`, `q31` |
+| Векторная экспонента | `arm_vexp_*` | `f32`, `f64` |
+| Совместный синус/косинус | `arm_sin_cos_*` | `f32`, `q31` |
+| PID | `arm_pid_init_*`, `arm_pid_reset_*`, `arm_pid_*` (шаг, inline) | `f32`, `q15`, `q31` |
+| Преобразования Кларка/Парка | `arm_clarke_*`, `arm_inv_clarke_*`, `arm_park_*`, `arm_inv_park_*` (inline) | `f32`, `q31` |
+
+Для этих групп используйте `dsp/fast_math_functions.h` и `dsp/controller_functions.h`. Общий `arm_math.h` объявляет также функции групп, исходники которых модуль не собирает: FFT, FIR/IIR-фильтры, статистика и другие группы не подключены; наличие объявления не означает наличие реализации. Ядра float16 исключены. Общие таблицы собираются однократно вместе с отдельными функциями; агрегирующие исходники исключены.
+
+`arm_sin_f32`/`arm_cos_f32` принимают радианы, `arm_sin_cos_f32` — градусы. Каждый экземпляр CMSIS PID перед первым шагом инициализируйте через `arm_pid_init_*(..., 1)`. Проверяйте возвращаемый `arm_status` у корня, деления и atan2. Диапазоны аргументов и форматы фиксированной точки описаны в заголовках Arm: [FastMath](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/fast_math_functions.h) и [Controller](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/controller_functions.h).
+
+Модуль **`PID`** — собственный ПИД-регулятор (`math/PID.*`): переменный шаг `dT`, мёртвая зона `e_lim`, симметричное ограничение интегральной составляющей `max_ki_I` и вспомогательная `PID_get_quality` (относительное отклонение пика и накопленное время). C API доступен напрямую из C++.
+
+Перед использованием обнулите состояние регулятора либо вызовите `zero_PID_I_D()`. На каждом шаге задавайте `e`; `dT` задаётся в секундах. Входные значения должны быть конечными, `dT > 0`, `e_lim`/`max_ki_I >= 0`; при `dT == 0` возвращается ноль без изменения состояния. При `ki == 0` интеграл `I` сохраняется. В зоне `|e| <= e_lim` интеграл сохраняется, `D` обнуляется, `e_old` обновляется; пропорциональная составляющая продолжает действовать.
+
+Перед измерением и при смене уставки или режима сбрасывайте `PID_get_quality` через `get=0`. При `get=1` ошибка `e` выражается в процентах для ненулевой уставки `u`, а при `u=0` равна абсолютной ошибке `y-u`; `t_time` суммирует время вне коридора ±5%. При `get=2` ошибка абсолютная, `t_time` суммирует каждый переданный `dt`. Это накопленное время, а не время установления. Поле `max_y` хранит максимум отклика при `u >= 0` и минимум при `u < 0`, начиная с нуля после сброса; `sigma=(max_y-u)/u` — относительная величина, при `u=0` она равна нулю.
 
 ## Подключение и сборка
 
