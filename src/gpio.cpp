@@ -1,6 +1,6 @@
 #include "gpio.hpp"
 
-SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override)
+SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override, LVL initial_level)
 {
 	const uint8_t raw   = static_cast<uint8_t>(type);
 	const uint8_t mode  = (raw >> mode_pos)        & 0x3u;
@@ -37,6 +37,7 @@ SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override
 		}
 	}
 
+	if (modeEnum == PIN::MODE::OUTPUT) SetLevel(initial_level);
 	port->MODER |= (static_cast<uint32_t>(mode) << (pin * 2));
 
 	return SysInitStatus::InitOK;

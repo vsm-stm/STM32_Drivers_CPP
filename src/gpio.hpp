@@ -43,12 +43,13 @@ private:
 
 	void Reset() { SetUp(TYPE::INPUT_NO_Pull); }
 
-	uintptr_t _port_base{};
+	const uintptr_t _port_base{};
+	const uint8_t pin{};
+	const uint8_t af{};
 
 public:
-	uint8_t  pin{};
-	uint8_t  af{};
-	uint32_t periph_base{};
+	// Read-only binding metadata used by USART/SPI/I2C constructors.
+	const uint32_t periph_base{};
 
 	enum class TYPE : uint8_t
 	{
@@ -81,21 +82,54 @@ public:
 		HIGH
 	};
 
+	// An absent pin, for optional peripheral signals. Do not access or configure it.
 	PIN() = default;
 	PIN(PIN const&)            = default;
 	PIN(PIN&&)                 = default;
-	PIN& operator=(PIN const&) = default;
-	PIN& operator=(PIN&&)      = default;
+	PIN& operator=(PIN const&) = delete;
+	PIN& operator=(PIN&&)      = delete;
 
-	// Constexpr constructor — for compile-time pin tables in SPI/UART/etc.
-	constexpr PIN(uintptr_t port_base, uint8_t p, uint8_t a = 0, uint32_t periph = 0) noexcept
-		: _port_base(port_base), pin(p), af(a), periph_base(periph) {}
-
-	// Runtime constructor — for direct GPIO_TypeDef* usage
-	PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept
-		: _port_base(reinterpret_cast<uintptr_t>(port)), pin(p), af(a)
+	// Use GPIOx_BASE: parameters and checks are evaluated only at compile time.
+	consteval PIN(uintptr_t port_base, uint32_t p, uint32_t a = 0, uint32_t periph = 0) noexcept
+		: _port_base(port_base), pin(static_cast<uint8_t>(p)),
+		  af(static_cast<uint8_t>(a)), periph_base(periph)
 	{
-		if (p >= 16) { __BKPT(0); while(1); }
+		// Reaching a non-constant expression rejects an invalid definition at build time.
+		if (p >= 16 || a >= 16) __builtin_unreachable();
+		switch (port_base) {
+		case GPIOA_BASE:
+		case GPIOB_BASE:
+#if defined(GPIOC_BASE)
+		case GPIOC_BASE:
+#endif
+#if defined(GPIOD_BASE)
+		case GPIOD_BASE:
+#endif
+#if defined(GPIOE_BASE)
+		case GPIOE_BASE:
+#endif
+#if defined(GPIOF_BASE)
+		case GPIOF_BASE:
+#endif
+#if defined(GPIOG_BASE)
+		case GPIOG_BASE:
+#endif
+#if defined(GPIOH_BASE)
+		case GPIOH_BASE:
+#endif
+#if defined(GPIOI_BASE)
+		case GPIOI_BASE:
+#endif
+#if defined(GPIOJ_BASE)
+		case GPIOJ_BASE:
+#endif
+#if defined(GPIOK_BASE)
+		case GPIOK_BASE:
+#endif
+			break;
+		default:
+			__builtin_unreachable();
+		}
 	}
 
 	GPIO_TypeDef* PORT() const noexcept
@@ -108,19 +142,21 @@ public:
 	PIN& operator=(bool b) noexcept { SetLevel(b); return *this; }
 	explicit operator bool() const noexcept { return GetLevel(); }
 
-	// Uses stored af; speed defaults to Low
-	SysInitStatus SetUp(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low)
+	// OUTPUT starts at initial_level; other modes do not change the output latch.
+	SysInitStatus SetUp(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low,
+						LVL initial_level = LVL::LOW)
 	{
-		return SetUp(type, speed, af);
+		return SetUp(type, speed, af, initial_level);
 	}
 
 	// Full form — actual implementation
-	SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override);
+	SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override,
+						LVL initial_level = LVL::LOW);
 
 	// Explicit af, default Low speed
-	SysInitStatus SetUp(TYPE type, uint8_t af_override)
+	SysInitStatus SetUp(TYPE type, uint8_t af_override, LVL initial_level = LVL::LOW)
 	{
-		return SetUp(type, OUTPUT_SPEED::Low, af_override);
+		return SetUp(type, OUTPUT_SPEED::Low, af_override, initial_level);
 	}
 
 	// ---- level access ----
@@ -142,6 +178,7 @@ public:
 
 	inline void TogglePin() noexcept
 	{
+		// ODR read-modify-write: do not modify this port from IRQ during the toggle.
 		PORT()->ODR ^= (0x1u << pin);
 	}
 
@@ -182,15 +219,20 @@ private:
 	PIN pins[N];
 
 	template<size_t... I>
+	constexpr PinArray(const PIN (&values)[N], std::index_sequence<I...>)
+		: pins{values[I]...} {}
+
+	template<size_t... I>
 	SysInitStatus SetUpAllImpl(std::index_sequence<I...>,
 							   PIN::TYPE         type,
 							   PIN::OUTPUT_SPEED  speed,
 							   uint8_t            af)
 	{
 		SysInitStatus result = SysInitStatus::InitOK;
-		((pins[I].SetUp(type, speed, af) != SysInitStatus::InitOK
-			  ? (result = SysInitStatus::NotInit, void())
-			  : void()), ...);
+		([&] {
+			const SysInitStatus current = pins[I].SetUp(type, speed, af);
+			if (result == SysInitStatus::InitOK) result = current;
+		}(), ...);
 		return result;
 	}
 
@@ -214,10 +256,7 @@ private:
 
 public:
 	constexpr explicit PinArray(const PIN (&_pins)[N])
-	{
-		for (size_t i = 0; i < N; ++i)
-			pins[i] = _pins[i];
-	}
+		: PinArray(_pins, std::make_index_sequence<N>{}) {}
 
 	SysInitStatus SetUpAll(PIN::TYPE type, uint8_t af)
 	{
