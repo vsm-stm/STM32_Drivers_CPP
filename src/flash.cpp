@@ -81,20 +81,6 @@ constexpr uint32_t operation_mask = FLASH_CR_PG | erase_bit | sector_mask | mass
 #endif
     ;
 
-bool valid_range(uint32_t addr, uint32_t bytes)
-{
-    if (!bytes || bytes > UINT32_MAX - addr) return false;
-    for (const auto& sector : flash_sectors) {
-        if (addr < sector.address || addr - sector.address >= sector.size) continue;
-        const uint32_t available = sector.size - (addr - sector.address);
-        const uint32_t part = bytes < available ? bytes : available;
-        addr += part;
-        bytes -= part;
-        if (!bytes) return true;
-    }
-    return false;
-}
-
 SysStatus wait_operation()
 {
 #if defined(STM32G0)
@@ -223,7 +209,6 @@ void flash_base::clear_errors()
 
 SysStatus flash_base::enable_access()
 {
-    if (init() != SysInitStatus::InitOK) return SysStatus::Error;
     if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
         return SysStatus::Timeout;
     if (FLASH->CR & FLASH_CR_LOCK) {
@@ -236,7 +221,6 @@ SysStatus flash_base::enable_access()
 SysStatus flash_base::erase_sector(uint32_t sector)
 {
     if (sector >= FLASH_SECTOR_COUNT) return SysStatus::Error;
-    if (init() != SysInitStatus::InitOK) return SysStatus::Error;
     if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
         return SysStatus::Timeout;
     if (FLASH->CR & FLASH_CR_LOCK) return SysStatus::Error;
@@ -269,7 +253,6 @@ SysStatus flash_base::mass_erase(uint8_t bank)
 #if !defined(FLASH_CR_MER2)
     if (bank & 2U) return SysStatus::Error;
 #endif
-    if (init() != SysInitStatus::InitOK) return SysStatus::Error;
     if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
         return SysStatus::Timeout;
     if (FLASH->CR & FLASH_CR_LOCK) return SysStatus::Error;
@@ -292,22 +275,15 @@ SysStatus flash_base::mass_erase(uint8_t bank)
     return completed;
 }
 
-SysStatus flash_base::program(uint32_t addr, const void* data, uint32_t bytes, uint32_t width)
+template<uint32_t width>
+SysStatus flash_base::program(uint32_t addr, const void* data, uint32_t bytes)
 {
     if (!bytes) return SysStatus::OK;
-    if (!data) return SysStatus::Error;
 #if defined(STM32G0)
-    (void)width;
-    if ((addr & 7U) || bytes > UINT32_MAX - 7U) return SysStatus::Error;
     const uint32_t physical_bytes = (bytes + 7U) & ~7U;
 #else
-    // F4/F7 x64 requires external VPP. Split 64-bit input into x32 writes.
-    if (width == 8U) width = 4U;
-    if (addr & (width - 1U)) return SysStatus::Error;
     const uint32_t physical_bytes = bytes;
 #endif
-    if (!valid_range(addr, physical_bytes)) return SysStatus::Error;
-    if (init() != SysInitStatus::InitOK) return SysStatus::Error;
     if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
         return SysStatus::Timeout;
     if (FLASH->CR & FLASH_CR_LOCK) return SysStatus::Error;
@@ -316,10 +292,11 @@ SysStatus flash_base::program(uint32_t addr, const void* data, uint32_t bytes, u
     // The caller must not access the destination range during the operation.
     invalidate_flash(addr, physical_bytes);
 
-    uint32_t program_bits = FLASH_CR_PG;
+    constexpr uint32_t program_bits = FLASH_CR_PG
 #if defined(STM32F4) || defined(STM32F7)
-    program_bits |= (width >> 1U) << FLASH_CR_PSIZE_Pos;
+        | ((width >> 1U) << FLASH_CR_PSIZE_Pos)
 #endif
+        ;
     FLASH->CR = (FLASH->CR & ~operation_mask) | program_bits;
     const uint8_t* src = static_cast<const uint8_t*>(data);
     SysStatus result = SysStatus::OK;
@@ -340,8 +317,8 @@ SysStatus flash_base::program(uint32_t addr, const void* data, uint32_t bytes, u
     for (uint32_t i = 0; i < bytes; i += width) {
         uint32_t value = 0;
         memcpy(&value, src + i, width);
-        if (width == 1U) *reinterpret_cast<volatile uint8_t*>(addr + i) = static_cast<uint8_t>(value);
-        else if (width == 2U) *reinterpret_cast<volatile uint16_t*>(addr + i) = static_cast<uint16_t>(value);
+        if constexpr (width == 1U) *reinterpret_cast<volatile uint8_t*>(addr + i) = static_cast<uint8_t>(value);
+        else if constexpr (width == 2U) *reinterpret_cast<volatile uint16_t*>(addr + i) = static_cast<uint16_t>(value);
         else *reinterpret_cast<volatile uint32_t*>(addr + i) = value;
         __DSB();
         result = wait_operation();
@@ -356,34 +333,43 @@ SysStatus flash_base::program(uint32_t addr, const void* data, uint32_t bytes, u
     return result;
 }
 
+// Only physical widths are instantiated: one on G0, three on F4/F7.
+#if defined(STM32G0)
+template SysStatus flash_base::program<8U>(uint32_t, const void*, uint32_t);
+#else
+template SysStatus flash_base::program<1U>(uint32_t, const void*, uint32_t);
+template SysStatus flash_base::program<2U>(uint32_t, const void*, uint32_t);
+template SysStatus flash_base::program<4U>(uint32_t, const void*, uint32_t);
+#endif
+
 // One sector contains full, fixed-size slots:
 // [status_t][payload][padding], stride = unit + ceil(size / unit) * unit.
 // The status is separate from the data and uses the minimum programming unit.
 SysInitStatus flash_data::SetUp(bank_type tb)
 {
-    initialized = false;
+    stride = 0;
     status = Data_Status::NO_DATA;
     if (sector >= FLASH_SECTOR_COUNT || !data || !size) return SysInitStatus::InitError;
     const uint32_t unit = sizeof(status_t);
     if (size > UINT32_MAX - (unit - 1U)) return SysInitStatus::InitError;
-    const uint32_t rounded = ((size + unit - 1U) / unit) * unit;
+    const uint32_t rounded = (size + unit - 1U) & ~(unit - 1U);
     if (rounded > UINT32_MAX - unit) return SysInitStatus::InitError;
-    stride = unit + rounded;
-    if (stride > flash_sectors[sector].size || flash_sectors[sector].address % unit)
+    const uint32_t record_size = unit + rounded;
+    if (record_size > flash_sectors[sector].size || (flash_sectors[sector].address & (unit - 1U)))
         return SysInitStatus::InitError;
     if (init(tb) != SysInitStatus::InitOK || enable_access() != SysStatus::OK)
         return SysInitStatus::InitError;
     invalidate_flash(flash_sectors[sector].address, flash_sectors[sector].size);
+    stride = record_size;
     find_offset();
-    initialized = true;
     return SysInitStatus::InitOK;
 }
 
 flash_data::Data_Status flash_data::read_data()
 {
-    if (!initialized) return Data_Status::DATA_CORRUPT;
+    if (!stride) return Data_Status::DATA_CORRUPT;
     if (status == Data_Status::DATA_OK) {
-        const uint32_t addr = flash_sectors[sector].address + offset * stride + sizeof(status_t);
+        const uint32_t addr = flash_sectors[sector].address + offset + sizeof(status_t);
         memcpy(data, reinterpret_cast<const uint8_t*>(addr), size);
     }
     return status;
@@ -391,15 +377,14 @@ flash_data::Data_Status flash_data::read_data()
 
 SysStatus flash_data::write_data()
 {
-    if (!initialized) return SysStatus::NotInit;
+    if (!stride) return SysStatus::NotInit;
     if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
         return SysStatus::Timeout;
-    const uint32_t slots = flash_sectors[sector].size / stride;
-    if (next_offset == slots) {
+    if (next_offset > flash_sectors[sector].size - stride) {
         // One-sector storage cannot preserve the previous version during erase.
         const SysStatus erased = erase_sector(sector);
         if (erased != SysStatus::OK) {
-            initialized = false; // A failed erase may already have destroyed old data.
+            stride = 0; // A failed erase may already have destroyed old data.
             status = Data_Status::DATA_CORRUPT;
             return erased;
         }
@@ -409,8 +394,9 @@ SysStatus flash_data::write_data()
     }
 
     // Reserve the whole attempted slot; failures must not retry its data blocks.
-    const uint32_t candidate = next_offset++;
-    const uint32_t addr = flash_sectors[sector].address + candidate * stride;
+    const uint32_t candidate = next_offset;
+    next_offset += stride;
+    const uint32_t addr = flash_sectors[sector].address + candidate;
     if (status != Data_Status::DATA_OK) status = Data_Status::DATA_CORRUPT;
     const status_t writing = static_cast<status_t>(Data_Status::DATA_WRITING);
     SysStatus result = write(addr, &writing);
@@ -433,15 +419,15 @@ void flash_data::find_offset()
     offset = 0;
     next_offset = 0;
     status = Data_Status::NO_DATA;
-    const uint32_t slots = flash_sectors[sector].size / stride;
-    for (uint32_t i = 0; i < slots; ++i) {
+    const uint32_t last_offset = flash_sectors[sector].size - stride;
+    for (uint32_t pos = 0; pos <= last_offset; pos += stride) {
         const Data_Status marker = static_cast<Data_Status>(
-            read<status_t>(flash_sectors[sector].address + i * stride));
+            read<status_t>(flash_sectors[sector].address + pos));
         if (marker == Data_Status::NO_DATA) continue;
         // Skip an entire incomplete/corrupt/legacy-invalid record by stride.
-        next_offset = i + 1U;
+        next_offset = pos + stride;
         if (marker == Data_Status::DATA_OK) {
-            offset = i;
+            offset = pos;
             status = Data_Status::DATA_OK;
         } else if (status != Data_Status::DATA_OK) {
             status = Data_Status::DATA_CORRUPT;

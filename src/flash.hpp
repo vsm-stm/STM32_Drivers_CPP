@@ -21,7 +21,8 @@
 class flash_base
 {
 private:
-	static SysStatus program(uint32_t addr, const void* data, uint32_t bytes, uint32_t width);
+	template<uint32_t width>
+	static SysStatus program(uint32_t addr, const void* data, uint32_t bytes);
 public:
 	enum class bank_type
 	{
@@ -29,7 +30,7 @@ public:
 		DUAL_BANK
 	};
 
-	// The default follows the mode selected by project.json/device geometry.
+	// Call once before direct access. The default follows the generated bank mode.
 	static SysInitStatus init(bank_type tb = FLASH_DUAL_BANK ? bank_type::DUAL_BANK : bank_type::SINGLE_BANK);
 	static SysStatus enable_access();
 	static bool ready();
@@ -42,6 +43,7 @@ public:
 	static inline T read(uint32_t addr) { return *reinterpret_cast<const volatile T*>(addr); }
 
 	// size is the element count. On G0 the last 8-byte block is padded with FF.
+	// The caller validates source, size/rounding overflow, destination range and alignment.
 	// Programming a buffer is not atomic; inspect the returned status.
 	template<typename T>
 	static SysStatus write(uint32_t addr, const T* data, uint32_t size = 1);
@@ -73,7 +75,6 @@ public:
 		next_offset(0),
 		stride(0),
 		status(Data_Status::NO_DATA),
-		initialized(false),
 		data(_data),
 		size(sz)
 	{}
@@ -85,11 +86,10 @@ public:
 
 private:
 	uint32_t sector;
-	uint32_t offset;
-	uint32_t next_offset;
-	uint32_t stride;
+	uint32_t offset;      // Byte offset of the last completed record within the sector.
+	uint32_t next_offset; // Byte offset for the next attempt; advances by stride.
+	uint32_t stride; // Zero until SetUp succeeds; also cleared after an erase failure.
 	Data_Status status;
-	bool initialized;
 
 	uint8_t *data;
 	uint32_t size;
@@ -102,8 +102,12 @@ template<typename T>
 SysStatus flash_base::write(uint32_t addr, const T* data, uint32_t size)
 {
 	static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
-	if (size > UINT32_MAX / sizeof(T)) return SysStatus::Error;
-	return program(addr, data, size * static_cast<uint32_t>(sizeof(T)), sizeof(T));
+#if defined(STM32G0)
+	return program<8U>(addr, data, size * static_cast<uint32_t>(sizeof(T)));
+#else
+	// x64 requires external VPP on F4/F7: use two x32 writes.
+	return program<sizeof(T) == 8U ? 4U : sizeof(T)>(addr, data, size * static_cast<uint32_t>(sizeof(T)));
+#endif
 }
 
 #endif
