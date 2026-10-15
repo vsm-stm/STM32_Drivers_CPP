@@ -14,7 +14,7 @@
 #include "uart_defs.hpp"
 #undef UART_DEFS_CPP
 
-// OVER8=0: 16-bit BRR, USARTDIV >= 16. Kernel clock is PCLK, PRESC is /1.
+// OVER8=0: 16-bit BRR, USARTDIV >= 16. G0 PRESC is /1.
 static uint32_t BaudRegister(uint32_t clock, uint32_t baud)
 {
 	if (!baud || baud > clock / 16U) return 0;
@@ -23,7 +23,38 @@ static uint32_t BaudRegister(uint32_t clock, uint32_t baud)
 	return brr >= 16U && brr <= max_brr ? brr : 0;
 }
 
-// Select PCLK and program BRR with UE=0. Register the object once even if another
+uint32_t USART::KernelClock(const PeriphInfo& info) const
+{
+#if defined(STM32F7) || defined(STM32G0)
+	if (!info.clock_select && _clock_source != ClockSource::PCLK) return 0;
+	switch (_clock_source) {
+	case ClockSource::PCLK: return *info.bus_clk;
+	case ClockSource::SYSCLK: {
+		// HPRE encodes /1, /2, /4, /8, /16, /64, /128, /256, /512.
+		// SystemCoreClock is HCLK: undo the AHB divider, not the APB divider.
+		static constexpr uint8_t ahb_shift[16] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 6, 7, 8, 9};
+		return System::SystemCoreClock << ahb_shift[(RCC->CFGR & RCC_CFGR_HPRE) >> RCC_CFGR_HPRE_Pos];
+	}
+	case ClockSource::HSI: {
+		const uint32_t cr = RCC->CR;
+#if defined(STM32G0)
+		const uint32_t enabled = RCC_CR_HSION | RCC_CR_HSIKERON;
+#else
+		const uint32_t enabled = RCC_CR_HSION;
+#endif
+		return (cr & enabled) && (cr & RCC_CR_HSIRDY) ? HSI_Clock : 0;
+	}
+	case ClockSource::LSE:
+		return (RCC->BDCR & (RCC_BDCR_LSEON | RCC_BDCR_LSERDY))
+			== (RCC_BDCR_LSEON | RCC_BDCR_LSERDY) ? RCCDefs::LSE_HZ : 0;
+	default: return 0;
+	}
+#else
+	return *info.bus_clk;
+#endif
+}
+
+// Select the kernel clock and program BRR with UE=0. Register the object once even if another
 // peripheral already enabled the shared NVIC line. FIFO support is per instance.
 SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 {
@@ -32,7 +63,7 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 	for (const auto& e : usart_table)
 		if (e.periph == USARTx) { info = &e; break; }
 	if (!info) return SysInitStatus::InitError;
-	const uint32_t brr = BaudRegister(*info->bus_clk, BaudRate);
+	const uint32_t brr = BaudRegister(KernelClock(*info), BaudRate);
 	if (!brr) return SysInitStatus::InitError;
 #if defined(STM32G0)
 	if ((fifo != FIFO::NO && fifo != FIFO::EN)
@@ -46,10 +77,18 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 	*info->clk_reg |= info->clk_bit;
 	(void)*info->clk_reg;
 	USARTx->CR1 = 0; // BRR and FIFO configuration require UE=0.
+#if defined(STM32F7) || defined(STM32G0)
+	if (info->clock_select) {
+		// Locate this instance's two-bit USARTxSEL field; the mask is nonzero here.
+		const uint32_t selection = static_cast<uint32_t>(_clock_source) << __builtin_ctz(info->clock_select);
 #if defined(STM32F7)
-	RCC->DCKCFGR2 &= ~info->clock_select;
-#elif defined(STM32G0)
-	RCC->CCIPR &= ~info->clock_select;
+		RCC->DCKCFGR2 = (RCC->DCKCFGR2 & ~info->clock_select) | selection;
+#else
+		RCC->CCIPR = (RCC->CCIPR & ~info->clock_select) | selection;
+#endif
+	}
+#endif
+#if defined(STM32G0)
 	USARTx->PRESC = 0;
 #endif
 	USARTx->BRR = brr;
@@ -93,7 +132,7 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 SysStatus USART::SetBaud(uint32_t baud)
 {
 	if (!_info) return SysStatus::NotInit;
-	const uint32_t brr = BaudRegister(*_info->bus_clk, baud);
+	const uint32_t brr = BaudRegister(KernelClock(*_info), baud);
 	if (!brr) return SysStatus::Error;
 	// Caller ensures physical completion via TC; these are software transfer states.
 	if (tx_status == SysStatus::Busy || rx_status == SysStatus::Busy)

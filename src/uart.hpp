@@ -9,8 +9,9 @@
  *
  * Initialization and IRQ ownership
  * -------------------------------
- * Initialize System/RCC before SetUp(). The driver selects PCLK, oversampling
- * x16 and 8N1; G0 PRESC is /1. Peripheral tables in uart_defs.hpp provide clock
+ * Initialize System/RCC before SetUp(). PCLK is the default; on F7/G0 the
+ * constructor can select SYSCLK, HSI or LSE where the instance supports them.
+ * SetUp() uses oversampling x16 and 8N1; G0 PRESC is /1. Peripheral tables provide clock
  * gates, PCLK variables, vectors, pins and DMAReq routes for the selected MCU.
  * TX/RX pins come from USART::_N::TX/RX. Their number/AF are defined by PIN;
  * the USART constructor checks the owning peripheral at run time.
@@ -99,6 +100,23 @@ public:
 	// For example USART::_1::TX::PB6 stores port, pin, AF and USART1 ownership.
 #include "uart_defs.hpp"
 
+#if defined(STM32F7) || defined(STM32G0)
+	/**
+	 * @brief USART kernel clock, fixed when the object is constructed.
+	 * Values match the two-bit RCC USARTxSEL field. Availability depends on
+	 * the selected MCU and instance; a G0 instance without a selector uses PCLK only.
+	 * The caller enables HSI/LSE before SetUp() and keeps the source running.
+	 * Keep RCC source frequencies and bus dividers unchanged while UART is in use.
+	 */
+	enum class 
+	ClockSource : uint8_t {
+		PCLK = 0,   ///< APB clock for this instance (default).
+		SYSCLK = 1, ///< System clock before the AHB divider.
+		HSI = 2,    ///< HSI 16 MHz; on G0 this is before HSIDIV.
+		LSE = 3     ///< LSE 32768 Hz.
+	};
+#endif
+
 	/**
 	 * @brief Peripheral interrupt sources controlled by IRQ_en().
 	 *
@@ -150,19 +168,36 @@ public:
 	 * This ownership check is performed at run time; construction is not SetUp().
 	 *
 	 * @param usartx Hardware USART/UART pointer, for example USART1.
-	 * @param baudrate Requested bits per second; validated against PCLK in SetUp().
+	 * @param baudrate Requested bits per second; validated against the kernel clock.
 	 * @param tx Named USART::_N::TX pin, or PIN{} to leave TX unconfigured.
 	 * @param rx Named USART::_N::RX pin, or PIN{} to leave RX unconfigured.
+	 * @param clock_source F7/G0 only: kernel clock, PCLK by default. Immutable;
+	 *        SetUp() applies the choice but never starts an oscillator. An unavailable
+	 *        source or an HSI/LSE source that is not enabled and ready gives InitError.
 	 *
 	 * TX-only example:
 	 * @code
 	 *   USART log(USART2, 115200, USART::_2::TX::PA2, PIN{});
 	 *   SysInitStatus status = log.SetUp();
 	 * @endcode
+	 *
+	 * F7/G0 HSI example, after the caller has enabled HSI and waited for HSIRDY:
+	 * @code
+	 *   USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+	 *              USART::ClockSource::HSI);
+	 *   SysInitStatus status = link.SetUp();
+	 * @endcode
 	 */
 	explicit USART(USART_TypeDef* usartx, uint32_t baudrate,
-		PIN tx = PIN{}, PIN rx = PIN{})
+		PIN tx = PIN{}, PIN rx = PIN{}
+#if defined(STM32F7) || defined(STM32G0)
+		, ClockSource clock_source = ClockSource::PCLK
+#endif
+		)
 		: USARTx(usartx), BaudRate(baudrate), _TX(tx), _RX(rx)
+#if defined(STM32F7) || defined(STM32G0)
+		, _clock_source(clock_source)
+#endif
 	{
 		if (tx.IsValid() && tx.periph_base && tx.periph_base != (uint32_t)usartx)
 			System::DebugTrap("USART: TX pin belongs to wrong peripheral");
@@ -183,9 +218,11 @@ public:
 	/**
 	 * @brief Enable the clock, configure GPIO/UART and register the UART IRQ.
 	 *
-	 * Uses PCLK, oversampling x16, 8 data bits, no parity and one stop bit.
-	 * BRR is rounded from (PCLK + baud/2) / baud; it must fit 16..65535,
-	 * and requested baud must not exceed PCLK/16. G0 PRESC is set to /1.
+	 * Uses the constructor's kernel clock (PCLK on F4), oversampling x16,
+	 * 8 data bits, no parity and one stop bit. BRR is rounded from
+	 * (kernel_clock + baud/2) / baud; it must fit 16..65535,
+	 * and requested baud must not exceed kernel_clock/16. G0 PRESC is /1.
+	 * HSI/LSE must already be enabled and ready; SetUp() only checks their state.
 	 * SetUp() registers this object once and enables the UART NVIC vector.
 	 * Transfer sources themselves are enabled later by the selected operation.
 	 *
@@ -193,7 +230,7 @@ public:
 	 * @param fifo_th_tx G0 TX threshold when FIFO is enabled.
 	 * @param fifo_th_rx G0 RX threshold when FIFO is enabled.
 	 * FIFO_TH::all is encoding 5: RX full, TX empty. F4/F7 accept NO only.
-	 * @return InitOK on success; InitError for invalid peripheral/baud/FIFO,
+	 * @return InitOK on success; InitError for invalid peripheral/clock/baud/FIFO,
 	 *         repeated setup or a failed IRQ registration (including a full row).
 	 * @pre System/RCC are initialized. Call from main; repeated setup needs DeInit().
 	 *
@@ -488,13 +525,15 @@ public:
 
 	/**
 	 * @brief Validate and change baud without repeating the full UART setup.
-	 * @param baud Requested bits per second, representable at the configured PCLK.
+	 * @param baud Requested bits per second, representable at the kernel clock.
 	 * @return OK after programming; NotInit before SetUp(); Error for zero or an
-	 *         unrepresentable divider; Busy while software TX or RX is active.
+	 *         unrepresentable divider or a source that is no longer ready;
+	 *         Busy while software TX or RX is active.
 	 *         Rejected calls leave BRR and the stored BaudRate unchanged.
 	 *
 	 * Writes BRR with UE=0, restores CR1 and stores the new BaudRate so it is
-	 * retained for a later setup. Uses the same rounded x16 divider as SetUp().
+	 * retained for a later setup. Uses the same rounded x16 divider and the same
+	 * constructor-selected source as SetUp(); the clock source is not changed.
 	 * @pre Caller has ensured physical TX completion via TC/OnTC(), RX is stopped,
 	 *      and the peer will not transmit while the UART is temporarily disabled.
 	 *      TX OK alone is insufficient: the final stop bit may still be active.
@@ -549,12 +588,17 @@ private:
 		const uint32_t* bus_clk;
 		IRQn_Type irq;
 #if defined(STM32F7) || defined(STM32G0)
-		uint32_t clock_select; ///< Clear this RCC selector mask to select PCLK.
+		uint32_t clock_select; ///< Two-bit RCC selector mask; zero means fixed PCLK.
 #endif
 	};
 	static const PeriphInfo usart_table[];
 	PIN _TX; ///< Optional TX pin and stored AF.
 	PIN _RX; ///< Optional RX pin and stored AF.
+#if defined(STM32F7) || defined(STM32G0)
+	const ClockSource _clock_source; ///< Constructor choice, retained across DeInit().
+#endif
+	/// Selected nominal kernel frequency; zero for an unavailable/not-ready source.
+	uint32_t KernelClock(const PeriphInfo& info) const;
 
 	/**
 	 * @brief Asynchronous transfer descriptor, initialized before enabling a source.
