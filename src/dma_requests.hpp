@@ -26,7 +26,15 @@
  * by more than one stream, the primary stream is named ::TX / ::RX and
  * the alternative is named ::TX_alt / ::RX_alt.
  *
- * CHSEL values: RM0090 Table 42 (F407) / RM0385 Table 8 (F7).
+ * Route tables are shared with peripheral consumers, not inferred from CHSEL
+ * alone: F4/F7 descriptors include the hardware stream as well.
+ * USART1 DMA2_Stream5/CH4 is RX_alt, never TX_alt. G0 USART3..6 and UART7/8
+ * request declarations are conditional on peripheral availability.
+ *
+ * CanUseRequest() compares a candidate against constructor selection; it neither
+ * claims the channel nor proves its route is valid for a particular peripheral.
+ * The consumer selects from its own allowed DMAReq entries before calling SetUp.
+ * See the selected device's DMA request map and the UART.md references.
  */
 
 #ifndef DMA_REQUESTS_H_
@@ -113,6 +121,22 @@ struct Req {
 					static constexpr DMAReq TX = { 51U }; };
 	struct Usart2 { static constexpr DMAReq RX = { 52U };
 					static constexpr DMAReq TX = { 53U }; };
+#ifdef USART3_BASE
+	struct Usart3 { static constexpr DMAReq RX = { 54U };
+					static constexpr DMAReq TX = { 55U }; };
+#endif
+#ifdef USART4_BASE
+	struct Usart4 { static constexpr DMAReq RX = { 56U };
+					static constexpr DMAReq TX = { 57U }; };
+#endif
+#ifdef USART5_BASE
+	struct Usart5 { static constexpr DMAReq RX = { 74U };
+					static constexpr DMAReq TX = { 75U }; };
+#endif
+#ifdef USART6_BASE
+	struct Usart6 { static constexpr DMAReq RX = { 76U };
+					static constexpr DMAReq TX = { 77U }; };
+#endif
 
 #elif defined(STM32F4) || defined(STM32F7)
 
@@ -121,7 +145,7 @@ struct Req {
 	struct Usart1 {
 		static constexpr DMAReq RX     = { DMA2_Stream2, 4U };
 		static constexpr DMAReq TX     = { DMA2_Stream7, 4U };
-		static constexpr DMAReq TX_alt = { DMA2_Stream5, 4U };  // Stream5 Ch4
+		static constexpr DMAReq RX_alt = { DMA2_Stream5, 4U };  // USART1_RX, not TX.
 	};
 	struct Usart2 {
 		static constexpr DMAReq RX = { DMA1_Stream5, 4U };
@@ -146,6 +170,18 @@ struct Req {
 		static constexpr DMAReq RX_alt = { DMA2_Stream2, 5U };  // Stream2 Ch5
 		static constexpr DMAReq TX_alt = { DMA2_Stream7, 5U };  // Stream7 Ch5
 	};
+#ifdef UART7_BASE
+	struct Uart7 {
+		static constexpr DMAReq TX = { DMA1_Stream1, 5U };
+		static constexpr DMAReq RX = { DMA1_Stream3, 5U };
+	};
+#endif
+#ifdef UART8_BASE
+	struct Uart8 {
+		static constexpr DMAReq TX = { DMA1_Stream0, 5U };
+		static constexpr DMAReq RX = { DMA1_Stream6, 5U };
+	};
+#endif
 
 	struct Spi1 {
 		static constexpr DMAReq RX     = { DMA2_Stream0, 3U };

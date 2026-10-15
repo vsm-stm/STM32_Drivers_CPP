@@ -1,3 +1,21 @@
+/**
+ * @file RingQueue.hpp
+ * @brief Fixed-storage FIFO with N-1 usable elements and no heap allocation.
+ *
+ * One slot distinguishes full from empty: RingQueue<int,4> stores three items.
+ * push/pop/size are O(1). Power-of-two N wraps by masking; otherwise an increment
+ * and comparison wrap the index, without run-time division.
+ *
+ * @code
+ *   RingQueue<int, 4> queue;
+ *   bool stored = queue.push(42);
+ *   int value;
+ *   if (queue.pop(value)) {
+ *       // Use value; 42 if the push succeeded.
+ *   }
+ * @endcode
+ * This is a single-context container, not an interrupt/main SPSC primitive.
+ */
 #ifndef RING_QUEUE_HPP
 #define RING_QUEUE_HPP
 
@@ -30,6 +48,10 @@ private:
 	}
 
 public:
+	/**
+	 * @brief Assign item into the next available slot.
+	 * @return false if full; content/order then remain unchanged.
+	 */
 	inline bool push(const T& item) {
 		size_t next = next_index(head);
 		if (next == tail) return false; // full
@@ -38,6 +60,11 @@ public:
 		return true;
 	}
 
+	/**
+	 * @brief Copy and remove the oldest item.
+	 * @return false if empty, leaving item_out unchanged.
+	 * Removal advances an index; it does not destroy/reset the stored slot.
+	 */
 	inline bool pop(T& item_out) {
 		if (tail == head) return false; // empty
 		item_out = buffer[tail];
@@ -47,6 +74,7 @@ public:
 
 	inline bool empty() const { return head == tail; }
 	inline bool full() const { return next_index(head) == tail; }
+	/// Current logical item count, 0..N-1.
 	inline size_t size() const {
 		if (head >= tail) return head - tail;
 		return N - tail + head; // wrap case

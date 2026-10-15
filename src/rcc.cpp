@@ -1,3 +1,11 @@
+/**
+ * @file rcc.cpp
+ * @brief Hardware application of the constant clock plan from rcc.hpp.
+ *
+ * System::WaitBits uses the running SysTick; it is not an instruction-count delay.
+ * One attempt is allowed per reset. Failures return InitError without pretending
+ * to restore a complete clock tree. No peripheral setup or dynamic retuning here.
+ */
 #include "rcc.hpp"
 
 uint32_t ClockSystem::HSESrcClk{0U};
@@ -6,6 +14,8 @@ namespace {
 using namespace RCCDefs;
 bool init_started = false;
 
+// Replace the complete latency field in one write, then confirm readback.
+// Apply calls this before an increase of HCLK and after a decrease.
 bool SetLatency(uint32_t latency)
 {
     const uint32_t value = latency << FLASH_ACR_LATENCY_Pos;
@@ -33,6 +43,8 @@ void SetPowerScale()
 #endif
 }
 
+// Voltage-scale acknowledgement and, when requested, the two overdrive stages.
+// F4/F7 call this after PLL enable; G0 checks VOSF independently of PLL.
 bool WaitPower(bool overdrive)
 {
 #if defined(STM32G0)
@@ -63,6 +75,8 @@ bool WaitPower(bool overdrive)
 #endif
 }
 
+// Enable only the oscillator required by the prepared source. LSE temporarily
+// unlocks backup-domain writes and restores the previous DBP permission.
 bool EnableSource(ClockSystem::SystemClockSource source, bool use_hse)
 {
     if (use_hse) {
@@ -97,6 +111,12 @@ bool EnableSource(ClockSystem::SystemClockSource source, bool use_hse)
 }
 }
 
+/**
+ * @brief Apply a compile-time validated plan, retaining unrelated RCC fields.
+ * Switch only the SW field, confirm SWS, then immediately restart SysTick with
+ * the final HCLK before any later timed wait. TIMPRE is forced to the x1/x2
+ * rule used by Prepare(), so the published timer clocks match hardware.
+ */
 SysInitStatus ClockSystem::Apply(const Prepared& config)
 {
     using namespace RCCDefs;

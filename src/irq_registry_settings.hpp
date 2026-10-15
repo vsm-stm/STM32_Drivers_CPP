@@ -1,3 +1,14 @@
+/**
+ * @file irq_registry_settings.hpp
+ * @brief Header-based capacities shared by IRQ_Registry and all consumers.
+ *
+ * Example: four G0 USART3..6 owners on one vector need IRQ_MAX_SHARED >= 4,
+ * plus capacity for any other registered owner of that shared line.
+ * IRQ_MAX_FUNCTION_HANDLERS limits plain-function adapters across all IRQs;
+ * object handlers use row slots but no function adapter. Exceeding either
+ * capacity makes Register return InitError, without a trap or dynamic allocation.
+ * Keep these definitions identical for generated table and consumer compilation.
+ */
 #ifndef IRQ_REGISTRY_SETTINGS_HPP
 #define IRQ_REGISTRY_SETTINGS_HPP
 

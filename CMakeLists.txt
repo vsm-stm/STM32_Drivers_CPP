@@ -195,6 +195,9 @@ stm32_drivers_module(CRC    SOURCES crc/crc32.c                       INCLUDE cr
 # as for every other one.
 stm32_drivers_module(DSP)
 
+# Example project.json: "drivers": ["MODBUS"] resolves UART and DMA automatically.
+# Request modules in project.json; do not patch this target's source list per project.
+# Header-only containers contribute include paths; DSP is fetched only if selected.
 # Resolve direct and transitive dependencies once, regardless of declaration order.
 # Keep the user's requested list unchanged, including its cache value.
 set(_stm32_pending ${STM32_DRIVERS_REQUESTED})
@@ -236,6 +239,8 @@ if("DSP" IN_LIST _stm32_modules)
 	FetchContent_MakeAvailable(cmsis_dsp)
 
 	set(_dsp "${cmsis_dsp_SOURCE_DIR}")
+	# This subset is FastMath + Controller + common tables, not the complete CMSIS-DSP.
+	# arm_pid_* is a separate recurrence-based controller from math/PID's variable-dT API.
 	# Individual kernels only: the aggregate *.c files include those same
 	# kernels again, and FastMathFunctionsF16.c bypasses the _f16.c filter.
 	file(GLOB _dsp_src

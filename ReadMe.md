@@ -61,7 +61,7 @@ Only **compilation** has been checked (release, one module at a time; F446RE, F7
 |---|---|---|---|---|
 | Core: System, RCC, GPIO, Flash, IRQ_Registry | `src/system.*`, `rcc.*`, `gpio.*`, `flash.*`, `irq_registry.*` | ok | ok | ok |
 | UART, SPI, TIM | `src/uart.*`, `spi.*`, `tim.*` | ok | not tested | ok |
-| DMA | `src/dma.*` | ok | not tested | **error**: `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (on G071 the vector is `Ch4_7`) |
+| DMA | `src/dma.*` | revised, not rebuilt | revised, not rebuilt | device-specific channel/IRQ table fixed; not rebuilt |
 | RTC | `src/rtc.*` | **not ported** (`ICSR`) | not ported | ok |
 | ADC | `src/adc.*` | **not ported** (`SMPL::CYC_12_5`) | not tested | **error**: `ADC1_IRQn` |
 | DAC | `src/dac.*` | **error**: `SYS_StatusTypeDef` not defined | not tested | not tested |
@@ -71,7 +71,7 @@ Only **compilation** has been checked (release, one module at a time; F446RE, F7
 | DSP | subset of CMSIS-DSP v1.16.2 | ok | not tested | not tested |
 | CRC | `crc/crc32.*` (no tables, no HW peripheral — portable to any family) | ok | ok | ok |
 
-The list of known gaps (RTC/ADC/DAC, DMA on G071) is tracked as a backlog — they ship into the release "as is".
+The list of known gaps (RTC/ADC/DAC) is tracked as a backlog — they ship into the release "as is". DMA changes and remaining integration work are tracked in [Review/DMA.md](Review/DMA.md).
 
 Families other than F4 / F7 / G0 (including G4) are not supported by the drivers: set `"drivers": null` and write directly against the registers, or port the library (see "Adding a new MCU").
 
@@ -181,7 +181,8 @@ assumption and does not restore the hardware clock configuration.
 The base defines `STM32_STARTUP_ENABLES_FPU`, so `System::Init()` skips the FPU
 setup already performed by startup. With another startup, omit this definition
 unless it initializes FPU itself. On F7 the core caches remain enabled;
-cache maintenance will be added to DMA drivers during their individual reviews.
+System provides common cache operations; peripheral drivers will call them
+during buffer handover as their individual reviews are completed.
 MPU region setup and external-memory access permissions are described in
 [System.md](System.md#mpu-on-stm32f7).
 
@@ -224,6 +225,12 @@ F7 projects can reserve non-cacheable DMA buffers through the base's
 Addresses are automatic; startup zeros the buffers, and `System::Init()` applies
 their MPU attributes before enabling D-cache. Place buffers in `.dma.<name>`.
 For the configuration, limits and initialization order, see [System.md](System.md).
+
+Shared cache operations are `System::CacheClean`, `CacheInvalidate` and
+`CacheCleanInvalidate` (address + byte count). F7 skips ranges wholly inside
+configured non-cacheable DMA areas; F4/G0/L0 use inline no-ops. The peripheral
+driver decides when to call them; direct DMA users do so themselves. RX buffers
+must own every affected 32-byte cache line. See [System.md](System.md).
 
 ### Bus frequency variables
 
@@ -458,6 +465,21 @@ after changing settings; see the detailed documentation for template updates.
 
 Supports F4/F7 (streams, `DMA_Stream_TypeDef`) and G0 (channels, `DMA_Channel_TypeDef`). The API is identical for both families.
 
+`SetUp()` accepts zero count/addresses for preparation without starting DMA.
+It rejects repeated setup of an owned channel, invalid register fields,
+misaligned addresses and counts above 65535. `SetCount()` accepts 1..65535
+elements. Address/count setters return `NotInit` before setup, `Busy` while
+EN is set, and `Error` for invalid arguments; check their results.
+
+`Stream_EN(DISABLE)` waits for EN=0 without a timeout. `Release()` stops and
+resets the owned resource, then releases it; constructor selection is retained.
+Before release, disable the peripheral's DMA requests and unregister its own
+handler. Shared NVIC lines and controller clocks remain enabled. SetUp/Release
+are used from the main loop. Each configured object belongs to one consumer.
+
+Cache operations live in `System`; the consuming peripheral driver chooses
+their timing and range. Integration into the remaining consumers is pending.
+
 ### Constructor (STM32G0)
 
 On G0, DMAMUX1 lets you connect any channel to any peripheral. The user picks the channel; the request comes from the `Req::` table:
@@ -468,7 +490,7 @@ DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
 DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
 
 // Option 2: channel + raw DMAMUX1 request ID
-DMA_Sx dma(DMA1_Channel3, 48u);
+DMA_Sx dma(DMA1_Channel3, 51u); // USART1_TX
 
 // Option 3: channel without a request (ID supplied later via StreamSettings)
 DMA_Sx dma(DMA1_Channel3);
@@ -480,7 +502,7 @@ On F4, the stream and CHSEL are hard-wired to the peripheral:
 
 ```cpp
 DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX);       // DMA2, Stream7, CH4
-DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX_alt);   // alternative stream
+DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_alt);   // DMA2, Stream5, CH4: alternate RX
 ```
 
 ### Configuration via StreamSettings
@@ -532,7 +554,7 @@ void HandleIRQ() override {
 |---|---|
 | `From_Per` | Peripheral → Memory |
 | `To_Per` | Memory → Peripheral |
-| `Mem_To_Mem` | Memory → Memory |
+| `Mem_To_Mem` | Memory → Memory on G0; F4/F7 return `InitError` |
 
 ### Element width
 
@@ -550,6 +572,11 @@ void HandleIRQ() override {
 | CH2, CH3 | `DMA1_Channel2_3_IRQn` (shared) |
 | CH4, CH5 | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (shared) |
 
+The last row applies to five-channel models. Seven-channel DMA1 models use
+`DMA1_Ch4_7_DMAMUX1_OVR_IRQn`; models with DMA2 use
+`DMA1_Ch4_7_DMA2_Ch1_5_DMAMUX1_OVR_IRQn` for DMA1 CH4–7 and DMA2 CH1–5.
+The driver selects the channel count and vector from the device header.
+
 Two channels on one vector is not a problem: `IRQ_Registry` supports a chain of handlers.
 
 ---
@@ -558,6 +585,17 @@ Two channels on one vector is not a problem: `IRQ_Registry` supports a chain of 
 
 **Files:** `uart.hpp`, `uart.cpp`, `uart_defs.hpp`
 **Details:** [UART.md](UART.md)
+
+UART now uses PCLK and oversampling x16, validates BRR, and returns SysStatus from
+SetBaud(). Zero transfer length is Error; IRQ/DMA lengths are 1..65535 bytes.
+Before SetBaud(), the caller waits for physical TX completion (TC/OnTC); Busy
+checks software operations only. No additional TX tracking field is used.
+AttachDMA() returns SysInitStatus and validates DMAReq routes. IDLE stops RX DMA
+before counting/reading the packet. F7 cache handover uses System helpers, which
+skip configured non-cacheable DMA regions.
+GetDataReceivedCount() no longer clears ready/count: call ClearDataReceivedFlag()
+after consuming the packet. Errors stop the affected operation and call OnError(mask).
+Modbus adaptation to the explicit flag reset is deferred to its module review.
 
 ### Basic usage
 
@@ -600,22 +638,23 @@ uart.IRQ_en(USART::IRQ::RXNE, ENABLE);   // enable the RXNE interrupt
 uart.IRQ_en(USART::IRQ::TXE, DISABLE);   // disable the TXE interrupt
 ```
 
-On the first `IRQ_en(..., ENABLE)` — the object registers itself in `IRQ_Registry` and enables the NVIC.
-On the last `IRQ_en(..., DISABLE)` — it unregisters and disables the NVIC.
+`SetUp()` registers the UART IRQ once. `IRQ_en()` changes only peripheral sources,
+including from callbacks. `DeInit()` removes only this object's registrations; shared
+handlers remain registered.
 
 ### Custom interrupt handling (inheritance)
 
 ```cpp
 class MyUART : public USART {
     using USART::USART;  // inherit the constructor
-    void OnRxByte(uint8_t b) override { ring_buf.push(b); }
-    void OnIdle()            override { process_packet();  }
+    void OnRxByte(uint8_t b) override { USART::OnRxByte(b); ring_buf.push(b); }
+    void OnIdle() override { USART::OnIdle(); process_packet(); }
 };
 
 MyUART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
-### Changing the baud rate on the fly
+### Changing baud between transfers
 
 ```cpp
 uart.SetBaud(9600);
@@ -1127,7 +1166,7 @@ system.hpp
 |---|---|---|---|---|
 | Ядро: System, RCC, GPIO, Flash, IRQ_Registry | `src/system.*`, `rcc.*`, `gpio.*`, `flash.*`, `irq_registry.*` | ок | ок | ок |
 | UART, SPI, TIM | `src/uart.*`, `spi.*`, `tim.*` | ок | не проверялось | ок |
-| DMA | `src/dma.*` | ок | не проверялось | **ошибка**: `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (у G071 вектор `Ch4_7`) |
+| DMA | `src/dma.*` | исправлен, сборка не запускалась | исправлен, сборка не запускалась | таблица каналов/IRQ уточнена по МК; сборка не запускалась |
 | RTC | `src/rtc.*` | **не портирован** (`ICSR`) | не портирован | ок |
 | ADC | `src/adc.*` | **не портирован** (`SMPL::CYC_12_5`) | не проверялось | **ошибка**: `ADC1_IRQn` |
 | DAC | `src/dac.*` | **ошибка**: `SYS_StatusTypeDef` не определён | не проверялось | не проверялось |
@@ -1137,7 +1176,7 @@ system.hpp
 | DSP | подмножество CMSIS-DSP v1.16.2 | ок | не проверялось | не проверялось |
 | CRC | `crc/crc32.*` (без таблиц, без HW-периферии — переносимо на любое семейство) | ок | ок | ок |
 
-Список известных недоработок (RTC/ADC/DAC, DMA на G071) ведётся как бэклог — в релиз они входят «как есть».
+Список известных недоработок (RTC/ADC/DAC) ведётся как бэклог — в релиз они входят «как есть». Правки DMA и оставшаяся интеграция отмечены в [Review/DMA.md](Review/DMA.md).
 
 Семейства, отличные от F4 / F7 / G0 (в т.ч. G4), драйверами не поддерживаются: ставьте `"drivers": null` и пишите под регистры, либо портируйте (см. «Добавление нового МК»).
 
@@ -1251,7 +1290,8 @@ G0 также возвращает VOS Range 1 перед Flash 0 WS.
 Base определяет `STM32_STARTUP_ENABLES_FPU`: `System::Init()` пропускает настройку
 FPU, выполненную startup. При другом startup уберите это определение, если он
 сам не включает FPU. На F7 кеши ядра остаются включёнными; обслуживание кеша
-добавим в DMA-драйверы при их отдельном разборе. Настройка MPU и разрешение
+реализовано общими функциями System, которые подключим в периферии при её
+разборе. Настройка MPU и разрешение
 доступа к внешней памяти описаны в [System.md](System.md#mpu-на-stm32f7).
 
 ### Работа со временем
@@ -1293,6 +1333,13 @@ SWO настраивается в отладчике. `SetDebugOutput()` уда�
 автоматически; startup обнуляет буферы, а `System::Init()` настраивает MPU до
 включения D-cache. Буферы размещаются в `.dma.<name>`. Настройка, ограничения
 и порядок инициализации описаны в [System.md](System.md).
+
+Общие операции кеша — `System::CacheClean`, `CacheInvalidate` и
+`CacheCleanInvalidate` (адрес + размер в байтах). На F7 диапазон целиком внутри
+настроенной некешируемой DMA-области пропускается; на F4/G0/L0 функции пустые
+и определены inline. Периферийный драйвер определяет момент вызова; при прямом
+использовании DMA это делает пользователь. RX-буфер должен владеть всеми
+затронутыми 32-байтными строками кеша. Подробнее — [System.md](System.md).
 
 ### Переменные частот шин
 
@@ -1530,6 +1577,22 @@ Register/Unregister запрещены из HandleIRQ и его callback. Изм
 
 Поддерживает F4/F7 (потоки, `DMA_Stream_TypeDef`) и G0 (каналы, `DMA_Channel_TypeDef`). API идентичен для обоих семейств.
 
+`SetUp()` допускает нулевые счётчик/адреса для настройки без запуска. Повторная
+настройка занятого канала, некорректные поля регистров, невыровненные адреса
+и счётчик больше 65535 возвращают ошибку. `SetCount()` принимает 1..65535
+элементов. Методы адресов/счётчика возвращают `NotInit` до настройки, `Busy`
+при установленном EN и `Error` для неверных аргументов; проверяйте результат.
+
+`Stream_EN(DISABLE)` ждёт EN=0 без таймаута. `Release()` останавливает и
+сбрасывает принадлежащий объекту ресурс, затем снимает занятость; выбор из
+конструктора сохраняется. До освобождения отключите DMA-запросы периферии
+и удалите её обработчик. Общая линия NVIC и тактирование контроллера остаются
+включёнными. SetUp/Release вызываются из mainloop. Один настроенный объект
+используется одним потребителем.
+
+Операции кеша находятся в `System`; периферийный драйвер определяет их момент
+и диапазон. Подключение в остальных потребителях выполняется при их разборе.
+
 ### Конструктор (STM32G0)
 
 На G0 DMAMUX1 позволяет подключить любой канал к любой периферии. Канал выбирает пользователь, запрос — из таблицы `Req::`:
@@ -1540,7 +1603,7 @@ DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
 DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
 
 // Вариант 2: канал + сырой ID запроса DMAMUX1
-DMA_Sx dma(DMA1_Channel3, 48u);
+DMA_Sx dma(DMA1_Channel3, 51u); // USART1_TX
 
 // Вариант 3: канал без запроса (ID передаётся позже через StreamSettings)
 DMA_Sx dma(DMA1_Channel3);
@@ -1552,7 +1615,7 @@ DMA_Sx dma(DMA1_Channel3);
 
 ```cpp
 DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX);       // DMA2, Stream7, CH4
-DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX_alt);   // альтернативный поток
+DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_alt);   // DMA2, Stream5, CH4: альтернативный RX
 ```
 
 ### Настройка через StreamSettings
@@ -1604,7 +1667,7 @@ void HandleIRQ() override {
 |---|---|
 | `From_Per` | Периферия → Память |
 | `To_Per` | Память → Периферия |
-| `Mem_To_Mem` | Память → Память |
+| `Mem_To_Mem` | Память → Память на G0; на F4/F7 — `InitError` |
 
 ### Ширина элемента
 
@@ -1622,6 +1685,11 @@ void HandleIRQ() override {
 | CH2, CH3 | `DMA1_Channel2_3_IRQn` (общий) |
 | CH4, CH5 | `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` (общий) |
 
+Последняя строка относится к моделям с пятью каналами. Для DMA1 с семью
+каналами используется `DMA1_Ch4_7_DMAMUX1_OVR_IRQn`; при наличии DMA2 —
+`DMA1_Ch4_7_DMA2_Ch1_5_DMAMUX1_OVR_IRQn` для DMA1 CH4–7 и DMA2 CH1–5.
+Драйвер выбирает состав каналов и вектор по заголовку выбранного МК.
+
 Два канала на одном векторе — не проблема: `IRQ_Registry` поддерживает цепочку обработчиков.
 
 ---
@@ -1630,6 +1698,17 @@ void HandleIRQ() override {
 
 **Файлы:** `uart.hpp`, `uart.cpp`, `uart_defs.hpp`
 **Подробнее:** [UART.md](UART.md)
+
+UART использует PCLK и oversampling x16, проверяет BRR; SetBaud() возвращает SysStatus.
+Перед SetBaud() вызывающий код ждёт физического завершения TX (TC/OnTC).
+Busy проверяет только программные операции; дополнительного поля контроля TX нет.
+Нулевая длина — Error, IRQ/DMA — 1..65535 байт. AttachDMA() возвращает SysInitStatus
+и проверяет маршрут DMAReq. IDLE останавливает RX DMA до чтения счётчика и пакета.
+Кеш F7 обслуживается через System; для настроенных некешируемых DMA-областей
+кешевые операции пропускаются.
+GetDataReceivedCount() больше не сбрасывает флаг/счётчик: после обработки нужен
+ClearDataReceivedFlag(). Ошибка останавливает свою операцию и вызывает OnError(mask).
+Адаптация Modbus к явному сбросу флага оставлена для разбора этого модуля.
 
 ### Базовое использование
 
@@ -1672,22 +1751,23 @@ uart.IRQ_en(USART::IRQ::RXNE, ENABLE);   // включить RXNE-прерыва
 uart.IRQ_en(USART::IRQ::TXE, DISABLE);   // выключить TXE-прерывание
 ```
 
-При первом `IRQ_en(..., ENABLE)` — объект сам регистрируется в `IRQ_Registry` и включает NVIC.  
-При последнем `IRQ_en(..., DISABLE)` — отменяет регистрацию и выключает NVIC.
+`SetUp()` один раз регистрирует UART IRQ. `IRQ_en()` меняет только источники
+периферии, в том числе из callback. `DeInit()` удаляет только свои регистрации,
+сохраняя обработчики других устройств на общем IRQ.
 
 ### Собственная обработка прерываний (наследование)
 
 ```cpp
 class MyUART : public USART {
     using USART::USART;  // наследуем конструктор
-    void OnRxByte(uint8_t b) override { ring_buf.push(b); }
-    void OnIdle()            override { process_packet();  }
+    void OnRxByte(uint8_t b) override { USART::OnRxByte(b); ring_buf.push(b); }
+    void OnIdle() override { USART::OnIdle(); process_packet(); }
 };
 
 MyUART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
-### Изменение baudrate на лету
+### Изменение baudrate между обменами
 
 ```cpp
 uart.SetBaud(9600);

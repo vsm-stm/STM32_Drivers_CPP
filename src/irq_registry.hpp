@@ -1,3 +1,12 @@
+/**
+ * @file irq_registry.hpp
+ * @brief Fixed-capacity dispatch of shared peripheral IRQs to objects/functions.
+ *
+ * The generated irq_registry_config.h defines the device-sized table and vector
+ * stubs. Each stub calls Dispatch(irqn); application code does not duplicate it.
+ * Every registered handler must test its own enabled hardware sources and clear
+ * them. Registration neither enables peripheral sources nor changes NVIC.
+ */
 #ifndef IRQ_REGISTRY_HPP
 #define IRQ_REGISTRY_HPP
 
@@ -30,7 +39,34 @@ public:
  * or locks. Unregister removes pointers; it does not change NVIC or hardware.
  *
  * Settings are in irq_registry_settings.hpp. Function adapters use a separate
- * static pool; no heap allocation is performed. See IRQ_Registry.md.
+ * static pool; no heap allocation is performed. Change capacity in that header
+ * and rebuild every translation unit using the registry; not through CMakeLists.
+ *
+ * Object registration example (peripheral setup/flag acknowledgement omitted):
+ * @code
+ *   struct Handler : IIRQHandler {
+ *       void HandleIRQ() override {
+ *           // Check enabled sources of the owned peripheral and acknowledge them.
+ *       }
+ *   };
+ *   static Handler handler;
+ *   bool enabled = NVIC_GetEnableIRQ(USART1_IRQn) != 0;
+ *   NVIC_DisableIRQ(USART1_IRQn);
+ *   SysInitStatus result = IRQ_Registry::Register(USART1_IRQn, &handler);
+ *   if (result == SysInitStatus::InitOK || enabled) NVIC_EnableIRQ(USART1_IRQn);
+ * @endcode
+ *
+ * Removing only that owner, preserving other handlers on the shared vector:
+ * @code
+ *   // Stop this peripheral's sources first, in main.
+ *   bool enabled = NVIC_GetEnableIRQ(USART1_IRQn) != 0;
+ *   NVIC_DisableIRQ(USART1_IRQn);
+ *   IRQ_Registry::Unregister(USART1_IRQn, &handler);
+ *   if (enabled && IRQ_Registry::HasHandlers(USART1_IRQn))
+ *       NVIC_EnableIRQ(USART1_IRQn);
+ * @endcode
+ * Peripheral drivers that register themselves must not be registered again by
+ * application code. See IRQ_Registry.md for shared-vector capacity and ownership.
  */
 class IRQ_Registry
 {
@@ -40,14 +76,21 @@ public:
 	/// Maximum registrations on one IRQ, default 3 in the settings header.
 	static constexpr int MAX_PER_IRQ = IRQ_MAX_SHARED;
 
-	/// Plain function; ctx is passed unchanged on every invocation.
+	/**
+	 * @brief Non-member callback signature; ctx is passed unchanged on each IRQ.
+	 * It can point to application state, or be nullptr. The registry does not own
+	 * that storage. Function identity is fn alone on a given IRQ, not fn+ctx.
+	 */
 	using IRQHandlerFn = void (*)(void* ctx);
 
 	/**
 	 * @brief Register an object in the first free slot of irqn.
 	 * @return InitOK on insertion; InitError for an invalid IRQ, null pointer,
 	 *         duplicate object on this IRQ or a full row. No debug trap.
+	 * @param irqn External device IRQ; negative core exception numbers are rejected.
+	 * @param handler Live object pointer; its lifetime covers the registration.
 	 * @note To replace a registration, first Unregister(irqn, handler).
+	 *       The same object may be registered once on each of several IRQs.
 	 */
 	static SysInitStatus Register(IRQn_Type irqn, IIRQHandler* handler);
 
@@ -58,16 +101,41 @@ public:
 	 * @note A different ctx does not permit registering the same fn twice
 	 *       on one IRQ. Change fn/ctx through Unregister followed by Register.
 	 *       ctx may be nullptr; pointed-to data must remain valid while registered.
+	 *
+	 * @code
+	 *   static uint32_t count = 0;
+	 *   auto callback = +[](void* context) {
+	 *       // Test and acknowledge the peripheral source before counting it.
+	 *       auto* value = static_cast<uint32_t*>(context);
+	 *       ++*value;
+	 *   };
+	 *   // In main, with the affected IRQ masked:
+	 *   auto status = IRQ_Registry::Register(USART1_IRQn, callback, &count);
+	 *   // A new ctx still requires Unregister(USART1_IRQn, callback) first.
+	 * @endcode
 	 */
 	static SysInitStatus Register(IRQn_Type irqn, IRQHandlerFn fn, void* ctx = nullptr);
 
-	/// Explicitly clear the whole IRQ row; also release its function adapters.
+	/**
+	 * @brief Remove every handler on this IRQ and release its function adapters.
+	 * Use only when deliberately owning the entire vector. For a shared line,
+	 * use an object/function overload to avoid removing another peripheral.
+	 * Invalid IRQ is ignored; hardware/NVIC are not changed.
+	 */
 	static void Unregister(IRQn_Type irqn);
 
-	/// Remove only this object; the other handlers on irqn remain registered.
+	/**
+	 * @brief Remove only the matching object from this IRQ.
+	 * Other handlers remain. Null/missing object or invalid IRQ is ignored.
+	 * Removing one registration does not remove this object from its other IRQs.
+	 */
 	static void Unregister(IRQn_Type irqn, IIRQHandler* handler);
 
-	/// Remove only this function and release its adapter; ctx is not an identity.
+	/**
+	 * @brief Remove only this function and release its adapter on this IRQ.
+	 * ctx is not an identity and is not required to unregister. Other vectors
+	 * using the same fn retain their registrations. Missing fn is ignored.
+	 */
 	static void Unregister(IRQn_Type irqn, IRQHandlerFn fn);
 
 	/// Return whether any handler remains on irqn; invalid IRQs return false.

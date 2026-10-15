@@ -1,3 +1,12 @@
+/**
+ * @file flash.cpp
+ * @brief Blocking Flash operations and fixed-stride single-sector journal.
+ *
+ * The driver never masks interrupts. SysTick-based waits can be delayed by
+ * same-bank instruction/vector fetch stalls; timeout is not hardware cancellation.
+ * Destination cache invalidation prevents stale Flash reads; F4/G0 accelerator
+ * resets are distinct from Cortex-M7 SRAM/data-cache range maintenance.
+ */
 #include "flash.hpp"
 
 namespace {
@@ -87,6 +96,8 @@ constexpr uint32_t operation_mask = FLASH_CR_PG | erase_bit | sector_mask | mass
 #endif
     ;
 
+// Wait for the physical operation, report controller errors, then on G0 confirm
+// that CR is writable (CFGBSY clear) using the remainder of the same time budget.
 SysStatus wait_operation()
 {
 #if defined(STM32G0)
@@ -145,6 +156,8 @@ void invalidate_flash(uint32_t addr, uint32_t bytes)
     __ISB();
 }
 
+// Derive each selected bank's address span from the generated sector rows.
+// Never assume equal contiguous bank sizes in this helper.
 void invalidate_banks(uint8_t banks)
 {
     for (uint32_t bank = 1U; bank <= 2U; ++bank) {
@@ -281,6 +294,9 @@ SysStatus flash_base::mass_erase(uint8_t bank)
     return completed;
 }
 
+// Physical-width programming only. Locally copy source bytes rather than casting
+// potentially unaligned RAM; G0's final partial doubleword is padded with FF.
+// Cache/CR cleanup after Timeout is permitted only once hardware is ready.
 template<uint32_t width>
 SysStatus flash_base::program(uint32_t addr, const void* data, uint32_t bytes)
 {
@@ -427,6 +443,9 @@ SysStatus flash_data::write_data()
     return result;
 }
 
+// Continue past invalid/incomplete slots after a good record. offset retains the
+// last valid commit; next_offset follows the last occupied slot of any status.
+// FF inside payload/padding is irrelevant because the scan always steps by stride.
 void flash_data::find_offset()
 {
     offset = 0;

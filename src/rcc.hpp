@@ -1,3 +1,49 @@
+/**
+ * @file rcc.hpp
+ * @brief Compile-time clock configuration and one hardware application on F4/F7/G0.
+ *
+ * Config is a C++20 structural value passed to Init<config>(). Prepare() calculates
+ * PLL register fields, bus/timer clocks, Flash latency and SysTick reload during
+ * compilation. static_assert reports invalid configurations; run-time code waits
+ * for hardware ready flags and applies the prepared register values.
+ *
+ * Initialize System first, while HSI /1 and a serviceable SysTick are available.
+ * Configure clocks once before peripheral setup. Reconfiguration and retry after
+ * a failed hardware initialization are not supported; reset before another attempt.
+ * Device limits assume VDD=3.0 V (also the 3.3 V timing band); see rcc_defs.hpp.
+ *
+ * Automatic exact nominal SYSCLK example:
+ * @code
+ *   constexpr auto clocks = ClockSystem::CalcPLL(
+ *       64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+ *   if (System::Init() != SysInitStatus::InitOK)
+ *       System::DebugTrap("System init");
+ *   if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+ *       System::DebugTrap("Clock hardware timeout");
+ * @endcode
+ *
+ * Direct HSE example (the selected MCU/board must support an 8 MHz HSE):
+ * @code
+ *   constexpr ClockSystem::Config clocks{
+ *       .ClkSrc = ClockSystem::SystemClockSource::HSE,
+ *       .HSE_Clk = 8 * MHz
+ *   };
+ *   // After System::Init(): ClockSystem::Init<clocks>().
+ * @endcode
+ *
+ * Manual G0 PLL example, SYSCLK=16 MHz / 1 * 8 / 2 = 64 MHz:
+ * @code
+ *   constexpr ClockSystem::Config clocks{
+ *       .ClkSrc = ClockSystem::SystemClockSource::PLL,
+ *       .PLLCfgr = {
+ *           .PLL_ClkSrc = ClockSystem::PLL_ClockSource::HSI,
+ *           .PLL_M = 1, .PLL_N = 8, .PLL_P = 2, .PLL_Q = 2, .PLL_R = 2
+ *       }
+ *   };
+ * @endcode
+ * The manual example is G0-specific; F4/F7 coefficients have different limits
+ * and use PLL_P for the usual SYSCLK output. No USB/audio clock setup is implied.
+ */
 #ifndef RCC_H_
 #define RCC_H_
 
@@ -9,6 +55,11 @@
 class ClockSystem
 {
 public:
+    /**
+     * @brief Encoded RCC SYSCLK selection, not a frequency value.
+     * F4/F7 PLL normally selects P; PLL_R exists only on devices exposing it.
+     * G0 PLL selects R; LSE/LSI can also supply SYSCLK.
+     */
     enum class SystemClockSource : uint32_t {
 #if defined(STM32F4) || defined(STM32F7)
         HSI = RCC_CFGR_SW_HSI, HSE = RCC_CFGR_SW_HSE, PLL = RCC_CFGR_SW_PLL,
@@ -21,25 +72,37 @@ public:
 #endif
     };
 
+    /// HPRE field encodings; DIV8 is a divide-by-eight choice, not numeric value 8.
     enum class AHB_Divider : uint32_t {
         DIV1 = 0, DIV2 = 8, DIV4 = 9, DIV8 = 10, DIV16 = 11,
         DIV64 = 12, DIV128 = 13, DIV256 = 14, DIV512 = 15,
     };
+    /// PPRE field encodings. Timer clock is PCLK for /1 and 2*PCLK otherwise.
     enum class APB_Divider : uint32_t {
         DIV1 = 0, DIV2 = 4, DIV4 = 5, DIV8 = 6, DIV16 = 7,
     };
+    /// PLL input selection; NO is invalid when a PLL output supplies SYSCLK.
     enum class PLL_ClockSource : uint32_t {
         NO = 0xFFFFFFFFU, HSI = RCC_PLLCFGR_PLLSRC_HSI, HSE = RCC_PLLCFGR_PLLSRC_HSE,
     };
 
+    /**
+     * @brief AHB/APB prescalers. Defaults are /1; APB2 is ignored on G0.
+     * Manual Config must choose bus clocks within the selected device limits.
+     */
     struct BusDividers {
         AHB_Divider AHB_div = AHB_Divider::DIV1;
         APB_Divider APB1_div = APB_Divider::DIV1;
         APB_Divider APB2_div = APB_Divider::DIV1; // Ignored on G0 (no APB2).
     };
 
-    // Numeric divisors, not encoded register fields. R is ignored when absent.
-    // G0 configures the P/Q divisors where present, but enables only the R output.
+    /**
+     * @brief Numeric PLL coefficients, not their encoded register bit patterns.
+     * M divides the source, N multiplies it, P/Q/R divide the VCO.
+     * F4/F7 normally use P for SYSCLK; R is ignored when absent.
+     * G0 configures P/Q divisors where present but enables only the R output.
+     * These defaults are placeholders, not an automatically chosen board clock.
+     */
     struct PLL_CFGR {
         PLL_ClockSource PLL_ClkSrc = PLL_ClockSource::NO;
         uint8_t PLL_M = 2U;
@@ -49,6 +112,11 @@ public:
         uint8_t PLL_R = 2U;
     };
 
+    /**
+     * @brief Complete nominal clock request evaluated by Init<config>().
+     * HSE_Clk is in Hz and used only if HSE supplies SYSCLK or the active PLL.
+     * PLLCfgr is ignored for direct HSI/HSE/LSE/LSI clocking.
+     */
     struct Config {
         SystemClockSource ClkSrc = SystemClockSource::HSI;
         uint32_t HSE_Clk = 0U; // Nominal Hz; read only if HSE actually supplies SYSCLK/PLL.
@@ -56,15 +124,38 @@ public:
         PLL_CFGR PLLCfgr{};    // Ignored unless ClkSrc selects a PLL output.
     };
 
-    // Exact nominal SYSCLK, AHB /1, fastest APB clocks within the device limits.
-    // Among exact solutions prefer the smallest M (highest PLL input), then the
-    // smallest P/R. No solution is represented by M=0; Init<config>() diagnoses it.
+    /**
+     * @brief Search for an exact nominal SYSCLK configuration without rounding a target.
+     * @param frequency Requested SYSCLK in Hz; AHB remains /1.
+     * @param source HSI or HSE; hse_clock must describe the board when HSE is used.
+     * @param hse_clock Nominal external oscillator frequency in Hz, otherwise zero.
+     * @param pll_q Numeric Q divider, subject to device validation.
+     * @return Config using the fastest valid APB clocks; PLL_M=0 if no solution.
+     *
+     * Search M ascending to maximize the PLL comparison frequency, then prefer
+     * the smallest P/R output divisor. The choice is deterministic and preserves
+     * the intended low-jitter preference. It does not measure oscillator error
+     * or guarantee a 48 MHz USB/Q output. If no exact solution exists, provide
+     * a manual Config with deliberate coefficients; Init diagnoses an invalid one.
+     * Use a constexpr result with Init<config>() to keep calculation out of firmware.
+     */
     static constexpr Config CalcPLL(uint32_t frequency, PLL_ClockSource source,
                                     uint32_t hse_clock = 0U, uint8_t pll_q = 2U);
 
-    // Compile-time checks run for both automatic and manual configurations.
-    // System::Init() must precede this call: HSI /1 and serviceable SysTick.
-    // A second attempt, including after a hardware timeout, returns InitError.
+    /**
+     * @brief Validate a constant Config and apply it once to hardware.
+     * @tparam config Automatic or manual C++20 constant configuration.
+     * @return InitOK after switching and publishing clocks; InitError for a
+     *         repeated attempt or hardware-ready timeout. Configuration errors
+     *         are compilation errors, not a run-time InitError.
+     * @pre Successful System::Init(), HSI /1, working SysTick; call before drivers.
+     *
+     * Raises Flash latency before raising HCLK, lowers it only after switching
+     * to the lower clock, and publishes System bus/timer clocks and SysTick.
+     * A timeout can leave partial hardware changes; no automatic rollback/retry.
+     * With an integer SysTick reload, some clocks cannot produce exactly 1 ms:
+     * G0 LSE /1 uses 32 cycles per tick (1024 ticks/s), so GetTick is nominal.
+     */
     template<Config config>
     static SysInitStatus Init()
     {
@@ -79,10 +170,18 @@ public:
         return Apply(prepared);
     }
 
+    /// Nominal HSE input used by the completed clock setup; zero if unused/not published.
     static uint32_t GetHSEClock() noexcept { return HSESrcClk; }
 
 private:
     enum class Error : uint8_t { None, Source, HSE, PLL, VCO, Divider, Frequency, Tick };
+    /**
+     * @brief Compiler-produced register words and derived clock/tick values.
+     * Rational frequencies are checked before integer division; reported integer
+     * clocks/reload use truncation. Apply() consumes this result without rerunning
+     * the configuration search. hsi_* values keep timeout ticks usable while
+     * applying bus dividers before the final SYSCLK switch.
+     */
     struct Prepared {
         Error error = Error::None;
         SystemClockSource source = SystemClockSource::HSI;
@@ -137,6 +236,8 @@ constexpr ClockSystem::APB_Divider ClockSystem::SelectAPB(uint32_t hclk, uint32_
     return static_cast<APB_Divider>(0xFFFFFFFFU);
 }
 
+// Validate source-specific coefficients and limits before constructing register
+// words. This is constexpr implementation shared by manual Init and CalcPLL.
 constexpr ClockSystem::Prepared ClockSystem::Prepare(const Config& config)
 {
     using namespace RCCDefs;

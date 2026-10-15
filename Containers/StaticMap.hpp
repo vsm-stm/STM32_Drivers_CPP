@@ -1,3 +1,23 @@
+/**
+ * @file StaticMap.hpp
+ * @brief Unordered fixed-storage unique-key map with linear lookup.
+ *
+ * insert/find/erase/clear are O(N); size/capacity are O(1). No heap or hashing.
+ * Re-inserting an existing key replaces its value even when the map is full.
+ *
+ * @code
+ *   StaticMap<int, int, 4> map;
+ *   map.insert(1, 10);
+ *   map.insert(1, 20); // Replacement: size remains one.
+ *   if (int* value = map.find(1)) *value = 30;
+ *   for (size_t i = 0; i < map.capacity(); ++i) {
+ *       const auto& entry = map.raw_entries()[i];
+ *       if (entry.used) { // Only occupied key/value fields may be inspected.
+ *           // Use entry.key and entry.value.
+ *       }
+ *   }
+ * @endcode
+ */
 #ifndef STATIC_MAP_HPP
 #define STATIC_MAP_HPP
 
@@ -43,7 +63,10 @@ private:
 	size_t used_count = 0;
 
 public :
-	/** @return false only when k is new and the map is full. */
+	/**
+	 * @brief Insert a new pair or assign the value for an equal existing key.
+	 * @return false only if k is new and capacity is exhausted; no mutation then.
+	 */
 	bool insert(const Key &k, const Value &v) {
 		if (auto existing = find_entry(k)) {
 			existing->value = v;
@@ -61,11 +84,13 @@ public :
 		return false;
 	}
 
+	/// Pointer to live value, or nullptr; invalidated when this key is erased/cleared.
 	Value* find(const Key& k) {
 		auto entry = find_entry(k);
 		return entry ? &entry->value : nullptr;
 	}
 
+	/// Mark the matching slot unused and decrement size; false when absent.
 	bool erase(const Key& k) {
 		auto entry = find_entry(k);
 		if (entry) {
@@ -76,11 +101,13 @@ public :
 		return false;
 	}
 
+	/// Mark slots unused and reset size; does not destroy/reset keys or values.
 	void clear() {
 		for (auto& e : entries) e.used = false;
 		used_count = 0;
 	}
 
+	/// Logical occupied count; mutations through raw_entries do not recompute it.
 	size_t size() const {
 		return used_count;
 	}

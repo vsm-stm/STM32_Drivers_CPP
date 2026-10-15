@@ -31,6 +31,9 @@ uint32_t System::TIMxAPB1Clock  { HSI_Clock };
 uint32_t System::TIMxAPB2Clock  { HSI_Clock };
 
 #if defined(STM32F7)
+// Project records are triples: MPU number/base/size. Region 0 remains reserved;
+// configuration validates 1..7, power-of-two sizes and aligned SRAM1/SRAM2 tails.
+// Keep custom non-project MPU regions, and preserve existing dirty RAM data.
 // Apply the project's non-cacheable DMA regions before enabling D-cache.
 static void InitDMARegions()
 {
@@ -77,6 +80,9 @@ static SysInitStatus InitClockState()
 
 #if defined(STM32_USE_BOOTLOADER) && (defined(STM32F4) || defined(STM32F7) || defined(STM32G0))
 // Restore HSI, bus dividers, G0 power and Flash latency after the bootloader.
+// This is clock handover preparation, not an RCC/peripheral factory reset.
+// HSI and the actual source switch precede timed waits because no trustworthy
+// software tick is available yet. Once HSI /1 is published, VOS/latency use 100 ms.
 static SysInitStatus InitAfterBootloader()
 {
 	// Stop the previous time base while its input clock is being changed.
@@ -218,6 +224,8 @@ uint32_t System::GetTick()
 	return static_cast<uint32_t>(Tick);
 }
 
+// One unsigned elapsed-tick budget, also allowing a single check at timeout zero.
+// Register reads remain volatile; the expected value is already a masked field.
 bool System::WaitBits(volatile uint32_t& reg, uint32_t mask, uint32_t value, uint32_t timeout)
 {
 	const uint32_t start = GetTick();
@@ -315,10 +323,47 @@ uint32_t System::SWOTrace(const uint8_t *ptr, uint32_t len)
 }
 #endif // STM32L0 or STM32G0
 // ---------------------------------------------------------------------------
-// System::MPU_Init  (STM32F7 only)
+// System cache maintenance / MPU_Init (STM32F7 only)
 // ---------------------------------------------------------------------------
 
 #if defined(STM32F7)
+// Project DMA regions use the same linker records as InitDMARegions().
+// Only full containment within one configured region bypasses maintenance;
+// a mixed/cross-region range takes the conservative CMSIS line operation.
+// This is not a run-time MPU attribute decoder.
+static bool CacheMaintenanceNeeded(const void* addr, uint32_t size)
+{
+	if (!addr || !size || !(SCB->CCR & SCB_CCR_DC_Msk)) return false;
+	if (__stm32_dma_regions_start__ && __stm32_dma_regions_end__) {
+		const uintptr_t base = reinterpret_cast<uintptr_t>(addr);
+		for (const uint32_t* p = __stm32_dma_regions_start__;
+			 p != __stm32_dma_regions_end__; p += 3) {
+			if (base >= p[1] && base - p[1] < p[2]
+			 && size <= p[2] - (base - p[1])) return false;
+		}
+	}
+	return true;
+}
+
+// CMSIS handles 32-byte line coverage itself; do not round the byte count again.
+void System::CacheClean(const void* addr, uint32_t size)
+{
+	if (CacheMaintenanceNeeded(addr, size))
+		SCB_CleanDCache_by_Addr(const_cast<void*>(addr), static_cast<int32_t>(size));
+}
+
+void System::CacheInvalidate(void* addr, uint32_t size)
+{
+	if (CacheMaintenanceNeeded(addr, size))
+		SCB_InvalidateDCache_by_Addr(addr, static_cast<int32_t>(size));
+}
+
+void System::CacheCleanInvalidate(void* addr, uint32_t size)
+{
+	if (CacheMaintenanceNeeded(addr, size))
+		SCB_CleanInvalidateDCache_by_Addr(addr, static_cast<int32_t>(size));
+}
+
 /**
  * @brief Configure the MPU for the STM32F7.
  *

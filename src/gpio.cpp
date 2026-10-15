@@ -1,3 +1,11 @@
+/**
+ * @file gpio.cpp
+ * @brief Program one immutable PIN binding; no run-time range guards.
+ *
+ * GPIO port clock index comes from the CMSIS spacing between GPIOA/ GPIOB.
+ * The expression uses division by a compile-time constant so the compiler can
+ * choose a shift; no hard-coded "10" is needed for the 0x400-byte port stride.
+ */
 #include "gpio.hpp"
 
 SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override, LVL initial_level)
@@ -17,6 +25,7 @@ SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override
 	port->PUPDR   &= ~(0x3u << (pin * 2));
 	port->OTYPER  &= ~(0x1u <<  pin);
 	port->OSPEEDR &= ~(0x3u << (pin * 2));
+	// Two AFR registers cover eight pins each, four bits per AF field.
 	port->AFR[pin >> 3] &= ~(0xFu << ((pin & 0x7u) * 4u));
 
 	const PIN::MODE modeEnum = static_cast<PIN::MODE>(mode);
@@ -37,6 +46,7 @@ SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override
 		}
 	}
 
+	// Preload BSRR before switching MODER into output, avoiding the old latch level.
 	if (modeEnum == PIN::MODE::OUTPUT) SetLevel(initial_level);
 	port->MODER |= (static_cast<uint32_t>(mode) << (pin * 2));
 

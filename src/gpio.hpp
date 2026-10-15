@@ -1,3 +1,24 @@
+/**
+ * @file gpio.hpp
+ * @brief Fixed GPIO pin binding, configuration, level access and pin groups.
+ *
+ * Pin number, port and constructor AF never change after construction.
+ * GPIOx_BASE construction is consteval and validates port/pin/AF at compilation;
+ * the retained GPIO_TypeDef* constructor is convenient for CMSIS pointers and
+ * relies on caller-supplied valid pin/AF. No run-time argument guards are added.
+ *
+ * @code
+ *   PIN led(GPIOA, 5); // CMSIS pointer constructor, immutable binding.
+ *   led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
+ *   led.SetLevel(false);
+ *   led.TogglePin();
+ *
+ *   constexpr PIN tx(GPIOA_BASE, 9, 7, USART1_BASE); // Compile-time checked form.
+ *   // Peripheral drivers use the stored AF; they check periph_base ownership.
+ * @endcode
+ * GPIO and PinArray operations have no internal locks. SetLevel uses BSRR;
+ * TogglePin uses ODR read/modify/write and must not race with another port writer.
+ */
 #ifndef GPIO_H_
 #define GPIO_H_
 
@@ -13,6 +34,11 @@
 	#define RCC_GPIOA_EN		RCC_IOPENR_GPIOAEN
 #endif
 
+/**
+ * @brief One immutable pin binding; operations configure/read/write its hardware.
+ * PIN{} is an absent optional signal: test IsValid(), do not configure/access it.
+ * The destructor does not reset GPIO or disable its shared port clock.
+ */
 class PIN
 {
 private:
@@ -51,6 +77,7 @@ public:
 	// Read-only binding metadata used by USART/SPI/I2C constructors.
 	const uint32_t periph_base{};
 
+	/// Packed mode/pull/output-type choices consumed by SetUp(), not raw MODER values.
 	enum class TYPE : uint8_t
 	{
 		INPUT_NO_Pull   = (static_cast<uint8_t>(MODE::INPUT)  << mode_pos),
@@ -68,6 +95,7 @@ public:
 		ANALOG          = (static_cast<uint8_t>(MODE::ANALOG) << mode_pos)
 	};
 
+	/// GPIO output slew-rate selection; availability/electrical limits are device-specific.
 	enum class OUTPUT_SPEED : uint8_t
 	{
 		Low    = 0b00,
@@ -132,32 +160,54 @@ public:
 		}
 	}
 
-	// Direct CMSIS GPIO pointer; the caller supplies pin/AF in 0..15.
+	/**
+	 * @brief Bind a direct CMSIS GPIO pointer; retained for ordinary GPIOx syntax.
+	 * @param port Existing GPIO port pointer on the selected device.
+	 * @param p Pin number 0..15, provided correctly by the caller.
+	 * @param a Stored alternate function 0..15, default 0.
+	 * No run-time validation; this overload is not a compile-time pointer checker.
+	 */
 	PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept
 		: _port_base(reinterpret_cast<uintptr_t>(port)), pin(p), af(a) {}
 
+	/// Recover the bound CMSIS port pointer. Does not enable its clock.
 	GPIO_TypeDef* PORT() const noexcept
 	{
 		return reinterpret_cast<GPIO_TypeDef*>(_port_base);
 	}
 
+	/// Whether a port binding exists; not a pin/package/AF-route capability test.
 	constexpr bool IsValid() const noexcept { return _port_base != 0; }
 
 	PIN& operator=(bool b) noexcept { SetLevel(b); return *this; }
 	explicit operator bool() const noexcept { return GetLevel(); }
 
-	// OUTPUT starts at initial_level; other modes do not change the output latch.
+	/**
+	 * @brief Configure this pin using its constructor AF.
+	 * @param type Packed input/output/AF/analog choice.
+	 * @param speed Slew rate for output/AF, default Low.
+	 * @param initial_level Output latch level set before enabling OUTPUT, default LOW.
+	 * @return InitOK after register programming; arguments are a caller contract.
+	 * Enables the shared GPIO clock. Other modes do not change the output latch;
+	 * ANALOG clears pull/output/AF fields rather than enabling a digital output.
+	 * @pre Valid bound pin and enum arguments; serialize GPIO configuration.
+	 */
 	SysInitStatus SetUp(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low,
 						LVL initial_level = LVL::LOW)
 	{
 		return SetUp(type, speed, af, initial_level);
 	}
 
-	// Full form — actual implementation
+	/**
+	 * @brief Full configuration with an explicit hardware AF override.
+	 * @param af_override AF field 0..15; does not change the stored constructor AF.
+	 * Caller supplies a valid route/value; the GPIO layer does not validate
+	 * whether that AF connects to a particular peripheral on the selected pin.
+	 */
 	SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override,
 						LVL initial_level = LVL::LOW);
 
-	// Explicit af, default Low speed
+	/// Convenience overload: explicit AF override, Low speed and default LOW output level.
 	SysInitStatus SetUp(TYPE type, uint8_t af_override, LVL initial_level = LVL::LOW)
 	{
 		return SetUp(type, OUTPUT_SPEED::Low, af_override, initial_level);
@@ -165,11 +215,13 @@ public:
 
 	// ---- level access ----
 
+	/// Read IDR (actual input level), not the ODR output latch.
 	inline bool GetLevel() const noexcept
 	{
 		return (PORT()->IDR >> pin) & 0x1u;
 	}
 
+	/// Write one BSRR set/reset bit, leaving unrelated output bits unchanged.
 	inline void SetLevel(bool lvl) noexcept
 	{
 		PORT()->BSRR = 1u << (pin + 16 * static_cast<uint8_t>(!lvl));
@@ -180,6 +232,10 @@ public:
 		SetLevel(lvl == LVL::HIGH);
 	}
 
+	/**
+	 * @brief Toggle the ODR bit using a whole-register read/modify/write.
+	 * Caller prevents competing writes to this port during the operation.
+	 */
 	inline void TogglePin() noexcept
 	{
 		// ODR read-modify-write: do not modify this port from IRQ during the toggle.
@@ -187,6 +243,7 @@ public:
 	}
 
 #if defined(STM32F4)
+	/// F4 peripheral bit-band read of IDR; no corresponding M7/G0 API.
 	inline bool GetLevel_BB() const noexcept
 	{
 		return static_cast<bool>(BIT_BB(&PORT()->IDR, pin));
@@ -202,6 +259,7 @@ public:
 		SetLevel_BB(lvl == LVL::HIGH);
 	}
 
+	/// F4 bit-band read then write of ODR; the combined toggle is not atomic.
 	inline void TogglePin_BB() noexcept
 	{
 		BIT_BB(&PORT()->ODR, pin) = !BIT_BB(&PORT()->ODR, pin);
@@ -213,6 +271,20 @@ public:
 
 // ---------------------------------------------------------------------------
 
+/**
+ * @brief Copy N fixed pin bindings into a group, N=1..32.
+ * Group bit i corresponds to constructor pin i, even across different ports.
+ * Operations visit pins individually; a group write is not one simultaneous
+ * hardware transaction. SetUpAll uses its explicit common AF (default 0).
+ *
+ * @code
+ *   PIN signals[] = { PIN(GPIOA, 5), PIN(GPIOB, 0) };
+ *   PinArray<2> group(signals);
+ *   group.SetUpAll(PIN::TYPE::OUTPUT_PushPull);
+ *   group.SetLevelAll(0b01); // First HIGH, second LOW.
+ *   uint32_t inputs = group.GetLevelAll();
+ * @endcode
+ */
 template<size_t N>
 class PinArray
 {
@@ -262,11 +334,13 @@ public:
 	constexpr explicit PinArray(const PIN (&_pins)[N])
 		: PinArray(_pins, std::make_index_sequence<N>{}) {}
 
+	/// Configure all pins with a common AF and Low speed; returns the first non-InitOK result.
 	SysInitStatus SetUpAll(PIN::TYPE type, uint8_t af)
 	{
 		return SetUpAllImpl(std::make_index_sequence<N>{}, type, PIN::OUTPUT_SPEED::Low, af);
 	}
 
+	/// Configure every pin, retaining the first error while still visiting the remaining pins.
 	SysInitStatus SetUpAll(PIN::TYPE         type  = PIN::TYPE::INPUT_NO_Pull,
 						   PIN::OUTPUT_SPEED  speed = PIN::OUTPUT_SPEED::Low,
 						   uint8_t            af    = 0)
@@ -291,6 +365,7 @@ public:
 
 	PinArray& operator=(uint32_t value) noexcept { SetLevelAll(value); return *this; }
 
+	/// Unchecked access: i < N. Binding cannot be reassigned; GPIO level/configuration can.
 	PIN&       operator[](size_t i)       { return pins[i]; }
 	const PIN& operator[](size_t i) const { return pins[i]; }
 };

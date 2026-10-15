@@ -1,3 +1,9 @@
+/**
+ * @file irq_registry.cpp
+ * @brief Registry insertion/removal and dispatch; no locks or NVIC manipulation.
+ * Mutations are a main-loop operation with the affected IRQ masked. The caller
+ * must never mutate the table/pool during Dispatch or one of its callbacks.
+ */
 #include "irq_registry_config.h"   // defines IRQ_TABLE_SIZE/table/ISRs; includes the common irq_registry.hpp
 
 SysInitStatus IRQ_Registry::Register(IRQn_Type irqn, IIRQHandler* handler)
@@ -7,6 +13,7 @@ SysInitStatus IRQ_Registry::Register(IRQn_Type irqn, IIRQHandler* handler)
 	if (idx < 0 || idx >= IRQ_TABLE_SIZE || handler == nullptr)
 		return SysInitStatus::InitError;
 
+	// Search the entire row for duplicates before occupying the first free slot.
 	int free_slot = -1;
 	for (int s = 0; s < MAX_PER_IRQ; ++s) {
 		if (_table[idx][s] == handler) return SysInitStatus::InitError;
@@ -33,6 +40,7 @@ SysInitStatus IRQ_Registry::Register(IRQn_Type irqn, IRQHandlerFn fn, void* ctx)
 		if (!adapter.IsFree()) continue;
 		adapter.Bind(fn, ctx);
 		const SysInitStatus result = Register(irqn, &adapter);
+		// A failed row insertion must not leak a function adapter from the pool.
 		if (result != SysInitStatus::InitOK) adapter.Bind(nullptr, nullptr);
 		return result;
 	}
@@ -98,6 +106,8 @@ void IRQ_Registry::ReleaseFunction(IIRQHandler* handler)
 	}
 }
 
+// Shared vectors call every occupied slot. The peripheral handler, not this
+// dispatcher, decides which of its enabled sources actually raised the IRQ.
 void IRQ_Registry::Dispatch(IRQn_Type irqn)
 {
 	int idx = static_cast<int>(irqn);

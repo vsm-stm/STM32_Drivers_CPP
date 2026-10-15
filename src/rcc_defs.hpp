@@ -1,3 +1,16 @@
+/**
+ * @file rcc_defs.hpp
+ * @brief Device-specific constants for ClockSystem compile-time validation.
+ *
+ * Values describe nominal supported operating limits, numeric PLL coefficients,
+ * voltage scale, Flash timing band and hardware wait timeouts. They do not set
+ * registers themselves. Device selection is by CMSIS model definitions; an
+ * unknown F4/F7 model is rejected rather than assigned a guessed clock limit.
+ *
+ * VDD is fixed at 3000 mV for the agreed 3.0/3.3 V use. FLASH_STEP selects the
+ * wait-state band used by Prepare(); changing supply assumptions requires
+ * revisiting these limits, not merely choosing a larger SYSCLK.
+ */
 #ifndef RCC_DEFS_H_
 #define RCC_DEFS_H_
 
@@ -99,6 +112,8 @@ inline constexpr uint32_t PLL_MASK = RCC_PLLCFGR_PLLSRC_Msk | RCC_PLLCFGR_PLLM_M
 #error "RCC supports STM32F4, STM32F7 and STM32G0 only"
 #endif
 
+// Run-time hardware waits, in System tick units (nominal milliseconds).
+// LSE startup/switching gets a longer budget than PLL lock/disable.
 inline constexpr uint32_t PLL_TIMEOUT_MS = 2U;
 inline constexpr uint32_t HSI_TIMEOUT_MS = 2U;
 inline constexpr uint32_t HSE_TIMEOUT_MS = 100U;

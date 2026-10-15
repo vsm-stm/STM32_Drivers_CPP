@@ -1,3 +1,24 @@
+/**
+ * @file system.hpp
+ * @brief Startup-facing clock state, tick delays, trace and F7 cache/MPU helpers.
+ *
+ * Typical order in main, after the provided startup initialized RAM/constructors:
+ * @code
+ *   if (System::Init() != SysInitStatus::InitOK)
+ *       System::DebugTrap("System init");
+ *   // Apply one ClockSystem::Init<config>() before configuring peripherals.
+ *   uint32_t previous = System::GetTick();
+ *   // In the application loop:
+ *   if (System::GetTick() - previous >= 1000U) {
+ *       previous = System::GetTick();
+ *       // Nominal one-second work; unsigned subtraction handles counter wrap.
+ *   }
+ * @endcode
+ * The driver's SysTick_Handler calls TickIncrease(); do not define another
+ * handler when linking this implementation. Time-based waits need SysTick to
+ * preempt them. No IPSR/PRIMASK guard, fallback timer or internal lock is added.
+ * F4/F7/G0 are the configured driver families; L0 retains a limited legacy path.
+ */
 #ifndef SYSTEM_H_
 #define SYSTEM_H_
 
@@ -60,6 +81,12 @@ enum class SysInitStatus : uint8_t
 // System class
 // ---------------------------------------------------------------------------
 
+/**
+ * @brief Shared bare-metal core utilities; all methods/state are static.
+ * Published clocks are software values maintained by System/ClockSystem,
+ * not live RCC register measurements. Peripheral kernel selectors can differ
+ * from the APB clock, so their consumers must select/derive the correct source.
+ */
 class System
 {
 public:
@@ -102,6 +129,10 @@ public:
 	 *       F7 applies project DMA areas to their MPU regions before enabling
 	 *       D-cache. An already enabled D-cache is disabled with clean/invalidate
 	 *       first. Call before DMA starts; other MPU regions are retained.
+	 * @return InitOK on success; InitError if clock/tick/power preparation fails.
+	 * @note STM32_USE_BOOTLOADER is supplied by the base's project.json handling,
+	 *       not a request to reset PLL/HSE or all peripherals. The startup can
+	 *       define STM32_STARTUP_ENABLES_FPU to omit duplicate FPU enabling here.
 	 */
 	static SysInitStatus Init();
 
@@ -124,7 +155,10 @@ public:
 	static void TickIncrease();
 
 	/**
-	 * @brief Return the software tick count (nominally milliseconds).
+	 * @brief Return the unsigned 32-bit software tick count (nominal milliseconds).
+	 * It wraps modulo 2^32; compare intervals by unsigned subtraction.
+	 * Reading does not clear the counter or require interrupt masking.
+	 * Integer SysTick reload can make the actual tick rate differ from 1 kHz.
 	 */
 	static uint32_t GetTick();
 
@@ -133,6 +167,13 @@ public:
 	 * @param value Expected masked value: 0 for cleared bits, mask for all set.
 	 * @param timeout Maximum wait in nominal milliseconds; 0 checks once.
 	 * @note SysTick must run during the wait, as required by Delay_ms().
+	 *       value must contain only bits inside mask. This checks equality of
+	 *       the entire masked field, not whether any selected bit is nonzero.
+	 * @code
+	 *   bool ready = System::WaitBits(RCC->CR, RCC_CR_HSERDY,
+	 *                                 RCC_CR_HSERDY, 100);
+	 * @endcode
+	 * Enabling the source and handling a false result belong to the caller.
 	 */
 	static bool WaitBits(volatile uint32_t& reg, uint32_t mask, uint32_t value, uint32_t timeout);
 
@@ -162,6 +203,10 @@ public:
 	 *       Rounds up fractional cycles and clamps to 0x7FFFFFFF core cycles.
 	 *       The clock must remain unchanged during the delay. Counter subtraction
 	 *       handles wrap-around provided polling resumes within half the counter range.
+	 * @code
+	 *   System::Enable_CYCCNT(); // F4/F7, after the core frequency is established.
+	 *   System::Delay_us(10);
+	 * @endcode
 	 */
 	static void Delay_us(uint32_t delay);
 
@@ -172,6 +217,11 @@ public:
 	 * @return Number of bytes written into ITM, possibly fewer than len.
 	 * @note The debugger must configure and enable ITM/SWO. Does not wait
 	 *       for transmission or use SysTick; hardware receipt is not confirmed.
+	 * @code
+	 *   static const uint8_t message[] = "ready\n";
+	 *   uint32_t sent = System::SWOTrace(message, sizeof(message) - 1);
+	 *   // Retry or drop the unsent suffix according to application policy.
+	 * @endcode
 	 */
 	static uint32_t SWOTrace(const uint8_t *ptr, uint32_t len);
 #endif
@@ -183,8 +233,54 @@ public:
 	 *       for external memory you use, before enabling caches. Other regions
 	 *       are retained. Does not create a non-cacheable DMA memory area.
 	 *       See System.md for the memory map and a region configuration example.
+	 * @code
+	 *   System::MPU_Init(); // F7: optional external-address guard, before cache enable.
+	 *   auto status = System::Init(); // Applies project DMA regions, then caches.
+	 * @endcode
+	 * External RAM/QSPI actually used in the guarded range needs an appropriate
+	 * higher-priority region and its controller initialized separately.
 	 */
 	static void MPU_Init();
+#endif
+
+	/**
+	 * @brief Cache maintenance for a byte range used by a peripheral driver.
+	 * @note F7 calls the CMSIS operations for the intersecting 32-byte lines.
+	 *       A range wholly inside a project's non-cacheable DMA area is skipped.
+	 *       Call after Init(); retain the configured MPU attributes afterwards.
+	 *       The caller supplies a valid range fitting the CMSIS signed byte count
+	 *       including line rounding. nullptr or zero size performs no operation.
+	 *       RX buffers must own every affected cache line, including padding;
+	 *       do not share those lines with independently modified data.
+	 *       F4/G0/L0 have no SRAM D-cache; these functions perform no operation.
+	 *
+	 * Ownership transitions:
+	 * - CPU -> TX DMA: CacheClean (write dirty source bytes to RAM).
+	 * - CPU -> RX DMA: CacheCleanInvalidate (remove old/dirty destination lines).
+	 * - Stopped RX DMA -> CPU: CacheInvalidate (discard stale CPU copies).
+	 * Stop DMA and confirm EN=0 before the final invalidate/read. An invalidate
+	 * does not preserve dirty CPU changes, so do not access an owned RX buffer.
+	 *
+	 * @code
+	 *   alignas(32) static uint8_t buffer[64];
+	 *   System::CacheCleanInvalidate(buffer, 37); // Before RX, after System::Init().
+	 *   // Prepare/start DMA for 37 bytes; CPU leaves all touched lines alone.
+	 *   // Stop DMA, wait for EN=0, then obtain the actual transferred byte count.
+	 *   System::CacheInvalidate(buffer, received_bytes);
+	 *   // CPU may now inspect buffer[0..received_bytes).
+	 * @endcode
+	 * received_bytes comes from the peripheral's completed transfer. Automatic
+	 * non-cacheable detection uses the project's linker DMA records, not a
+	 * general scan of arbitrary user MPU mappings.
+	 */
+#if defined(STM32F7)
+	static void CacheClean(const void* addr, uint32_t size);
+	static void CacheInvalidate(void* addr, uint32_t size);
+	static void CacheCleanInvalidate(void* addr, uint32_t size);
+#else
+	static void CacheClean(const void*, uint32_t) {}
+	static void CacheInvalidate(void*, uint32_t) {}
+	static void CacheCleanInvalidate(void*, uint32_t) {}
 #endif
 
 	// ---------------------------------------------------------------------------

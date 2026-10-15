@@ -1,3 +1,12 @@
+/**
+ * @file dma.cpp
+ * @brief Exact stream/channel lookup, one-owner setup and full resource release.
+ *
+ * The static used flag prevents duplicate hardware ownership, not concurrent
+ * access synchronization. Setup/release are serialized main-loop operations.
+ * G0 DMA2 maps to its own ISR/IFCR and DMAMUX slots 7..11, not DMA1 registers.
+ * Consumer-specific peripheral routing and cache handling remain outside DMA.
+ */
 #include "dma.hpp"
 
 // ---------------------------------------------------------------------------
@@ -69,6 +78,8 @@ static constexpr int32_t kStreamCount =
 
 // ---------------------------------------------------------------------------
 
+// Accept exact hardware object addresses only: range plus stride divisibility.
+// A pointer inside a stream/channel register block must not acquire that resource.
 int32_t DMA_Sx::GetStreamIndex(void* s)
 {
 	uintptr_t base = reinterpret_cast<uintptr_t>(s);
@@ -193,6 +204,12 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 	return SysInitStatus::InitOK;
 }
 
+/**
+ * @brief Stop/reset only this acquired stream/channel and return it to the pool.
+ * Consumer disables peripheral requests and unregisters its handler beforehand.
+ * Shared controller clocks/NVIC and other consumers are deliberately untouched.
+ * Constructor selection remains, allowing a later explicit SetUp after release.
+ */
 SysStatus DMA_Sx::Release()
 {
 	if (!_info) return SysStatus::NotInit;

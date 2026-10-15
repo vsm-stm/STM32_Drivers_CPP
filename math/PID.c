@@ -1,3 +1,9 @@
+/**
+ * @file PID.c
+ * @brief Trapezoidal integral, error derivative and quality accumulation.
+ * Contracts/examples are in PID.h. No run-time finite checks, output clamp,
+ * sample-time generation or synchronization are performed here.
+ */
 #include <PID.h>
 
 float PID(pid* p)
@@ -8,6 +14,8 @@ float PID(pid* p)
 	{
 		if(p->ki != 0.0f)
 		{
+			// Clamp the proposed integral to an exact contribution limit,
+			// retaining I in integral units for subsequent samples.
 			float tmp_I = p->I + (p->e + p->e_old) * 0.5f * p->dT;
 			if(fabsf(p->ki * tmp_I) > p->max_ki_I)
 				tmp_I = (tmp_I > 0.0f ? p->max_ki_I : -p->max_ki_I)
@@ -21,6 +29,7 @@ float PID(pid* p)
 	{
 		p->D = 0.0f;
 	}
+	// Refresh history inside the dead zone too, avoiding a stale-error slope.
 	p->e_old = p->e;
 
 	return (p->kp*p->e + p->ki*p->I + p->kd*p->D);
@@ -43,6 +52,8 @@ void PID_get_quality(con_quality_t* qual, float u, float y, float dt, uint32_t g
 
 		qual->sigma = u != 0.0f ? (qual->max_y - u) / u : 0.0f;
 
+		// Mode 1 sums time outside the band; mode 2 sums all sample time.
+		// This intentionally retains the existing accumulated-duration meaning.
 		const float tolerance = fabsf(u) * 0.05f;
 		if((y > u + tolerance)
 		|| (y < u - tolerance)

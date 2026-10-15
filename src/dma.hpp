@@ -44,7 +44,7 @@
  *    a) DMAReq from Req:: table  [recommended — encodes stream + CHSEL]
  *       @code
  *         DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX);      // DMA2_Stream7, ch4
- *         DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX_alt);  // DMA2_Stream5, ch4
+ *         DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_alt);  // DMA2_Stream5, ch4
  *         DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX);      // DMA2_Stream2, ch4
  *       @endcode
  *
@@ -86,18 +86,21 @@
  *
  *    @code
  *      // 1. Declare driver objects (file or class scope)
- *      USART  uart(USART1, 115200, USART::TX::PB6, USART::RX::PB7);
+ *      USART  uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
  *      DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
  *      DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
  *
  *      // 2. Init UART, then attach DMA — AttachDMA configures the channels internally.
- *      uart.SetUp();
- *      uart.AttachDMA(&dma_tx, &dma_rx);
- *      uart.EnableNVIC_IRQ();
+ *      auto initialized = uart.SetUp();
+ *      // Only after initialized == InitOK:
+ *      auto attached = uart.AttachDMA(&dma_tx, &dma_rx);
+ *      // Check attached == InitOK; UART owns registration, no manual Register/NVIC.
  *
  *      // 4. Transfer — the driver manages DMA internally
- *      uart.SendDMA(tx_buf, sizeof(tx_buf));
- *      uart.ReceiveDMA(rx_buf, sizeof(rx_buf));
+ *      uart.Send_DMA(tx_buf, sizeof(tx_buf));
+ *      uart.Receive_DMA(rx_buf, sizeof(rx_buf));
+ *      // Check each start result. Consume RX after ready, clear ready explicitly,
+ *      // then start the next Receive_DMA; the DMA resources stay attached.
  *    @endcode
  *
  * Notes
@@ -259,6 +262,21 @@ public:
 	explicit DMA_Sx(DMA_Channel_TypeDef* ch, uint32_t req) : _stream(ch), _preset_ch(req),   _has_preset(true) {}
 #endif
 
+	/** @brief Check a peripheral's DMAReq against this object's constructor selection.
+	 * No hardware access or ownership change. With no preset, SetUp must receive req.ch.
+	 * F4/F7 compare stream and any constructor preset; G0 compares the preset
+	 * request but leaves actual channel existence to SetUp(). This is a route
+	 * candidate check, not a reservation or proof the resource is free.
+	 */
+	inline bool CanUseRequest(DMAReq req) const {
+		if (!req.IsValid() || (_has_preset && _preset_ch != req.ch)) return false;
+	#if defined(STM32F4) || defined(STM32F7)
+		return _stream == req.stream;
+	#else
+		return true; // DMAMUX permits the request on any existing channel.
+	#endif
+	}
+
 	DMA_Sx() = delete;
 	DMA_Sx(const DMA_Sx&) = delete;
 	DMA_Sx& operator=(const DMA_Sx&) = delete;
@@ -270,6 +288,11 @@ public:
 	 * @note Constructor request takes precedence over settings.channel.
 	 *       Does not start DMA. Repeated setup requires prior Release().
 	 *       Mem_To_Mem is currently unsupported on F4/F7 and returns InitError.
+	 * @param settings Numeric request/channel, direction, widths, addresses/count.
+	 * count=0 and zero addresses allow deferred preparation without starting.
+	 * Existing hardware ownership, including this same configured object, rejects
+	 * another SetUp until Release(). Validation is about register fields/alignment;
+	 * the peripheral consumer validates the real route via DMAReq.
 	 */
 	SysInitStatus SetUp(const StreamSettings& settings);
 
@@ -304,7 +327,12 @@ public:
 		return SysStatus::OK;
 	}
 
-	/** @brief Set 1..65535 elements while stopped; rejected values leave the count unchanged. */
+	/**
+	 * @brief Set 1..65535 elements while the owned stream/channel is stopped.
+	 * @return NotInit without ownership, Busy while EN=1, Error for zero/out-of-range.
+	 * Rejected calls do not write the counter. This is element count, not bytes;
+	 * unlike deferred SetUp(count=0), a transfer preparation needs a nonzero count.
+	 */
 	inline SysStatus SetCount(uint32_t n) {
 		if (!_info) return SysStatus::NotInit;
 		if (_CR() & CR_EN) return SysStatus::Busy;
@@ -313,6 +341,11 @@ public:
 		return SysStatus::OK;
 	}
 
+	/**
+	 * @brief Read the current remaining hardware element count.
+	 * @pre Successful SetUp. To derive a final packet length, stop DMA and wait
+	 *      for EN=0 first; an active transfer can change this value immediately.
+	 */
 	inline uint32_t GetCount() { return _NDTR(); }
 
 	/** @brief Clears all status flags for this stream/channel. */
@@ -325,7 +358,24 @@ public:
 		return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0;
 	}
 
-	/** @brief Enables a DMA interrupt source and unmasks its NVIC line. */
+	/** @brief Read this stream's error bits, normalized to the first flag group.
+	 * F4/F7: TEIF0, DMEIF0, FEIF0; G0: TEIF1. Zero when not configured.
+	 */
+	inline uint32_t GetErrorFlags() const {
+		if (!_info) return 0;
+	#if defined(STM32F4) || defined(STM32F7)
+		constexpr uint32_t errors = DMA_LISR_TEIF0 | DMA_LISR_DMEIF0 | DMA_LISR_FEIF0;
+	#else
+		constexpr uint32_t errors = DMA_ISR_TEIF1;
+	#endif
+		return (*_info->isr >> _info->if_offset) & errors;
+	}
+
+	/**
+	 * @brief Set the DMA source bit and enable its NVIC line.
+	 * @pre Successful SetUp and the consumer's handler already registered.
+	 * Does not register a callback/object, clear flags or start a transfer.
+	 */
 	inline void Enable_IRQ(IRQ irq) {
 		_CR() |= static_cast<uint32_t>(irq);
 		if (!NVIC_GetEnableIRQ(_info->irqn))
@@ -337,12 +387,15 @@ public:
 		_CR() &= ~static_cast<uint32_t>(irq);
 	}
 
+	/// Change memory-address increment; configure while stopped and under the owner's control.
 	inline void MINC(FunctionalState en) {
 		if (en) _CR() |=  CR_MINC; else _CR() &= ~CR_MINC;
 	}
+	/// Change peripheral-address increment; ordinary peripheral registers keep it disabled.
 	inline void PINC(FunctionalState en) {
 		if (en) _CR() |=  CR_PINC; else _CR() &= ~CR_PINC;
 	}
+	/// Change circular mode while stopped; the consumer defines completion/buffer ownership.
 	inline void CIRC(FunctionalState en) {
 		if (en) _CR() |=  CR_CIRC; else _CR() &= ~CR_CIRC;
 	}
@@ -351,6 +404,9 @@ public:
 	 * @brief Enable the prepared transfer or stop and wait for EN=0.
 	 * @note SetUp() must have succeeded. Stop has no timeout and can be used
 	 *       from IRQ. The caller prepares valid addresses/count before starting.
+	 *       Enabling has no argument/status validation and returns void by contract.
+	 *       Barriers order RAM access around the DMA handover, but do not clean
+	 *       or invalidate cache. The peripheral consumer uses System helpers.
 	 */
 	inline void Stream_EN(FunctionalState en) {
 		if (en) {

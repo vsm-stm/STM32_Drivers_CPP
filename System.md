@@ -405,8 +405,22 @@ For subsequent driver changes, the agreed transfer rules are:
 - CPU must not access the DMA-owned portion during transfer. Circular buffers
   require ownership and cache maintenance for each completed portion.
 
-These operations are to be added inside the relevant DMA/peripheral drivers
-later; this System change does not implement those transfer paths.
+The shared operations are implemented in System:
+
+```cpp
+System::CacheClean(tx_buffer, tx_bytes);
+System::CacheCleanInvalidate(rx_buffer, rx_bytes); // before starting RX
+System::CacheInvalidate(rx_buffer, received_bytes); // after DMA has stopped
+```
+
+The peripheral driver chooses the address, byte count and call timing. Direct
+DMA users make those calls themselves. DMA does not retain buffer/cache state.
+On F7, the functions skip a range wholly inside a project DMA region or when
+D-cache is disabled; otherwise CMSIS handles the intersecting 32-byte lines.
+On F4/G0/L0 they are inline no-ops. Zero size/nullptr also performs no operation.
+Use valid ranges fitting the CMSIS signed byte count, including line rounding.
+Call after System::Init() and retain the configured MPU attributes. Integration
+into individual peripheral drivers remains part of their respective reviews.
 
 See [ST AN4838](https://www.st.com/resource/en/application_note/DM00272912-.pdf)
 for MPU region attributes and
@@ -942,8 +956,24 @@ weak-символы, без автоматической настройки DMA 
 - CPU не обращается к части буфера, принадлежащей DMA, во время передачи.
   Для кольцевого буфера владение и обслуживание нужны для каждой завершённой части.
 
-Эти операции добавим внутри соответствующих DMA/периферийных драйверов позже;
-текущие изменения System не реализуют их пути передачи.
+Общие операции реализованы в System:
+
+```cpp
+System::CacheClean(tx_buffer, tx_bytes);
+System::CacheCleanInvalidate(rx_buffer, rx_bytes); // до запуска RX
+System::CacheInvalidate(rx_buffer, received_bytes); // после остановки DMA
+```
+
+Периферийный драйвер определяет адрес, размер в байтах и момент вызова.
+При прямом использовании DMA эти вызовы делает пользователь. DMA не хранит
+состояние буфера/кеша. На F7 функции пропускают обслуживание диапазона целиком
+внутри настроенной DMA-области и при выключенном D-cache; в остальных случаях
+CMSIS обрабатывает пересекающиеся 32-байтные строки. На F4/G0/L0 функции пустые
+и определены inline. Нулевой размер/nullptr также не выполняет операции.
+Диапазон должен быть корректным и помещаться в знаковый размер CMSIS с учётом
+округления до строк. Вызывайте после System::Init() и сохраняйте настроенные
+атрибуты MPU. Подключение этих операций в периферии выполняется при разборе
+соответствующего драйвера.
 
 Описание атрибутов регионов — в
 [ST AN4838](https://www.st.com/resource/en/application_note/DM00272912-.pdf),

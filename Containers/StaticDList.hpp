@@ -1,3 +1,21 @@
+/**
+ * @file StaticDList.hpp
+ * @brief Fixed-capacity doubly linked list addressed by live-slot indices.
+ *
+ * push_back/erase/move_to_tail/navigation are O(1); construction is O(N).
+ * A live index stays stable when moving a node. Erasing invalidates that index
+ * and its references, even if later insertion reuses the same physical slot.
+ *
+ * @code
+ *   StaticDList<int, 8> list;
+ *   StaticDList<int, 8>::index_type saved;
+ *   if (list.push_back(7, &saved)) list.move_to_tail(saved);
+ *   for (auto i = list.head(); i != decltype(list)::npos; ) {
+ *       if (list.ref(i) == 7) i = list.erase_and_next(i);
+ *       else i = list.next(i);
+ *   }
+ * @endcode
+ */
 #ifndef STATIC_DLIST_HPP
 #define STATIC_DLIST_HPP
 
@@ -14,6 +32,7 @@ class StaticDList {
 public:
 	static_assert(N > 0, "N > 0");
 	using index_type = size_t;
+	/// No-element sentinel, including empty head/tail and unsuccessful navigation.
 	static constexpr index_type npos = static_cast<index_type>(-1);
 
 private:
@@ -62,7 +81,8 @@ public:
 		}
 	}
 
-	// basic API
+	// Logical size/order, independent of physical slot numbers.
+	// head()/tail() return npos if empty; ref(i) requires valid(i).
 	bool        empty() const { return sz == 0; }
 	bool        full()  const { return sz == N; }
 	size_t      size()  const { return sz; }
@@ -75,7 +95,11 @@ public:
 	const T&    ref (index_type i) const { return nodes[i].value; } // precondition: valid(i)
 	bool        valid(index_type i) const { return (i < N) && nodes[i].used; }
 
-	// append at the tail
+	/**
+	 * @brief Copy to a free slot and append in logical order.
+	 * @param out_idx Optional output receiving the live index on success only.
+	 * @return false if full; no list mutation/out_idx write then.
+	 */
 	bool push_back(const T& v, index_type* out_idx = nullptr) {
 		index_type i = alloc_node();
 		if (i == npos) return false;
@@ -90,7 +114,7 @@ public:
 		return true;
 	}
 
-	// move node i to the tail (O(1))
+	/// Relink a live node at the tail in O(1); invalid/already-tail index is a no-op.
 	void move_to_tail(index_type i) {
 		if (!valid(i) || i == tail_idx) return;
 		unlink(i);
@@ -101,7 +125,7 @@ public:
 		if (head_idx == npos) head_idx = i;
 	}
 
-	// ordinary removal (unlink + free)
+	/// Unlink/free a live node without destroying its value; false for invalid/unused i.
 	bool erase(index_type i) {
 		if (!valid(i)) return false;
 		unlink(i);
@@ -110,8 +134,11 @@ public:
 		return true;
 	}
 
-	// CONVENIENT FOR ITERATION: returns the index of the node AFTER erasing i.
-	// Guarantees a correct step in an external for loop.
+	/**
+	 * @brief Remove i and return its saved successor, or npos.
+	 * Use as the iterator step when erasing; next(i) after erase returns npos
+	 * for the unused index, not its old successor.
+	 */
 	index_type erase_and_next(index_type i) {
 		if (!valid(i)) return npos;
 		index_type n = nodes[i].next; // save next BEFORE unlinking
