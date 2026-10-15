@@ -406,8 +406,8 @@ public:
 	 *
 	 * F4/F7 construction (stream and CHSEL are part of DMAReq):
 	 * @code
-	 *   DMA_Sx tx(DMA_Sx::Req::Usart1::TX);
-	 *   DMA_Sx rx(DMA_Sx::Req::Usart1::RX_alt); // DMA2_Stream5 / CH4 is RX.
+	 *   DMA_Sx tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7);
+	 *   DMA_Sx rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CH4, RX.
 	 *   // uart.SetUp(), then uart.AttachDMA(&tx, &rx), checking both results.
 	 * @endcode
 	 *

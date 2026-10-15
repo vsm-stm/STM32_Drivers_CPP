@@ -481,28 +481,28 @@ static const UartDmaInfo uart_dma_req_table[] = {
 #endif
 #else
 #ifdef USART1_BASE
-	{ USART1, { DMA_Sx::Req::Usart1::TX }, { DMA_Sx::Req::Usart1::RX, DMA_Sx::Req::Usart1::RX_alt } },
+	{ USART1, { DMA_Sx::Req::Usart1::TX_DMA2_Stream7 }, { DMA_Sx::Req::Usart1::RX_DMA2_Stream2, DMA_Sx::Req::Usart1::RX_DMA2_Stream5 } },
 #endif
 #ifdef USART2_BASE
-	{ USART2, { DMA_Sx::Req::Usart2::TX }, { DMA_Sx::Req::Usart2::RX } },
+	{ USART2, { DMA_Sx::Req::Usart2::TX_DMA1_Stream6 }, { DMA_Sx::Req::Usart2::RX_DMA1_Stream5 } },
 #endif
 #ifdef USART3_BASE
-	{ USART3, { DMA_Sx::Req::Usart3::TX, DMA_Sx::Req::Usart3::TX_alt }, { DMA_Sx::Req::Usart3::RX } },
+	{ USART3, { DMA_Sx::Req::Usart3::TX_DMA1_Stream3, DMA_Sx::Req::Usart3::TX_DMA1_Stream4 }, { DMA_Sx::Req::Usart3::RX_DMA1_Stream1 } },
 #endif
 #ifdef UART4_BASE
-	{ UART4, { DMA_Sx::Req::Uart4::TX }, { DMA_Sx::Req::Uart4::RX } },
+	{ UART4, { DMA_Sx::Req::Uart4::TX_DMA1_Stream4 }, { DMA_Sx::Req::Uart4::RX_DMA1_Stream2 } },
 #endif
 #ifdef UART5_BASE
-	{ UART5, { DMA_Sx::Req::Uart5::TX }, { DMA_Sx::Req::Uart5::RX } },
+	{ UART5, { DMA_Sx::Req::Uart5::TX_DMA1_Stream7 }, { DMA_Sx::Req::Uart5::RX_DMA1_Stream0 } },
 #endif
 #ifdef USART6_BASE
-	{ USART6, { DMA_Sx::Req::Usart6::TX, DMA_Sx::Req::Usart6::TX_alt }, { DMA_Sx::Req::Usart6::RX, DMA_Sx::Req::Usart6::RX_alt } },
+	{ USART6, { DMA_Sx::Req::Usart6::TX_DMA2_Stream6, DMA_Sx::Req::Usart6::TX_DMA2_Stream7 }, { DMA_Sx::Req::Usart6::RX_DMA2_Stream1, DMA_Sx::Req::Usart6::RX_DMA2_Stream2 } },
 #endif
 #ifdef UART7_BASE
-	{ UART7, { DMA_Sx::Req::Uart7::TX }, { DMA_Sx::Req::Uart7::RX } },
+	{ UART7, { DMA_Sx::Req::Uart7::TX_DMA1_Stream1 }, { DMA_Sx::Req::Uart7::RX_DMA1_Stream3 } },
 #endif
 #ifdef UART8_BASE
-	{ UART8, { DMA_Sx::Req::Uart8::TX }, { DMA_Sx::Req::Uart8::RX } },
+	{ UART8, { DMA_Sx::Req::Uart8::TX_DMA1_Stream0 }, { DMA_Sx::Req::Uart8::RX_DMA1_Stream6 } },
 #endif
 #endif
 };

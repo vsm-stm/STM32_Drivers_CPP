@@ -11,7 +11,7 @@
  * Public API is identical on both families.
  *
  * Nested types (DIR, SIZE, IRQ, StreamSettings, DMAReq, Req) live inside
- * the DMA_Sx class — access them as DMA_Sx::DIR::To_Per, DMA_Sx::Req::Usart1::TX, etc.
+ * the DMA_Sx class — access them as DMA_Sx::DIR::To_Per, DMA_Sx::DMAReq, etc.
  *
  * ============================================================================
  * Usage — standalone DMA transfer
@@ -43,9 +43,9 @@
  *
  *    a) DMAReq from Req:: table  [recommended — encodes stream + CHSEL]
  *       @code
- *         DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX);      // DMA2_Stream7, ch4
- *         DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_alt);  // DMA2_Stream5, ch4
- *         DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX);      // DMA2_Stream2, ch4
+ *         DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7); // CHSEL=4
+ *         DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CHSEL=4
+ *         DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream2); // CHSEL=4
  *       @endcode
  *
  *    b) Raw stream pointer  [CHSEL supplied via StreamSettings::channel]
@@ -115,7 +115,8 @@
  *  - On G0, DMA1 has 5 or 7 channels; some models also have DMA2 with 5 channels.
  *    Shared IRQ lines require enough IRQ_Registry slots for their consumers.
  *  - On F4/F7, stream + CHSEL are hardware-fixed; use the Req:: table to pick
- *    the correct combination. Alternate streams are named ::TX_alt / ::RX_alt.
+ *    the correct combination. Names include controller and stream, for example
+ *    Req::Usart3::TX_DMA1_Stream3 and Req::Usart3::TX_DMA1_Stream4.
  *  - The peripheral driver checks the route; DMA validates register fields.
  *  - DMA does not perform cache maintenance. The consumer calls System's cache
  *    operations at buffer handover; direct DMA callers do this themselves.
@@ -129,14 +130,13 @@
 #include "system.hpp"
 #include "rcc.hpp"
 
-/** @brief Per-stream/channel static descriptor stored in dma.cpp. */
+/** @brief Read-only stream/channel descriptor; ownership flags are separate in dma.cpp. */
 struct dma_sets_typedef {
 	DMA_TypeDef*        ctrl;      ///< DMA1 or DMA2
 	volatile uint32_t*  isr;       ///< Status register (LISR/HISR on F4, ISR on G0)
 	volatile uint32_t*  ifcr;      ///< Clear register  (LIFCR/HIFCR on F4, IFCR on G0)
 	uint8_t             if_offset; ///< Bit offset of this stream's flag group
 	IRQn_Type           irqn;      ///< NVIC IRQ number
-	bool                used;      ///< Owned after SetUp(); cleared by the owner's Release()
 };
 
 // ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ private:
 	static constexpr uint32_t FLAG_ALL = 0xFu; // GIF+TCIF+HTIF+TEIF per channel
 #endif
 
-	dma_sets_typedef* _info    = nullptr;
+	const dma_sets_typedef* _info = nullptr;
 	static constexpr uint32_t MAX_COUNT = 0xFFFFU;
 	uint32_t          _preset_ch  = 0;
 	bool              _has_preset = false;
@@ -248,7 +248,7 @@ public:
 	};
 
 	// DMAReq and Req are defined in dma_requests.hpp and become nested types here.
-	// Access as: DMA_Sx::DMAReq, DMA_Sx::Req::Usart1::TX, etc.
+	// F4/F7: Req::Usart1::TX_DMA2_Stream7; G0: Req::Usart1::TX.
 #include "dma_requests.hpp"
 
 #if defined(STM32F4) || defined(STM32F7)

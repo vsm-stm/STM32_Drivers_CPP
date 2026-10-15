@@ -2,7 +2,7 @@
  * @file dma.cpp
  * @brief Exact stream/channel lookup, one-owner setup and full resource release.
  *
- * The static used flag prevents duplicate hardware ownership, not concurrent
+ * The dma_used array prevents duplicate hardware ownership, not concurrent
  * access synchronization. Setup/release are serialized main-loop operations.
  * G0 DMA2 maps to its own ISR/IFCR and DMAMUX slots 7..11, not DMA1 registers.
  * Consumer-specific peripheral routing and cache handling remain outside DMA.
@@ -10,7 +10,8 @@
 #include "dma.hpp"
 
 // ---------------------------------------------------------------------------
-// Static descriptor table — one entry per hardware stream/channel.
+// Read-only descriptor table in Flash — one entry per hardware stream/channel.
+// Mutable ownership is kept separately in dma_used; both arrays use the same index.
 //
 // F4/F7: 16 entries (DMA1 streams 0-7 + DMA2 streams 0-7).
 //   Flag offset within LISR/HISR: bits 15:12 are reserved, so the pattern
@@ -23,23 +24,23 @@
 
 #if defined(STM32F4) || defined(STM32F7)
 
-static dma_sets_typedef dma_streams[16] = {
-	{ DMA1, &DMA1->LISR, &DMA1->LIFCR,  0, DMA1_Stream0_IRQn, false },
-	{ DMA1, &DMA1->LISR, &DMA1->LIFCR,  6, DMA1_Stream1_IRQn, false },
-	{ DMA1, &DMA1->LISR, &DMA1->LIFCR, 16, DMA1_Stream2_IRQn, false },
-	{ DMA1, &DMA1->LISR, &DMA1->LIFCR, 22, DMA1_Stream3_IRQn, false },
-	{ DMA1, &DMA1->HISR, &DMA1->HIFCR,  0, DMA1_Stream4_IRQn, false },
-	{ DMA1, &DMA1->HISR, &DMA1->HIFCR,  6, DMA1_Stream5_IRQn, false },
-	{ DMA1, &DMA1->HISR, &DMA1->HIFCR, 16, DMA1_Stream6_IRQn, false },
-	{ DMA1, &DMA1->HISR, &DMA1->HIFCR, 22, DMA1_Stream7_IRQn, false },
-	{ DMA2, &DMA2->LISR, &DMA2->LIFCR,  0, DMA2_Stream0_IRQn, false },
-	{ DMA2, &DMA2->LISR, &DMA2->LIFCR,  6, DMA2_Stream1_IRQn, false },
-	{ DMA2, &DMA2->LISR, &DMA2->LIFCR, 16, DMA2_Stream2_IRQn, false },
-	{ DMA2, &DMA2->LISR, &DMA2->LIFCR, 22, DMA2_Stream3_IRQn, false },
-	{ DMA2, &DMA2->HISR, &DMA2->HIFCR,  0, DMA2_Stream4_IRQn, false },
-	{ DMA2, &DMA2->HISR, &DMA2->HIFCR,  6, DMA2_Stream5_IRQn, false },
-	{ DMA2, &DMA2->HISR, &DMA2->HIFCR, 16, DMA2_Stream6_IRQn, false },
-	{ DMA2, &DMA2->HISR, &DMA2->HIFCR, 22, DMA2_Stream7_IRQn, false },
+static const dma_sets_typedef dma_streams[16] = {
+	{ DMA1, &DMA1->LISR, &DMA1->LIFCR,  0, DMA1_Stream0_IRQn },
+	{ DMA1, &DMA1->LISR, &DMA1->LIFCR,  6, DMA1_Stream1_IRQn },
+	{ DMA1, &DMA1->LISR, &DMA1->LIFCR, 16, DMA1_Stream2_IRQn },
+	{ DMA1, &DMA1->LISR, &DMA1->LIFCR, 22, DMA1_Stream3_IRQn },
+	{ DMA1, &DMA1->HISR, &DMA1->HIFCR,  0, DMA1_Stream4_IRQn },
+	{ DMA1, &DMA1->HISR, &DMA1->HIFCR,  6, DMA1_Stream5_IRQn },
+	{ DMA1, &DMA1->HISR, &DMA1->HIFCR, 16, DMA1_Stream6_IRQn },
+	{ DMA1, &DMA1->HISR, &DMA1->HIFCR, 22, DMA1_Stream7_IRQn },
+	{ DMA2, &DMA2->LISR, &DMA2->LIFCR,  0, DMA2_Stream0_IRQn },
+	{ DMA2, &DMA2->LISR, &DMA2->LIFCR,  6, DMA2_Stream1_IRQn },
+	{ DMA2, &DMA2->LISR, &DMA2->LIFCR, 16, DMA2_Stream2_IRQn },
+	{ DMA2, &DMA2->LISR, &DMA2->LIFCR, 22, DMA2_Stream3_IRQn },
+	{ DMA2, &DMA2->HISR, &DMA2->HIFCR,  0, DMA2_Stream4_IRQn },
+	{ DMA2, &DMA2->HISR, &DMA2->HIFCR,  6, DMA2_Stream5_IRQn },
+	{ DMA2, &DMA2->HISR, &DMA2->HIFCR, 16, DMA2_Stream6_IRQn },
+	{ DMA2, &DMA2->HISR, &DMA2->HIFCR, 22, DMA2_Stream7_IRQn },
 };
 
 #elif defined(STM32G0)
@@ -52,22 +53,22 @@ static constexpr IRQn_Type kSharedDMA_IRQn = DMA1_Ch4_7_DMAMUX1_OVR_IRQn;
 static constexpr IRQn_Type kSharedDMA_IRQn = DMA1_Ch4_5_DMAMUX1_OVR_IRQn;
 #endif
 
-static dma_sets_typedef dma_streams[] = {
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  0, DMA1_Channel1_IRQn,           false },
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  4, DMA1_Channel2_3_IRQn,         false },
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  8, DMA1_Channel2_3_IRQn,         false },
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 12, kSharedDMA_IRQn, false },
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 16, kSharedDMA_IRQn, false },
+static const dma_sets_typedef dma_streams[] = {
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  0, DMA1_Channel1_IRQn },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  4, DMA1_Channel2_3_IRQn },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR,  8, DMA1_Channel2_3_IRQn },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 12, kSharedDMA_IRQn },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 16, kSharedDMA_IRQn },
 #if defined(DMA1_Channel7)
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 20, kSharedDMA_IRQn, false },
-	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 24, kSharedDMA_IRQn, false },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 20, kSharedDMA_IRQn },
+	{ DMA1, &DMA1->ISR, &DMA1->IFCR, 24, kSharedDMA_IRQn },
 #endif
 #if defined(DMA2_Channel1)
-	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  0, kSharedDMA_IRQn, false },
-	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  4, kSharedDMA_IRQn, false },
-	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  8, kSharedDMA_IRQn, false },
-	{ DMA2, &DMA2->ISR, &DMA2->IFCR, 12, kSharedDMA_IRQn, false },
-	{ DMA2, &DMA2->ISR, &DMA2->IFCR, 16, kSharedDMA_IRQn, false },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  0, kSharedDMA_IRQn },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  4, kSharedDMA_IRQn },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR,  8, kSharedDMA_IRQn },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR, 12, kSharedDMA_IRQn },
+	{ DMA2, &DMA2->ISR, &DMA2->IFCR, 16, kSharedDMA_IRQn },
 #endif
 };
 
@@ -75,6 +76,9 @@ static dma_sets_typedef dma_streams[] = {
 
 static constexpr int32_t kStreamCount =
 	(int32_t)(sizeof(dma_streams) / sizeof(dma_streams[0]));
+
+// Mutable ownership flags share the descriptor-table index and start clear in .bss.
+static bool dma_used[kStreamCount] = {};
 
 // ---------------------------------------------------------------------------
 
@@ -143,12 +147,11 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 	if ((settings.per_address | settings.mem_address) & alignment_mask)
 		return SysInitStatus::InitError;
 
-	dma_sets_typedef& info = dma_streams[idx];
-	if (info.used)
+	if (dma_used[idx])
 		return SysInitStatus::InitError;
 
-	info.used = true;
-	_info = &info;
+	dma_used[idx] = true;
+	_info = &dma_streams[idx];
 
 	// Enable DMA clock
 #if defined(STM32F4) || defined(STM32F7)
@@ -213,6 +216,7 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 SysStatus DMA_Sx::Release()
 {
 	if (!_info) return SysStatus::NotInit;
+	const int32_t idx = static_cast<int32_t>(_info - dma_streams);
 	Stream_EN(DISABLE);
 	_CR() = 0U; // Disable this stream/channel's interrupt sources and configuration.
 	ClearFlags();
@@ -223,11 +227,10 @@ SysStatus DMA_Sx::Release()
 	_stream->M1AR = 0U;
 	_stream->FCR = DMA_SxFCR_FTH_0; // Reset writable FIFO fields; status bits are read-only.
 #elif defined(STM32G0)
-	const int32_t idx = GetStreamIndex(_stream);
 	(DMAMUX1_Channel0 + idx)->CCR = 0U;
 	DMAMUX1_ChannelStatus->CFR = 1U << idx;
 #endif
-	_info->used = false;
+	dma_used[idx] = false;
 	_info = nullptr;
 	return SysStatus::OK;
 }
