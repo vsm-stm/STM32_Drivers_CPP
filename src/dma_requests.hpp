@@ -92,6 +92,13 @@ struct Req {
 	struct Spi2  {	static constexpr DMAReq RX = { 18U };
 					static constexpr DMAReq TX = { 19U }; };
 
+#ifdef SPI3_BASE
+	struct Spi3 {
+		static constexpr DMAReq RX = { 66U };
+		static constexpr DMAReq TX = { 67U };
+	};
+#endif
+
 	struct Tim1 {
 					static constexpr DMAReq CH1  = { 20U };
 					static constexpr DMAReq CH2  = { 21U };
@@ -198,6 +205,29 @@ struct Req {
 		static constexpr DMAReq RX_DMA1_Stream2 = { DMA1_Stream2, 0U };  // Stream2 Ch0
 		static constexpr DMAReq TX_DMA1_Stream7 = { DMA1_Stream7, 0U };  // Stream7 Ch0
 	};
+
+#ifdef SPI4_BASE
+    struct Spi4 {
+        static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0, 4U };
+        static constexpr DMAReq RX_DMA2_Stream3 = { DMA2_Stream3, 5U };
+        static constexpr DMAReq TX_DMA2_Stream1 = { DMA2_Stream1, 4U };
+        static constexpr DMAReq TX_DMA2_Stream4 = { DMA2_Stream4, 5U };
+    };
+#endif
+#ifdef SPI5_BASE
+    struct Spi5 {
+        static constexpr DMAReq RX_DMA2_Stream3 = { DMA2_Stream3, 2U };
+        static constexpr DMAReq RX_DMA2_Stream5 = { DMA2_Stream5, 7U };
+        static constexpr DMAReq TX_DMA2_Stream4 = { DMA2_Stream4, 2U };
+        static constexpr DMAReq TX_DMA2_Stream6 = { DMA2_Stream6, 7U };
+    };
+#endif
+#ifdef SPI6_BASE
+    struct Spi6 {
+        static constexpr DMAReq RX_DMA2_Stream6 = { DMA2_Stream6, 1U };
+        static constexpr DMAReq TX_DMA2_Stream5 = { DMA2_Stream5, 1U };
+    };
+#endif
 
 	struct I2c1 {
 		static constexpr DMAReq RX_DMA1_Stream0 = { DMA1_Stream0, 1U };
