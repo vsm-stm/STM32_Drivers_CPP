@@ -79,17 +79,16 @@
  * ============================================================================
  *
  * The DMA_Sx object owns the hardware channel after successful SetUp().
- * USART retains the object through its constructor (other consumers still use
- * AttachDMA); do not share
- * one configured object between different peripherals.
+ * USART owns embedded DMA objects configured by named constructor requests.
+ * Other consumers retain external DMA objects; do not share one configured
+ * resource between different peripherals.
  * USART registers separate TX/RX DMA handlers and calls DMA methods internally.
  *
  *    @code
  *      // 1. Declare driver objects (file or class scope)
- *      DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
- *      DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
  *      USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
- *                 &dma_tx, &dma_rx);
+ *                 {DMA1_Channel4, DMA_Sx::Req::Usart1::TX},
+ *                 {DMA1_Channel5, DMA_Sx::Req::Usart1::RX});
  *
  *      // 2. UART SetUp configures the constructor-bound DMA internally.
  *      auto initialized = uart.SetUp();
@@ -104,8 +103,8 @@
  *
  * Notes
  * -----
- *  - For standalone transfers, call DMA SetUp() once. AttachDMA() in current
- *    peripheral drivers calls it internally; do not call it beforehand.
+ *  - For standalone transfers, call DMA SetUp() once. Peripheral drivers configure
+ *    their owned/bound DMA themselves; do not call it beforehand.
  *  - Repeated SetUp() is InitError until Release(), including on the same object.
  *  - SetUp() permits count=0 and address=0 for preparation without a start.
  *    SetCount() accepts 1..65535 elements; check its returned status.
@@ -255,7 +254,9 @@ public:
 #if defined(STM32F4) || defined(STM32F7)
 	// Stream + CHSEL come from DMAReq; no separate channel choice needed.
 	explicit DMA_Sx(DMA_Stream_TypeDef* stream) : _stream(stream) {}
-	explicit DMA_Sx(DMAReq req) : _stream(req.stream), _preset_ch(req.ch), _has_preset(true) {}
+	explicit DMA_Sx(DMAReq req)
+		: _stream(reinterpret_cast<DMA_Stream_TypeDef*>(req.stream)),
+		  _preset_ch(req.ch), _has_preset(true) {}
 #elif defined(STM32G0)
 	// Channel chosen by the user; request ID comes from DMAReq (DMAMUX1).
 	explicit DMA_Sx(DMA_Channel_TypeDef* ch) : _stream(ch) {}
@@ -272,11 +273,14 @@ public:
 	inline bool CanUseRequest(DMAReq req) const {
 		if (!req.IsValid() || (_has_preset && _preset_ch != req.ch)) return false;
 	#if defined(STM32F4) || defined(STM32F7)
-		return _stream == req.stream;
+		return reinterpret_cast<uintptr_t>(_stream) == req.stream;
 	#else
 		return true; // DMAMUX permits the request on any existing channel.
 	#endif
 	}
+
+	/// Whether a hardware stream/channel was selected; does not acquire it.
+	bool HasSelection() const { return _stream != nullptr; }
 
 	DMA_Sx() = delete;
 	DMA_Sx(const DMA_Sx&) = delete;
