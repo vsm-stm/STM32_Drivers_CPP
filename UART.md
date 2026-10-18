@@ -7,9 +7,11 @@
 ### Initialization and ownership
 
 One USART object controls one UART. Call System/RCC initialization first.
-SetUp() selects PCLK, oversampling x16 and 8N1; G0 PRESC is /1.
+The constructor fixes the kernel clock; PCLK is the default. SetUp() applies
+that source, oversampling x16 and 8N1; G0 PRESC is /1.
 Baud is rounded to the nearest representable divider:
-BRR = (PCLK + baud/2) / baud, with 16 <= BRR <= 65535 and baud <= PCLK/16.
+BRR = (kernel_clock + baud/2) / baud, with 16 <= BRR <= 65535
+and baud <= kernel_clock/16.
 Zero baud and rates outside this range return InitError; no arbitrary 9600 minimum.
 
 Named pins use USART::_N::TX/RX. PIN{} leaves a direction unconfigured.
@@ -26,6 +28,35 @@ IRQ_en() changes peripheral source bits only. Completion disables its sources
 without unregistering anything. DeInit() removes this object's registrations and
 preserves other handlers on shared vectors. The object must outlive registration;
 its destructor does not call DeInit().
+
+### Kernel clock (F7/G0)
+
+The optional last constructor argument is `USART::ClockSource`:
+
+| Source | Frequency used for BRR |
+|---|---|
+| `PCLK` (default) | This instance's APB clock |
+| `SYSCLK` | System clock before the AHB divider; derived from HCLK and HPRE |
+| `HSI` | 16 MHz, before G0 HSIDIV |
+| `LSE` | 32768 Hz |
+
+```cpp
+// F7/G0; the caller must enable HSI and wait for HSIRDY before SetUp().
+USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+           USART::ClockSource::HSI);
+SysInitStatus status = link.SetUp();
+```
+
+`SetUp()` checks that the selected HSI/LSE is enabled and ready. It neither starts
+an oscillator nor waits for one. An unavailable/not-ready source returns InitError
+before UART configuration. On G0, instances without an RCC USARTxSEL field accept
+PCLK only; passing another source also returns InitError. F4 retains its original
+constructor and PCLK clocking.
+
+The source is immutable, including across DeInit()/SetUp(). Keep the oscillator
+running and RCC frequencies/dividers unchanged while using the UART. SetBaud()
+uses the same source, checks readiness and returns Error if it is no longer ready;
+it does not change the source. With x16 oversampling, LSE limits baud to 2048.
 
 ### Transfer contract
 
@@ -93,7 +124,7 @@ Shared UART vectors also use IRQ_Registry capacity. If all four G0B0/B1
 USART3..6 are used, configure at least four slots in irq_registry_settings.hpp.
 An exhausted IRQ row returns InitError; this is not configured through CMake.
 
-USART1 DMA2_Stream5 / CH4 is RX_alt, not TX_alt.
+USART1 DMA2_Stream5 / CH4 is named RX_DMA2_Stream5; it is an RX route.
 UART7/8 routes and G0 USART3..6 request IDs are provided where those peripherals exist.
 DMA_Sx::CanUseRequest() inspects constructor selection without changing ownership.
 GetErrorFlags() reads hardware error flags; UART enables TC/TE and F4/F7 DME interrupts.
@@ -164,7 +195,8 @@ if (uart.GetDataReceivedFlag()) {
 }
 ~~~
 
-For F4/F7 construct DMA_Sx tx(DMA_Sx::Req::Usart1::TX) and the matching RX object.
+For F4/F7 construct DMA_Sx tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7)
+and the matching RX object, for example DMA_Sx rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5).
 
 Existing consumers that relied on GetDataReceivedCount() clearing the flag must
 now call ClearDataReceivedFlag() explicitly. Modbus migration is deferred to its
@@ -175,9 +207,10 @@ module review; it was not changed here.
 ### Настройка и владение
 
 Один объект обслуживает один UART. Сначала настраиваются System и RCC.
-SetUp() выбирает PCLK, oversampling x16 и 8N1; PRESC на G0 — /1.
-BRR округляется до ближайшего целого: (PCLK + baud/2) / baud.
-Допустимы 16..65535 и baud <= PCLK/16. Нулевой или непредставимый baud —
+Источник фиксируется в конструкторе, по умолчанию PCLK. SetUp() применяет
+выбранный источник, oversampling x16 и 8N1; PRESC на G0 — /1.
+BRR округляется до ближайшего целого: (kernel_clock + baud/2) / baud.
+Допустимы 16..65535 и baud <= kernel_clock/16. Нулевой или непредставимый baud —
 InitError. Условного нижнего предела 9600 больше нет.
 
 Таблицы учитывают наличие периферии и GPIO в CMSIS: F4/F7 UART/USART 1..8,
@@ -190,6 +223,36 @@ SetUp() один раз регистрирует объект на UART IRQ и �
 Завершение обмена не меняет реестр. DeInit() останавливает DMA, освобождает свои
 ресурсы и удаляет только свои обработчики, сохраняя общие IRQ других устройств.
 Настройка/подключение/удаление выполняются в main, объект живёт до снятия регистрации.
+
+### Источник тактирования (F7/G0)
+
+Последний необязательный параметр конструктора — `USART::ClockSource`:
+
+| Источник | Частота для расчёта BRR |
+|---|---|
+| `PCLK` (по умолчанию) | Частота APB соответствующего USART |
+| `SYSCLK` | Частота до делителя AHB, восстановленная по HCLK и HPRE |
+| `HSI` | 16 МГц, до HSIDIV на G0 |
+| `LSE` | 32768 Гц |
+
+```cpp
+// F7/G0: вызывающий код заранее включает HSI и ждёт HSIRDY.
+USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+           USART::ClockSource::HSI);
+SysInitStatus status = link.SetUp();
+```
+
+`SetUp()` только проверяет, что выбранный HSI/LSE включён и готов. Запускать
+генераторы и ожидать их готовности должен вызывающий код. Недоступный или
+неготовый источник даёт InitError до настройки UART. На G0 экземпляры без поля
+RCC USARTxSEL принимают только PCLK; другой источник также даёт InitError.
+Конструктор и тактирование F4 остаются прежними — от PCLK.
+
+Источник неизменяем, в том числе после DeInit()/SetUp(). Во время использования
+UART генератор должен работать, частоты и делители RCC должны сохраняться.
+SetBaud() рассчитывает BRR от того же источника и возвращает Error, если он
+перестал быть готов; источник не переключается. При oversampling x16 частота
+LSE ограничивает baud значением 2048.
 
 ### Обмен и готовность пакета
 
@@ -269,7 +332,7 @@ SetParity остаётся заглушкой.
 
 ### Совместимость
 
-USART1 DMA2_Stream5 / CH4 переименован из ошибочного TX_alt в RX_alt.
+USART1 DMA2_Stream5 / CH4 назван RX_DMA2_Stream5: это маршрут RX.
 Добавлены UART7/8 и G0 USART3..6 DMAReq; исправлены G0 AF USART1/4 и общие IRQ.
 Добавлены DMA_Sx::CanUseRequest() и GetErrorFlags(); прочие потребители DMA не менялись.
 
@@ -278,6 +341,8 @@ ClearDataReceivedFlag() явно. Modbus оставлен для своего р
 
 ### Источники для таблиц
 
+- [ST USART F7 — источники тактирования](https://www.st.com/resource/en/product_training/STM32F7_Peripheral_USART.pdf).
+- [ST RM0444 — RCC/USART G0x1](https://www.st.com/resource/en/reference_manual/dm00371828.pdf).
 - [ST AN4031 — таблицы DMA F4/F7](https://www.st.com/resource/en/application_note/dm00046011-using-the-stm32f2-stm32f4-and-stm32f7-series-dma-controller-stmicroelectronics.pdf).
 - [ST G0 LL DMAMUX — идентификаторы запросов](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h).
 - [ST G071 datasheet — AF USART1/4](https://www.st.com/resource/en/datasheet/stm32g071kb.pdf).

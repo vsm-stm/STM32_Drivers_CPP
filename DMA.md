@@ -56,9 +56,9 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
                                                               └─────────────────────┘
 ```
 
-On F4/F7 the "stream ↔ peripheral" pairing is part of the silicon (for example, `USART1_TX` is **always**
-`DMA2_Stream7` or `DMA2_Stream5`, never anything else); `DMA_Sx::Req::Usart1::TX`/`::TX_alt` in the
-`Req::` table (§5) simply name these fixed pairs. On G0, `DMAMUX1` is a separate hardware
+On F4/F7 the "stream ↔ peripheral" pairing is part of the silicon. For example,
+`Req::Usart3::TX_DMA1_Stream3` and `Req::Usart3::TX_DMA1_Stream4` name two fixed
+USART3 TX routes and show the occupied resource directly. On G0, `DMAMUX1` is a separate hardware
 block between the available DMA controllers and request sources. The device has
 5 or 7 DMA1 channels and may also have five DMA2 channels. The caller selects
 an available channel and a valid request source through `DMAMUX1_ChannelN->CCR`.
@@ -87,7 +87,11 @@ and works identically on F4/F7/G0.
 
 ## 4. Static Descriptor Table and Protection from Double Initialization
 
-Each descriptor stores the controller, flag registers/offset, IRQ and a used flag.
+Each descriptor stores only the controller, flag registers/offset and IRQ.
+`dma_streams` is a `static const` table in Flash; mutable ownership flags live
+in the separate zero-initialized `dma_used` array in RAM, with the same indices.
+`_info` points to a const descriptor. SetUp marks its index occupied; Release
+clears that index. No additional per-object index is stored.
 F4/F7 have 16 streams. G0 has 5 or 7 DMA1 channels, plus five DMA2 channels when present.
 GetStreamIndex() checks the controller range and exact stride from CMSIS base addresses;
 a pointer inside a register block is rejected. DMA2 on G0 uses descriptor/DMAMUX
@@ -109,7 +113,16 @@ struct DMAReq {
 };
 
 struct Req {
-    struct Usart1 { static constexpr DMAReq TX = {...}; static constexpr DMAReq RX = {...}; };
+    struct Usart1 {
+#if defined(STM32F4) || defined(STM32F7)
+        static constexpr DMAReq TX_DMA2_Stream7 = {DMA2_Stream7, 4U};
+        static constexpr DMAReq RX_DMA2_Stream2 = {DMA2_Stream2, 4U};
+        static constexpr DMAReq RX_DMA2_Stream5 = {DMA2_Stream5, 4U};
+#elif defined(STM32G0)
+        static constexpr DMAReq TX = {51U};
+        static constexpr DMAReq RX = {50U};
+#endif
+    };
     // ... Spi1, Tim3, Adc1, ...
 };
 ```
@@ -118,9 +131,9 @@ struct Req {
 **which number to write into CHSEL (F4/F7) or into DMAMUX1 (G0)** so the stream/channel listens to
 exactly the right peripheral. The struct names are deliberately `CamelCase` (`Usart1`, not `USART1`) so
 as not to conflict with the CMSIS macros `USART1`/`SPI1`/... (those are `#define`d as pointers to the
-peripheral's registers, not identifiers). On F4/F7, where one peripheral can have more than one
-hardware-valid stream, the second option is called `::TX_alt`/`::RX_alt` (for example,
-`Req::Usart1::RX` = `DMA2_Stream2`, `Req::Usart1::RX_alt` = `DMA2_Stream5`).
+peripheral's registers, not identifiers). F4/F7 route names identify each stream:
+`Req::Usart1::RX_DMA2_Stream2` and `Req::Usart1::RX_DMA2_Stream5`, for example.
+G0 keeps TX/RX because the channel is chosen separately in the constructor.
 
 ---
 
@@ -155,7 +168,18 @@ table:
 ```cpp
 inline void ClearFlags() { *_info->ifcr = FLAG_ALL << _info->if_offset; }
 inline bool GetTC_Flag() { return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0; }
+inline bool GetHT_Flag() const { return (*_info->isr & (FLAG_HT << _info->if_offset)) != 0; }
+inline void ClearHT_Flag() { *_info->ifcr = FLAG_HT << _info->if_offset; }
+inline void ClearTC_Flag() { *_info->ifcr = FLAG_TC << _info->if_offset; }
 ```
+
+`GetHT_Flag()` reads the half-transfer flag independently of whether `IRQ::HTC`
+is enabled. `ClearHT_Flag()` clears only HT; `ClearTC_Flag()` clears only TC.
+Both retain other completion/error flags and flags of other streams/channels.
+Each clear performs one write to the clear register, without read/modify/write.
+All three methods require successful `SetUp()`. The consumer enables interrupt
+sources and handles errors; `ClearFlags()` still clears all flags of its resource.
+The ADC callbacks and cache maintenance for buffer halves require separate integration.
 
 On F4/F7 the group occupies 6 bits, but the offsets go `0, 6, 16, 22` (not `0, 6, 12, 18` — bits
 15:12 inside `LISR`/`HISR` are reserved by hardware), so the offsets in the `dma_streams[]` table are
@@ -210,8 +234,8 @@ DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
 ### F4/F7 — via the Req:: Table (the Stream Is Already Baked into DMAReq)
 
 ```cpp
-DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX);       // DMA2_Stream2, CHSEL=4
-DMA_Sx dma_rx_alt(DMA_Sx::Req::Usart1::RX_alt); // DMA2_Stream5, CHSEL=4 — same request, different stream
+DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream2);     // CHSEL=4
+DMA_Sx dma_rx_alt(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CHSEL=4
 ```
 
 ### G0 — Standalone Memory-to-Memory Transfer, No Peripheral
@@ -238,7 +262,7 @@ while (!copier.GetTC_Flag()) {}
 
 ```cpp
 USART a(USART3, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9);
-DMA_Sx dma_tx(DMA_Sx::Req::Usart3::TX);
+DMA_Sx dma_tx(DMA_Sx::Req::Usart3::TX_DMA1_Stream3);
 a.SetUp();
 a.AttachDMA(&dma_tx, nullptr);   // SetUp() and IRQ_Registry::Register() — inside AttachDMA()
 a.Send_DMA(buf, len);
@@ -353,9 +377,9 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
                                                              └─────────────────────┘
 ```
 
-На F4/F7 связка "стрим ↔ периферия" — часть кремния (например, `USART1_TX` **всегда**
-`DMA2_Stream7` или `DMA2_Stream5`, никак иначе); `DMA_Sx::Req::Usart1::TX`/`::TX_alt` в таблице
-`Req::` (§5) просто называют эти зафиксированные пары. На G0 `DMAMUX1` — отдельный аппаратный
+На F4/F7 связка "стрим ↔ периферия" задана аппаратно. Например,
+`Req::Usart3::TX_DMA1_Stream3` и `Req::Usart3::TX_DMA1_Stream4` обозначают два
+маршрута USART3 TX и сразу показывают занятый ресурс. На G0 `DMAMUX1` — отдельный аппаратный
 блок между доступными контроллерами DMA и источниками запросов. В зависимости
 от МК есть 5 или 7 каналов DMA1 и ещё пять каналов DMA2. Пользователь выбирает
 существующий канал и допустимый источник через `DMAMUX1_ChannelN->CCR`.
@@ -384,7 +408,11 @@ CMSIS: `DMA_SxCR_EN` vs `DMA_CCR_EN`) и `FLAG_TC`/`FLAG_ALL` (позиция ф
 
 ## 4. Статическая таблица дескрипторов и защита от двойной инициализации
 
-Дескриптор содержит контроллер, регистры/смещение флагов, IRQ и used.
+Дескриптор содержит только контроллер, регистры/смещение флагов и IRQ.
+`dma_streams` — таблица `static const` во Flash. Изменяемые флаги занятости
+вынесены в отдельный обнуляемый массив `dma_used` в RAM с теми же индексами.
+`_info` указывает на константный дескриптор. SetUp отмечает индекс занятым,
+Release освобождает его. Дополнительный индекс в объекте не хранится.
 На F4/F7 есть 16 потоков. На G0 — 5 или 7 каналов DMA1 и ещё пять каналов DMA2,
 если этот контроллер присутствует. GetStreamIndex() проверяет диапазон контроллера
 и точный шаг из базовых адресов CMSIS; указатель внутрь блока регистров отклоняется.
@@ -407,7 +435,16 @@ struct DMAReq {
 };
 
 struct Req {
-    struct Usart1 { static constexpr DMAReq TX = {...}; static constexpr DMAReq RX = {...}; };
+    struct Usart1 {
+#if defined(STM32F4) || defined(STM32F7)
+        static constexpr DMAReq TX_DMA2_Stream7 = {DMA2_Stream7, 4U};
+        static constexpr DMAReq RX_DMA2_Stream2 = {DMA2_Stream2, 4U};
+        static constexpr DMAReq RX_DMA2_Stream5 = {DMA2_Stream5, 4U};
+#elif defined(STM32G0)
+        static constexpr DMAReq TX = {51U};
+        static constexpr DMAReq RX = {50U};
+#endif
+    };
     // ... Spi1, Tim3, Adc1, ...
 };
 ```
@@ -416,9 +453,9 @@ struct Req {
 записать в CHSEL (F4/F7) или в DMAMUX1 (G0)**, чтобы стрим/канал слушал именно нужную периферию.
 Имена структур — `CamelCase` (`Usart1`, не `USART1`) специально, чтобы не конфликтовать с
 CMSIS-макросами `USART1`/`SPI1`/... (те `#define`'ятся как указатели на регистры периферии, а не
-идентификаторы). На F4/F7, где для одной периферии может быть больше одного аппаратно валидного
-стрима, второй вариант называется `::TX_alt`/`::RX_alt` (например,
-`Req::Usart1::RX` = `DMA2_Stream2`, `Req::Usart1::RX_alt` = `DMA2_Stream5`).
+идентификаторы). Имена маршрутов F4/F7 показывают поток:
+например, `Req::Usart1::RX_DMA2_Stream2` и `Req::Usart1::RX_DMA2_Stream5`.
+На G0 сохраняются TX/RX: канал отдельно задаётся в конструкторе.
 
 ---
 
@@ -453,7 +490,19 @@ CMSIS-макросами `USART1`/`SPI1`/... (те `#define`'ятся как у�
 ```cpp
 inline void ClearFlags() { *_info->ifcr = FLAG_ALL << _info->if_offset; }
 inline bool GetTC_Flag() { return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0; }
+inline bool GetHT_Flag() const { return (*_info->isr & (FLAG_HT << _info->if_offset)) != 0; }
+inline void ClearHT_Flag() { *_info->ifcr = FLAG_HT << _info->if_offset; }
+inline void ClearTC_Flag() { *_info->ifcr = FLAG_TC << _info->if_offset; }
 ```
+
+`GetHT_Flag()` читает флаг половины передачи независимо от включения `IRQ::HTC`.
+`ClearHT_Flag()` очищает только HT, `ClearTC_Flag()` — только TC. Остальные
+флаги завершения/ошибок и флаги чужих каналов/потоков сохраняются.
+Каждая очистка — одна запись в регистр очистки, без чтения/изменения/записи.
+Предусловие всех трёх методов — успешный `SetUp()`. Включение источников IRQ
+и обработку ошибок выполняет потребитель. `ClearFlags()` по-прежнему очищает
+все флаги своего ресурса. Подключение callbacks ADC и обслуживания кеша
+половин буфера выполняется отдельным шагом.
 
 На F4/F7 группа занимает 6 бит, но смещения идут `0, 6, 16, 22` (не `0, 6, 12, 18` — биты 15:12
 внутри `LISR`/`HISR` зарезервированы аппаратно), поэтому смещения в таблице `dma_streams[]`
@@ -509,8 +558,8 @@ DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
 ### F4/F7 — через таблицу Req:: (стрим уже зашит в DMAReq)
 
 ```cpp
-DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX);       // DMA2_Stream2, CHSEL=4
-DMA_Sx dma_rx_alt(DMA_Sx::Req::Usart1::RX_alt); // DMA2_Stream5, CHSEL=4 — тот же запрос, другой стрим
+DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream2);     // CHSEL=4
+DMA_Sx dma_rx_alt(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CHSEL=4
 ```
 
 ### G0 — автономный перенос память→память, без периферии
@@ -537,7 +586,7 @@ while (!copier.GetTC_Flag()) {}
 
 ```cpp
 USART a(USART3, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9);
-DMA_Sx dma_tx(DMA_Sx::Req::Usart3::TX);
+DMA_Sx dma_tx(DMA_Sx::Req::Usart3::TX_DMA1_Stream3);
 a.SetUp();
 a.AttachDMA(&dma_tx, nullptr);   // SetUp() и IRQ_Registry::Register() — внутри AttachDMA()
 a.Send_DMA(buf, len);
@@ -617,5 +666,18 @@ CanUseRequest() проверяет маршрут DMAReq без настройк
 передаёт выбранный req.ch в StreamSettings.
 GetErrorFlags() возвращает аппаратные биты ошибок до их очистки, либо 0 до настройки.
 
-В UART-части Req исправлено USART1::TX_alt -> RX_alt: DMA2_Stream5/CH4 обслуживает RX.
+В UART-части Req маршрут USART1 DMA2_Stream5/CH4 назван RX_DMA2_Stream5: он обслуживает RX.
 Добавлены Uart7/Uart8 и G0 Usart3..6 по наличию периферии.
+
+## Explicit route names / Явные имена маршрутов — 15.10.2026
+
+All F4/F7 routes now include the DMA controller and stream in their names:
+`Usart3::TX_DMA1_Stream3`, `Spi1::RX_DMA2_Stream0`, `Adc1::RX_DMA2_Stream4`.
+These replace TX/RX and TX_alt/RX_alt; update application declarations accordingly.
+Stream pointers and CHSEL values are unchanged. G0 keeps its request names:
+the constructor already takes an explicit channel.
+
+Все маршруты F4/F7 содержат контроллер DMA и поток в имени. Старые TX/RX и
+TX_alt/RX_alt заменены новыми именами; объявления DMA в приложении нужно обновить.
+Указатели потоков и CHSEL сохранены. Имена G0 прежние: канал явно задаётся
+в конструкторе. В таблицах UART/ADC/I2C/SPI заменены только ссылки на маршруты.

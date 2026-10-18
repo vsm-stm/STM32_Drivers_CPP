@@ -13,7 +13,7 @@
 3. [SetFrequency() — PSC/ARR Calculation, and Why It's protected](#3-setfrequency--pscarr-calculation-and-why-its-protected)
 4. [IRQ_en() and the Shared/Separate Vector](#4-irq_en-and-the-sharedseparate-vector)
 5. [TIM::HandleIRQ() — The Base for All Subclasses](#5-timhandleirq--the-base-for-all-subclasses)
-6. [Deinit() — Switching Modes on a Single Physical Timer](#6-deinit--switching-modes-on-a-single-physical-timer)
+6. [DeInit() — Switching Modes on a Single Physical Timer](#6-deinit--switching-modes-on-a-single-physical-timer)
 7. [Subclasses](#7-subclasses)
    - [7.1 TIM_PeriodicIRQ](#71-tim_periodicirq)
    - [Generators](#generators--produce-an-output-signal)
@@ -33,263 +33,148 @@
 
 ## 1. Why the Base Class Is Protected
 
-`TIM` is the common part shared by eight different drivers, but is not itself a working driver —
-its constructor is `protected`, so `TIM` can't be created directly. The drivers fall into three
-groups:
+`TIM` supplies clock/reset lookup, PSC/ARR calculation, start/stop and timer IRQ
+registration. Its constructor stays protected; select a concrete `TIM_*` mode.
+One initialized object owns a physical TIMx. Configure from main, serialize
+control calls and keep the object alive while it is registered. Callbacks run
+in IRQ and must not configure timers or modify the IRQ registry.
 
-- **Neither one nor the other** — `TIM_PeriodicIRQ`: doesn't occupy any pins, pure Update/CC
-  interrupts.
-- **Generators** (produce an output signal) — `TIM_PWM`, `TIM_EncoderGenerator`, `TIM_StepGenerator`.
-- **Measurers** (read/decode an input signal) — `TIM_InputCapture`, `TIM_PulseMeasure`,
-  `TIM_EncoderReader`, `TIM_HWCounter`.
+The common API is revised as of 18.10.2026. PWM, encoders, capture, pulse
+measurement, HWCounter and TriggerGenerator remain separate review steps;
+see [Review/TIM.md](Review/TIM.md). Compiling the source does not validate those
+mode algorithms or their DMA paths.
 
-They appear in `tim.hpp` in exactly this order, with banner separators `// === Generators ===` /
-`// === Measurers ===`.
-
-The reason for protecting the constructor isn't purely organizational. CMSIS gives every
-`TIM_TypeDef*` the same set of fields (`CCR1-4`, `CCMR1-2`, `CCER`, `BDTR`, `RCR`, `OR`), even if
-the specific timer doesn't physically implement some of them: `TIM6`/`TIM7` (basic timers, F4)
-have no compare channels at all, only the Update event; `TIM9-TIM14` have 1-2 channels; the full 4
-channels exist only on `TIM1/2/3/4/5/8` (F4) or `TIM1/TIM3` (G0). A write to a register that
-physically doesn't exist on a given instance is ignored by hardware — not a bus error, just a
-silent no-op. In other words, `TIM t(TIM6); t.SetCCCallback(...)` would compile and simply never
-fire. Each subclass requires a specific `Line`/`TIM_PIN` from the `tim_defs.hpp` tables, which
-**declare only the channels that actually exist** for that timer (for example, there's no
-`TIM::_14::CH2` for `TIM14` — the second channel simply doesn't exist in the table), so a
-"channel that doesn't exist" error is caught at compile time instead of silently at runtime.
-
-By the same logic, **`Init()` and `SetFrequency()` are also `protected`** — they're internal
-building blocks, not part of the public contract. They have no legitimate external caller: each
-subclass calls them itself from its own `SetUp()`. Calling `SetFrequency()` directly on an object
-that needs extra bookkeeping around the frequency (for example, `TIM_StepGenerator`, which
-recomputes `CCR` for the new `ARR`) would silently misconfigure the timer — that's exactly what
-once happened: `SetFrequency()` was accidentally called directly on a `TIM_StepGenerator` instead
-of `SetStepFrequency()`. Subclasses that genuinely need public access to the base semantics
-without extra bookkeeping (`TIM_PeriodicIRQ`) get it back selectively via `using
-TIM::SetFrequency;` — not a copy of the method, but literally the same name, just with a
-different access level in that specific subclass. `IRQ_en()`, by contrast, stays public in the
-base class deliberately: it's documented as a method that can be called directly (see
-`TIM_PeriodicIRQ::SetCompareIRQ()`), and calling it incorrectly doesn't corrupt state — at worst
-it flips a bit that has no effect on anything.
-
----
+`TIM_PIN` is defined before `TIM` and exposed as `TIM::TIM_PIN`. Its consteval
+constructor checks GPIO port/pin/AF, channel range 0..3 and timer presence.
+Named constants retain `TIM::_N::CHx::Pyz` spelling. Port/timer guards omit
+unavailable declarations. Existing AF routes are retained; package bonding and
+exact routing remain the caller's responsibility. Descriptor copies retain
+the old assignable layout for mode constructors; no new runtime checker is added.
 
 ## 2. PeriphInfo — A Facts Table for Each Timer
 
-```cpp
-struct PeriphInfo {
-    TIM_TypeDef*        periph;        // TIM3, ...
-    volatile uint32_t*  clk_reg;       // &RCC->APB1ENR
-    uint32_t            clk_bit;       // RCC_APB1ENR_TIM3EN
-    volatile uint32_t*  rst_reg;       // &RCC->APB1RSTR
-    uint32_t            rst_bit;       // RCC_APB1RSTR_TIM3RST — used by Deinit(), see §6
-    uint32_t const*     bus_clk;       // &System::TIMxAPB1Clock (already accounting for the "x2" rule, see RCC.md)
-    IRQn_Type           irq_up;        // Update event vector
-    IRQn_Type           irq_cc;        // CC event vector; == irq_up if the vector is shared
-    bool                has_bdtr;      // advanced/semi-advanced (BDTR/MOE/RCR available)
-    uint8_t             channel_count; // 0, 1, 2, or 4
-    uint32_t            arr_max;       // 0xFFFF (16-bit) or 0xFFFFFFFF (TIM2/TIM5, 32-bit)
-    uint32_t            dma_up_req;    // DMAMUX request ID for the Update event (0 — none/not needed)
-};
-static const PeriphInfo tim_table[];   // one row per timer, per-family — tim_defs.hpp Section B
-```
+`tim_table[]` is a static const table with one row per available peripheral:
 
-`Init()` finds the row via a linear search on `TIMx` and stores the pointer in `_info` — from
-then on, **all** the rest of the code (`SetFrequency`, `IRQ_en`, `Deinit`, every subclass's
-`SetUp()`) reads facts through `_info`, instead of `switch(TIMx)`/`#if` in every method. The
-`rst_reg`/`rst_bit` pair is an exact mirror of `clk_reg`/`clk_bit`, just for the RCC reset register
-instead of the enable register (see §6). An example of a real row (F4, `TIM3` — a 16-bit
-general-purpose timer, 4 channels, a shared Update+CC vector):
+| Field | Purpose |
+|---|---|
+| periph | Constructor's fixed TIMx |
+| clk_reg / clk_bit | Enable the peripheral clock |
+| rst_reg / rst_bit | Reset this timer |
+| bus_clk | Pointer to System::TIMxAPB1Clock / TIMxAPB2Clock |
+| irq_up / irq_cc | Update and CC vectors; may be the same |
+| has_bdtr | Presence of the output gate used by existing modes |
+| channel_count | Number of described CC channels, 0/1/2/4 |
+| arr_max | Largest hardware ARR register value |
+| dma_up_req | Existing G0 Update request; PWM route revision is separate |
 
-```cpp
-{ TIM3, &RCC->APB1ENR, RCC_APB1ENR_TIM3EN, &RCC->APB1RSTR, RCC_APB1RSTR_TIM3RST,
-  &System::TIMxAPB1Clock, TIM3_IRQn, TIM3_IRQn,
-  /*has_bdtr=*/false, /*channels=*/4, /*arr_max=*/0xFFFF, /*dma_up_req=*/0 }
-```
+F4/F7 use APB1/APB2. G0 uses its APB timer clock. RCC/IRQ names are selected
+from the actual CMSIS device: F410 has TIM1_UP; F412 has TIM6 without DAC;
+G0B/C have a shared TIM3/TIM4 vector and some share TIM16/17 with FDCAN.
+Basic TIM6/TIM7 have no CC channels. TIM2/TIM5 on F4/F7, and TIM2 where
+present on G0, have 32-bit counters; the remaining described counters are 16-bit.
 
-Compare this with `TIM1` on the same F4 (an advanced timer — `has_bdtr = true`, separate Update
-and CC vectors):
-
-```cpp
-{ TIM1, &RCC->APB2ENR, RCC_APB2ENR_TIM1EN, &RCC->APB2RSTR, RCC_APB2RSTR_TIM1RST,
-  &System::TIMxAPB2Clock, TIM1_UP_TIM10_IRQn, TIM1_CC_IRQn, /*has_bdtr=*/true, 4, 0xFFFF, 0 }
-```
-
-and with `TIM6` (a basic timer — 0 channels, no subclass with CC channels can be instantiated on
-it):
-
-```cpp
-{ TIM6, &RCC->APB1ENR, RCC_APB1ENR_TIM6EN, &RCC->APB1RSTR, RCC_APB1RSTR_TIM6RST,
-  &System::TIMxAPB1Clock, TIM6_DAC_IRQn, TIM6_DAC_IRQn, false, /*channels=*/0, 0xFFFF, 0 }
-```
-
-> On STM32G0 the repository has no device CMSIS header — the `rst_reg`/`rst_bit` values
-> (`RCC_APBRSTR1_*`/`RCC_APBRSTR2_*`) were filled in by analogy with the already-used
-> `APBENR1`/`APBENR2` (the same bit naming/placement pattern), but haven't been checked against
-> real hardware. A mistake in the macro name simply won't compile — a loud, safe failure, not a
-> silent register corruption.
-
----
+`Init()` rejects an already initialized object, enables/reset the selected
+peripheral, registers the update vector and a distinct CC vector once each,
+then enables NVIC with DIER still zero. Failed registration removes only its
+own insertion and restores prior NVIC enable states. `_info` is published
+only on success; a later mode setup failure must roll back through DeInit.
+A repeated SetUp returns InitError without replacing callbacks or hardware
+configuration. A failed periodic frequency setup is rolled back and can retry.
 
 ## 3. SetFrequency() — PSC/ARR Calculation, and Why It's protected
 
 ```cpp
-SysInitStatus TIM::SetFrequency(uint32_t freq, uint32_t arr = 0);   // protected
+SysInitStatus TIM::SetFrequency(uint32_t freq, uint32_t arr = 0); // protected
 ```
 
-A single function with two modes, switched by `arr`:
+`freq` is requested Hz. `arr` is **period ticks**, so register ARR is arr-1.
+Zero requests automatic period selection. Calculation uses positive integer
+values and truncating 32-bit divisions:
 
-- **`arr == 0`** (the default) — the function picks both `PSC` and `ARR` itself, maximizing
-  `ARR` (i.e., the resolution of `SetCCR()`/`SetDuty()`) for the given `freq`:
+```cpp
+ratio = timer_clock / freq;
+// Explicit period:
+psc = ratio / arr;
+// Automatic period on 16-bit timers:
+psc = (ratio - 1) / 65536 + 1;
+arr = ratio / psc;
+// Automatic period on 32-bit timers: psc = 1, arr = ratio.
+```
 
-  ```cpp
-  uint32_t ratio = *_info->bus_clk / freq;                 // (PSC+1)*(ARR+1)
-  uint32_t psc   = ratio / (uint64_t(_info->arr_max) + 1) + 1;  // the minimum divider for which ARR fits
-  uint32_t arr   = ratio / psc;                             // the maximum ARR for this psc
-  ```
+PSC register is psc-1. The sequential division in the explicit case equals
+floor(clock/(freq*arr)) without forming an overflowing product or doing a
+64-bit divide. Reject zero/above-clock frequency, zero resulting period,
+PSC outside 1..65536 or ARR register overflow. A 16-bit timer accepts period
+**65536**, not just 65535. The uint32_t API represents 32-bit periods up to
+UINT32_MAX, not 2^32. Integer truncation may change actual frequency; no exact
+divisor search or new rounding policy is introduced. Rejected calls write nothing.
 
-- **`arr != 0`** — the period is given explicitly by the calling code, the function only picks
-  `PSC` to match it:
+When stopped, UG loads the preload before Start. URS is temporarily set so
+this service update does not request IRQ/DMA; only UIF is acknowledged and
+CR1 is restored. UG can still be visible on TRGO: configure frequency before
+arming ADC or slave timers. This follows the preload/URS behavior described
+in [ST AN4013](https://www.st.com/resource/en/application_note/an4013-introduction-to-timers-for-stm32-mcus-stmicroelectronics.pdf).
 
-  ```cpp
-  uint64_t psc = *_info->bus_clk / (uint64_t(arr) * freq);
-  ```
-
-  Casting to `uint64_t` in both branches is mandatory on 32-bit timers (`TIM2`/`TIM5`,
-  `arr_max = 0xFFFFFFFF`) — without it, `arr_max + 1` or `arr * freq` would silently overflow
-  `uint32_t`. `psc` in both branches is a "divider" in 1-based form (1 = divide by 1), so the
-  final register write is always `TIMx->PSC = psc - 1u`, regardless of which branch computed it —
-  the bounds check (`psc == 0` → unreachable frequency, `psc > 0x10000` → doesn't fit in the
-  16-bit `PSC`) is also shared by both branches.
-
-**The method is `protected`** — calling it directly on an object that needs extra bookkeeping
-around the frequency would silently misconfigure something (see §1). Classes that need this
-publicly have their own variants:
-
-| Class | Public Method | How It Differs from Plain `SetFrequency()` |
-|-------|------------------|---------------------------------------------|
-| `TIM_PeriodicIRQ` | `using TIM::SetFrequency;` | No difference — the base method's semantics are already correct, no wrapper needed. |
-| `TIM_PWM` | `SetFrequency(freq, arr=0)` | Here `arr=0` means **not** "pick again," but "keep the current period" — otherwise `SetDuty()`'s resolution would change unpredictably on every frequency change. |
-| `TIM_StepGenerator` | `SetStepFrequency(freq)` | Additionally recomputes `CCR = ARR/2` (see §7.4) and clears `TIM_CR1_OPM` left over from `RunSteps()`. |
-
----
+A running timer is not stopped/reset by SetFrequency: PSC applies on a later
+update and ARR follows the existing ARPE setting. No atomic or glitch-free
+live change is promised. Public mode wrappers keep their existing contracts:
+PeriodicIRQ exposes the base function, PWM may retain its period, and Step
+also adjusts its compare value. Those mode-specific details are reviewed later.
 
 ## 4. IRQ_en() and the Shared/Separate Vector
 
-```cpp
-void TIM::IRQ_en(IRQ irq, FunctionalState en)   // public — intentionally, see §1
-```
-
-The same auto-register/auto-unregister idiom as `USART`/`RTC` (see
-[IRQ_Registry.md](IRQ_Registry.md)), but with one difference: on advanced timers the Update and
-Compare events can sit on **two different** NVIC vectors (`irq_up` != `irq_cc`, for example
-`TIM1_UP_TIM10_IRQn` and `TIM1_CC_IRQn` on F4). On the first enable of any source, `IRQ_en()`
-registers **both** vectors (if they differ) on the same `this`:
-
-```cpp
-if (en && !NVIC_GetEnableIRQ(_info->irq_up)) {
-    IRQ_Registry::Register(_info->irq_up, this);
-    NVIC_EnableIRQ(_info->irq_up);
-    if (_info->irq_cc != _info->irq_up) {
-        IRQ_Registry::Register(_info->irq_cc, this);
-        NVIC_EnableIRQ(_info->irq_cc);
-    }
-}
-```
-
-and symmetrically unregisters both when the last source is disabled (`!(TIMx->DIER & all)`, where
-`all` is the mask of all 5 IE bits). On timers with a shared vector (`irq_up == irq_cc`, most
-general-purpose timers), the second `Register()` simply isn't executed — it isn't needed.
-
----
+`IRQ_en()` changes only the selected DIER bit; unavailable CC channels are
+ignored. It neither registers nor unregisters handlers and does not change
+NVIC. Registration lasts from common Init to DeInit. Disabling one source
+preserves other timers on shared vectors and is permitted from a callback.
+Application code must not register an initialized timer again.
 
 ## 5. TIM::HandleIRQ() — The Base for All Subclasses
 
+The common handler takes one snapshot of SR & DIER for supported Update/CC1..4
+events and clears exactly that snapshot with `SR = ~flags` (rc_w0). Disabled
+polling flags and unrelated event flags are retained. It then invokes only
+corresponding non-null function pointers. No locks, dispatch-time registration
+or new callback adapters are added.
+
+Callbacks are supplied during initialization: the Update function in SetUp,
+the CC function in SetCompareIRQ. Public SetUpdateCallback/SetCCCallback have
+been removed. Initialize compare events before Start; an assigned non-null
+CC callback cannot be replaced until DeInit. A null callback binds no function,
+while the IRQ source may still be enabled. Capture/HWCounter custom handlers
+remain a separate review item; this paragraph describes the common handler.
+
 ```cpp
-void TIM::HandleIRQ()
-{
-    uint32_t sr = TIMx->SR;
-    TIMx->SR = ~sr;   // see below — not "= 0"
-    if ((sr & TIM_SR_UIF)   && _update_cb) _update_cb();
-    if ((sr & TIM_SR_CC1IF) && _cc_cb[0])  _cc_cb[0]();
-    if ((sr & TIM_SR_CC2IF) && _cc_cb[1])  _cc_cb[1]();
-    if ((sr & TIM_SR_CC3IF) && _cc_cb[2])  _cc_cb[2]();
-    if ((sr & TIM_SR_CC4IF) && _cc_cb[3])  _cc_cb[3]();
+void Tick();
+void MidPeriod();
+TIM_PeriodicIRQ timer(TIM1);
+if (timer.SetUp(1000, &Tick) == SysInitStatus::InitOK) {
+    if (timer.SetCompareIRQ(TIM::Channel::CH1, timer.GetPeriod() / 2,
+                           &MidPeriod) == SysInitStatus::InitOK)
+        timer.Start();
 }
 ```
 
-Two non-obvious decisions, both commented directly in the code and worth knowing when
-reading/editing it:
+## 6. DeInit() — Switching Modes on a Single Physical Timer
 
-- **`TIMx->SR = ~sr`, not `TIMx->SR = 0`.** `SR` is "write-0-to-clear, write-1-is-no-op": writing
-  the inverted mask clears exactly the flags that were read, and leaves the rest alone.
-  `SR = 0` would clear **all** flags at once — including one that hardware managed to set in the
-  gap between reading `sr` and writing (for example, `CC2IF` gets set while the `CC1` callback is
-  still running) — such an event would be silently lost instead of staying set for the next entry
-  into `HandleIRQ()` (NVIC tail-chaining would pick it up immediately). The genuinely dangerous
-  window is only a few cycles between reading `sr` itself and writing `~sr`, not the entire time
-  the callbacks run (they already happen after the write).
-- **All 4 CC flags are checked unconditionally**, rather than looping up to
-  `_info->channel_count`. On timers with fewer channels, the missing `SR` bits are hardwired to 0
-  per the Reference Manual — checking the "extra" bits is both correct and cheap (one `AND` plus a
-  branch per channel, negligible next to interrupt entry/exit), so it's not worth complicating the
-  code for this case.
+The public name is now DeInit, matching USART. From main it disables its
+sources/stops the counter, unregisters only this object on timer vectors,
+resets/disables the peripheral and clears `_info`/callbacks. Other shared
+handlers retain their previous NVIC enable state; an empty vector remains
+disabled and its pending bit is cleared. An uninitialized object does nothing.
+The same object can then SetUp again. One physical timer must not be configured
+through several live objects at once.
 
-Subclasses that need different dispatch logic (DMA plus timer flags together, a single channel
-instead of all four, etc.) override `HandleIRQ()` entirely — see the subclass table in §7.
-`TIM_PulseMeasure` and `TIM_EncoderReader` don't override it at all — both are purely hardware
-measurers with no interrupt whatsoever.
-
----
-
-## 6. Deinit() — Switching Modes on a Single Physical Timer
+Mode-specific PWM DMA stop/unregister/release remains TIM-6, a separate step.
+Before calling the current base DeInit, attached DMA must be stopped/released
+by its owner. Base teardown is not a claim of complete PWM DMA cleanup.
 
 ```cpp
-void TIM::Deinit();   // public
+timer.Stop();
+timer.DeInit();
+if (timer.SetUp(2000, &Tick) == SysInitStatus::InitOK)
+    timer.Start();
 ```
-
-The inverse operation to `Init()`+`SetUp()`: it lets you hand the same physical timer to a
-different mode (for example, `TIM_PWM` → `TIM_StepGenerator` on the same `TIM3`) **without
-rebooting the controller**. Before this method existed, switching was unsafe — each `SetUp()`
-only clears the registers that matter specifically to it (`TIM_PWM::SetUp()` doesn't touch
-`SMCR`/`RCR`, for example), so state from the previous mode could leak into the next one.
-
-```cpp
-void TIM::Deinit()
-{
-    IRQ_en(IRQ::UE,  DISABLE);   // + CC1..CC4 — disable and unregister everything that was enabled
-    Stop();
-    *_info->rst_reg |= _info->rst_bit;    // pulse the RCC reset bit —
-    *_info->rst_reg &= ~_info->rst_bit;   // a full reset of CR1/CR2/SMCR/DIER/SR/EGR/CCMRx/CCER/
-                                           // CNT/PSC/ARR/RCR/CCRx/BDTR/DCR/DMAR/OR in one operation
-    *_info->clk_reg &= ~_info->clk_bit;   // undo of Init()
-    _update_cb = nullptr;
-    _cc_cb[0] = _cc_cb[1] = _cc_cb[2] = _cc_cb[3] = nullptr;
-}
-```
-
-The key idea is not to zero out the registers manually one by one (easy to forget one of ~15), but
-to take advantage of the fact that in RCC every timer has not only a clock **enable** bit
-(`RCC_APB1ENR_TIM3EN`, already used in `clk_bit`), but also a separate **reset** bit
-(`RCC_APB1RSTR_TIM3RST`) — setting and immediately clearing it means "this entire timer has
-returned to its state right after power-on-reset," in hardware, in a single operation.
-
-```cpp
-TIM_PWM pwm(TIM3, TIM::_3::CH2::PB5);
-TIM_StepGenerator step(TIM3, TIM::_3::CH2::PB5);   // the same physical timer, not in use yet
-
-pwm.SetUp(10*kHz);
-pwm.Start();
-...
-pwm.Stop();
-pwm.Deinit();          // a full hardware reset of TIM3 — can be called from any object wrapping this TIMx
-step.SetUp(1*MHz);
-step.Start();          // the same TIM3, now as a step generator
-```
-
-`Deinit()` can be called on **any** `TIM_*` object wrapping the desired `TIMx` — the reset is
-tied to the physical peripheral through `_info->rst_reg`/`rst_bit`, not to which C++ object called
-it.
 
 ---
 
@@ -617,10 +502,9 @@ TIM_StepGenerator (master, STEP on its own CH)  ──TRGO (Update)──▶  IT
         EnableTriggerOutput(): MMS=010                 SMCR: TS=itr, SMS=111 (External Clock Mode 1)
 ```
 
-> STM32F7 isn't covered at all in this same sense — Section A of `tim_defs.hpp` (pin tables) is
-> already conditionally compiled under `STM32F4 || STM32F7`, but `tim_table`/`itr_table` (Section
-> B) are filled in only for `STM32F4`. Building `TIM.*` for F7 currently won't link until someone
-> adds a verified block with RCC bits/IRQ vectors/ITR routes per RM0410.
+F7 now has the common peripheral table and compiles. Its HWCounter routes
+remain unsupported: FindITR returns 0xFF until that mode is reviewed. G0
+routes also remain unverified; existing F4 routes are filtered by availability.
 
 ---
 
@@ -640,7 +524,7 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
 | Measure both period AND duty cycle of a single PWM signal | `TIM_PulseMeasure` |
 | Read a real quadrature encoder | `TIM_EncoderReader` |
 | An exact number of steps without an ISR per step | `RunSteps()` (needs RCR) or `TIM_HWCounter::StopAfter()`/`StopAT()` (doesn't need it) |
-| Switch one physical timer between modes without a reboot | `Deinit()` (§6) |
+| Switch one physical timer between modes without a reboot | `DeInit()` (§6) |
 
 ---
 
@@ -649,13 +533,13 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
 - **`TIM6`/`TIM7` (F4) — 0 channels** (`channel_count = 0`): suitable only for
   `TIM_PeriodicIRQ` (the Update event) — all other subclasses require at least one CC channel and
   either won't compile (no required pin table) or `SetUp()` will return `InitError`.
-- **16-bit vs. 32-bit ARR** — only `TIM2`/`TIM5` on F4/F7 have `arr_max = 0xFFFFFFFF`; all
+- **16-bit vs. 32-bit ARR** — `TIM2`/`TIM5` on F4/F7 and present `TIM2` on G0 have `arr_max = 0xFFFFFFFF`; all
   others are limited to `0xFFFF`. `SetDuty()` warns in its doc comment: for ARR values near the
   32-bit limit, use `SetCCR()` directly, not percentages.
 - **`has_bdtr`** — not just "an advanced timer": it's the single indicator of the presence of
   `BDTR`/`MOE` (needed for `TIM_PWM` on some timers — without `MOE` the outputs physically aren't
   activated) and `RCR` (needed for `TIM_StepGenerator::RunSteps()`).
-- **`TIM_HWCounter` on STM32G0 is always `InitError`** — the `itr_table` isn't confirmed (see
+- **`TIM_HWCounter` on STM32G0/F7 is always `InitError`** — the `itr_table` isn't confirmed (see
   §8); this isn't a bug in a specific call, it's a deliberately incomplete table.
 - **`TIM_HWCounter::on_complete` is bound to `SetUp()`, not to `StopAfter()`/`StopAT()`** — one
   callback for the object's entire lifetime; it can only be changed by calling `SetUp()` again
@@ -669,7 +553,7 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
 - **`TIM_StepGenerator::SetStepFrequency()` resets `RunSteps()` mode** — it explicitly clears
   `TIM_CR1_OPM`, returning the timer to free-running (continuous) mode; calling it after
   `RunSteps()` cancels the expected auto-stop.
-- **A shared Update+CC vector on most general-purpose timers** — `IRQ_en()` doesn't register the
+- **A shared Update+CC vector on most general-purpose timers** — `Init()` does not register the
   same vector twice (the `irq_cc != irq_up` comparison), but this means `HandleIRQ()` for such
   timers is called on **any** of the Update/CC1-4 events — the code inside always figures out for
   itself which `SR` bits are actually set (see §5).
@@ -678,13 +562,13 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
 
 ## See Also
 
-- [IRQ_Registry.md](IRQ_Registry.md) — `IRQ_en()` (§4) registers `this` the same way
+- [IRQ_Registry.md](IRQ_Registry.md) — `Init()` (§4) registers `this` the same way
   `USART`/`SPI`/`RTC` do; see there also for the shared/separate vector on a single `_table` row.
 - [DMA.md](DMA.md) — `TIM_PWM::AttachDMA()` (§7.2) configures `DMA_Sx` the same way `USART`/`SPI`
   do.
 - [RCC.md](RCC.md) — `_info->bus_clk`/`clk_reg`/`rst_reg` (§2-3, §6) point to the registers and
   variables this module itself writes (including the "timers x2" rule for the clock frequency).
-- [GPIO.md](GPIO.md) — `TIM_PIN`/`Line` (tim_defs.hpp) are built on top of the same `PIN` as the
+- [GPIO.md](GPIO.md) — `TIM_PIN`/`Line` (tim.hpp + tim_defs.hpp) are built on top of the same `PIN` as the
   other peripheral pin tables.
 - [System.md](System.md) — the common infrastructure (`SysStatus`/`SysInitStatus`, `DebugTrap`)
   used by all `SetUp()` methods in this file.
@@ -700,7 +584,7 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
 3. [SetFrequency() — расчёт PSC/ARR, и почему он protected](#3-setfrequency--расчёт-pscarr-и-почему-он-protected)
 4. [IRQ_en() и общий/раздельный вектор](#4-irq_en-и-общийраздельный-вектор)
 5. [TIM::HandleIRQ() — база для всех подклассов](#5-timhandleirq--база-для-всех-подклассов)
-6. [Deinit() — переключение режима на одном физическом таймере](#6-deinit--переключение-режима-на-одном-физическом-таймере)
+6. [DeInit() — переключение режима на одном физическом таймере](#6-deinit--переключение-режима-на-одном-физическом-таймере)
 7. [Подклассы](#7-подклассы)
    - [7.1 TIM_PeriodicIRQ](#71-tim_periodicirq)
    - [Generators](#generators--производят-выходной-сигнал)
@@ -720,254 +604,145 @@ above each class in [tim.hpp](src/tim.hpp). A "what to choose" summary:
 
 ## 1. Зачем базовый класс защищён
 
-`TIM` — общая часть для восьми разных драйверов, но сам по себе не является рабочим драйвером — его
-конструктор `protected`, создать `TIM` напрямую нельзя. Драйверы делятся на три группы:
+`TIM` даёт поиск тактирования/сброса, расчёт PSC/ARR, запуск/остановку и
+регистрацию IRQ. Конструктор защищён: создаётся нужный конкретный TIM_*.
+Один настроенный объект владеет физическим TIMx. Настройка и управление
+выполняются последовательно из main; объект живёт всё время регистрации.
+Callbacks исполняются в IRQ и не перенастраивают таймер/реестр обработчиков.
 
-- **Ни то ни другое** — `TIM_PeriodicIRQ`: не занимает пинов, чистые Update/CC-прерывания.
-- **Generators** (производят выходной сигнал) — `TIM_PWM`, `TIM_EncoderGenerator`, `TIM_StepGenerator`.
-- **Measurers** (читают/декодируют входной сигнал) — `TIM_InputCapture`, `TIM_PulseMeasure`,
-  `TIM_EncoderReader`, `TIM_HWCounter`.
+Общая часть исправлена 18.10.2026. PWM, энкодеры, capture, измеритель импульсов,
+HWCounter и TriggerGenerator разбираются отдельными шагами — [Review/TIM.md](Review/TIM.md).
+Компиляция файла не подтверждает алгоритмы этих режимов или их DMA-пути.
 
-Именно в этом порядке они и идут в `tim.hpp`, с баннерами-разделителями `// === Generators ===` /
-`// === Measurers ===`.
-
-Причина защиты конструктора — не только организационная. CMSIS даёт каждому `TIM_TypeDef*`
-одинаковый набор полей (`CCR1-4`, `CCMR1-2`, `CCER`, `BDTR`, `RCR`, `OR`), даже если конкретный
-таймер физически не реализует часть из них: `TIM6`/`TIM7` (basic timers, F4) вообще не имеют
-каналов сравнения, только Update-событие; `TIM9-TIM14` — 1-2 канала; полные 4 канала есть только у
-`TIM1/2/3/4/5/8` (F4) или `TIM1/TIM3` (G0). Запись в регистр, которого физически нет у данного
-экземпляра, аппаратно игнорируется — не ошибка шины, а тихий no-op. То есть `TIM t(TIM6);
-t.SetCCCallback(...)` скомпилировался бы и просто никогда не сработал. Каждый подкласс требует
-конкретный `Line`/`TIM_PIN` из таблиц `tim_defs.hpp`, которые **объявляют только существующие
-каналы** для этого таймера (например, для `TIM14` нет `TIM::_14::CH2` — второго канала там просто
-не существует в таблице), так что ошибка "канал, которого не существует" ловится на этапе
-компиляции, а не тишиной в рантайме.
-
-По той же логике **`Init()` и `SetFrequency()` тоже `protected`** — это внутренние строительные
-блоки, а не часть публичного контракта. У них нет ни одного легитимного внешнего вызывающего кода:
-каждый подкласс сам вызывает их из своего `SetUp()`. Прямой вызов `SetFrequency()` на объекте,
-которому нужна дополнительная бухгалтерия вокруг частоты (например, `TIM_StepGenerator`,
-пересчитывающий `CCR` под новый `ARR`), тихо сконфигурировал бы таймер неправильно — именно так
-когда-то и произошло: `SetFrequency()` был случайно вызван напрямую на `TIM_StepGenerator` вместо
-`SetStepFrequency()`. Подклассам, которым реально нужен публичный доступ к базовой семантике без
-дополнительной бухгалтерии (`TIM_PeriodicIRQ`), возвращают его точечно через `using
-TIM::SetFrequency;` — не копия метода, а буквально то же самое имя, просто с другим уровнем
-доступа в конкретном подклассе. `IRQ_en()`, для сравнения, остался публичным в базовом классе
-осознанно: он документирован как метод, который можно звать напрямую (см. `TIM_PeriodicIRQ::
-SetCompareIRQ()`), и неверный вызов не портит состояние — максимум щёлкает битом, который ни на что
-не влияет.
-
----
+`TIM_PIN` определён перед TIM и доступен как TIM::TIM_PIN. Конструктор consteval
+проверяет GPIO/номер/AF, диапазон канала 0..3 и наличие таймера. Имена
+TIM::_N::CHx::Pyz сохранены. Guards исключают отсутствующие порты/таймеры.
+Прежние AF-маршруты сохранены; доступность в корпусе и точный маршрут проверяет
+вызывающий. Копии дескрипторов пока сохраняют присваиваемую компоновку для
+существующих конструкторов режимов; новых runtime-проверок конструктора нет.
 
 ## 2. PeriphInfo — таблица фактов о каждом таймере
 
-```cpp
-struct PeriphInfo {
-    TIM_TypeDef*        periph;        // TIM3, ...
-    volatile uint32_t*  clk_reg;       // &RCC->APB1ENR
-    uint32_t            clk_bit;       // RCC_APB1ENR_TIM3EN
-    volatile uint32_t*  rst_reg;       // &RCC->APB1RSTR
-    uint32_t            rst_bit;       // RCC_APB1RSTR_TIM3RST — используется Deinit(), см. §6
-    uint32_t const*     bus_clk;       // &System::TIMxAPB1Clock (уже с учётом правила "x2", см. RCC.md)
-    IRQn_Type           irq_up;        // вектор Update-события
-    IRQn_Type           irq_cc;        // вектор CC-события; == irq_up, если вектор общий
-    bool                has_bdtr;      // advanced/semi-advanced (BDTR/MOE/RCR доступны)
-    uint8_t             channel_count; // 0, 1, 2 или 4
-    uint32_t            arr_max;       // 0xFFFF (16 бит) или 0xFFFFFFFF (TIM2/TIM5, 32 бита)
-    uint32_t            dma_up_req;    // DMAMUX request ID для Update-события (0 — нет/не нужен)
-};
-static const PeriphInfo tim_table[];   // одна строка на таймер, per-family — tim_defs.hpp Section B
-```
+`tim_table[]` — static const с одной строкой на существующий экземпляр:
 
-`Init()` ищет строку линейным поиском по `TIMx` и запоминает указатель в `_info` — дальше **весь**
-остальной код (`SetFrequency`, `IRQ_en`, `Deinit`, все `SetUp()` подклассов) читает факты через
-`_info`, вместо `switch(TIMx)`/`#if` в каждом методе. Пара `rst_reg`/`rst_bit` — точное зеркало
-`clk_reg`/`clk_bit`, только для RCC reset-регистра вместо enable-регистра (см. §6). Пример реальной
-строки (F4, `TIM3` — 16-битный general-purpose, 4 канала, общий вектор Update+CC):
+| Поле | Назначение |
+|---|---|
+| periph | TIMx, закреплённый конструктором |
+| clk_reg / clk_bit | Включение тактирования |
+| rst_reg / rst_bit | Сброс своего таймера |
+| bus_clk | Указатель на System::TIMxAPB1Clock / TIMxAPB2Clock |
+| irq_up / irq_cc | Векторы Update/CC, могут совпадать |
+| has_bdtr | Наличие выходного gate, используемого текущими режимами |
+| channel_count | Число описанных CC-каналов: 0/1/2/4 |
+| arr_max | Максимальное аппаратное значение регистра ARR |
+| dma_up_req | Прежний G0 Update request; маршруты PWM DMA разбираются отдельно |
 
-```cpp
-{ TIM3, &RCC->APB1ENR, RCC_APB1ENR_TIM3EN, &RCC->APB1RSTR, RCC_APB1RSTR_TIM3RST,
-  &System::TIMxAPB1Clock, TIM3_IRQn, TIM3_IRQn,
-  /*has_bdtr=*/false, /*channels=*/4, /*arr_max=*/0xFFFF, /*dma_up_req=*/0 }
-```
+F4/F7 используют APB1/APB2, G0 — свою APB-частоту таймеров. Имена RCC/IRQ
+выбираются по CMSIS: у F410 отдельный TIM1_UP, у F412 TIM6 без DAC, у G0B/C
+общий TIM3/TIM4 и местами совместные TIM16/17 с FDCAN. У TIM6/TIM7 нет CC.
+TIM2/TIM5 на F4/F7 и TIM2 при его наличии на G0 — 32-битные; остальные
+описанные счётчики — 16-битные.
 
-Сравните с `TIM1` на том же F4 (advanced timer — `has_bdtr = true`, отдельные вектора Update и CC):
-
-```cpp
-{ TIM1, &RCC->APB2ENR, RCC_APB2ENR_TIM1EN, &RCC->APB2RSTR, RCC_APB2RSTR_TIM1RST,
-  &System::TIMxAPB2Clock, TIM1_UP_TIM10_IRQn, TIM1_CC_IRQn, /*has_bdtr=*/true, 4, 0xFFFF, 0 }
-```
-
-и с `TIM6` (basic timer — 0 каналов, никакой подкласс с CC-каналами на нём не заведётся):
-
-```cpp
-{ TIM6, &RCC->APB1ENR, RCC_APB1ENR_TIM6EN, &RCC->APB1RSTR, RCC_APB1RSTR_TIM6RST,
-  &System::TIMxAPB1Clock, TIM6_DAC_IRQn, TIM6_DAC_IRQn, false, /*channels=*/0, 0xFFFF, 0 }
-```
-
-> На STM32G0 в репозитории нет CMSIS-заголовка устройства — значения `rst_reg`/`rst_bit`
-> (`RCC_APBRSTR1_*`/`RCC_APBRSTR2_*`) заполнены по аналогии с уже используемыми `APBENR1`/`APBENR2`
-> (тот же паттерн именования/расположения битов), но не сверены вживую. Ошибка в имени макроса
-> просто не даст скомпилироваться — громкий, безопасный отказ, а не тихая порча регистра.
-
----
+`Init()` отклоняет повтор, включает/сбрасывает выбранную периферию, регистрирует
+Update и отличающийся от него CC один раз, включает NVIC при нулевом DIER.
+При отказе регистрации удаляется только своя вставка и восстанавливается
+предыдущее состояние NVIC. `_info` устанавливается только после успеха.
+Последующий отказ настройки режима должен откатываться через DeInit.
+Повторный SetUp возвращает InitError, не меняя callback/аппаратуру.
+Ошибка частоты при первичной настройке PeriodicIRQ откатывается, повтор возможен.
 
 ## 3. SetFrequency() — расчёт PSC/ARR, и почему он protected
 
 ```cpp
-SysInitStatus TIM::SetFrequency(uint32_t freq, uint32_t arr = 0);   // protected
+SysInitStatus TIM::SetFrequency(uint32_t freq, uint32_t arr = 0); // protected
 ```
 
-Одна функция с двумя режимами, переключаемыми по `arr`:
+`freq` — частота в Гц; `arr` — **число тактов периода**, регистр ARR = arr-1.
+Ноль означает автоматический выбор периода. Расчёт целочисленный, с усечением
+и только 32-битным делением:
 
-- **`arr == 0`** (по умолчанию) — функция сама подбирает и `PSC`, и `ARR`, максимизируя `ARR`
-  (то есть разрешение `SetCCR()`/`SetDuty()`) при заданной `freq`:
+```cpp
+ratio = timer_clock / freq;
+// Явный период:
+psc = ratio / arr;
+// Автовыбор для 16-битного таймера:
+psc = (ratio - 1) / 65536 + 1;
+arr = ratio / psc;
+// Для 32-битного при автовыборе: psc = 1, arr = ratio.
+```
 
-  ```cpp
-  uint32_t ratio = *_info->bus_clk / freq;                 // (PSC+1)*(ARR+1)
-  uint32_t psc   = ratio / (uint64_t(_info->arr_max) + 1) + 1;  // минимальный делитель, при котором ARR влезает
-  uint32_t arr   = ratio / psc;                             // максимальный ARR при этом psc
-  ```
+В PSC записывается psc-1. Последовательное деление эквивалентно
+floor(clock/(freq*arr)), без переполняющегося произведения и 64-битного деления.
+Отклоняются нулевая/слишком высокая частота, нулевой результат периода,
+PSC вне 1..65536 и переполнение регистра ARR. Для 16-битного таймера разрешён
+период **65536**, а не только 65535. uint32_t API задаёт 32-битный период до
+UINT32_MAX, но не 2^32. Из-за усечения фактическая частота может отличаться;
+нового поиска точных делителей/правила округления нет. При отказе регистры не меняются.
 
-- **`arr != 0`** — период задан явно вызывающим кодом, функция подбирает только `PSC` под него:
+На остановленном таймере UG загружает preload до Start. Временно включается
+URS, поэтому служебное событие не запрашивает IRQ/DMA; очищается только UIF,
+CR1 восстанавливается. UG всё ещё может быть виден через TRGO: частоту задают
+до arm ADC/ведомых таймеров. Поведение preload/URS описано в
+[ST AN4013](https://www.st.com/resource/en/application_note/an4013-introduction-to-timers-for-stm32-mcus-stmicroelectronics.pdf).
 
-  ```cpp
-  uint64_t psc = *_info->bus_clk / (uint64_t(arr) * freq);
-  ```
-
-  Приведение к `uint64_t` в обеих ветках обязательно на 32-битных таймерах (`TIM2`/`TIM5`,
-  `arr_max = 0xFFFFFFFF`) — без него `arr_max + 1` или `arr * freq` тихо переполнили бы `uint32_t`.
-  `psc` в обеих ветках — "делитель" в 1-based форме (1 = делить на 1), поэтому финальная запись в
-  регистр всегда `TIMx->PSC = psc - 1u`, независимо от того, какая ветка его вычислила — проверка
-  границ (`psc == 0` → недостижимая частота, `psc > 0x10000` → не влезает в 16-битный `PSC`) тоже
-  общая для обеих веток.
-
-**Метод `protected`** — прямой вызов на объекте, которому нужна дополнительная бухгалтерия вокруг
-частоты, тихо сконфигурировал бы что-то неправильно (см. §1). У классов, которым это нужно публично,
-есть свои варианты:
-
-| Класс | Публичный метод | Чем отличается от голого `SetFrequency()` |
-|-------|------------------|---------------------------------------------|
-| `TIM_PeriodicIRQ` | `using TIM::SetFrequency;` | Ничем — семантика базового метода и так верна, обёртка не нужна. |
-| `TIM_PWM` | `SetFrequency(freq, arr=0)` | `arr=0` здесь означает **не** "подобрать заново", а "оставить текущий период" — иначе разрешение `SetDuty()` менялось бы непредсказуемо при каждой смене частоты. |
-| `TIM_StepGenerator` | `SetStepFrequency(freq)` | Дополнительно пересчитывает `CCR = ARR/2` (см. §7.4) и снимает `TIM_CR1_OPM`, оставшийся от `RunSteps()`. |
-
----
+Работающий таймер SetFrequency не останавливает и не сбрасывает: PSC применится
+на последующем update, ARR — согласно текущему ARPE. Атомарное изменение без
+переходного периода не обещается. Публичные обёртки режимов пока сохраняют
+смысл: PeriodicIRQ открывает базовый метод, PWM может сохранять период, Step
+дополнительно меняет compare. Детали этих режимов разбираются позже.
 
 ## 4. IRQ_en() и общий/раздельный вектор
 
-```cpp
-void TIM::IRQ_en(IRQ irq, FunctionalState en)   // public — намеренно, см. §1
-```
-
-Тот же auto-register/auto-unregister идиом, что и у `USART`/`RTC` (см. [IRQ_Registry.md](IRQ_Registry.md)),
-но с одним отличием: у продвинутых таймеров Update и Compare-события могут висеть на **двух разных**
-векторах NVIC (`irq_up` != `irq_cc`, например `TIM1_UP_TIM10_IRQn` и `TIM1_CC_IRQn` на F4). При
-первом включении любого источника `IRQ_en()` регистрирует **оба** вектора (если они разные) на один
-и тот же `this`:
-
-```cpp
-if (en && !NVIC_GetEnableIRQ(_info->irq_up)) {
-    IRQ_Registry::Register(_info->irq_up, this);
-    NVIC_EnableIRQ(_info->irq_up);
-    if (_info->irq_cc != _info->irq_up) {
-        IRQ_Registry::Register(_info->irq_cc, this);
-        NVIC_EnableIRQ(_info->irq_cc);
-    }
-}
-```
-
-и симметрично отменяет регистрацию на обоих при выключении последнего источника (`!(TIMx->DIER & all)`,
-где `all` — маска всех 5 IE-битов). На таймерах с общим вектором (`irq_up == irq_cc`, большинство
-general-purpose таймеров) второй `Register()` просто не выполняется — не нужен.
-
----
+`IRQ_en()` меняет только выбранный бит DIER; отсутствующие CC игнорируются.
+Метод не регистрирует/не удаляет обработчики и не меняет NVIC. Регистрация
+живёт от Init до DeInit. Отключение источника сохраняет чужие обработчики
+общего вектора и допускается из callback. Повторная ручная регистрация
+настроенного объекта запрещена.
 
 ## 5. TIM::HandleIRQ() — база для всех подклассов
 
+Общий handler читает один снимок SR & DIER для Update/CC1..4 и подтверждает
+только его записью SR = ~flags (rc_w0). Выключенные polling-флаги и посторонние
+события сохраняются. Затем вызываются соответствующие ненулевые указатели
+на функции. Блокировок, регистрации из ISR и новых callback-адаптеров нет.
+
+Функции задаются при инициализации: Update в SetUp, CC в SetCompareIRQ.
+Публичные SetUpdateCallback/SetCCCallback удалены. Compare настраивается до
+Start; назначенный ненулевой callback нельзя заменить до DeInit. nullptr
+означает, что функция не привязана, но источник IRQ может быть включён.
+Собственные handlers Capture/HWCounter остаются отдельным этапом; здесь
+описан общий handler.
+
 ```cpp
-void TIM::HandleIRQ()
-{
-    uint32_t sr = TIMx->SR;
-    TIMx->SR = ~sr;   // см. ниже — не "= 0"
-    if ((sr & TIM_SR_UIF)   && _update_cb) _update_cb();
-    if ((sr & TIM_SR_CC1IF) && _cc_cb[0])  _cc_cb[0]();
-    if ((sr & TIM_SR_CC2IF) && _cc_cb[1])  _cc_cb[1]();
-    if ((sr & TIM_SR_CC3IF) && _cc_cb[2])  _cc_cb[2]();
-    if ((sr & TIM_SR_CC4IF) && _cc_cb[3])  _cc_cb[3]();
+void Tick();
+void MidPeriod();
+TIM_PeriodicIRQ timer(TIM1);
+if (timer.SetUp(1000, &Tick) == SysInitStatus::InitOK) {
+    if (timer.SetCompareIRQ(TIM::Channel::CH1, timer.GetPeriod() / 2,
+                           &MidPeriod) == SysInitStatus::InitOK)
+        timer.Start();
 }
 ```
 
-Два неочевидных решения, оба закомментированы прямо в коде и стоит знать при чтении/правке:
+## 6. DeInit() — переключение режима на одном физическом таймере
 
-- **`TIMx->SR = ~sr`, а не `TIMx->SR = 0`.** `SR` — "write-0-to-clear, write-1-is-no-op": запись
-  инвертированной маски снимает ровно те флаги, что были прочитаны, и не трогает остальные.
-  Блок `SR = 0` снял бы **все** флаги разом — включая тот, что аппаратура могла успеть выставить
-  в промежутке между чтением `sr` и записью (например, `CC2IF` взводится, пока ещё выполняется
-  колбэк `CC1`) — такое событие было бы потеряно молча вместо того, чтобы остаться выставленным
-  для следующего входа в `HandleIRQ()` (tail-chaining NVIC подхватит его сразу же). Реально опасное
-  окно — только несколько тактов между самим чтением `sr` и записью `~sr`, не всё время выполнения
-  колбэков (они уже идут после записи).
-- **Все 4 CC-флага проверяются безусловно**, а не циклом до `_info->channel_count`. На таймерах с
-  меньшим числом каналов недостающие биты `SR` аппаратно зашиты в 0 согласно Reference Manual —
-  проверка "лишних" битов и корректна, и дёшева (одно `AND`+переход на канал, пренебрежимо на фоне
-  входа/выхода из прерывания), так что не стоит усложнять код ради этого случая.
+Имя метода теперь DeInit, как в USART. Из main он выключает источники и
+останавливает счётчик, адресно удаляет только свои timer IRQ, сбрасывает и
+отключает периферию, очищает `_info`/callbacks. Чужие обработчики сохраняют
+предыдущее состояние NVIC; пустой вектор остаётся выключенным, pending очищается.
+Для ненастроенного объекта действий нет. Затем допускается новый SetUp.
+Одновременно настраивать несколько объектов на один TIMx нельзя.
 
-Подклассы, которым нужна другая логика диспетчеризации (DMA + таймерные флаги вместе, единственный
-канал вместо всех четырёх, и т.д.), переопределяют `HandleIRQ()` целиком — см. таблицу подклассов
-в §7. `TIM_PulseMeasure` и `TIM_EncoderReader` не переопределяют его вообще — оба чисто аппаратные
-измерители без единого прерывания.
-
----
-
-## 6. Deinit() — переключение режима на одном физическом таймере
+Остановка/удаление регистрации/освобождение PWM DMA остаётся отдельным TIM-6.
+До вызова нынешнего базового DeInit владелец должен остановить/освободить
+подключённый DMA. Базовая очистка не означает готовую очистку PWM DMA.
 
 ```cpp
-void TIM::Deinit();   // public
+timer.Stop();
+timer.DeInit();
+if (timer.SetUp(2000, &Tick) == SysInitStatus::InitOK)
+    timer.Start();
 ```
-
-Обратная операция к `Init()`+`SetUp()`: позволяет отдать один и тот же физический таймер другому
-режиму (например, `TIM_PWM` → `TIM_StepGenerator` на одном `TIM3`) **без перезагрузки контроллера**.
-До появления этого метода переключение было небезопасным — каждый `SetUp()` очищает только те
-регистры, которые важны конкретно ему (`TIM_PWM::SetUp()` не трогает `SMCR`/`RCR`, например), так что
-состояние от предыдущего режима могло протечь в следующий.
-
-```cpp
-void TIM::Deinit()
-{
-    IRQ_en(IRQ::UE,  DISABLE);   // + CC1..CC4 — снять и разрегистрировать всё, что было включено
-    Stop();
-    *_info->rst_reg |= _info->rst_bit;    // импульс reset-бита RCC —
-    *_info->rst_reg &= ~_info->rst_bit;   // полный сброс CR1/CR2/SMCR/DIER/SR/EGR/CCMRx/CCER/
-                                           // CNT/PSC/ARR/RCR/CCRx/BDTR/DCR/DMAR/OR за одну операцию
-    *_info->clk_reg &= ~_info->clk_bit;   // откат Init()
-    _update_cb = nullptr;
-    _cc_cb[0] = _cc_cb[1] = _cc_cb[2] = _cc_cb[3] = nullptr;
-}
-```
-
-Ключевая идея — не обнулять регистры вручную по одному (легко забыть какой-то из ~15), а
-воспользоваться тем, что у каждого таймера в RCC есть не только бит **разрешения** тактирования
-(`RCC_APB1ENR_TIM3EN`, уже используется в `clk_bit`), но и отдельный бит **сброса**
-(`RCC_APB1RSTR_TIM3RST`) — установить и тут же снять его означает "весь этот таймер вернулся в
-состояние сразу после power-on-reset", аппаратно, за одну операцию.
-
-```cpp
-TIM_PWM pwm(TIM3, TIM::_3::CH2::PB5);
-TIM_StepGenerator step(TIM3, TIM::_3::CH2::PB5);   // тот же физический таймер, пока не используется
-
-pwm.SetUp(10*kHz);
-pwm.Start();
-...
-pwm.Stop();
-pwm.Deinit();          // полный аппаратный сброс TIM3 — можно вызывать с любого объекта на этот TIMx
-step.SetUp(1*MHz);
-step.Start();          // тот же TIM3, теперь как генератор шагов
-```
-
-`Deinit()` можно вызвать на **любом** `TIM_*` объекте, обёрнутом вокруг нужного `TIMx` — сброс
-завязан на физическую периферию через `_info->rst_reg`/`rst_bit`, а не на то, какой C++-объект его
-вызвал.
 
 ---
 
@@ -1291,10 +1066,10 @@ TIM_StepGenerator (master, STEP на своём CH)  ──TRGO (Update)──�
         EnableTriggerOutput(): MMS=010                 SMCR: TS=itr, SMS=111 (External Clock Mode 1)
 ```
 
-> STM32F7 в этом же смысле не покрыт вообще — Section A `tim_defs.hpp` (таблицы пинов) уже условно
-> собирается под `STM32F4 || STM32F7`, но `tim_table`/`itr_table` (Section B) заполнены только для
-> `STM32F4`. Сборка `TIM.*` под F7 сейчас не слинкуется, пока кто-то не добавит верифицированный
-> блок с RCC-битами/IRQ-векторами/ITR-маршрутами по RM0410.
+Общая таблица периферии F7 теперь определена, исходник компилируется.
+Маршруты HWCounter F7 пока не реализованы: FindITR возвращает 0xFF до разбора
+этого режима. G0 также ожидает проверки маршрутов; прежние F4 отфильтрованы
+по наличию периферии.
 
 ---
 
@@ -1314,7 +1089,7 @@ TIM_StepGenerator (master, STEP на своём CH)  ──TRGO (Update)──�
 | Измерить период И скважность одного PWM-сигнала | `TIM_PulseMeasure` |
 | Прочитать реальный квадратурный энкодер | `TIM_EncoderReader` |
 | Точное число шагов без ISR на каждый шаг | `RunSteps()` (нужен RCR) или `TIM_HWCounter::StopAfter()`/`StopAT()` (не нужен) |
-| Переключить один физический таймер между режимами без ребута | `Deinit()` (§6) |
+| Переключить один физический таймер между режимами без ребута | `DeInit()` (§6) |
 
 ---
 
@@ -1323,27 +1098,26 @@ TIM_StepGenerator (master, STEP на своём CH)  ──TRGO (Update)──�
 - **`TIM6`/`TIM7` (F4) — 0 каналов** (`channel_count = 0`): годятся только для
   `TIM_PeriodicIRQ` (Update-событие) — все остальные подклассы требуют хотя бы один CC-канал и
   либо не скомпилируются (нет нужной таблицы пинов), либо `SetUp()` вернёт `InitError`.
-- **16-бит vs 32-бит ARR** — только `TIM2`/`TIM5` на F4/F7 имеют `arr_max = 0xFFFFFFFF`; все
+- **16-бит vs 32-бит ARR** — `TIM2`/`TIM5` на F4/F7 и существующий `TIM2` на G0 имеют `arr_max = 0xFFFFFFFF`; все
   остальные ограничены `0xFFFF`. `SetDuty()` предупреждает в своём doc-комментарии: для ARR
   вблизи 32-битного предела использовать `SetCCR()` напрямую, не проценты.
 - **`has_bdtr`** — не просто "продвинутый таймер": это единственный признак наличия `BDTR`/`MOE`
   (нужен для `TIM_PWM` на некоторых таймерах — без `MOE` выходы физически не активируются) и `RCR`
   (нужен для `TIM_StepGenerator::RunSteps()`).
-- **`TIM_HWCounter` на STM32G0 всегда `InitError`** — таблица `itr_table` не подтверждена (см.
+- **`TIM_HWCounter` на STM32G0/F7 всегда `InitError`** — таблица `itr_table` не подтверждена (см.
   §8); это не баг конкретного вызова, а сознательно неполная таблица.
 - **`TIM_HWCounter::on_complete` привязан к `SetUp()`, не к `StopAfter()`/`StopAT()`** — один
-  колбэк на весь жизненный цикл объекта; сменить его можно только повторным `SetUp()` (что заново
+  колбэк на весь жизненный цикл объекта; сменить его можно только через `DeInit()` и новый `SetUp()` (что заново
   сцепит ITR-маршрут — не то же самое, что просто сменить цель).
 - **`TIM_EncoderReader` требует именно CH1+CH2** — аппаратное ограничение Encoder Interface mode,
   не выбор этого драйвера; CH3/CH4 конструктор отклонит трапом.
-- **`Init()`/`SetFrequency()` теперь `protected`** — прямой вызов `pwm.SetFrequency(...)` или
-  `step.SetFrequency(...)` больше не скомпилируется на объектах, где это было бы неправильно; вместо
+- **`Init()`/`SetFrequency()` теперь `protected`** — прямой вызов защищённого базового метода больше не скомпилируется на объектах, где это было бы неправильно; вместо
   них у `TIM_PWM` и `TIM_StepGenerator` свои публичные обёртки (см. §3), `TIM_PeriodicIRQ` открывает
   базовый метод через `using`.
 - **`TIM_StepGenerator::SetStepFrequency()` сбрасывает режим `RunSteps()`** — явно снимает
   `TIM_CR1_OPM`, возвращая таймер в свободный (continuous) режим; вызов после `RunSteps()`
   отменяет ожидаемый авто-стоп.
-- **Общий вектор Update+CC у большинства general-purpose таймеров** — `IRQ_en()` не регистрирует
+- **Общий вектор Update+CC у большинства general-purpose таймеров** — `Init()` не регистрирует
   второй раз один и тот же вектор (сравнение `irq_cc != irq_up`), но это значит, что `HandleIRQ()`
   для таких таймеров вызывается на **любое** из событий Update/CC1-4 — код внутри всегда сам
   разбирает, какие именно биты `SR` реально стоят (см. §5).
@@ -1352,12 +1126,12 @@ TIM_StepGenerator (master, STEP на своём CH)  ──TRGO (Update)──�
 
 ## См. также
 
-- [IRQ_Registry.md](IRQ_Registry.md) — `IRQ_en()` (§4) регистрирует `this` тем же способом, что
+- [IRQ_Registry.md](IRQ_Registry.md) — `Init()` (§4) регистрирует `this` тем же способом, что
   `USART`/`SPI`/`RTC`; см. там же про общий/раздельный вектор на одну строку `_table`.
 - [DMA.md](DMA.md) — `TIM_PWM::AttachDMA()` (§7.2) настраивает `DMA_Sx` так же, как `USART`/`SPI`.
 - [RCC.md](RCC.md) — `_info->bus_clk`/`clk_reg`/`rst_reg` (§2-3, §6) указывают на регистры и
   переменные, которые пишет именно этот модуль (включая правило "таймеры x2" для тактовой частоты).
-- [GPIO.md](GPIO.md) — `TIM_PIN`/`Line` (tim_defs.hpp) построены поверх того же `PIN`, что и
+- [GPIO.md](GPIO.md) — `TIM_PIN`/`Line` (tim.hpp + tim_defs.hpp) построены поверх того же `PIN`, что и
   остальные периферийные таблицы пинов.
 - [System.md](System.md) — общая инфраструктура (`SysStatus`/`SysInitStatus`, `DebugTrap`),
   используемая всеми методами `SetUp()` этого файла.

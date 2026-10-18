@@ -7,445 +7,344 @@
 #include "dma.hpp"
 #include "tim.hpp"
 
-// ---------------------------------------------------------------------------
-// ADC_N — single ADC peripheral driver
-// ---------------------------------------------------------------------------
+/**
+ * @brief Immutable GPIO binding with its ADC channel and peripheral ownership.
+ *
+ * Defined before ADC_N so its consteval constructor is available when the
+ * nested pin tables are initialized. ADC_N::ADC_PIN remains the public alias.
+ * GPIOx_BASE, pin and channel/peripheral ranges are checked at compile time.
+ * Package bonding remains the caller's responsibility; ADC_PIN{} is absent.
+ */
+struct ADC_PIN : public PIN {
+	const uint8_t channel{}; ///< ADC channel number; fixed at construction.
+
+	ADC_PIN() = default;
+	consteval ADC_PIN(uintptr_t port, uint32_t pin, uint32_t ch, uint32_t adc_base)
+		: PIN(port, pin, 0, adc_base), channel(static_cast<uint8_t>(ch))
+	{
+		if (ch > 18) __builtin_unreachable();
+		switch (adc_base) {
+		case ADC1_BASE:
+#if defined(ADC2_BASE)
+		case ADC2_BASE:
+#endif
+#if defined(ADC3_BASE)
+		case ADC3_BASE:
+#endif
+			break;
+		default:
+			__builtin_unreachable();
+		}
+	}
+};
+
+// Implemented in the separate TIM work item; no substitute lives in ADC.
+class TIM_TriggerGenerator;
 
 /**
- * @brief One ADC peripheral.
+ * @brief One ADC: SetUp -> AddChannel -> optional DMA/trigger -> Start.
  *
- * SetUp() does the basic set-up (clock, calibration, enable). Then the
- * sequence is built with AddChannel() — each call goes straight into the
- * registers — and converted
- *  - once, polled or by interrupt          — Start();
- *  - once into a buffer by DMA             — StartDMA();
- *  - on every trigger, circular DMA        — AttachTrig() / AttachExtTrig(), StartTrig();
- *  - continuously, circular DMA            — StartCont(buf, len);
- *  - continuously, one channel, no DMA     — StartCont(), latest value in GetData().
- * Stop() stops whatever is running. Configuration, StartXxx() and Stop()
- * run in thread mode with interrupts enabled. IRQ callbacks notify the
- * main loop; they do not call these control methods.
- * A hardware handshake failure requires a successful SetUp() before reuse.
+ * Initialize System/RCC first. Setup, channel changes, attachment, Start,
+ * Stop and DeInit are serialized main-loop operations. Callbacks run in IRQ
+ * and notify the application; do not configure/restart the ADC from callbacks.
+ * No internal locks, thread-context checks or configuration reservation exist.
+ * System waits require a live SysTick; do not mask it during control methods.
+ *
+ * Start converts once; Start_DMA captures one sequence; StartTrig_DMA captures
+ * on external events; StartCont_DMA captures continuously into circular DMA.
+ * StartCont without DMA returns the latest single-channel value through GetData.
+ * After a finite capture, call Start again. A running capture returns Busy.
+ *
+ * SetUp registers the ADC IRQ once; AttachDMA registers its DMA IRQ once.
+ * IRQ_en changes sources only. Stop retains configuration and attachments;
+ * DeInit removes this object's registrations and releases its DMA.
+ *
+ * F7 DMA uses System cache helpers. Buffers own all intersected 32-byte lines,
+ * including padding. Transfer length need not be a multiple of 32 bytes.
+ * The application must finish reading circular data before DMA overwrites it;
+ * neither a callback nor invalidate freezes a circular buffer.
  *
  * @code
- *   TIM_TriggerGenerator trg(TIM3, TIM_TriggerGenerator::Req::Adc::TIM3_TRGO);
- *   trg.SetUp(1000);                                  // 1000 sequences/s
- *   DMA_Sx dma(DMA1_Channel1, DMA_Sx::Req::Adc1::RX);
+ *   class Samples : public ADC_N {
+ *   public:
+ *       using ADC_N::ADC_N;
+ *       volatile bool ready = false;
+ *       volatile uint32_t errors = 0;
+ *   protected:
+ *       void OnDmaComplete() override { ready = true; }
+ *       void OnError(uint32_t causes) override { errors = causes; }
+ *   };
  *
- *   ADC_N adc(ADC1);
- *   adc.SetUp(ADC_N::SMPL::CYC_39_5);
- *   adc.AddChannel(ADC_N::IN::PA0);
- *   adc.AddChannel(ADC_N::IN::PB0);
- *   adc.AttachDMA(&dma);
- *   adc.AttachTrig(&trg);
- *   adc.SetDMACallback(on_buffer_full);
- *   adc.IRQ_en(ADC_N::IRQ::DMA_TC, ENABLE);         // interrupts only on request
- *   adc.StartTrig(buf, 2 * 8);                        // TIM3 + circular DMA
- *   ...
- *   adc.Stop();
+ *   Samples adc(ADC1);
+ *   alignas(32) static uint16_t values[16]; // Full cache line, two samples used.
+ * #if defined(STM32G0)
+ *   DMA_Sx dma(DMA1_Channel1, DMA_Sx::Req::Adc1::RX);
+ * #else
+ *   DMA_Sx dma(DMA_Sx::Req::Adc1::RX_DMA2_Stream0);
+ * #endif
+ *   if (adc.SetUp() == SysInitStatus::InitOK) {
+ * #if defined(STM32G0)
+ *       adc.AddChannel(ADC_N::IN::PA0_IN0);
+ *       adc.AddChannel(ADC_N::IN::PB0_IN8);
+ * #else
+ *       adc.AddChannel(ADC_N::_1::PA0_IN0);
+ *       adc.AddChannel(ADC_N::_1::PB0_IN8);
+ * #endif
+ *       if (adc.AttachDMA(&dma) == SysInitStatus::InitOK)
+ *           adc.Start_DMA(values); // Check each AddChannel/start result as well.
+ *   }
+ *   // Main: consume values after ready, clear ready, then Start_DMA(values) again.
  * @endcode
+ * See ADC.md for polling, circular capture, sampling and pending TIM/DMA work.
  */
 class ADC_N : public IIRQHandler
 {
 public:
-	// ADC_PIN, IN / _1 / _2 / _3 channel tables, INTERNAL, SMPL / CH_SMPL,
-	// EXTSEL_EXTI11. Access as: ADC_N::IN::PA1 (G0), ADC_N::_1::PA0 (F4/F7 ADC1).
+	using ADC_PIN = ::ADC_PIN;
 #include "adc_defs.hpp"
 
-	/** @param adcx  Hardware ADC (ADC1, ADC2, ADC3). */
+	/// Bind ADC1/2/3 once; construction does not access hardware.
 	explicit ADC_N(ADC_TypeDef* adcx) : ADCx(adcx) {}
-
 	ADC_N() = delete;
 	ADC_N(const ADC_N&) = delete;
 	ADC_N& operator=(const ADC_N&) = delete;
-
-	// -----------------------------------------------------------------------
-	// Set-up
-	// -----------------------------------------------------------------------
+	ADC_N(ADC_N&&) = delete;
+	ADC_N& operator=(ADC_N&&) = delete;
+	/// Normally static lifetime; call DeInit before destroying an initialized object.
+	~ADC_N() = default;
 
 	/**
-	 * @brief Basic set-up: enables the ADC clock, calibrates (G0), enables
-	 *        the ADC with an empty sequence. Channels are added afterwards.
+	 * @brief Enable clock, initialize an empty sequence and register the ADC IRQ.
+	 * G0: PCLK/2, regulator/calibration, two common sampling times SMP1/SMP2.
+	 * F4/F7: PCLK2/4; smp1/smp2 are unused, sampling is selected per channel.
 	 *
-	 * ADC clock: G0 — synchronous PCLK/2 (CFGR2.CKMODE = 01);
-	 *            F4/F7 — PCLK2/4 (ADC->CCR.ADCPRE = 01, common to all ADCs).
-	 *
-	 * May be called again: anything running is stopped and the sequence is
-	 * emptied (internal inputs switched off). An attached DMA / trigger stays
-	 * attached.
-	 *
-	 * @param smp1  G0: sampling time SMP1 (channels pick SMP1/SMP2 in AddChannel()).
-	 * @param smp2  G0: sampling time SMP2.
-	 *              F4/F7: ignored — the sampling time is per channel.
-	 * @return InitError if @p ADCx is not an ADC of this device, a
-	 *         configuration is in progress, or (G0) the ADC does not answer a
-	 *         handshake (ADDIS / ADCAL / ADRDY / CCRDY, about 1 ms each).
+	 * ADCPRE is shared by ADC1/2/3 even in independent mode. Set up all ADCs
+	 * before starting conversion; no common/multimode manager is introduced.
+	 * @return InitOK or InitError for an unknown ADC, repeated setup, failed
+	 *         handshake or IRQ registration. Repeated setup requires DeInit.
 	 */
 	SysInitStatus SetUp(SMPL smp1 = SMPL::DEFAULT, SMPL smp2 = SMPL::DEFAULT);
 
-	// -----------------------------------------------------------------------
-	// Channels — after SetUp(), while nothing runs
-	// -----------------------------------------------------------------------
-
 	/**
-	 * @brief Appends an analog input to the conversion sequence and writes it
-	 *        to the registers right away: sequence, sampling time, GPIO in
-	 *        analog mode, internal input enable bit.
+	 * @brief Append an input; successful calls define conversion/buffer order.
+	 * PIN port/number and channel/peripheral ranges are compile-time checked.
+	 * Package bonding and the selected hardware route remain caller obligations.
 	 *
-	 * The order of the calls is the conversion order, and so the order of
-	 * the samples in the DMA buffer.
+	 * F4/F7: up to 16 ranks, arbitrary order/repeats. G0: eight ranks of channels
+	 * 0..14 in arbitrary order; a channel above 14 or a ninth rank switches to
+	 * bitmask mode, which requires strictly ascending, non-repeated channels.
+	 * Repeated channels must use the same sampling setting.
 	 *
-	 * F4/F7: up to 16 ranks (SQ1-SQ16), any order, a channel may repeat.
-	 * G0: up to 8 channels in any order (fully configurable sequencer,
-	 * channels 0-14). A channel 15-18 or a 9th channel switches the ADC to
-	 * the bitmask sequencer (done here: ADC disabled, CHSELR rebuilt,
-	 * re-enabled), which converts in ascending channel order only — so the
-	 * channels must have been added in ascending order without repeats.
-	 *
-	 * The sampling setting belongs to the channel number, not to the rank: a
-	 * channel added twice must use the same setting.
-	 *
-	 * Calls System::DebugTrap() if SetUp() was not called, something is
-	 * running, @p pin belongs to another ADC (e.g. ADC_N::_2::PA0 on ADC1),
-	 * the sequence is full, the same channel comes with a different sampling
-	 * setting, or (G0) the bitmask sequencer is needed but the order is not
-	 * ascending. An invalid ADC_PIN{} is ignored (Error).
-	 *
-	 * @param pin   Input from ADC_N::IN (G0) or ADC_N::_N (F4/F7).
-	 * @param smpl  G0: which of the two sampling times given to SetUp() this
-	 *              channel uses (SMPSELx); F4/F7: the channel's own sampling
-	 *              time (SMPRx).
-	 * @return OK; Timeout (G0) if the ADC did not answer CCRDY / ADRDY — the
-	 *         channel is not added.
+	 * @return NotInit, Busy, Error for a wrong/absent pin or an invalid sequence,
+	 *         Timeout on a G0 handshake, otherwise OK.
+	 * A handshake timeout requires successful ClearChannels or DeInit/SetUp
+	 * before capture is started again; no automatic recovery is performed.
 	 */
 	SysStatus AddChannel(ADC_PIN pin, CH_SMPL smpl = CH_SMPL::DEFAULT);
 
 	/**
-	 * @brief Appends an internal input (VREFINT, TEMP, VBAT) to the sequence:
-	 *        same rules as for a pin; instead of the GPIO its enable bit in
-	 *        ADC->CCR is set (start-up delay included).
-	 *
-	 * F4/F7: ADC1 only. They need a long sampling time (datasheet: several
-	 * microseconds). DebugTrap() as for a pin, plus: (F4/F7) not on ADC1, or
-	 * TEMP and VBAT combined where both share IN18 — with VBATE set, IN18
-	 * reads VBAT. Returns as for a pin.
+	 * @brief Append VREFINT, TEMP or VBAT (ADC1 only), including source startup.
+	 * The caller chooses sampling from the datasheet and actual ADC clock.
+	 * The external-input default can be too short for internal sources.
+	 * Delay_ms(1) lets the source settle; it does not extend sample acquisition.
+	 * No sampling override or additional timing validation is performed.
+	 * TEMP and VBAT cannot share their common channel in one sequence.
+	 * @return Same status contract as the pin overload.
 	 */
 	SysStatus AddChannel(INTERNAL in, CH_SMPL smpl = CH_SMPL::DEFAULT);
 
 	/**
-	 * @brief Empties the sequence in the registers and switches the internal
-	 *        inputs off. DebugTrap() if something is running.
-	 * @return OK; NotInit before SetUp(); Timeout (G0) if the ADC did not
-	 *         answer (the channel count is 0 anyway: nothing can start).
+	 * @brief Empty the sequence and disable ADC1 internal sources while idle.
+	 * @return NotInit, Busy, Timeout (G0), or OK.
+	 * A successful call also clears a previous channel-configuration timeout.
 	 */
 	SysStatus ClearChannels();
-
-	/** @brief Number of channels in the sequence (= samples per sequence). */
 	inline uint8_t GetChannelCount() const { return _ch_count; }
 
-	// -----------------------------------------------------------------------
-	// DMA and triggers
-	// -----------------------------------------------------------------------
-
 	/**
-	 * @brief Attaches a DMA stream for ADC -> memory transfers.
-	 *
-	 * Configures the stream: Per->Mem, 16-bit, MINC, source = ADCx->DR,
-	 * request from the peripheral table. Must be called after SetUp(). No
-	 * interrupt is enabled — IRQ_en(IRQ::DMA_TC, ENABLE) if wanted.
-	 *
-	 * @return InitError if SetUp() was not called, @p dma is null, or the
-	 *         stream is unknown / already in use.
+	 * @brief Configure/attach one DMA resource and register its IRQ.
+	 * Validates the complete route using existing DMAReq/CanUseRequest.
+	 * Configures half-word Per->Mem, MINC, ADC DR; do not SetUp DMA separately.
+	 * TC/TE and F4/F7 DME sources are enabled, as in USART.
+	 * @return InitError before SetUp, for null/wrong/owned DMA, repeated
+	 *         attachment, Busy acquisition or a setup/registration failure.
+	 * The DMA object outlives the attachment; only DeInit releases it.
 	 */
 	SysInitStatus AttachDMA(DMA_Sx* dma);
 
 	/**
-	 * @brief Attaches a trigger timer for StartTrig().
-	 *
-	 * @p trg must have been created with a Req::Adc request
-	 * (TIM_TriggerGenerator trg(TIM3, TIM_TriggerGenerator::Req::Adc::TIM3_TRGO))
-	 * and set up with its period (and compare point for a CCx request).
-	 * StartTrig() starts it, Stop() stops it.
-	 *
-	 * @return InitError if @p trg is null, its request is not for the ADC,
-	 *         or acquisition is running.
+	 * @brief Attach an already configured TIM_TriggerGenerator.
+	 * StartTrig_DMA arms ADC/DMA first, then starts this timer; Stop stops it.
+	 * @return InitError before SetUp, for null or Busy acquisition.
+	 * TIM_TriggerGenerator is a pending TIM dependency, not implemented in ADC.
 	 */
 	SysInitStatus AttachTrig(TIM_TriggerGenerator* trg);
 
-	/**
-	 * @brief Attaches the external trigger EXTI line 11 for StartTrig()
-	 *        (rising edge). Replaces an attached timer.
-	 *
-	 * The EXTI line itself (pin, edge) is configured by the application.
-	 *
-	 * @return InitError if acquisition is running.
-	 */
+	/// Select rising-edge EXTI11 instead of a timer; the application configures EXTI.
 	SysInitStatus AttachExtTrig();
 
-	// -----------------------------------------------------------------------
-	// Run
-	// -----------------------------------------------------------------------
+	/**
+	 * @brief Convert the sequence once, without DMA.
+	 * Poll IsBusy/IsEOC and read GetData, or enable EOC/EOS notifications.
+	 * Only the latest DR sample is retained without DMA.
+	 * @return NotInit, Busy, Error for an empty sequence, Timeout (G0), or OK.
+	 */
+	SysStatus Start();
 
 	/**
-	 * @brief Converts the sequence once, without DMA (poll IsEOC() /
-	 *        GetData(), or use the EOC/EOS callbacks). IsBusy() is true until
-	 *        the sequence is done (G0: ADSTART cleared, F4/F7: EOC).
-	 * Does nothing if called from IRQ, with IRQs masked, or while busy.
+	 * @brief Capture one sequence, then stop DMA and hand the buffer to CPU.
+	 * @param buf At least GetChannelCount half-words, DMA-accessible and kept alive.
+	 * TC is enabled automatically for completion; do not disable it during this run.
+	 * @return NotInit, Busy, Error for buffer/DMA/count/preparation, Timeout, or OK.
+	 * OnDmaComplete runs only after the DMA stop and cache invalidate.
+	 * OnError discards the buffer without invalidate; partial data must not be read.
 	 */
-	void Start();
+	SysStatus Start_DMA(uint16_t* buf);
 
 	/**
-	 * @brief Converts the sequence once into @p buf by DMA, then stops by
-	 *        itself: IsBusy() becomes false; the DMA callback fires if
-	 *        IRQ::DMA_TC is enabled.
-	 *
-	 * @param buf  Buffer of GetChannelCount() samples.
-	 * @return Error if no DMA is attached, no channel was added or @p buf is
-	 *         null; Busy if something is running; Timeout (G0, all StartXxx
-	 *         with a CFGR1 change) if the ADC did not answer ADDIS / ADRDY.
+	 * @brief Circular DMA capture, one sequence per trigger, until Stop.
+	 * @param len Samples, 1..65535 and a multiple of GetChannelCount.
+	 * The application ensures conversion and processing fit the trigger interval.
+	 * At TC the buffer is invalidated and OnDmaComplete is called; DMA keeps running.
+	 * @return As Start_DMA; Error also when no trigger is attached.
+	 * Requires the separately planned TIM_TriggerGenerator for timer triggering.
 	 */
-	SysStatus StartDMA(uint16_t* buf);
+	SysStatus StartTrig_DMA(uint16_t* buf, uint32_t len);
 
 	/**
-	 * @brief Triggered acquisition: DMA circular over @p buf, the ADC
-	 *        converts the sequence on every trigger, the trigger timer is
-	 *        started last. Runs until Stop(); the DMA callback fires each
-	 *        time @p len samples have been written (IRQ::DMA_TC).
-	 *
-	 * @param buf  Destination buffer (must stay valid until Stop()).
-	 * @param len  Buffer length in samples: a non-zero multiple of
-	 *             GetChannelCount(), at most 65535 (DMA counter width).
-	 * @return Error if no DMA or trigger is attached, no channel was added,
-	 *         @p buf is null or @p len is invalid; Busy if something is running.
+	 * @brief Continuous conversion with circular DMA until Stop.
+	 * @param len Samples, 1..65535 and a multiple of GetChannelCount.
+	 * Callback data is valid only until DMA overwrites it. Buffer length, sampling
+	 * time and CPU processing determine the available time; the caller owns this.
+	 * No buffering, copying, automatic pause or overtake detection is added.
+	 * HT integration awaits the separate DMA flag-interface work; see ADC.md.
+	 * @return Same status contract as Start_DMA.
 	 */
-	SysStatus StartTrig(uint16_t* buf, uint32_t len);
+	SysStatus StartCont_DMA(uint16_t* buf, uint32_t len);
 
-	/**
-	 * @brief Continuous acquisition: the ADC converts the sequence back to
-	 *        back (CONT = 1), DMA circular over @p buf. Runs until Stop(); the
-	 *        DMA callback fires each time @p len samples have been written
-	 *        (IRQ::DMA_TC).
-	 *
-	 * @param buf  Destination buffer (must stay valid until Stop()).
-	 * @param len  Buffer length in samples: a non-zero multiple of
-	 *             GetChannelCount(), at most 65535 (DMA counter width).
-	 * @return Error if no DMA is attached, no channel was added, @p buf is
-	 *         null or @p len is invalid; Busy if something is running.
-	 */
-	SysStatus StartCont(uint16_t* buf, uint32_t len);
-
-	/**
-	 * @brief Continuous conversion of a single channel without DMA: GetData()
-	 *        always returns the latest value. Runs until Stop().
-	 *
-	 * Unread results are simply overwritten — G0: OVRMOD = 1; F4/F7: without
-	 * DMA and with EOCS = 0 an overrun is not detected at all. The OVR flag
-	 * (G0) does not stop this mode.
-	 *
-	 * @return Error if the sequence is not exactly one channel; Busy if
-	 *         something is running.
-	 */
+	/// Continuous single-channel conversion without DMA; unread data is overwritten.
 	SysStatus StartCont();
 
 	/**
-	 * @brief Stops whatever is running: trigger timer, conversions, DMA.
-	 * Returns with everything stopped (F4/F7: ADON cleared and set again,
-	 * which aborts a conversion in progress; G0: ADSTP, then CFGR1 restored
-	 * with the ADC disabled).
-	 * @return Error from IRQ or with IRQs masked; OK on success;
-	 *         Busy if a configuration is in progress (nothing stopped);
-	 *         Timeout (G0) if the ADC did not answer ADSTP / ADDIS / ADRDY —
-	 *         timer, DMA and the run state are stopped anyway.
+	 * @brief Stop timer, conversions and DMA; retain channels and attachments.
+	 * DMA EN=0 is confirmed before cache/buffer handover. G0 ADC handshakes
+	 * use System waits in main, never a hidden deferred configuration phase.
+	 * @return NotInit, Timeout on a hardware handshake, Error on DMA failure, or OK.
+	 * No completion callbacks are generated for an explicit stop.
 	 */
 	SysStatus Stop();
 
-	/**
-	 * @brief True while Start() / StartDMA() / StartTrig() / StartCont() runs.
-	 *
-	 * Start() and StartDMA() end by themselves. StartDMA() with IRQ::DMA_TC
-	 * enabled is finished by the interrupt (and its callback); without it,
-	 * IsBusy() sees the DMA transfer-complete flag and finishes the run.
-	 * Hardware stop confirmation after IRQ/polling completion is deferred
-	 * until the next control operation or explicit Stop() in main.
-	 */
-	bool IsBusy();
+	/// Pure queries; no DMA stop, cache operation, flag clear or callback occurs.
+	bool IsBusy() const;
+	SysStatus GetStatus() const;
 
 	/**
-	 * @brief Returns the last converted value from ADCx->DR.
-	 * F4/F7 during a Start() run: DR is read only once EOC is set (reading
-	 * it clears EOC); before that the previous value is returned.
+	 * @brief Read DR; do not use while DMA owns the ADC data register.
+	 * F4/F7 returns the last read value while a one-shot conversion is pending,
+	 * so reading DR cannot erase an unseen EOC. An observed result completes Start.
 	 */
 	uint16_t GetData();
 
-	/** @brief True if the EOC flag is set (conversion complete). */
 #if defined(STM32G0)
-	inline bool IsEOC() const { return (ADCx->ISR & ADC_ISR_EOC) != 0u; }
-#elif defined(STM32F4) || defined(STM32F7)
-	inline bool IsEOC() const { return (ADCx->SR & ADC_SR_EOC) != 0u; }
+	inline bool IsEOC() const { return _info && (ADCx->ISR & ADC_ISR_EOC); }
+#else
+	inline bool IsEOC() const { return _info && (ADCx->SR & ADC_SR_EOC); }
 #endif
 
-	// -----------------------------------------------------------------------
-	// Interrupts and callbacks — callbacks run from HandleIRQ
-	// -----------------------------------------------------------------------
-
-	/**
-	 * @brief Interrupt sources. All are off until enabled with IRQ_en().
-	 *
-	 * EOC/EOS/OVR map directly to IER (G0) / CR1 (F4/F7) interrupt-enable
-	 * bits. F4/F7 has no separate EOS interrupt: EOS aliases EOCIE (EOCS = 0
-	 * makes EOC an end-of-sequence event), so enabling/disabling either
-	 * affects both. DMA_TC is the transfer-complete interrupt of the attached
-	 * DMA stream (needs AttachDMA()).
-	 */
+	/// ADC peripheral sources plus the attached DMA's TC source.
 	enum class IRQ : uint32_t {
 #if defined(STM32G0)
-		EOC = ADC_IER_EOCIE,
-		EOS = ADC_IER_EOSIE,
-		OVR = ADC_IER_OVRIE,
-#elif defined(STM32F4) || defined(STM32F7)
-		EOC = ADC_CR1_EOCIE,
-		EOS = ADC_CR1_EOCIE,
-		OVR = ADC_CR1_OVRIE,
+		EOC = ADC_IER_EOCIE, EOS = ADC_IER_EOSIE, OVR = ADC_IER_OVRIE,
+#else
+		EOC = ADC_CR1_EOCIE, EOS = ADC_CR1_EOCIE, OVR = ADC_CR1_OVRIE,
 #endif
-		DMA_TC = 0x80000000u,   ///< not an ADC register bit (bit 31 is reserved in IER/CR1)
+		DMA_TC = 0x80000000u
 	};
-
 	/**
-	 * @brief Enables or disables one interrupt source.
-	 *
-	 * On first enable on a line: registers this object in IRQ_Registry and
-	 * unmasks NVIC. On last disable: unregisters only this object; NVIC is
-	 * masked only if no other handler remains on the line (F4/F7: ADC1/2/3
-	 * share ADC_IRQn; G0 with COMP: shared with COMP; G0 DMA channels share
-	 * lines). IRQ::DMA_TC is ignored while no DMA is attached.
+	 * @brief Change source bits only; registrations persist until DeInit.
+	 * Usable for disabling a source in callbacks. F4/F7 EOC and EOS alias
+	 * the same source and invoke OnEOS only; G0 has separate EOC/EOS events.
+	 * DMA HT selection awaits the separate DMA API decision.
 	 */
 	void IRQ_en(IRQ irq, FunctionalState en);
 
-	/**
-	 * @brief Called at end of conversion (EOC).
-	 * F4/F7: EOCS = 0, so EOC fires once per sequence — same event as EOS.
-	 */
-	inline void SetEOCCallback(void (*cb)(void)) { _eoc_cb = cb; }
-
-	/** @brief Called at end of the sequence (EOS). */
-	inline void SetEOSCallback(void (*cb)(void)) { _eos_cb = cb; }
+	/// Cause mask delivered to OnError; several causes can occur together.
+	enum class Error : uint32_t { Overrun = 1u, Dma = 2u };
 
 	/**
-	 * @brief Called on overrun (IRQ::OVR). A running DMA acquisition is
-	 *        stopped first; StartCont() without DMA keeps running.
+	 * @brief Explicitly stop and release ADC/DMA IRQ registrations and DMA ownership.
+	 * Call from main. Keeps other handlers and shared NVIC state intact.
+	 * ADC clock is disabled; shared GPIO/DMA clocks and GPIO analog settings remain.
+	 * Stops/detaches the externally configured trigger but does not destroy it.
+	 * No automatic destructor cleanup. The same object may subsequently SetUp again.
 	 */
-	inline void SetOVRCallback(void (*cb)(void)) { _ovr_cb = cb; }
-
-	/**
-	 * @brief Called when the DMA has filled the buffer (IRQ::DMA_TC):
-	 *        StartDMA — once, StartTrig / StartCont(buf, len) — every pass.
-	 */
-	inline void SetDMACallback(void (*cb)(void)) { _dma_cb = cb; }
-
-	/**
-	 * @brief True if the last DMA run ended on a DMA transfer error (the run is
-	 *        stopped; the DMA callback is also called then).
-	 */
-	inline bool IsDMAError() const { return _dma_error; }
-
-	ADC_TypeDef* ADCx;
+	void DeInit();
 
 protected:
-	/** @brief Run-time descriptor for one ADC peripheral. Defined in adc_defs.hpp Section B. */
+	// Notifications only: hardware/status/cache handling is complete before entry.
+	// Do not call control methods or change IRQ Registry from these callbacks.
+#if defined(STM32G0)
+	/// G0 only: one conversion completed. F4/F7 notify via OnEOS instead.
+	virtual void OnEOC() {}
+#endif
+	virtual void OnEOS() {}
+	/// Reserved for the agreed HT integration after the separate DMA API update.
+	virtual void OnDmaHalf() {}
+	/// One-shot: stopped stable buffer. Circular: caller must meet its read deadline.
+	virtual void OnDmaComplete() {}
+	/// Capture is stopped; partial DMA data is invalid and must not be read.
+	virtual void OnError(uint32_t errors) { (void)errors; }
+
+private:
+	ADC_TypeDef* const ADCx;
+
 	struct PeriphInfo {
-		ADC_TypeDef*        periph;
-		volatile uint32_t*  clk_reg;
-		uint32_t            clk_bit;
-		IRQn_Type           irqn;
-		DMA_Sx::RequestSet  dma_req;
+		ADC_TypeDef* periph;
+		volatile uint32_t* clk_reg;
+		uint32_t clk_bit;
+		IRQn_Type irqn;
+#if defined(STM32G0)
+		DMA_Sx::DMAReq dma_req[1];
+#else
+		DMA_Sx::DMAReq dma_req[2];
+#endif
 	};
 	static const PeriphInfo adc_table[];
+	const PeriphInfo* _info = nullptr;
+	DMA_Sx* _dma = nullptr;
+	TIM_TriggerGenerator* _trg = nullptr;
+	uint16_t* _buf = nullptr;
+	uint32_t _buf_bytes = 0;
+	uint8_t _ch_count = 0;
+	uint8_t _extsel = 0;
+	bool _trig_set = false;
+	bool _dma_tc_irq = false;
 
-	const PeriphInfo* _info   = nullptr;
-	uint8_t  _ch_count        = 0;           ///< Channels in the sequence
+	enum class Mode : uint8_t { Single, Dma, Trig, ContDma, Cont };
+	Mode _mode = Mode::Single;
+	volatile SysStatus _status = SysStatus::NotInit;
 
-	/** @brief Common part of both AddChannel(): next rank, sampling setting (caller holds Mode::Config). */
-	bool AddRank(uint8_t ch, CH_SMPL smpl);   // false: G0 handshake timeout
-
-	/** @brief Reserves Mode::Config and completes an IRQ stop with interrupts enabled. */
-	SysStatus BeginConfig();
-	/** @brief IsBusy() without the lock: notices a finished Start()/StartDMA(). Caller holds IrqLock. */
-	bool RunActive();
-	/** @brief Cancels the run and requests hardware stop without ADC waits. Caller holds IrqLock. */
-	void RequestStop();
-	/** @brief Confirms stop and prepares the idle ADC. Caller holds Mode::Config, IRQs enabled. */
-	bool FinishStop();
-
-	/** @brief True if @p ch is already in the sequence (G0: CHSELR, F4/F7: SQRx). */
 	bool InSequence(uint8_t ch) const;
+	SysStatus AddRank(uint8_t ch, CH_SMPL smpl);
+	/// Replace only the hardware run fields (G0 requires disabled ADC).
+	bool SetRunMode(uint32_t bits);
+	/// Shared hardware start for the three public DMA capture modes.
+	SysStatus StartDma(uint16_t* buf, uint32_t len, Mode mode);
+	/// Main Stop/DeInit: stop, read errors once, clear; hand over only valid data.
+	uint32_t StopDMA();
 
 #if defined(STM32G0)
-	bool     _seq_mode        = true;        ///< Fully configurable sequencer (CHSELRMOD = 1)
-	bool     _ascending       = true;        ///< Channels added so far are strictly ascending
-	uint8_t  _last_ch         = 0;           ///< Last channel added
-
-	/** @brief Switches the sequencer mode (CHSELRMOD may only change with ADEN = 0); keeps the channels. */
-	bool SetSeqMode(bool seq);
-
-	// G0 handshakes use GetTick() with a 1 ms timeout. Called only from
-	// thread mode with interrupts enabled; false means no hardware answer.
-
-	/** @brief Sets ADEN until ADRDY (ADEN is ignored for a few ADC clocks after ADCAL / ADDIS). */
+	bool _seq_mode = true;
+	bool _ascending = true;
+	uint8_t _last_ch = 0;
 	bool Enable();
-
-	/** @brief Stops conversions and clears ADEN through ADDIS. */
 	bool Disable();
-
-	/** @brief Writes CHSELR and waits for CCRDY. */
 	bool WriteChselr(uint32_t chsel);
-
-	/** @brief CFGR1 = (CFGR1 & ~clear) | set with the ADC disabled (RM0444: ADEN = 0 required). */
 	bool WriteCfgr1(uint32_t clear, uint32_t set);
+	bool SetSeqMode(bool seq);
+#else
+	uint16_t _last_data = 0;
 #endif
-
-	/**
-	 * @brief Start(): the hardware ends a single run by itself — notices it.
-	 * @param sr F4/F7: the SR snapshot the caller goes on to process (an EOC
-	 *           must not be cleared unseen); G0: unused, ADSTART is checked.
-	 */
-	void CheckSingleDone(uint32_t sr);
-
-#if defined(STM32F4) || defined(STM32F7)
-	uint16_t _last_data       = 0;           ///< Last DR value read by GetData()
-#endif
-
-	DMA_Sx*               _dma = nullptr;
-	TIM_TriggerGenerator* _trg = nullptr;    ///< Attached trigger timer (AttachTrig)
-	bool     _trig_set        = false;       ///< A trigger is attached (timer or EXTI11)
-	uint8_t  _extsel          = 0;           ///< EXTSEL of the attached trigger
-
-	/** @brief What is running; set by StartXxx(), back to Idle by Stop() (also from ISR). */
-	enum class Mode : uint8_t {
-		NotInit,    ///< SetUp has not completed, or a hardware handshake failed
-		Idle,
-		Config,     ///< A configuration / the set-up part of a start is in progress
-		Single,     ///< Start: one sequence, no DMA
-		Dma,        ///< StartDMA: one sequence, one DMA pass
-		Trig,       ///< StartTrig: circular DMA, on every trigger
-		ContDma,    ///< StartCont(buf, len): circular DMA, continuous
-		Cont,       ///< StartCont(): one channel, no DMA
-	};
-	volatile Mode _mode       = Mode::NotInit;
-	bool     _cancelled       = true;        ///< Suppresses late ADC events of a stopped/configured run.
-	bool     _irq_registered  = false;       ///< Registered on the ADC IRQ line
-	bool     _dma_registered  = false;       ///< Registered on the DMA IRQ line (IRQ::DMA_TC)
-	uint16_t* _buf            = nullptr;     ///< DMA buffer of the running run (F7 cache maintenance)
-	uint32_t _buf_bytes       = 0;
-	volatile bool _dma_error  = false;       ///< Last DMA run ended on a transfer error
-
-	/** @brief Remembers the DMA buffer, clears the error flag, invalidates it (F7). */
-	void SetDmaBuffer(uint16_t* buf, uint32_t bytes);
-
-	void (*_eoc_cb)(void)     = nullptr;
-	void (*_eos_cb)(void)     = nullptr;
-	void (*_ovr_cb)(void)     = nullptr;
-	void (*_dma_cb)(void)     = nullptr;
-
 	void HandleIRQ() override;
 };
 

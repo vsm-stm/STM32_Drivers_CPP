@@ -6,6 +6,83 @@
 #include "gpio.hpp"
 #include "dma.hpp"
 
+/**
+ * @brief Compile-time checked timer pin descriptor; also exposed as TIM::TIM_PIN.
+ * Stores the existing port/pin/AF/channel/timer metadata. Named table entries
+ * are constexpr; the GPIO port, pin, AF, channel range and timer presence are
+ * checked by the constructor. Package bonding and exact AF routing are caller
+ * obligations. Copies remain assignable for existing mode constructors.
+ */
+struct TIM_PIN {
+	uint32_t port = 0;
+	uint8_t pin = 0;
+	uint8_t af = 0;
+	uint8_t channel = 0;
+	uint32_t tim_base = 0;
+
+	TIM_PIN() = default;
+	consteval TIM_PIN(uint32_t gpio, uint32_t number, uint32_t alternate,
+		uint32_t ch, uint32_t timer)
+		: port(gpio), pin(static_cast<uint8_t>(number)), af(static_cast<uint8_t>(alternate)),
+		  channel(static_cast<uint8_t>(ch)), tim_base(timer)
+	{
+		(void)PIN(static_cast<uintptr_t>(gpio), number, alternate, timer);
+		if (ch >= 4) __builtin_unreachable();
+		switch (timer) {
+#if defined(TIM1_BASE)
+		case TIM1_BASE:
+#endif
+#if defined(TIM2_BASE)
+		case TIM2_BASE:
+#endif
+#if defined(TIM3_BASE)
+		case TIM3_BASE:
+#endif
+#if defined(TIM4_BASE)
+		case TIM4_BASE:
+#endif
+#if defined(TIM5_BASE)
+		case TIM5_BASE:
+#endif
+#if defined(TIM8_BASE)
+		case TIM8_BASE:
+#endif
+#if defined(TIM9_BASE)
+		case TIM9_BASE:
+#endif
+#if defined(TIM10_BASE)
+		case TIM10_BASE:
+#endif
+#if defined(TIM11_BASE)
+		case TIM11_BASE:
+#endif
+#if defined(TIM12_BASE)
+		case TIM12_BASE:
+#endif
+#if defined(TIM13_BASE)
+		case TIM13_BASE:
+#endif
+#if defined(TIM14_BASE)
+		case TIM14_BASE:
+#endif
+#if defined(TIM15_BASE)
+		case TIM15_BASE:
+#endif
+#if defined(TIM16_BASE)
+		case TIM16_BASE:
+#endif
+#if defined(TIM17_BASE)
+		case TIM17_BASE:
+#endif
+			break;
+		default: __builtin_unreachable();
+		}
+	}
+	constexpr bool IsValid() const { return port != 0; }
+	/// Preserve this entry's AF when configuring its GPIO through the shared PIN API.
+	PIN ToPin() const { return PIN(reinterpret_cast<GPIO_TypeDef*>(port), pin, af); }
+};
+
 // ---------------------------------------------------------------------------
 // TIM — base class
 // ---------------------------------------------------------------------------
@@ -15,8 +92,8 @@
  * not a usable driver by itself.
  *
  * TIM owns what every mode needs regardless of what a channel is *for*:
- * clock/peripheral lookup (Init()), PSC/ARR sizing (SetFrequency()),
- * start/stop, DIER/NVIC bookkeeping (IRQ_en()), and routing CCxIF/UIF to
+ * clock/reset/peripheral lookup and IRQ registration (Init()), PSC/ARR sizing (SetFrequency()),
+ * start/stop, DIER source control (IRQ_en()), and routing CCxIF/UIF to
  * user callbacks (HandleIRQ()). What a CCR/CCMR actually configures — PWM
  * output, input capture, PWM-input, toggle-output, hardware counting — is
  * mode-specific and deliberately lives in the subclasses, not here: there is
@@ -32,20 +109,25 @@
  * (CCR1-4, CCMR1-2, CCER, BDTR, RCR, OR) even though most peripherals don't
  * implement all of it — TIM6/TIM7 (basic timers) have no CC channels at all
  * (Update event only), TIM9-14 have 1-2, only TIM1/2/3/4/5/8 (F4) or
- * TIM1/TIM3 (G0) have the full 4. Writes to a register a given instance
- * doesn't implement are silently ignored by hardware, not a fault, so a raw
- * `TIM t(TIM6); t.SetCCCallback(...)` would compile and just never fire —
+ * TIM1/TIM2/TIM3/TIM4 where present (G0) have the full 4. Only access registers
+ * implemented by the selected instance: configuring a compare channel on a
+ * basic timer cannot produce a compare event —
  * going through a subclass avoids that class of mistake because the
  * per-timer channel pin tables in tim_defs.hpp only declare the channels
- * that actually exist (e.g. there is no TIM::_14::CH2).
+ * that are described (e.g. there is no TIM::_14::CH2). Runtime methods also
+ * check the instance capabilities where their public contract requires it.
  */
+// Common contract: one SetUp until DeInit; one object per TIMx. Callbacks are
+// function pointers bound by initialization methods, not runtime callback setters.
+// GPIO/DMA/trigger mode-specific revisions are tracked in Review/TIM.md.
 class TIM : public IIRQHandler
 {
 public:
 	/** @brief 0-indexed output/capture channel selector. */
 	enum class Channel { CH1 = 0, CH2 = 1, CH3 = 2, CH4 = 3 };
 
-	// Channel pin tables + TIM_PIN struct (see tim_defs.hpp Section A).
+	using TIM_PIN = ::TIM_PIN;
+	// Channel pin tables (see tim_defs.hpp Section A).
 	// Provides TIM::_1::CH1::PA8, TIM::_3::CH3::PB0, etc.
 #include "tim_defs.hpp"
 
@@ -76,57 +158,51 @@ public:
 	};
 
 	/**
-	 * @brief Fully resets this timer peripheral in hardware and forgets this
-	 * object's own configuration, so the same physical timer can be handed
-	 * to a different SetUp() — on this object or a different TIM_* object
-	 * wrapping the same TIMx — without a reboot.
+	 * @brief Stop/reset this timer, remove its own timer IRQ registrations,
+	 * disable its peripheral clock and clear callbacks/configuration ownership.
 	 *
-	 * Stops the counter, disables and unregisters every DIER interrupt
-	 * source this object had enabled (same cleanup IRQ_en(irq, DISABLE)
-	 * does), then pulses this instance's RCC reset bit — which forces every
-	 * register (CR1/CR2/SMCR/DIER/SR/EGR/CCMR1/CCMR2/CCER/CNT/PSC/ARR/RCR/
-	 * CCR1-4/BDTR/DCR/DMAR/OR) back to power-on-reset state in one shot.
-	 * That matters because each mode's SetUp() only clears the registers
-	 * *it* cares about (e.g. TIM_PWM::SetUp() never touches SMCR or RCR) —
-	 * leftover state from a previous, different mode would otherwise leak
-	 * into the next one. Finally disables the peripheral clock (undoing
-	 * Init()) and clears the update/CC callbacks.
+	 * Call from main. A successful SetUp is required before another SetUp can
+	 * run; call DeInit between them. An uninitialized object's DeInit is a no-op.
+	 * One live object owns a physical timer; do not configure a second object
+	 * for that TIMx concurrently. Shared NVIC vectors keep other handlers and
+	 * retain their previous enabled state. No automatic destructor cleanup.
 	 *
-	 * No-op if Init() was never called (nothing to undo).
+	 * Mode-specific DMA teardown is part of the separate PWM review; this base
+	 * method unregisters timer vectors. Stop/release attached DMA before it.
 	 *
 	 * @code
-	 *   TIM_PWM pwm(TIM3, ...);
-	 *   TIM_StepGenerator step(TIM3, ...);   // same physical timer, unused so far
-	 *
-	 *   pwm.SetUp(...); pwm.Start();         // running as PWM
-	 *   ...
-	 *   pwm.Stop(); pwm.Deinit();            // full hardware reset of TIM3
-	 *   step.SetUp(...); step.Start();       // now running as a step generator
+	 *   TIM_PeriodicIRQ tick(TIM3);
+	 *   tick.SetUp(1000, &Tick);
+	 *   tick.Start();
+	 *   // Later, from main:
+	 *   tick.DeInit();
+	 *   tick.SetUp(2000, &Tick); // A new setup is now permitted.
 	 * @endcode
 	 */
-	void Deinit();
+	void DeInit();
 
 	/**
 	 * @brief Enables or disables one DIER interrupt source.
-	 * On first enable: registers in IRQ_Registry and unmasks NVIC.
-	 * On last disable: unregisters and masks NVIC.
+	 * Changes only DIER. Registration/NVIC belong to Init/DeInit, including
+	 * shared vectors. Missing CC channels are ignored. Usable from callbacks.
 	 */
 	void IRQ_en(IRQ irq, FunctionalState en);
 
 	/** @brief Start()/Stop() as one state, for callers that track "running" as a bool. */
-	inline void SetEnable(bool on) { TIMx->CR1 = (TIMx->CR1 & ~ TIM_CR1_CEN) | (on << TIM_CR1_CEN_Pos); }
+	inline void SetEnable(bool on) {
+		if (!_info) return;
+		if (on) TIMx->CR1 |= TIM_CR1_CEN;
+		else TIMx->CR1 &= ~TIM_CR1_CEN;
+	}
 	/** @brief Enables the counter (sets CEN). */
 	inline void Start() { SetEnable(true); }
 	/** @brief Disables the counter (clears CEN). */
 	inline void Stop()  { SetEnable(false); }
 
 	/** @brief Routes the Update event to TRGO (useful for ADC/DAC triggering). */
-	inline void EnableTriggerOutput() { TIMx->CR2 |= 2u << TIM_CR2_MMS_Pos; }
-
-	/** @brief Sets the callback invoked from HandleIRQ() on a Update event. */
-	inline void SetUpdateCallback(void (*cb)(void))                { _update_cb = cb; }
-	/** @brief Sets the callback invoked from HandleIRQ() on a given channel's CC event. */
-	inline void SetCCCallback(Channel ch, void (*cb)(void))    { _cc_cb[static_cast<uint32_t>(ch)] = cb; }
+	inline void EnableTriggerOutput() {
+		if (_info) TIMx->CR2 = (TIMx->CR2 & ~TIM_CR2_MMS) | (2u << TIM_CR2_MMS_Pos);
+	}
 
 	/**
 	 * @brief Underlying peripheral register block.
@@ -151,46 +227,46 @@ protected:
 	TIM() = delete;
 	TIM(const TIM&) = delete;
 	TIM& operator=(const TIM&) = delete;
+	TIM(TIM&&) = delete;
+	TIM& operator=(TIM&&) = delete;
 
 	/** @brief Underlying peripheral register block; set once, in the constructor. */
-	TIM_TypeDef* TIMx;
+	TIM_TypeDef* const TIMx;
 
 	/**
-	 * @brief Looks up the peripheral table, enables the APB clock.
-	 * Must be called before any other method. Every subclass's own SetUp()
-	 * calls this itself — never meant to be called from outside the TIM
-	 * hierarchy, hence protected (public callers should have no reason to
-	 * call this ahead of a subclass's SetUp(), and calling it wouldn't do
-	 * anything useful on its own — Init() only enables the clock).
+	 * @brief Common setup: reject repeats, find the timer, enable/reset hardware,
+	 * register its update/CC vectors once and enable NVIC with DIER still zero.
+	 *
+	 * Called by a mode's SetUp. A shared vector is registered once, separate
+	 * update/CC vectors once each. Failed registration rolls back only this
+	 * object's insertion and restores the previous NVIC enable state. _info is
+	 * published only after registration succeeds. Modes must DeInit on a later
+	 * setup failure. Init/DeInit and configuration are serialized main operations;
+	 * callbacks run in IRQ and must not reconfigure or change the registry.
 	 */
 	SysInitStatus Init();
 
 	/**
-	 * @brief Computes PSC (and, unless @p arr is given, ARR) for the
-	 * requested frequency.
+	 * @brief Compute PSC/ARR using integer division and the selected timer clock.
 	 *
-	 * Protected: this is a raw building block for a subclass's own
-	 * frequency-setting method, not something to call directly on an
-	 * arbitrary TIM_* object — several subclasses need extra bookkeeping
-	 * around it (e.g. TIM_StepGenerator::SetStepFrequency() also repositions
-	 * CCR to keep the 50% duty cycle in sync with the new ARR; calling this
-	 * instead would leave a stale CCR from before the change).
+	 * Internal building block for each mode; public wrappers may also maintain
+	 * duty/compare/OPM state. Parameters and hardware are unchanged on error.
+	 * @param freq Requested event frequency in Hz, 1..timer clock. Integer
+	 *             truncation may produce a different actual frequency; no exact
+	 *             divisor search or rounding policy is added.
+	 * @param arr Period in ticks (ARR register = arr-1). Zero chooses the minimum
+	 *            PSC divisor that fits the counter and then the largest period.
+	 *            A 16-bit timer accepts 1..65536; a 32-bit timer accepts periods
+	 *            representable by uint32_t, 1..UINT32_MAX.
+	 * @return InitError before setup or for an invalid/unreachable freq/period.
+	 *         PSC divisors are 1..65536. Calculation uses 32-bit divisions only.
 	 *
-	 * @param freq  Target frequency in Hz.
-	 * @param arr   Desired period, in ticks (the counter counts 0..arr-1;
-	 *              register ARR ends up as arr-1) — same convention as
-	 *              TIM_PWM::SetUp()'s @p arr and TIM_PeriodicIRQ::GetPeriod().
-	 *              Pass 0 (the default) to have this function pick ARR
-	 *              itself, maximising resolution while keeping both PSC and
-	 *              ARR within this timer's widths — use an explicit value
-	 *              instead whenever the period itself matters, not just the
-	 *              resulting frequency (e.g. TIM_PWM needs a specific ARR so
-	 *              SetDuty()'s percent-to-CCR scaling has known granularity,
-	 *              or a periodic timer wants a round tick count for
-	 *              TIM_PeriodicIRQ::SetCompareIRQ() to divide evenly).
-	 * @return InitError if @p arr is nonzero and exceeds this timer's max
-	 *         ARR width (PeriphInfo::arr_max), or if the resulting PSC
-	 *         doesn't fit in 16 bits.
+	 * When stopped, UG loads PSC/ARR before Start; temporary URS prevents the
+	 * service update from requesting IRQ/DMA. Only UIF is acknowledged. UG can
+	 * still be visible to a connected TRGO consumer: configure frequency before
+	 * arming ADC/slave timers. When running, no UG/phase reset is issued: PSC
+	 * applies on a later update and ARR follows the existing ARPE setting. This
+	 * does not promise an atomic or glitch-free live frequency change.
 	 */
 	SysInitStatus SetFrequency(uint32_t freq, uint32_t arr = 0);
 
@@ -224,14 +300,14 @@ protected:
 		volatile uint32_t*  clk_reg;   ///< RCC enable register for this timer's bus, e.g. &RCC->APB1ENR.
 		uint32_t            clk_bit;   ///< Bit to OR into *clk_reg to enable the clock, e.g. RCC_APB1ENR_TIM3EN.
 		volatile uint32_t*  rst_reg;   ///< RCC reset register for this timer's bus, e.g. &RCC->APB1RSTR.
-		uint32_t            rst_bit;   ///< Bit to pulse (set then clear) in *rst_reg to force this instance back to power-on-reset state; used by Deinit(). E.g. RCC_APB1RSTR_TIM3RST.
+		uint32_t            rst_bit;   ///< Bit to pulse (set then clear) in *rst_reg to force this instance back to power-on-reset state; used by DeInit(). E.g. RCC_APB1RSTR_TIM3RST.
 		uint32_t const*     bus_clk;   ///< This timer's input clock in Hz (see System::TIMxAPBxClock); SetFrequency() divides this by the target frequency to get PSC/ARR.
 		IRQn_Type           irq_up;    ///< Update (or shared) IRQ vector.
 		IRQn_Type           irq_cc;    ///< CC IRQ vector; same as irq_up when shared.
-		bool                has_bdtr;  ///< True for advanced/semi-advanced timers (TIM1, TIM16, TIM17) — enables BDTR/MOE and complementary-output/dead-time hardware.
+		bool                has_bdtr;  ///< True when BDTR/MOE is present (TIM1/8/15/16/17 where available) — enables BDTR/MOE and complementary-output/dead-time hardware.
 		uint8_t             channel_count; ///< Number of CC channels this instance implements: 0 (TIM6/TIM7), 1, 2 or 4.
-		uint32_t            arr_max;   ///< Max ARR value: 0xFFFF, or 0xFFFFFFFF for 32-bit TIM2/TIM5 (F4/F7).
-		uint32_t            dma_up_req; ///< DMAMUX request ID for the Update event (used by TIM_PWM::AttachDMA); 0 where the family has no DMAMUX (F4) or this timer has no DMA request wired.
+		uint32_t            arr_max;   ///< Max ARR value: 0xFFFF, or 0xFFFFFFFF for 32-bit TIM2/TIM5 (F4/F7), TIM2 where present (G0).
+		uint32_t            dma_up_req; ///< DMAMUX request ID for the Update event (used by TIM_PWM::AttachDMA); 0 where no Update DMA route is described here; PWM routing is reviewed separately.
 	};
 	static const PeriphInfo tim_table[];
 
@@ -251,27 +327,32 @@ protected:
 	/** @brief Looks up the ITR index connecting master's TRGO to slave's TS. 0xFF if absent/unverified. */
 	static uint8_t FindITR(TIM_TypeDef* master, TIM_TypeDef* slave);
 
-	const PeriphInfo* _info = nullptr;      ///< Set by Init(); nullptr until then.
-	void (*_update_cb)(void)  = nullptr;    ///< Called from HandleIRQ() on a Update event.
-	void (*_cc_cb[4])(void)   = {};         ///< Per-channel callbacks, called from HandleIRQ() on CCxIF.
+	const PeriphInfo* _info = nullptr;      ///< Successful common Init; cleared by DeInit.
+	void (*_update_cb)(void)  = nullptr;    ///< Bound once by the mode setup; called on enabled Update.
+	void (*_cc_cb[4])(void)   = {};         ///< Bound by channel initialization; called on enabled CCxIF.
 
 	/** @brief Returns a pointer to CCRx (0-indexed channel). */
 	inline volatile uint32_t* ccr(uint32_t ch) {
-		return &TIMx->CCR1 + (&TIMx->CCR2 - &TIMx->CCR1) * ch;
+		// CCR1..CCR4 are consecutive 32-bit MMIO registers; ch must be 0..3.
+		return reinterpret_cast<volatile uint32_t*>(
+			reinterpret_cast<uintptr_t>(&TIMx->CCR1) + ch * sizeof(uint32_t));
 	}
 
 	/**
-	 * @brief ORs @p value into a CCMR1/CCMR2 sub-field for the given 0-indexed
+	 * @brief Replaces @p value in a CCMR1/CCMR2 sub-field for the given 0-indexed
 	 * channel — e.g. CCxS (input mapping) or OCxM+OCxPE (output mode/preload).
 	 *
 	 * CH1/CH3 live in the low byte of CCMR1/CCMR2, CH2/CH4 in the high byte
 	 * (+8 bit shift); CH1/CH2 live in CCMR1, CH3/CH4 in CCMR2. @p pos is the
-	 * field's bit position within CH1's/CH3's byte (e.g. TIM_CCMR1_OC1M_Pos).
+	 * field's bit position within CH1's/CH3's byte. Supported fields are CC1S,
+	 * OC1M and OC1PE; callers pass those CMSIS positions, not arbitrary fields.
 	 */
 	inline void SetCCMRField(uint32_t pos, uint32_t ch, uint32_t value) {
 		uint32_t shift = pos + (ch & 1u) * 8u;
-		if (ch < 2) TIMx->CCMR1 |= value << shift;
-		else        TIMx->CCMR2 |= value << shift;
+		const uint32_t mask = pos == TIM_CCMR1_OC1M_Pos ? TIM_CCMR1_OC1M
+			: pos == TIM_CCMR1_OC1PE_Pos ? TIM_CCMR1_OC1PE : TIM_CCMR1_CC1S;
+		volatile uint32_t& reg = ch < 2 ? TIMx->CCMR1 : TIMx->CCMR2;
+		reg = (reg & ~(mask << ((ch & 1u) * 8u))) | (value << shift);
 	}
 
 	void HandleIRQ() override;
@@ -315,7 +396,9 @@ public:
 	 * @param arr   Desired period, in ticks (the counter counts 0..arr-1;
 	 *              register ARR ends up as arr-1) — same convention as
 	 *              GetPeriod().
-	 * @param cb    Callback invoked from the update ISR (nullptr = no callback).
+	 * @param cb    Callback fixed by this setup (nullptr = no callback).
+	 * @return InitError for repeat setup, invalid frequency/period or registration
+	 *         failure. Failed frequency setup is rolled back; Start is explicit.
 	 */
 	SysInitStatus SetUp(uint32_t freq, void (*cb)(void) = nullptr, uint32_t arr = 0);
 
@@ -363,11 +446,14 @@ public:
 	 *                 <= the current ARR) or the callback will never fire —
 	 *                 see GetPeriod() for why this can't be predicted from
 	 *                 the frequency passed to SetUp().
-	 * @param cb       Called from the channel's CC ISR (nullptr = disables
-	 *                 the callback but leaves the interrupt/compare set —
+	 * @param cb       Bound during initialization and called from the CC ISR
+	 *                 (nullptr leaves the interrupt/compare set without a callback —
 	 *                 pass IRQ_en(<that channel's IRQ>, DISABLE) to fully
 	 *                 turn it off).
-	 * @return InitError if SetUp() hasn't been called yet, if @p compare is
+	 * Call during initialization, before Start. An assigned non-null callback
+	 * cannot be replaced until DeInit; a null callback means no function is bound.
+	 * @return InitError while running, for an already bound callback, if SetUp()
+	 *         has not been called, if @p compare is
 	 *         out of range, or if this timer doesn't implement channel
 	 *         @p ch at all (see PeriphInfo::channel_count).
 	 */

@@ -14,127 +14,126 @@
 
 SysInitStatus TIM::Init()
 {
+	if (_info) return SysInitStatus::InitError;
+	const PeriphInfo* info = nullptr;
 	for (const auto& e : tim_table)
-		if (e.periph == TIMx) { _info = &e; break; }
-	if (!_info) return SysInitStatus::InitError;
-	*_info->clk_reg |= _info->clk_bit;
+		if (e.periph == TIMx) { info = &e; break; }
+	if (!info) return SysInitStatus::InitError;
+	*info->clk_reg |= info->clk_bit;
+	(void)*info->clk_reg;
+	*info->rst_reg |= info->rst_bit;
+	*info->rst_reg &= ~info->rst_bit;
+
+	const bool up_enabled = NVIC_GetEnableIRQ(info->irq_up) != 0;
+	const bool separate_cc = info->irq_cc != info->irq_up;
+	const bool cc_enabled = separate_cc && NVIC_GetEnableIRQ(info->irq_cc) != 0;
+	NVIC_DisableIRQ(info->irq_up);
+	if (separate_cc) NVIC_DisableIRQ(info->irq_cc);
+	bool registered = IRQ_Registry::Register(info->irq_up, this) == SysInitStatus::InitOK;
+	if (registered && separate_cc
+		&& IRQ_Registry::Register(info->irq_cc, this) != SysInitStatus::InitOK) {
+		IRQ_Registry::Unregister(info->irq_up, this);
+		registered = false;
+	}
+	if (!registered) {
+		*info->clk_reg &= ~info->clk_bit;
+		if (up_enabled) NVIC_EnableIRQ(info->irq_up);
+		if (cc_enabled) NVIC_EnableIRQ(info->irq_cc);
+		return SysInitStatus::InitError;
+	}
+	_info = info;
+	NVIC_EnableIRQ(info->irq_up);
+	if (separate_cc) NVIC_EnableIRQ(info->irq_cc);
 	return SysInitStatus::InitOK;
 }
 
-void TIM::Deinit()
+void TIM::DeInit()
 {
 	if (!_info) return;
-
-	// Disable+unregister every possible DIER source; IRQ_en() no-ops on bits
-	// that were never set, and only actually unregisters once DIER is fully
-	// clear, so calling all 5 unconditionally is safe regardless of what
-	// this object had enabled.
-	IRQ_en(IRQ::UE,  DISABLE);
-	IRQ_en(IRQ::CC1, DISABLE);
-	IRQ_en(IRQ::CC2, DISABLE);
-	IRQ_en(IRQ::CC3, DISABLE);
-	IRQ_en(IRQ::CC4, DISABLE);
-
+	TIMx->DIER = 0;
 	Stop();
-
-	// Pulse the reset bit: forces every register (CR1/CR2/SMCR/DIER/SR/EGR/
-	// CCMR1/CCMR2/CCER/CNT/PSC/ARR/RCR/CCR1-4/BDTR/DCR/DMAR/OR) back to
-	// power-on-reset state in one shot, regardless of which mode configured
-	// any of them last.
+	const IRQn_Type irqs[2] = { _info->irq_up, _info->irq_cc };
+	for (unsigned i = 0; i < 2; ++i) {
+		if (i && irqs[i] == irqs[0]) continue;
+		const bool enabled = NVIC_GetEnableIRQ(irqs[i]) != 0;
+		NVIC_DisableIRQ(irqs[i]);
+		IRQ_Registry::Unregister(irqs[i], this);
+		if (IRQ_Registry::HasHandlers(irqs[i])) {
+			if (enabled) NVIC_EnableIRQ(irqs[i]);
+		} else NVIC_ClearPendingIRQ(irqs[i]);
+	}
 	*_info->rst_reg |= _info->rst_bit;
 	*_info->rst_reg &= ~_info->rst_bit;
-
-	// Undo Init()'s clock enable.
 	*_info->clk_reg &= ~_info->clk_bit;
-
 	_update_cb = nullptr;
 	_cc_cb[0] = _cc_cb[1] = _cc_cb[2] = _cc_cb[3] = nullptr;
+	_info = nullptr;
 }
 
 uint8_t TIM::FindITR(TIM_TypeDef* master, TIM_TypeDef* slave)
 {
+#if defined(STM32F7)
+	// F7 routes belong to the separate HWCounter review; none are claimed here.
+	(void)master;
+	(void)slave;
+#else
 	for (const auto& r : itr_table)
 		if (r.master == master && r.slave == slave) return r.itr;
+#endif
 	return 0xFF;
 }
 
 SysInitStatus TIM::SetFrequency(uint32_t freq, uint32_t arr)
 {
-	if (!_info || !freq || arr > _info->arr_max) return SysInitStatus::InitError;
-
-	// psc is kept in divisor form (1-based) by both branches below, so the
-	// bounds check and register writes at the bottom can be shared: register
-	// value is always psc-1, valid divisors are 1..0x10000 (register 0..0xFFFF).
-	// psc itself always fits in 32 bits (it can never exceed *_info->bus_clk,
-	// which is already a uint32_t) — only the operands being multiplied or
-	// summed below need 64-bit width, to avoid overflowing before the
-	// division that shrinks the result back down actually happens.
+	if (!_info || !freq) return SysInitStatus::InitError;
+	const uint32_t clock = *_info->bus_clk;
+	if (freq > clock || (arr && arr - 1u > _info->arr_max))
+		return SysInitStatus::InitError;
+	const uint32_t ratio = clock / freq;
 	uint32_t psc;
-
 	if (!arr) {
-		// arr not given: pick PSC and ARR together to maximise resolution.
-		// 64-bit: arr_max+1 overflows uint32_t when arr_max is 0xFFFFFFFF (32-bit ARR).
-		uint32_t ratio = *_info->bus_clk / freq;     // (PSC+1)*(ARR+1), fits in 32 bits
-		psc = static_cast<uint32_t>(ratio / (static_cast<uint64_t>(_info->arr_max) + 1)) + 1;
+		// Minimum divider that fits a 16-bit period; 32-bit timers need no divider.
+		constexpr uint32_t period_16bit = 0x10000u;
+		psc = _info->arr_max == UINT32_MAX ? 1u : (ratio - 1u) / period_16bit + 1u;
 		arr = ratio / psc;
 	} else {
-		// arr given: only PSC is ours to pick, for exactly this period.
-		// Cast arr (not the product) to 64-bit first: arr can be up to
-		// 0xFFFFFFFF on 32-bit-ARR timers, which would silently overflow a
-		// plain uint32_t multiply against freq before a cast on the product
-		// could do anything about it.
-		psc = static_cast<uint32_t>(*_info->bus_clk / (static_cast<uint64_t>(arr) * freq));
+		// floor(floor(clock/freq)/arr) == floor(clock/(freq*arr)); no wide multiply.
+		psc = ratio / arr;
 	}
-	// psc == 0 means the requested freq is unreachable at this arr/bus-clock
-	// (would need PSC register = -1); psc > 0x10000 doesn't fit a 16-bit
-	// PSC register (register = psc-1, so psc up to 0x10000 -> register 0xFFFF).
-	if (!psc || psc > 0x10000 || arr > _info->arr_max) return SysInitStatus::InitError;
-
+	// arr is the period in ticks, not the register value. 65536 fits a 16-bit ARR.
+	if (!psc || psc > 0x10000u || !arr || arr - 1u > _info->arr_max)
+		return SysInitStatus::InitError;
 	TIMx->PSC = psc - 1u;
 	TIMx->ARR = arr - 1u;
+	if (!(TIMx->CR1 & TIM_CR1_CEN)) {
+		// Load PSC before the first period. URS suppresses a synthetic IRQ/DMA request.
+		const uint32_t cr1 = TIMx->CR1;
+		TIMx->CR1 = (cr1 | TIM_CR1_URS) & ~TIM_CR1_UDIS;
+		TIMx->EGR = TIM_EGR_UG;
+		TIMx->SR = ~TIM_SR_UIF;
+		TIMx->CR1 = cr1;
+	}
 	return SysInitStatus::InitOK;
 }
 
 void TIM::IRQ_en(IRQ irq, FunctionalState en)
 {
 	if (!_info) return;
+	// CC1IE..CC4IE are contiguous; reject channels absent on this instance.
+	if (irq != IRQ::UE && static_cast<uint32_t>(irq) >= (TIM_DIER_CC1IE << _info->channel_count))
+		return;
 	if (en) TIMx->DIER |=  static_cast<uint32_t>(irq);
 	else    TIMx->DIER &= ~static_cast<uint32_t>(irq);
-
-	constexpr uint32_t all = TIM_DIER_UIE | TIM_DIER_CC1IE | TIM_DIER_CC2IE |
-	                         TIM_DIER_CC3IE | TIM_DIER_CC4IE;
-	if (en && !NVIC_GetEnableIRQ(_info->irq_up)) {
-		IRQ_Registry::Register(_info->irq_up, this);
-		NVIC_EnableIRQ(_info->irq_up);
-		if (_info->irq_cc != _info->irq_up) {
-			IRQ_Registry::Register(_info->irq_cc, this);
-			NVIC_EnableIRQ(_info->irq_cc);
-		}
-	} else if (!en && !(TIMx->DIER & all)) {
-		IRQ_Registry::Unregister(_info->irq_up);
-		NVIC_DisableIRQ(_info->irq_up);
-		if (_info->irq_cc != _info->irq_up) {
-			IRQ_Registry::Unregister(_info->irq_cc);
-			NVIC_DisableIRQ(_info->irq_cc);
-		}
-	}
 }
 
 void TIM::HandleIRQ()
 {
-	uint32_t sr = TIMx->SR;
-	// SR is write-0-to-clear/write-1-is-no-op, so `~sr` clears exactly the
-	// flags we just read and leaves everything else untouched. A blanket
-	// `SR = 0` would also wipe out any flag hardware sets in the gap between
-	// this read and the write (e.g. CC2 firing while CC1's callback below is
-	// still running) — silently dropping that event instead of just leaving
-	// it set for the next entry (re-triggered via tail-chaining, not lost).
+	if (!_info) return;
+	constexpr uint32_t events = TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF | TIM_SR_CC4IF;
+	const uint32_t sr = TIMx->SR & TIMx->DIER & events;
+	// rc_w0: acknowledge only enabled events from this snapshot. Polling flags survive.
 	TIMx->SR = ~sr;
-	// Always checking all 4 CC flags (rather than looping to _info->channel_count)
-	// is intentional: on timers with fewer channels the missing SR bits are
-	// hardwired to 0 per the reference manual, so the extra checks are both
-	// correct and cheap (one AND+branch each, dwarfed by ISR entry/exit) —
-	// not a per-timer special case worth complicating this for.
+	// Fixed four comparisons: missing channel flags are hardwired to zero.
 	if ((sr & TIM_SR_UIF)   && _update_cb) _update_cb();
 	if ((sr & TIM_SR_CC1IF) && _cc_cb[0])  _cc_cb[0]();
 	if ((sr & TIM_SR_CC2IF) && _cc_cb[1])  _cc_cb[1]();
@@ -148,11 +147,11 @@ void TIM::HandleIRQ()
 
 SysInitStatus TIM_PeriodicIRQ::SetUp(uint32_t freq, void (*cb)(void), uint32_t arr)
 {
-	_update_cb = cb;
 	SysInitStatus s = Init();
 	if (s != SysInitStatus::InitOK) return s;
-	s = SetFrequency(freq, arr);  // arr == 0 lets SetFrequency() pick ARR itself
-	if (s != SysInitStatus::InitOK) return s;
+	s = SetFrequency(freq, arr);
+	if (s != SysInitStatus::InitOK) { DeInit(); return s; }
+	_update_cb = cb;
 	TIMx->SR = 0;
 	IRQ_en(IRQ::UE, ENABLE);
 	return SysInitStatus::InitOK;
@@ -161,11 +160,13 @@ SysInitStatus TIM_PeriodicIRQ::SetUp(uint32_t freq, void (*cb)(void), uint32_t a
 SysInitStatus TIM_PeriodicIRQ::SetCompareIRQ(Channel ch, uint32_t compare, void (*cb)(void))
 {
 	uint32_t ch_idx = static_cast<uint32_t>(ch);
-	if (!_info || ch_idx >= _info->channel_count || compare > TIMx->ARR)
+	if (!_info || ch_idx >= _info->channel_count || (TIMx->CR1 & TIM_CR1_CEN)
+		|| _cc_cb[ch_idx] || compare > TIMx->ARR)
 		return SysInitStatus::InitError;
 
 	*ccr(ch_idx) = compare;
-	SetCCCallback(ch, cb);
+	TIMx->SR = ~(TIM_SR_CC1IF << ch_idx);
+	_cc_cb[ch_idx] = cb;
 	// CC1IE..CC4IE are contiguous DIER bits — same shift trick used elsewhere in this file.
 	IRQ_en(static_cast<IRQ>(TIM_DIER_CC1IE << ch_idx), ENABLE);
 	return SysInitStatus::InitOK;
@@ -202,7 +203,7 @@ SysInitStatus TIM_PWM::SetUp(uint32_t freq, uint32_t arr)
 	if (s != SysInitStatus::InitOK) return s;
 
 	s = SetFrequency(freq, arr);
-	if (s != SysInitStatus::InitOK) return s;
+	if (s != SysInitStatus::InitOK) { DeInit(); return s; }
 
 	TIMx->CCMR1 = 0;
 	TIMx->CCMR2 = 0;
@@ -533,7 +534,7 @@ SysInitStatus TIM_HWCounter::SetUp(TIM& master, void (*on_complete)(void))
 	if (s != SysInitStatus::InitOK) return s;
 
 	uint8_t itr = FindITR(master.GetTIMx(), TIMx);
-	if (itr == 0xFF) return SysInitStatus::InitError;
+	if (itr == 0xFF) { DeInit(); return SysInitStatus::InitError; }
 
 	master.EnableTriggerOutput();  // MMS = 010: TRGO on Update event
 	_master      = &master;

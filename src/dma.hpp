@@ -7,7 +7,7 @@
  *  - G0:    DMA_Channel_TypeDef, registers CCR/CNDTR/CPAR/CMAR, single ISR/IFCR
  *
  * All register differences are hidden behind private inline accessors
- * (_CR, _NDTR, _PAR, _MAR) and per-family flag constants (FLAG_TC, FLAG_ALL).
+ * (_CR, _NDTR, _PAR, _MAR) and per-family flag constants (FLAG_HT, FLAG_TC, FLAG_ALL).
  * Public API is identical on both families.
  *
  * Nested types (DIR, SIZE, IRQ, StreamSettings, DMAReq, Req) live inside
@@ -160,7 +160,8 @@ private:
 	static constexpr uint32_t CR_MSIZE_Pos = DMA_SxCR_MSIZE_Pos;
 	static constexpr uint32_t CR_PSIZE_Msk = DMA_SxCR_PSIZE_Msk;
 	static constexpr uint32_t CR_PSIZE_Pos = DMA_SxCR_PSIZE_Pos;
-	// TCIF0 sits at bit 5 within each 6-bit group in LISR/HISR
+	// HTIF0/TCIF0 use bits 4/5 of each flag group; clear bits have the same positions.
+	static constexpr uint32_t FLAG_HT  = DMA_LISR_HTIF0;
 	static constexpr uint32_t FLAG_TC  = DMA_LISR_TCIF0;
 	static constexpr uint32_t FLAG_ALL = DMA_LIFCR_CTCIF0 | DMA_LIFCR_CHTIF0 |
 	                                     DMA_LIFCR_CTEIF0 | DMA_LIFCR_CDMEIF0 |
@@ -179,7 +180,8 @@ private:
 	static constexpr uint32_t CR_MSIZE_Pos = DMA_CCR_MSIZE_Pos;
 	static constexpr uint32_t CR_PSIZE_Msk = DMA_CCR_PSIZE_Msk;
 	static constexpr uint32_t CR_PSIZE_Pos = DMA_CCR_PSIZE_Pos;
-	// TCIF1 sits at bit 1 within each 4-bit group in ISR
+	// HTIF1/TCIF1 use bits 2/1 of each 4-bit group; clear bits have the same positions.
+	static constexpr uint32_t FLAG_HT  = DMA_ISR_HTIF1;
 	static constexpr uint32_t FLAG_TC  = DMA_ISR_TCIF1;
 	static constexpr uint32_t FLAG_ALL = 0xFu; // GIF+TCIF+HTIF+TEIF per channel
 #endif
@@ -356,6 +358,29 @@ public:
 	/** @brief Returns true if the Transfer Complete flag is set. */
 	inline bool GetTC_Flag() {
 		return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0;
+	}
+
+	/** @brief Read this stream/channel's half-transfer flag without clearing it.
+	 * @pre Successful SetUp. Reads the status flag regardless of IRQ::HTC enable.
+	 */
+	inline bool GetHT_Flag() const {
+		return (*_info->isr & (FLAG_HT << _info->if_offset)) != 0;
+	}
+
+	/** @brief Clear only this stream/channel's HT flag; retain TC and errors.
+	 * @pre Successful SetUp. Status and clear registers use the same bit positions.
+	 * One write to the clear register; no read/modify/write or DMA stop.
+	 */
+	inline void ClearHT_Flag() {
+		*_info->ifcr = FLAG_HT << _info->if_offset;
+	}
+
+	/** @brief Clear only this stream/channel's TC flag; retain HT and errors.
+	 * @pre Successful SetUp. Status and clear registers use the same bit positions.
+	 * One write to the clear register; no read/modify/write or DMA stop.
+	 */
+	inline void ClearTC_Flag() {
+		*_info->ifcr = FLAG_TC << _info->if_offset;
 	}
 
 	/** @brief Read this stream's error bits, normalized to the first flag group.
