@@ -26,6 +26,8 @@
  * USART and its DMA handlers must not preempt one another for the same object.
  * Each IRQ entry services at most one hardware FIFO per direction: 8 words
  * on G0 with FIFO enabled, otherwise one byte. IDLE owns its RX tail budget.
+ * USART IRQ uses entry snapshots for source/DMA-gate checks, except TCIE/TC,
+ * which are re-read after callbacks and TX handling.
  *
  * Packet reception
  * ----------------

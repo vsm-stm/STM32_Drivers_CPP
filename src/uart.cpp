@@ -428,22 +428,29 @@ void USART::HandleIRQ()
 		}
 	}
 
-	bool rx_irq = (USARTx->CR1 & CR1_RXNEIE) && (sr & ISR_RXNE);
-	bool tx_irq = (USARTx->CR1 & CR1_TXEIE) && (sr & ISR_TXE);
-	const bool idle_irq = (sr & ISR_IDLE) && (USARTx->CR1 & USART_CR1_IDLEIE);
+	bool rx_irq = (cr1 & CR1_RXNEIE) && (sr & ISR_RXNE);
+	bool tx_irq = (cr1 & CR1_TXEIE) && (sr & ISR_TXE);
+	const bool idle_irq = (sr & ISR_IDLE) && (cr1 & USART_CR1_IDLEIE);
 #if defined(STM32G0)
-	rx_irq = rx_irq || ((USARTx->CR3 & USART_CR3_RXFTIE) && (sr & ISR_RXFT));
-	tx_irq = tx_irq || ((USARTx->CR3 & USART_CR3_TXFTIE) && (sr & ISR_TXFT));
+	rx_irq = rx_irq || ((cr3 & USART_CR3_RXFTIE) && (sr & ISR_RXFT));
+	tx_irq = tx_irq || ((cr3 & USART_CR3_TXFTIE) && (sr & ISR_TXFT));
 #endif
 	// Never read RDR in CPU while DMA owns the RX path.
 	// IDLE owns its FIFO tail; do not spend a second RX budget in the same entry.
-	if (rx_irq && !idle_irq && rx_status == SysStatus::Busy && !(USARTx->CR3 & USART_CR3_DMAR))
+	if (rx_irq && !idle_irq && rx_status == SysStatus::Busy && !(cr3 & USART_CR3_DMAR)) {
+#if defined(STM32G0)
 		for (uint32_t n = FifoDepth(); n && (Status_reg() & ISR_RXNE)
 			&& rx_status == SysStatus::Busy; --n)
 			OnRxByte(static_cast<uint8_t>(RXD()));
+#else
+		// RXNE is already present in sr; these UARTs have one receive register.
+		OnRxByte(static_cast<uint8_t>(RXD()));
+#endif
+	}
 	if (idle_irq) {
 #if defined(STM32F4) || defined(STM32F7)
-		if (rx_status == SysStatus::Busy && (USARTx->CR3 & USART_CR3_DMAR)) {
+		// The ordinary RX callback was skipped for IDLE, so cr3 is still usable.
+		if (rx_status == SysStatus::Busy && (cr3 & USART_CR3_DMAR)) {
 			_rx_dma_idle = true;
 			USARTx->CR1 &= ~CR1_RX_IRQ;
 			USARTx->CR3 &= ~CR3_RX_IRQ;
@@ -453,8 +460,8 @@ void USART::HandleIRQ()
 #endif
 			OnIdle();
 	}
-	if (tx_irq && tx_status == SysStatus::Busy && !(USARTx->CR3 & USART_CR3_DMAT)) OnTxEmpty();
-	// Sending the next byte clears TC. Re-read after TXE to avoid an old TC event.
+	if (tx_irq && tx_status == SysStatus::Busy && !(cr3 & USART_CR3_DMAT)) OnTxEmpty();
+	// Callbacks may enable TCIE, and sending a byte clears TC. Re-read both.
 	if ((USARTx->CR1 & USART_CR1_TCIE) && (Status_reg() & ISR_TC)) {
 #if defined(STM32F4)
 		USARTx->SR = ~USART_SR_TC;
