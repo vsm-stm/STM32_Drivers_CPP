@@ -4,9 +4,11 @@
  *
  * One object owns one hardware SPI and its IRQ/DMA registrations. Initialize
  * System/RCC first. SetUp() fixes clock polarity/phase, divider and 8/16-bit frame
- * width; each operation chooses Send, Receive or simultaneous Send/Receive.
- * All operations use two-line full duplex. Receive transmits 0xFF/0xFFFF dummy
- * frames; Send consumes and discards RX. RXONLY and one-wire modes are not used.
+ * width. Direction and optional DMA objects are fixed by the constructor.
+ * TX uses transmit-only BIDIMODE/BIDIOE and needs no RX DMA or RX IRQ.
+ * RX uses full duplex without RXONLY: master TX IRQ supplies 0xFF/0xFFFF dummy
+ * frames; slave RX needs no dummy writer. TXRX permits Send, Receive and simultaneous
+ * Send/Receive; Send consumes/discards RX and Receive supplies dummy frames.
  *
  * Pins and chip select
  * --------------------
@@ -47,17 +49,24 @@
  *
  * DMA and F7 cache
  * ----------------
- * AttachDMA() owns configuration/registration. Do not SetUp() the DMA first.
- * DMA objects and buffers must outlive their transfers and attachment.
+ * Pass DMA pointers after SS in the constructor. SetUp() owns their configuration
+ * and registration; do not SetUp() the DMA separately. Direction and pointers
+ * cannot change, even after DeInit(). DMA objects must outlive the SPI object.
  * UART-style DMAReq checks use the complete stream/CHSEL pair or DMAMUX ID.
  * Unattached directions use SPI IRQ servicing where the operation permits it.
  * F7 RX buffers own all touched 32-byte cache lines, including padding; CPU
  * must not access them while Busy. System cache helpers skip project-defined
  * non-cacheable regions and are empty on F4/G0. DMA-accessible RAM is required.
+ * The SPI IRQ and DMA TX/RX IRQs have separate registered handler objects; a
+ * shared DMA vector therefore needs two registry slots. No IRQ waits for hardware.
+ * F4/F7 collect forced-stop completion and counts in the DMA IRQ. On G0 a slave
+ * NSS stop requires the last DMA request already serviced; Process() reads the
+ * stopped count. Arbitrary aborts discard the packet, without using CNDTR.
  *
  * Blocking master, application-owned CS
  * @code
- *   SPI bus(SPI1, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
+ *   SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+ *           SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
  *   if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) ==
  *       SysInitStatus::InitOK) {
  *       PIN cs(GPIOB, 0);
@@ -73,13 +82,23 @@
  *
  * Async master with automatic software CS
  * @code
- *   SPI bus(SPI1, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
- *           SPI::_1::MISO::PA6, PIN(GPIOB, 0));
  *   DMA_Sx tx(DMA_Sx::Req::Spi1::TX_DMA2_Stream3); // F4/F7
  *   DMA_Sx rx(DMA_Sx::Req::Spi1::RX_DMA2_Stream0);
- *   // After successful bus.SetUp(Master, Software) and AttachDMA(&tx, &rx):
+ *   SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+ *           SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN(GPIOB, 0), &tx, &rx);
+ *   // After successful bus.SetUp(Master, Software):
  *   // Start SendReceive_DMA(tx_buffer, rx_buffer, frame_count); check the result.
  *   // In main, call bus.Process() until it returns OK/Error; only then use RX.
+ * @endcode
+ *
+ * Receive-only master with one DMA (G0 example)
+ * @code
+ *   DMA_Sx rx(DMA1_Channel3, DMA_Sx::Req::Spi1::RX);
+ *   SPI bus(SPI1, SPI::Direction::RX, SPI::_1::SCK::PA5,
+ *           PIN{}, SPI::_1::MISO::PA6, PIN{}, nullptr, &rx);
+ *   // Check bus.SetUp(Master, Software), then Receive_DMA(buffer, frame_count).
+ *   // TX IRQ provides dummy clocks; no MOSI pin or TX DMA is required.
+ *   // Call Process() from main and check OK before using the buffer.
  * @endcode
  *
  * Slave and 16-bit examples are also documented at the corresponding methods
@@ -97,6 +116,8 @@
 class SPI : public IIRQHandler
 {
 public:
+    /// Fixed physical direction; transfer methods still select polling/IRQ/DMA.
+    enum class Direction : uint8_t { TX, RX, TXRX };
     /// Only the role bit; NSS policy is configured independently by SetUp().
     enum class Master_sel { Slave = 0, Master = SPI_CR1_MSTR };
     enum class NSS_ctrl { Hard = 0, Software };
@@ -126,16 +147,22 @@ public:
     /**
      * @brief Store pins and hardware; no register access until SetUp().
      * @param spix Hardware pointer, for example SPI1.
+     * @param direction Fixed TX, RX or TXRX; incompatible transfer methods return Error.
      * @param sck Named SPI::_N::SCK pin.
      * @param mosi Optional named MOSI; defaults to PIN{} if externally unused.
      * @param miso Named MISO, or PIN{} if externally unused.
      * @param ss Optional software CS GPIO for master; hardware NSS pin for Hard.
+     * @param dma_tx Optional TX DMA, unused/forbidden for Direction::RX.
+     * @param dma_rx Optional RX DMA, unused/forbidden for Direction::TX.
      * A named AF pin from another peripheral calls System::DebugTrap().
      * Objects may not be copied/moved; call DeInit() before destruction.
      */
-    explicit SPI(SPI_TypeDef* spix, PIN sck, PIN mosi = PIN{},
-                 PIN miso = PIN{}, PIN ss = PIN{})
-        : SPIx(spix), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
+    explicit SPI(SPI_TypeDef* spix, Direction direction, PIN sck, PIN mosi = PIN{},
+                 PIN miso = PIN{}, PIN ss = PIN{},
+                 DMA_Sx* dma_tx = nullptr, DMA_Sx* dma_rx = nullptr)
+        : _direction(direction), _dma_tx(dma_tx), _dma_rx(dma_rx),
+          _dma_tx_irq(*this), _dma_rx_irq(*this),
+          SPIx(spix), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
     {
         if (sck.IsValid() && sck.periph_base && sck.periph_base != (uint32_t)spix)
             System::DebugTrap("SPI: SCK pin belongs to wrong peripheral");
@@ -153,7 +180,7 @@ public:
     SPI& operator=(SPI&&) = delete;
     ~SPI() = default;
 
-    /// Saved initialization arguments; TYPE is removed, operations choose direction.
+    /// Setup arguments remain in SetUp; physical direction is constructor-bound.
     struct Init_struct_Typedef {
         Master_sel mstr;
         NSS_ctrl nss_ctrl;
@@ -172,7 +199,10 @@ public:
      * Slave requires hardware NSS; configure EXTI on the same pin in the application.
      * Byte uses 8-bit DR access and the 8-bit RX threshold on F7/G0; Half_Word
      * uses 16-bit DR access, the half-word threshold and 16-bit DMA transfers.
-     * No RXONLY/BIDIMODE. Default NSS remains Hard; pass Software explicitly
+     * TX sets BIDIMODE/BIDIOE; RX/TXRX leave RXONLY clear. Default NSS is Hard;
+     * DMA pointers are configured here, with full DMAReq validation and separate
+     * registration per direction. On failure only newly acquired resources are
+     * released. No DMA is required for blocking/IRQ calls. Pass Software explicitly
      * for a master without a hardware NSS pin.
      *
      * @code
@@ -218,11 +248,11 @@ public:
      * @return NotInit before setup, Busy during another operation, Error for
      * null/zero arguments, width/alignment mismatch, missing data pins or hardware
      * errors; Timeout after cleanup; OK after physical master completion or slave NSS.
-     * Send discards RX. Receive sends all-one dummy frames.
+     * TXRX Send discards RX; TX-only has no RX. Master Receive sends dummy frames.
      * A slave buffer is capacity; NSS ends a shorter packet and excess RX is
      * discarded with IsTruncated() set. The user's EXTI must still call NssReleased().
      * No OnComplete notification for blocking calls. Hardware errors call OnError().
-     * RX data on Error/Timeout is partial and is not a successful packet.
+     * RX data on Error/Timeout must be discarded.
      */
     SysStatus Send(uint8_t* data, uint32_t len, uint32_t timeout = 100)
     { return Poll(data, nullptr, len, Data_frame_format::Byte, timeout); }
@@ -241,7 +271,7 @@ public:
      * @name IRQ transfers
      * Same buffer/width/count rules as blocking calls. OK means started.
      * Keep buffers alive and TX unchanged until Process() finishes.
-     * RX is always serviced, including discard for Send and truncation in slave.
+     * RX is serviced in RX/TXRX, including discard for TXRX Send and slave truncation.
      * Software CS stays asserted until Process(), never released by a byte IRQ.
      */
     SysStatus Send_IRQ(uint8_t* data, uint32_t len)
@@ -258,27 +288,13 @@ public:
     { return tx && rx ? Start(tx, rx, len, Data_frame_format::Half_Word, Mode::Irq) : (_info ? SysStatus::Error : SysStatus::NotInit); }
 
     /**
-     * @brief Configure and acquire TX/RX DMA; at least one is required.
-     * @return InitOK after all resources/registrations succeed, otherwise InitError.
-     * Rejects a wrong DMAReq route, repeated attach, identical TX/RX object,
-     * existing hardware ownership or active SPI. Failure releases only resources
-     * acquired by this call. Shared DMA IRQ registers this SPI once.
-     * DMA width is the configured SPI frame width. Call from main, not callbacks.
-     * G0 example:
-     * @code
-     *   DMA_Sx tx(DMA1_Channel2, DMA_Sx::Req::Spi1::TX);
-     *   DMA_Sx rx(DMA1_Channel3, DMA_Sx::Req::Spi1::RX);
-     *   // Check SetUp(), then AttachDMA(&tx, &rx); do not DMA SetUp separately.
-     * @endcode
-     */
-    SysInitStatus AttachDMA(DMA_Sx* tx = nullptr, DMA_Sx* rx = nullptr);
-
-    /**
      * @name DMA transfers
      * OK means started. Count is 1..65535 frames; cache byte count is len*frame size.
      * Send_DMA requires TX DMA; Receive_DMA requires RX DMA; SendReceive_DMA both.
-     * Where only one DMA direction is attached, the other is serviced by SPI IRQ
-     * (dummy TX or discarded RX). Prefer both DMA directions for high SCK rates.
+     * Direction::TX uses only TX DMA. Direction::RX master uses RX DMA plus TX IRQ
+     * for dummy clocks; slave RX uses only RX DMA. It never needs a second DMA.
+     * In TXRX with one DMA direction, the other is serviced by SPI IRQ (dummy TX
+     * or discarded RX). Both DMA directions reduce TXRX per-frame IRQ overhead.
      * minc=DISABLE repeats the first source frame and cleans only that source frame.
      * F7 cacheable RX allocations own full 32-byte lines. CPU does not access RX
      * or change TX before Process() finishes. TX/RX overlapping buffer ownership
@@ -313,6 +329,9 @@ public:
      * callbacks or maintain cache. Ignored unless an active slave operation exists.
      * No next packet may begin before Process() and rearm. Keep this EXTI and the
      * SPI/DMA handlers at priorities preventing mutual preemption.
+     * This call contains no hardware wait. F4/F7 await stop TC in DMA IRQ before
+     * Process() publishes data. G0 requires the last request serviced before this
+     * call; Process() reads CNDTR after stop. Error packets must be discarded.
      * @code
      *   // In the user's handler, after acknowledging the actual NSS EXTI flag:
      *   slave.NssReleased();
@@ -329,7 +348,7 @@ public:
     SysStatus GetStatus() const { return _status; }
     /// Successful packet length, saturated at capacity; 0 before success/while Busy.
     uint32_t GetDataReceivedCount() const {
-        return _status == SysStatus::OK ? _capacity - _rx_remaining : 0U;
+        return _status == SysStatus::OK && _direction != Direction::TX ? _capacity - _rx_remaining : 0U;
     }
     /// Excess slave RX after capacity; cleared by the next start or DeInit().
     bool IsTruncated() const { return _truncated; }
@@ -370,15 +389,38 @@ private:
     volatile uint32_t _errors = 0;
     volatile bool _truncated = false;
     volatile bool _nss_ended = false;
-    DMA_Sx* _dma_tx = nullptr;
-    DMA_Sx* _dma_rx = nullptr;
+    const Direction _direction;
+    DMA_Sx* const _dma_tx;
+    DMA_Sx* const _dma_rx;
+    // Active directions awaiting a DMA completion/stop event; SPI CR2 bit values.
+    volatile uint8_t _dma_pending = 0;
+
+    class DmaTxIRQ final : public IIRQHandler {
+    public:
+        explicit DmaTxIRQ(SPI& spi) : _spi(spi) {}
+        void HandleIRQ() override { _spi.HandleDmaTxIRQ(); }
+    private:
+        SPI& _spi;
+    };
+    class DmaRxIRQ final : public IIRQHandler {
+    public:
+        explicit DmaRxIRQ(SPI& spi) : _spi(spi) {}
+        void HandleIRQ() override { _spi.HandleDmaRxIRQ(); }
+    private:
+        SPI& _spi;
+    };
+    DmaTxIRQ _dma_tx_irq;
+    DmaRxIRQ _dma_rx_irq;
+    void HandleDmaTxIRQ();
+    void HandleDmaRxIRQ();
 
     uint16_t ReadFrame() const;
     void WriteFrame(uint16_t frame);
     void StoreFrame(uint16_t frame);
     void DrainRx();
     uint32_t ReadErrors();
-    uint32_t StopTransfer();
+    void StopTransfer();
+    SysInitStatus SetUpDMA();
     void Finish(SysStatus result, uint32_t errors = 0);
     SysStatus Start(const void* tx, void* rx, uint32_t len, Data_frame_format frame_format,
                     Mode mode, FunctionalState minc = ENABLE);
@@ -387,7 +429,7 @@ private:
     void HandleIRQ() override final;
 
 protected:
-    SPI_TypeDef* SPIx;
+    SPI_TypeDef* const SPIx;
     PIN _clk, _mosi, _miso, _ss;
     NSS_ctrl nss_ctrl{};
     Master_sel Master_slave{};

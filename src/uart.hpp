@@ -5,7 +5,7 @@
  * One object controls one peripheral. Three transfer modes are available:
  * - Send()/Receive(): blocking polling with a timeout for the whole call.
  * - Send_IRQ()/Receive_IRQ(): asynchronous byte/FIFO interrupt transfers.
- * - Send_DMA()/Receive_DMA(): asynchronous transfers using attached DMA resources.
+ * - Send_DMA()/Receive_DMA(): asynchronous transfers using constructor-bound DMA.
  *
  * Initialization and IRQ ownership
  * -------------------------------
@@ -16,11 +16,13 @@
  * TX/RX pins come from USART::_N::TX/RX. Their number/AF are defined by PIN;
  * the USART constructor checks the owning peripheral at run time.
  *
- * SetUp() registers the UART IRQ once; AttachDMA() registers unique DMA vectors.
+ * SetUp() registers the UART IRQ once and separate TX/RX DMA
+ * handlers, including two entries when the directions share one hardware vector.
  * Do not register this object manually. IRQ_en() changes peripheral source bits
  * only, so completion callbacks may disable a source without changing the registry.
- * SetUp(), AttachDMA() and DeInit() run in main, never from a callback.
+ * SetUp() and DeInit() run in main, never from a callback.
  * Shared IRQ capacity is configured in irq_registry_settings.hpp.
+ * USART and its DMA handlers must not preempt one another for the same object.
  *
  * Packet reception
  * ----------------
@@ -30,6 +32,10 @@
  * explicitly after consuming the packet, then start the next receive.
  * The receiver remains enabled between packets: this API does not guarantee
  * continuous reception without gaps. A new Receive discards stale input/errors.
+ * On G0 IDLE disables DMAR and DMA without waiting, then publishes the packet
+ * from USART IRQ. The last DMA request must have been serviced before this
+ * stop; abort during a DMA transfer can leave CNDTR inaccurate. Failed packets
+ * are discarded without reading their DMA length.
  *
  * TX completion
  * -------------
@@ -73,7 +79,7 @@
  *   }
  * @endcode
  *
- * See AttachDMA()/Receive_DMA() below for DMA examples, and UART.md for details.
+ * See the constructor/Receive_DMA() below for DMA examples, and UART.md for details.
  */
 #ifndef UART_H_
 #define UART_H_
@@ -136,7 +142,7 @@ public:
 	};
 	/**
 	 * @brief UART DMA request directions, not DMA controller enable bits.
-	 * @see DMA_en(), AttachDMA()
+	 * @see DMA_en(), SetUp()
 	 */
 	enum class DMA {
 		TXRX = USART_CR3_DMAR | USART_CR3_DMAT, ///< Both UART request directions.
@@ -162,7 +168,7 @@ public:
 	};
 
 	/**
-	 * @brief Store peripheral, baud and pins; hardware is configured by SetUp().
+	 * @brief Fix peripheral, pins, optional DMA and clock; SetUp configures hardware.
 	 *
 	 * A valid pin carrying a different peripheral base calls System::DebugTrap().
 	 * This ownership check is performed at run time; construction is not SetUp().
@@ -171,6 +177,8 @@ public:
 	 * @param baudrate Requested bits per second; validated against the kernel clock.
 	 * @param tx Named USART::_N::TX pin, or PIN{} to leave TX unconfigured.
 	 * @param rx Named USART::_N::RX pin, or PIN{} to leave RX unconfigured.
+	 * @param dma_tx TX DMA, nullptr by default. Binding cannot change after construction.
+	 * @param dma_rx RX DMA, nullptr by default. Do not pass the same object for TX/RX.
 	 * @param clock_source F7/G0 only: kernel clock, PCLK by default. Immutable;
 	 *        SetUp() applies the choice but never starts an oscillator. An unavailable
 	 *        source or an HSI/LSE source that is not enabled and ready gives InitError.
@@ -184,12 +192,34 @@ public:
 	 * F7/G0 HSI example, after the caller has enabled HSI and waited for HSIRDY:
 	 * @code
 	 *   USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-	 *              USART::ClockSource::HSI);
+	 *              nullptr, nullptr, USART::ClockSource::HSI);
 	 *   SysInitStatus status = link.SetUp();
 	 * @endcode
+	 *
+	 * G0 DMA example (select channels available on the chosen MCU):
+	 * @code
+	 *   DMA_Sx tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
+	 *   DMA_Sx rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7, &tx, &rx);
+	 *   SysInitStatus status = uart.SetUp(); // Configures UART and both DMA channels.
+	 * @endcode
+	 *
+	 * F4/F7 DMA construction (stream and CHSEL are part of DMAReq):
+	 * @code
+	 *   DMA_Sx tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7);
+	 *   DMA_Sx rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5);
+	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7, &tx, &rx);
+	 *   SysInitStatus status = uart.SetUp();
+	 * @endcode
+	 * Keep the DMA objects alive for the UART lifetime. SetUp validates DMAReq,
+	 * configures Byte/MINC and the UART data-register address, and registers
+	 * separate DMA handlers. Do not call DMA SetUp beforehand. A failed setup
+	 * releases only resources acquired by that call. DeInit releases DMA but
+	 * preserves these bindings. Blocking and IRQ methods remain available.
 	 */
 	explicit USART(USART_TypeDef* usartx, uint32_t baudrate,
-		PIN tx = PIN{}, PIN rx = PIN{}
+		PIN tx = PIN{}, PIN rx = PIN{},
+		DMA_Sx* dma_tx = nullptr, DMA_Sx* dma_rx = nullptr
 #if defined(STM32F7) || defined(STM32G0)
 		, ClockSource clock_source = ClockSource::PCLK
 #endif
@@ -198,6 +228,8 @@ public:
 #if defined(STM32F7) || defined(STM32G0)
 		, _clock_source(clock_source)
 #endif
+		, _dma_tx(dma_tx), _dma_rx(dma_rx)
+		, _dma_tx_irq(*this), _dma_rx_irq(*this)
 	{
 		if (tx.IsValid() && tx.periph_base && tx.periph_base != (uint32_t)usartx)
 			System::DebugTrap("USART: TX pin belongs to wrong peripheral");
@@ -216,14 +248,15 @@ public:
 	~USART() = default;
 
 	/**
-	 * @brief Enable the clock, configure GPIO/UART and register the UART IRQ.
+	 * @brief Configure GPIO/UART and constructor-bound DMA; register their IRQs.
 	 *
 	 * Uses the constructor's kernel clock (PCLK on F4), oversampling x16,
 	 * 8 data bits, no parity and one stop bit. BRR is rounded from
 	 * (kernel_clock + baud/2) / baud; it must fit 16..65535,
 	 * and requested baud must not exceed kernel_clock/16. G0 PRESC is /1.
 	 * HSI/LSE must already be enabled and ready; SetUp() only checks their state.
-	 * SetUp() registers this object once and enables the UART NVIC vector.
+	 * SetUp() registers this object and each bound DMA direction separately.
+	 * It rejects wrong/busy DMA routes and rolls back its own acquired resources.
 	 * Transfer sources themselves are enabled later by the selected operation.
 	 *
 	 * @param fifo NO by default. EN is supported only on FIFO-capable G0 instances.
@@ -379,44 +412,7 @@ public:
 	SysStatus Receive_IRQ(uint8_t* data, uint32_t len);
 
 	/**
-	 * @brief Configure and attach TX and/or RX DMA resources to this UART.
-	 * @param tx TX DMA object, or nullptr to omit TX DMA.
-	 * @param rx RX DMA object, or nullptr to omit RX DMA. At least one is required.
-	 * @return InitOK after configuration/registration; InitError for a missing
-	 *         UART setup, wrong DMAReq route, repeated attachment, the same object
-	 *         for TX/RX, active transfer, an owned resource or setup/IRQ failure.
-	 *
-	 * Calls DMA SetUp() with Byte, MINC, direction and DR/TDR/RDR address; do not
-	 * configure the DMA separately first. The full stream/CHSEL pair (F4/F7)
-	 * or request ID (G0) is checked against UART DMAReq routes.
-	 * Configures TC/TE and F4/F7 DME interrupts. Shared TX/RX vectors register
-	 * this object once. Failure rolls back only resources acquired by this call.
-	 * DMA remains attached after a transfer; reassignment requires DeInit(),
-	 * which releases the resources. DMA objects must outlive the attachment.
-	 *
-	 * G0 example (choose existing DMA channels on the selected MCU):
-	 * @code
-	 *   DMA_Sx tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-	 *   DMA_Sx rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
-	 *   if (uart.SetUp() == SysInitStatus::InitOK) {
-	 *       SysInitStatus attached = uart.AttachDMA(&tx, &rx);
-	 *       // Check attached before using Send_DMA()/Receive_DMA().
-	 *   }
-	 * @endcode
-	 *
-	 * F4/F7 construction (stream and CHSEL are part of DMAReq):
-	 * @code
-	 *   DMA_Sx tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7);
-	 *   DMA_Sx rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CH4, RX.
-	 *   // uart.SetUp(), then uart.AttachDMA(&tx, &rx), checking both results.
-	 * @endcode
-	 *
-	 * Call from main, never from IRQ/callback. Repeated attachment is an error
-	 * until DeInit(), including an attempt to add a second direction later.
-	 */
-	SysInitStatus AttachDMA(DMA_Sx* tx = nullptr, DMA_Sx* rx = nullptr);
-	/**
-	 * @brief Start one DMA transmission using the attached TX resource.
+	 * @brief Start one DMA transmission using the constructor-bound TX resource.
 	 * @param data DMA-accessible source, kept alive and unchanged until TX completes.
 	 * @param len Number of bytes, 1..65535.
 	 * @return OK on start; NotInit before UART setup; Error for missing TX DMA,
@@ -440,10 +436,13 @@ public:
 	 *
 	 * Clears previous ready/count/overflow state and stale UART input/errors.
 	 * Calls System::CacheCleanInvalidate() before starting DMA. On completion:
-	 * disable DMAR, stop DMA and wait for EN=0, read its remaining count,
+	 * disable DMAR and request a DMA stop. On F4/F7 the DMA TC IRQ then reads the count,
 	 * invalidate the bytes written by DMA, retain a fitting UART/FIFO tail,
 	 * then publish RX OK and ready/count. Errors instead publish RX Error and
 	 * invoke OnError(), without a ready packet.
+	 * G0 IDLE completes in USART IRQ without waiting. This assumes that the last
+	 * DMA request has completed; arbitrary mid-transfer abort does not guarantee
+	 * CNDTR. Failed G0 packets are discarded without calculating their length.
 	 *
 	 * F7 cacheable RX storage must own every touched 32-byte cache line, including
 	 * padding. Do not share these lines with unrelated data or access them from
@@ -451,7 +450,7 @@ public:
 	 * one configured non-cacheable DMA region; buffer ownership still applies.
 	 * F4/G0 cache helpers are empty.
 	 *
-	 * Example after successful SetUp()/AttachDMA():
+	 * Example after successful SetUp() with constructor-bound RX DMA:
 	 * @code
 	 *   alignas(32) static uint8_t packet[64]; // Own two entire cache lines.
 	 *   SysStatus started = uart.Receive_DMA(packet, 37); // Logical capacity is 37.
@@ -567,13 +566,13 @@ public:
 	 * @pre Call from main, not from IRQ/callback. No effect before successful SetUp().
 	 * @code
 	 *   uart.DeInit();
-	 *   // DMA resources are released. Check a new SetUp()/AttachDMA() before use.
+	 *   // Bindings remain; a successful SetUp() acquires the same DMA again.
 	 * @endcode
 	 */
 	void DeInit();
 
 private:
-	USART_TypeDef* USARTx; ///< Controlled hardware register block.
+	USART_TypeDef* const USARTx; ///< Hardware binding is fixed by the constructor.
 	uint32_t BaudRate;     ///< Requested baud retained across DeInit()/SetUp().
 
 	/**
@@ -620,14 +619,36 @@ private:
 	volatile uint32_t data_received_count{0};
 	volatile bool data_overflow{false};
 	volatile uint32_t data_overflow_count{0};
-	DMA_Sx* _dma_tx = nullptr;
-	DMA_Sx* _dma_rx = nullptr;
+	DMA_Sx* const _dma_tx;
+	DMA_Sx* const _dma_rx;
 	const PeriphInfo* _info = nullptr;
+	SysInitStatus SetUpDMA(); ///< Configure constructor-bound DMA during SetUp().
+	volatile bool _rx_dma_idle = false; ///< IDLE requested a DMA stop; TC finishes RX.
+	volatile uint32_t _rx_errors = 0; ///< UART errors retained until DMA has stopped.
+
+	// Separate registry objects keep the existing IIRQHandler registry unchanged.
+	// Each adapter forwards directly to one DMA direction; no source selection.
+	class DmaTxIRQ final : public IIRQHandler {
+	public:
+		explicit DmaTxIRQ(USART& uart) : _uart(uart) {}
+		void HandleIRQ() override { _uart.HandleDmaTxIRQ(); }
+	private:
+		USART& _uart;
+	};
+	class DmaRxIRQ final : public IIRQHandler {
+	public:
+		explicit DmaRxIRQ(USART& uart) : _uart(uart) {}
+		void HandleIRQ() override { _uart.HandleDmaRxIRQ(); }
+	private:
+		USART& _uart;
+	};
+	DmaTxIRQ _dma_tx_irq;
+	DmaRxIRQ _dma_rx_irq;
+	void HandleDmaTxIRQ();
+	void HandleDmaRxIRQ();
 	/**
-	 * @brief Registry entry point shared by the UART and its DMA vectors.
-	 * Processes enabled sources of active operations, acknowledges flags and
-	 * invokes the callbacks below. Application subclasses override callbacks,
-	 * not this dispatch method.
+	 * @brief USART-only registry entry point; DMA has two separate handlers.
+	 * Application subclasses override callbacks, not these dispatch methods.
 	 */
 	void HandleIRQ() override final;
 
@@ -637,11 +658,14 @@ protected:
 	 * Called in IRQ for asynchronous operations. Keep application work bounded;
 	 * process completed packets in main. OnError() from blocking Receive() runs
 	 * in the calling context instead.
+	 * On F4/F7, OnIdle() for DMA RX runs from DMA RX TC after the requested stop,
+	 * not from USART IRQ. Without DMA it runs from USART IRQ as before.
+	 * On G0, IDLE completion runs from USART IRQ, capacity from DMA RX IRQ.
 	 *
 	 * OnRxByte/OnTxEmpty/OnIdle/OnDmaTxComplete/OnDmaRxComplete perform the standard
 	 * buffer/state handling. Call their base implementation before adding logic
 	 * if that handling is required. OnTC and OnError are notifications with empty
-	 * defaults. Never change the IRQ registry or call SetUp/AttachDMA/DeInit here.
+	 * defaults. Never change the IRQ registry or call SetUp/DeInit here.
 	 *
 	 * Example: caller-owned notification of physical completion and errors:
 	 * @code
@@ -682,7 +706,9 @@ protected:
 	virtual void OnTxEmpty();
 	/**
 	 * @brief End the active packet on IDLE and acknowledge the hardware flag.
-	 * With DMA: disable requests, stop/wait, count and invalidate written data.
+	 * With DMA on F4/F7: runs after TC has confirmed the requested stop; read
+	 * the final count and invalidate written data without waiting in IRQ.
+	 * G0: disable DMAR/DMA without waiting, then count only an error-free packet.
 	 * Preserve a fitting pending UART/FIFO tail, then publish ready or OnError().
 	 */
 	virtual void OnIdle();

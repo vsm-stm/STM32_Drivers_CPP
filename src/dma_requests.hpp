@@ -116,6 +116,29 @@ struct Req {
 					static constexpr DMAReq UP   = { 37U };
 	};
 
+#ifdef TIM2_BASE
+	struct Tim2 {
+		static constexpr DMAReq CH1 = { 26U };
+		static constexpr DMAReq CH2 = { 27U };
+		static constexpr DMAReq CH3 = { 28U };
+		static constexpr DMAReq CH4 = { 29U };
+	};
+#endif
+#ifdef TIM4_BASE
+	struct Tim4 {
+		static constexpr DMAReq CH1 = { 68U };
+		static constexpr DMAReq CH2 = { 69U };
+		static constexpr DMAReq CH3 = { 70U };
+		static constexpr DMAReq CH4 = { 71U };
+	};
+#endif
+#ifdef TIM15_BASE
+	struct Tim15 {
+		static constexpr DMAReq CH1 = { 40U };
+		static constexpr DMAReq CH2 = { 41U };
+	};
+#endif
+
 	struct Tim16 {	static constexpr DMAReq CH1 = { 44U };
 					static constexpr DMAReq COM = { 45U };
 					static constexpr DMAReq UP  = { 46U }; };
@@ -145,6 +168,57 @@ struct Req {
 #endif
 
 #elif defined(STM32F4) || defined(STM32F7)
+
+	// Dedicated timer CC routes; combined CH1/CH2/CH3 routes are omitted.
+#ifdef TIM1_BASE
+	struct Tim1 {
+		static constexpr DMAReq CH1_DMA2_Stream1 = { DMA2_Stream1, 6U };
+		static constexpr DMAReq CH1_DMA2_Stream3 = { DMA2_Stream3, 6U };
+		static constexpr DMAReq CH2_DMA2_Stream2 = { DMA2_Stream2, 6U };
+		static constexpr DMAReq CH3_DMA2_Stream6 = { DMA2_Stream6, 6U };
+		static constexpr DMAReq CH4_DMA2_Stream4 = { DMA2_Stream4, 6U };
+	};
+#endif
+#ifdef TIM2_BASE
+	struct Tim2 {
+		static constexpr DMAReq CH1_DMA1_Stream5 = { DMA1_Stream5, 3U };
+		static constexpr DMAReq CH2_DMA1_Stream6 = { DMA1_Stream6, 3U };
+		static constexpr DMAReq CH3_DMA1_Stream1 = { DMA1_Stream1, 3U };
+		static constexpr DMAReq CH4_DMA1_Stream7 = { DMA1_Stream7, 3U };
+	};
+#endif
+#ifdef TIM3_BASE
+	struct Tim3 {
+		static constexpr DMAReq CH1_DMA1_Stream4 = { DMA1_Stream4, 5U };
+		static constexpr DMAReq CH2_DMA1_Stream5 = { DMA1_Stream5, 5U };
+		static constexpr DMAReq CH3_DMA1_Stream7 = { DMA1_Stream7, 5U };
+		static constexpr DMAReq CH4_DMA1_Stream2 = { DMA1_Stream2, 5U };
+	};
+#endif
+#ifdef TIM4_BASE
+	struct Tim4 {
+		static constexpr DMAReq CH1_DMA1_Stream0 = { DMA1_Stream0, 2U };
+		static constexpr DMAReq CH2_DMA1_Stream3 = { DMA1_Stream3, 2U };
+		static constexpr DMAReq CH3_DMA1_Stream7 = { DMA1_Stream7, 2U };
+	};
+#endif
+#ifdef TIM5_BASE
+	struct Tim5 {
+		static constexpr DMAReq CH1_DMA1_Stream2 = { DMA1_Stream2, 6U };
+		static constexpr DMAReq CH2_DMA1_Stream4 = { DMA1_Stream4, 6U };
+		static constexpr DMAReq CH3_DMA1_Stream0 = { DMA1_Stream0, 6U };
+		static constexpr DMAReq CH4_DMA1_Stream1 = { DMA1_Stream1, 6U };
+		static constexpr DMAReq CH4_DMA1_Stream3 = { DMA1_Stream3, 6U };
+	};
+#endif
+#ifdef TIM8_BASE
+	struct Tim8 {
+		static constexpr DMAReq CH1_DMA2_Stream2 = { DMA2_Stream2, 7U };
+		static constexpr DMAReq CH2_DMA2_Stream3 = { DMA2_Stream3, 7U };
+		static constexpr DMAReq CH3_DMA2_Stream4 = { DMA2_Stream4, 7U };
+		static constexpr DMAReq CH4_DMA2_Stream7 = { DMA2_Stream7, 7U };
+	};
+#endif
 
 	// Stream + CHSEL values for STM32F4 (RM0090 Table 42) / F7 (RM0385 Table 8).
 	// Each route name shows its DMA controller and stream, including alternatives.

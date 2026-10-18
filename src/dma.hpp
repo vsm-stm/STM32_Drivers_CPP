@@ -79,22 +79,21 @@
  * ============================================================================
  *
  * The DMA_Sx object owns the hardware channel after successful SetUp().
- * A peripheral driver retains the object through AttachDMA(); do not share
+ * USART retains the object through its constructor (other consumers still use
+ * AttachDMA); do not share
  * one configured object between different peripherals.
- * The driver registers itself as the IRQ handler for the DMA interrupt line
- * and calls Stream_EN / ClearFlags / GetTC_Flag internally.
+ * USART registers separate TX/RX DMA handlers and calls DMA methods internally.
  *
  *    @code
  *      // 1. Declare driver objects (file or class scope)
- *      USART  uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
  *      DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
  *      DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+ *      USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+ *                 &dma_tx, &dma_rx);
  *
- *      // 2. Init UART, then attach DMA — AttachDMA configures the channels internally.
+ *      // 2. UART SetUp configures the constructor-bound DMA internally.
  *      auto initialized = uart.SetUp();
- *      // Only after initialized == InitOK:
- *      auto attached = uart.AttachDMA(&dma_tx, &dma_rx);
- *      // Check attached == InitOK; UART owns registration, no manual Register/NVIC.
+ *      // Check initialized == InitOK; UART owns IRQ registration/NVIC.
  *
  *      // 4. Transfer — the driver manages DMA internally
  *      uart.Send_DMA(tx_buf, sizeof(tx_buf));
@@ -397,13 +396,15 @@ public:
 	}
 
 	/**
-	 * @brief Set the DMA source bit and enable its NVIC line.
+	 * @brief Set the DMA source bit and optionally enable its NVIC line.
+	 * @param enable_nvic false preserves NVIC enable/pending state; true (default)
+	 *                    enables the line without clearing its pending state.
 	 * @pre Successful SetUp and the consumer's handler already registered.
 	 * Does not register a callback/object, clear flags or start a transfer.
 	 */
-	inline void Enable_IRQ(IRQ irq) {
+	inline void Enable_IRQ(IRQ irq, bool enable_nvic = true) {
 		_CR() |= static_cast<uint32_t>(irq);
-		if (!NVIC_GetEnableIRQ(_info->irqn))
+		if (enable_nvic && !NVIC_GetEnableIRQ(_info->irqn))
 			NVIC_EnableIRQ(_info->irqn);
 	}
 
@@ -426,9 +427,24 @@ public:
 	}
 
 	/**
+	 * @brief Request a stop without waiting for the current transfer to finish.
+	 * @pre Successful SetUp. The peripheral consumer controls its DMA requests.
+	 * On F4/F7 a software stop produces TC after completion of the interrupted
+	 * transfer. Do not publish the buffer or reconfigure DMA before that event.
+	 * G0 abort/restart requires no transfer in progress on the DMA master port.
+	 */
+	inline void RequestStop() { _CR() &= ~CR_EN; }
+
+	/** @brief Read EN once; no wait and no flag acknowledgement.
+	 * @pre Successful SetUp. On F4/F7 use TC for RX buffer handover after a stop.
+	 */
+	inline bool IsEnabled() const { return (_CR() & CR_EN) != 0U; }
+
+	/**
 	 * @brief Enable the prepared transfer or stop and wait for EN=0.
-	 * @note SetUp() must have succeeded. Stop has no timeout and can be used
-	 *       from IRQ. The caller prepares valid addresses/count before starting.
+	 * @note SetUp() must have succeeded. Blocking stop is for main-loop code;
+	 *       IRQ handlers use RequestStop() and finish on their hardware event.
+	 *       The caller prepares valid addresses/count before starting.
 	 *       Enabling has no argument/status validation and returns void by contract.
 	 *       Barriers order RAM access around the DMA handover, but do not clean
 	 *       or invalidate cache. The peripheral consumer uses System helpers.
