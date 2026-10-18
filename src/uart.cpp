@@ -3,10 +3,10 @@
  * @brief UART setup and blocking/IRQ/DMA transfer implementation.
  *
  * uart.hpp contains the public contracts and complete usage examples.
- * IRQ dispatch tests flag AND source-enable/state; an attached DMA pointer alone
+ * IRQ dispatch tests flag AND source-enable/state; a bound DMA resource alone
  * does not mean the current operation uses DMA. Request gates identify that path.
  * Packet handover stops DMA before count/cache/CPU access. Registry mutations
- * belong only to main-loop setup/attachment/deinitialization, never completion.
+ * belong only to main-loop setup/deinitialization, never completion.
  */
 #include "uart.hpp"
 
@@ -270,17 +270,17 @@ SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len)
 SysStatus USART::Send_DMA(uint8_t* data, uint32_t len)
 {
 	if (!_info) return SysStatus::NotInit;
-	if (!_dma_tx || !data || !len || len > UINT16_MAX || !(USARTx->CR1 & USART_CR1_TE)) return SysStatus::Error;
+	if (!_dma_tx.HasSelection() || !data || !len || len > UINT16_MAX || !(USARTx->CR1 & USART_CR1_TE)) return SysStatus::Error;
 	if (tx_status == SysStatus::Busy) return SysStatus::Busy;
-	SysStatus status = _dma_tx->SetMemAddr(reinterpret_cast<uint32_t>(data));
+	SysStatus status = _dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(data));
 	if (status != SysStatus::OK) return status;
-	status = _dma_tx->SetCount(len);
+	status = _dma_tx.SetCount(len);
 	if (status != SysStatus::OK) return status;
 	System::CacheClean(data, len);
-	_dma_tx->ClearFlags();
-	_dma_tx->Enable_IRQ(DMA_Sx::IRQ::TE);
+	_dma_tx.ClearFlags();
+	_dma_tx.Enable_IRQ(DMA_Sx::IRQ::TE);
 #if defined(STM32F4) || defined(STM32F7)
-	_dma_tx->Enable_IRQ(DMA_Sx::IRQ::DME);
+	_dma_tx.Enable_IRQ(DMA_Sx::IRQ::DME);
 #endif
 #if defined(STM32F4)
 	USARTx->SR = ~USART_SR_TC;
@@ -288,7 +288,7 @@ SysStatus USART::Send_DMA(uint8_t* data, uint32_t len)
 	ClearFlags(ISR_FLAGS::TC);
 #endif
 	tx_status = SysStatus::Busy;
-	_dma_tx->Stream_EN(ENABLE);
+	_dma_tx.Stream_EN(ENABLE);
 	DMA_en(ENABLE, DMA::TX);
 	return SysStatus::OK;
 }
@@ -296,11 +296,11 @@ SysStatus USART::Send_DMA(uint8_t* data, uint32_t len)
 SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len)
 {
 	if (!_info) return SysStatus::NotInit;
-	if (!_dma_rx || !data || !len || len > UINT16_MAX || !(USARTx->CR1 & USART_CR1_RE)) return SysStatus::Error;
+	if (!_dma_rx.HasSelection() || !data || !len || len > UINT16_MAX || !(USARTx->CR1 & USART_CR1_RE)) return SysStatus::Error;
 	if (rx_status == SysStatus::Busy) return SysStatus::Busy;
-	SysStatus status = _dma_rx->SetMemAddr(reinterpret_cast<uint32_t>(data));
+	SysStatus status = _dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(data));
 	if (status != SysStatus::OK) return status;
-	status = _dma_rx->SetCount(len);
+	status = _dma_rx.SetCount(len);
 	if (status != SysStatus::OK) return status;
 	ClearDataReceivedFlag();
 	data_overflow = false;
@@ -316,50 +316,38 @@ SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len)
 	USARTx->RQR = USART_RQR_RXFRQ;
 #endif
 	System::CacheCleanInvalidate(data, len);
-	_dma_rx->ClearFlags();
-	_dma_rx->Enable_IRQ(DMA_Sx::IRQ::TE);
+	_dma_rx.ClearFlags();
+	_dma_rx.Enable_IRQ(DMA_Sx::IRQ::TE);
 #if defined(STM32F4) || defined(STM32F7)
-	_dma_rx->Enable_IRQ(DMA_Sx::IRQ::DME);
+	_dma_rx.Enable_IRQ(DMA_Sx::IRQ::DME);
 #endif
 	rx_status = SysStatus::Busy;
 	USARTx->CR1 |= USART_CR1_PEIE;
 	USARTx->CR3 |= USART_CR3_EIE;
-	_dma_rx->Stream_EN(ENABLE);
+	_dma_rx.Stream_EN(ENABLE);
 	DMA_en(ENABLE, DMA::RX);
 	IRQ_en(IRQ::IDLE, ENABLE);
 	return SysStatus::OK;
 }
 
-// Validate constructor bindings, acquire DMA and register each direction once.
+// Acquire internally stored DMA and register each direction once.
 // Rollback releases only resources successfully acquired by this SetUp().
 SysInitStatus USART::SetUpDMA()
 {
-	DMA_Sx* const tx = _dma_tx;
-	DMA_Sx* const rx = _dma_rx;
+	DMA_Sx* const tx = _dma_tx.HasSelection() ? &_dma_tx : nullptr;
+	DMA_Sx* const rx = _dma_rx.HasSelection() ? &_dma_rx : nullptr;
 	if (!tx && !rx) return SysInitStatus::InitOK;
-	if (tx && tx == rx) return SysInitStatus::InitError;
-	DMA_Sx::DMAReq tx_req{}, rx_req{};
-	for (const auto& e : uart_dma_req_table) {
-		if (e.periph != USARTx) continue;
-		for (unsigned i = 0; i < UART_DMA_ROUTES; ++i) {
-			if (tx && tx->CanUseRequest(e.tx[i])) tx_req = e.tx[i];
-			if (rx && rx->CanUseRequest(e.rx[i])) rx_req = e.rx[i];
-		}
-		break;
-	}
-	if ((tx && !tx_req.IsValid()) || (rx && !rx_req.IsValid())) return SysInitStatus::InitError;
+	// Route ownership/direction was checked by the constructor.
 
 	DMA_Sx::StreamSettings cfg;
 	cfg.data_size = DMA_Sx::SIZE::Byte;
 	cfg.minc = true;
 	if (tx) {
-		cfg.channel = tx_req.ch;
 		cfg.direction = DMA_Sx::DIR::To_Per;
 		cfg.per_address = reinterpret_cast<uint32_t>(&TXD());
 		if (tx->SetUp(cfg) != SysInitStatus::InitOK) return SysInitStatus::InitError;
 	}
 	if (rx) {
-		cfg.channel = rx_req.ch;
 		cfg.direction = DMA_Sx::DIR::From_Per;
 		cfg.per_address = reinterpret_cast<uint32_t>(&RXD());
 		if (rx->SetUp(cfg) != SysInitStatus::InitOK) {
@@ -415,14 +403,14 @@ void USART::HandleIRQ()
 		if (errors) {
 			USARTx->CR1 &= ~CR1_RX_IRQ;
 			USARTx->CR3 &= ~CR3_RX_IRQ;
-			if (_dma_rx && ((cr3 & USART_CR3_DMAR) || _rx_dma_idle)) {
+			if (_dma_rx.HasSelection() && ((cr3 & USART_CR3_DMAR) || _rx_dma_idle)) {
 				_rx_errors = _rx_errors | errors;
 				_rx_dma_idle = true;
 				DMA_en(DISABLE, DMA::RX);
 #if defined(STM32G0)
 				USART::OnIdle();
 #else
-				_dma_rx->RequestStop();
+				_dma_rx.RequestStop();
 #endif
 				return;
 			}
@@ -442,22 +430,25 @@ void USART::HandleIRQ()
 
 	bool rx_irq = (USARTx->CR1 & CR1_RXNEIE) && (sr & ISR_RXNE);
 	bool tx_irq = (USARTx->CR1 & CR1_TXEIE) && (sr & ISR_TXE);
+	const bool idle_irq = (sr & ISR_IDLE) && (USARTx->CR1 & USART_CR1_IDLEIE);
 #if defined(STM32G0)
 	rx_irq = rx_irq || ((USARTx->CR3 & USART_CR3_RXFTIE) && (sr & ISR_RXFT));
 	tx_irq = tx_irq || ((USARTx->CR3 & USART_CR3_TXFTIE) && (sr & ISR_TXFT));
 #endif
 	// Never read RDR in CPU while DMA owns the RX path.
-	if (rx_irq && rx_status == SysStatus::Busy && !(USARTx->CR3 & USART_CR3_DMAR))
-		while ((Status_reg() & ISR_RXNE) && rx_status == SysStatus::Busy)
+	// IDLE owns its FIFO tail; do not spend a second RX budget in the same entry.
+	if (rx_irq && !idle_irq && rx_status == SysStatus::Busy && !(USARTx->CR3 & USART_CR3_DMAR))
+		for (uint32_t n = FifoDepth(); n && (Status_reg() & ISR_RXNE)
+			&& rx_status == SysStatus::Busy; --n)
 			OnRxByte(static_cast<uint8_t>(RXD()));
-	if ((sr & ISR_IDLE) && (USARTx->CR1 & USART_CR1_IDLEIE)) {
+	if (idle_irq) {
 #if defined(STM32F4) || defined(STM32F7)
 		if (rx_status == SysStatus::Busy && (USARTx->CR3 & USART_CR3_DMAR)) {
 			_rx_dma_idle = true;
 			USARTx->CR1 &= ~CR1_RX_IRQ;
 			USARTx->CR3 &= ~CR3_RX_IRQ;
 			DMA_en(DISABLE, DMA::RX);
-			_dma_rx->RequestStop();
+			_dma_rx.RequestStop();
 		} else
 #endif
 			OnIdle();
@@ -477,46 +468,46 @@ void USART::HandleIRQ()
 void USART::HandleDmaTxIRQ()
 {
 	if (!_info || tx_status != SysStatus::Busy) return;
-	const uint32_t errors = _dma_tx->GetErrorFlags();
+	const uint32_t errors = _dma_tx.GetErrorFlags();
 	if (errors) {
 		DMA_en(DISABLE, DMA::TX);
-		_dma_tx->RequestStop();
-		_dma_tx->Disable_IRQ(DMA_Sx::IRQ::TE);
+		_dma_tx.RequestStop();
+		_dma_tx.Disable_IRQ(DMA_Sx::IRQ::TE);
 #if defined(STM32F4) || defined(STM32F7)
-		_dma_tx->Disable_IRQ(DMA_Sx::IRQ::DME);
+		_dma_tx.Disable_IRQ(DMA_Sx::IRQ::DME);
 		// An enabled stream finishes its stop with TC. TE may already have
 		// disabled it in hardware. Do not spin on EN from the error interrupt.
-		if (_dma_tx->IsEnabled()) return;
+		if (_dma_tx.IsEnabled()) return;
 #endif
-		_dma_tx->ClearFlags();
+		_dma_tx.ClearFlags();
 		__DMB();
 		tx_status = SysStatus::Error;
 		OnError(static_cast<uint32_t>(Error::DmaTx));
 		return;
 	}
-	if (_dma_tx->GetTC_Flag()) OnDmaTxComplete();
+	if (_dma_tx.GetTC_Flag()) OnDmaTxComplete();
 }
 
 void USART::HandleDmaRxIRQ()
 {
 	if (!_info || rx_status != SysStatus::Busy) return;
-	const uint32_t errors = _dma_rx->GetErrorFlags();
+	const uint32_t errors = _dma_rx.GetErrorFlags();
 	if (errors) {
 		_rx_errors = _rx_errors | static_cast<uint32_t>(Error::DmaRx);
 		_rx_dma_idle = true;
 		USARTx->CR1 &= ~CR1_RX_IRQ;
 		USARTx->CR3 &= ~CR3_RX_IRQ;
 		DMA_en(DISABLE, DMA::RX);
-		_dma_rx->Disable_IRQ(DMA_Sx::IRQ::TE);
+		_dma_rx.Disable_IRQ(DMA_Sx::IRQ::TE);
 #if defined(STM32F4) || defined(STM32F7)
-		_dma_rx->RequestStop();
-		_dma_rx->Disable_IRQ(DMA_Sx::IRQ::DME);
-		if (_dma_rx->IsEnabled()) return;
+		_dma_rx.RequestStop();
+		_dma_rx.Disable_IRQ(DMA_Sx::IRQ::DME);
+		if (_dma_rx.IsEnabled()) return;
 #endif
 		USART::OnIdle(); // Error cleanup only; do not notify a successful IDLE.
 		return;
 	}
-	if (!_dma_rx->GetTC_Flag()) return;
+	if (!_dma_rx.GetTC_Flag()) return;
 	if (_rx_errors) USART::OnIdle();
 	else if (_rx_dma_idle) OnIdle();
 	else OnDmaRxComplete();
@@ -524,7 +515,7 @@ void USART::HandleDmaRxIRQ()
 
 void USART::OnTxEmpty()
 {
-	while (tx_data.size && (Status_reg() & ISR_TXE)) {
+	for (uint32_t n = FifoDepth(); n && tx_data.size && (Status_reg() & ISR_TXE); --n) {
 		TXD() = *tx_data.data_ptr++;
 		--tx_data.size;
 	}
@@ -557,7 +548,7 @@ void USART::OnRxByte(uint8_t byte)
 void USART::OnIdle()
 {
 	const bool receiving = rx_status == SysStatus::Busy;
-	const bool dma = receiving && _dma_rx && (_rx_dma_idle || (USARTx->CR3 & USART_CR3_DMAR));
+	const bool dma = receiving && _dma_rx.HasSelection() && (_rx_dma_idle || (USARTx->CR3 & USART_CR3_DMAR));
 	uint32_t errors = _rx_errors;
 	USARTx->CR1 &= ~CR1_RX_IRQ;
 	USARTx->CR3 &= ~CR3_RX_IRQ;
@@ -566,22 +557,22 @@ void USART::OnIdle()
 #if defined(STM32G0)
 		// IDLE assumes that the last DMA request has already been serviced.
 		// G0 abort does not produce the F4/F7 software-stop TC event.
-		_dma_rx->RequestStop();
+		_dma_rx.RequestStop();
 		__DMB();
-		if (_dma_rx->GetErrorFlags()) errors |= static_cast<uint32_t>(Error::DmaRx);
+		if (_dma_rx.GetErrorFlags()) errors |= static_cast<uint32_t>(Error::DmaRx);
 		errors |= Status_reg() & UART_ERRORS;
 #else
 		// Called only after DMA TC (normal completion or software stop), or TE
 		// with the stream already disabled. No wait or second stop request.
 		__DMB();
 #endif
-		_dma_rx->ClearFlags();
+		_dma_rx.ClearFlags();
 #if defined(STM32G0)
 		// An abort during an active transfer may leave CNDTR inaccurate. Failed
 		// packets are discarded without deriving a length from that counter.
-		if (!errors) data_received_count = rx_data.size - _dma_rx->GetCount();
+		if (!errors) data_received_count = rx_data.size - _dma_rx.GetCount();
 #else
-		data_received_count = rx_data.size - _dma_rx->GetCount();
+		data_received_count = rx_data.size - _dma_rx.GetCount();
 		System::CacheInvalidate(rx_data.data_ptr, data_received_count);
 #endif
 	}
@@ -600,7 +591,7 @@ void USART::OnIdle()
 #else
 	ClearFlags(ISR_FLAGS::IDLE);
 	// FIFO may contain a short tail below RXFT. DMA is stopped before CPU access.
-	while (receiving && !errors && (Status_reg() & ISR_RXNE)) {
+	for (uint32_t n = FifoDepth(); n && receiving && !errors && (Status_reg() & ISR_RXNE); --n) {
 		if (dma) {
 			if (data_received_count == rx_data.size) break;
 			rx_data.data_ptr[data_received_count] = static_cast<uint8_t>(RXD());
@@ -634,8 +625,8 @@ void USART::OnTC() {}
 void USART::OnDmaTxComplete()
 {
 	DMA_en(DISABLE, DMA::TX);
-	_dma_tx->RequestStop(); // TC already confirms completion; G0 still needs EN cleared.
-	_dma_tx->ClearFlags();
+	_dma_tx.RequestStop(); // TC already confirms completion; G0 still needs EN cleared.
+	_dma_tx.ClearFlags();
 	__DMB();
 	tx_status = SysStatus::OK;
 }
@@ -654,15 +645,15 @@ void USART::OnError(uint32_t) {}
 void USART::DeInit()
 {
 	if (!_info) return;
-	const bool receiving_dma = _dma_rx && (_rx_dma_idle || (USARTx->CR3 & USART_CR3_DMAR));
+	const bool receiving_dma = _dma_rx.HasSelection() && (_rx_dma_idle || (USARTx->CR3 & USART_CR3_DMAR));
 	USARTx->CR1 = 0;
 	USARTx->CR3 = 0; // Disable sources and UART requests before stopping DMA.
-	if (_dma_tx) { _dma_tx->Stream_EN(DISABLE); _dma_tx->ClearFlags(); }
-	if (_dma_rx) { _dma_rx->Stream_EN(DISABLE); _dma_rx->ClearFlags(); }
+	if (_dma_tx.HasSelection()) { _dma_tx.Stream_EN(DISABLE); _dma_tx.ClearFlags(); }
+	if (_dma_rx.HasSelection()) { _dma_rx.Stream_EN(DISABLE); _dma_rx.ClearFlags(); }
 
 	const IRQn_Type no_irq = static_cast<IRQn_Type>(-1);
 	const IRQn_Type irqs[3] = {
-		_info->irq, _dma_tx ? _dma_tx->GetIRQn() : no_irq, _dma_rx ? _dma_rx->GetIRQn() : no_irq
+		_info->irq, _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : no_irq, _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : no_irq
 	};
 	IIRQHandler* const handlers[3] = { this, &_dma_tx_irq, &_dma_rx_irq };
 	for (unsigned i = 0; i < 3; ++i) {
@@ -674,11 +665,11 @@ void USART::DeInit()
 			if (enabled) NVIC_EnableIRQ(irqs[i]);
 		} else NVIC_ClearPendingIRQ(irqs[i]);
 	}
-	if (_dma_tx) _dma_tx->Release();
-	if (_dma_rx) {
+	if (_dma_tx.HasSelection()) _dma_tx.Release();
+	if (_dma_rx.HasSelection()) {
 		if (receiving_dma)
-			System::CacheInvalidate(rx_data.data_ptr, rx_data.size - _dma_rx->GetCount());
-		_dma_rx->Release();
+			System::CacheInvalidate(rx_data.data_ptr, rx_data.size - _dma_rx.GetCount());
+		_dma_rx.Release();
 	}
 	USARTx->CR2 = 0;
 	tx_data = {};

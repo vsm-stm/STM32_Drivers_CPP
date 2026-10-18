@@ -15,12 +15,12 @@
  * Result: USART::_N::TX/RX nested pin types, USART::FIFO, USART::FIFO_TH,
  *         plus private TXD()/RXD()/Status_reg()/Clear_reg() and ISR_* flags.
  *
- * Section B — peripheral-info table + DMA request table
+ * Section B — peripheral-info table
  * -------------------------------------------------------
  * Guard:  UART_DEFS_CPP  (defined in uart.cpp just before the include)
  * Scope:  file scope inside uart.cpp.
- * Result: USART::usart_table[] is defined; UartDmaInfo + uart_dma_req_table
- *         are visible to all functions in uart.cpp.
+ * Result: USART::usart_table[] is defined. DMA ownership/direction metadata
+ *         lives in DMA_Sx::Req; USART has no duplicate DMA table.
  *
  * Usage
  * -----
@@ -32,7 +32,7 @@
  * uart.cpp (after #include "uart.hpp"):
  * @code
  *   #define UART_DEFS_CPP
- *   #include "uart_defs.hpp"   // Section B: peripheral + DMA tables
+ *   #include "uart_defs.hpp"   // Section B: peripheral table
  *   #undef  UART_DEFS_CPP
  * @endcode
  *
@@ -443,68 +443,7 @@ const USART::PeriphInfo USART::usart_table[] = {
 #endif
 #undef UART_INFO
 
-// Preserve the full DMAReq: on F4/F7 CHSEL alone cannot identify a route.
-// Each direction lists only named permitted alternatives; a missing alternative
-// is value-initialized invalid. G0 needs one request ID, with channel chosen by
-// the DMA object. AttachDMA checks both constructor selection and ownership.
-// These descriptors do not reserve hardware or change the DMAMUX by themselves.
-#if defined(STM32G0)
-static constexpr unsigned UART_DMA_ROUTES = 1;
-#else
-static constexpr unsigned UART_DMA_ROUTES = 2;
-#endif
-struct UartDmaInfo {
-	USART_TypeDef* periph;
-	DMA_Sx::DMAReq tx[UART_DMA_ROUTES];
-	DMA_Sx::DMAReq rx[UART_DMA_ROUTES];
-};
-
-static const UartDmaInfo uart_dma_req_table[] = {
-#if defined(STM32G0)
-#ifdef USART1_BASE
-	{ USART1, { DMA_Sx::Req::Usart1::TX }, { DMA_Sx::Req::Usart1::RX } },
-#endif
-#ifdef USART2_BASE
-	{ USART2, { DMA_Sx::Req::Usart2::TX }, { DMA_Sx::Req::Usart2::RX } },
-#endif
-#ifdef USART3_BASE
-	{ USART3, { DMA_Sx::Req::Usart3::TX }, { DMA_Sx::Req::Usart3::RX } },
-#endif
-#ifdef USART4_BASE
-	{ USART4, { DMA_Sx::Req::Usart4::TX }, { DMA_Sx::Req::Usart4::RX } },
-#endif
-#ifdef USART5_BASE
-	{ USART5, { DMA_Sx::Req::Usart5::TX }, { DMA_Sx::Req::Usart5::RX } },
-#endif
-#ifdef USART6_BASE
-	{ USART6, { DMA_Sx::Req::Usart6::TX }, { DMA_Sx::Req::Usart6::RX } },
-#endif
-#else
-#ifdef USART1_BASE
-	{ USART1, { DMA_Sx::Req::Usart1::TX_DMA2_Stream7 }, { DMA_Sx::Req::Usart1::RX_DMA2_Stream2, DMA_Sx::Req::Usart1::RX_DMA2_Stream5 } },
-#endif
-#ifdef USART2_BASE
-	{ USART2, { DMA_Sx::Req::Usart2::TX_DMA1_Stream6 }, { DMA_Sx::Req::Usart2::RX_DMA1_Stream5 } },
-#endif
-#ifdef USART3_BASE
-	{ USART3, { DMA_Sx::Req::Usart3::TX_DMA1_Stream3, DMA_Sx::Req::Usart3::TX_DMA1_Stream4 }, { DMA_Sx::Req::Usart3::RX_DMA1_Stream1 } },
-#endif
-#ifdef UART4_BASE
-	{ UART4, { DMA_Sx::Req::Uart4::TX_DMA1_Stream4 }, { DMA_Sx::Req::Uart4::RX_DMA1_Stream2 } },
-#endif
-#ifdef UART5_BASE
-	{ UART5, { DMA_Sx::Req::Uart5::TX_DMA1_Stream7 }, { DMA_Sx::Req::Uart5::RX_DMA1_Stream0 } },
-#endif
-#ifdef USART6_BASE
-	{ USART6, { DMA_Sx::Req::Usart6::TX_DMA2_Stream6, DMA_Sx::Req::Usart6::TX_DMA2_Stream7 }, { DMA_Sx::Req::Usart6::RX_DMA2_Stream1, DMA_Sx::Req::Usart6::RX_DMA2_Stream2 } },
-#endif
-#ifdef UART7_BASE
-	{ UART7, { DMA_Sx::Req::Uart7::TX_DMA1_Stream1 }, { DMA_Sx::Req::Uart7::RX_DMA1_Stream3 } },
-#endif
-#ifdef UART8_BASE
-	{ UART8, { DMA_Sx::Req::Uart8::TX_DMA1_Stream0 }, { DMA_Sx::Req::Uart8::RX_DMA1_Stream6 } },
-#endif
-#endif
-};
+// USART DMA ownership/direction is stored once in DMA_Sx::Req.
+// The USART constructor validates it; no duplicate route table is needed here.
 
 #endif // UART_DEFS_CPP

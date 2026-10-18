@@ -12,7 +12,8 @@
  * Initialize System/RCC before SetUp(). PCLK is the default; on F7/G0 the
  * constructor can select SYSCLK, HSI or LSE where the instance supports them.
  * SetUp() uses oversampling x16 and 8N1; G0 PRESC is /1. Peripheral tables provide clock
- * gates, PCLK variables, vectors, pins and DMAReq routes for the selected MCU.
+ * gates, PCLK variables, vectors and pins for the selected MCU. Named DMAReq
+ * entries carry USART ownership/direction; DMA objects are stored inside USART.
  * TX/RX pins come from USART::_N::TX/RX. Their number/AF are defined by PIN;
  * the USART constructor checks the owning peripheral at run time.
  *
@@ -23,6 +24,8 @@
  * SetUp() and DeInit() run in main, never from a callback.
  * Shared IRQ capacity is configured in irq_registry_settings.hpp.
  * USART and its DMA handlers must not preempt one another for the same object.
+ * Each IRQ entry services at most one hardware FIFO per direction: 8 words
+ * on G0 with FIFO enabled, otherwise one byte. IDLE owns its RX tail budget.
  *
  * Packet reception
  * ----------------
@@ -96,7 +99,7 @@
  *
  * TX and RX can operate independently. Configuration and buffer handover for
  * one object must be serialized by its caller; no internal locks are provided.
- * Do not copy/move the object. Keep it, attached DMA objects and active buffers
+ * Do not copy/move the object. Keep it and active buffers
  * alive until their operations and registrations are stopped by DeInit().
  */
 class USART : public IIRQHandler
@@ -149,6 +152,16 @@ public:
 		TX = USART_CR3_DMAT,                    ///< UART TX requests only.
 		RX = USART_CR3_DMAR                     ///< UART RX requests only.
 	};
+
+#if defined(STM32G0)
+	/// G0 selects a physical channel as well as the named DMAMUX request.
+	struct DMAReq {
+		DMA_Channel_TypeDef* channel;
+		DMA_Sx::DMAReq request;
+	};
+#else
+	using DMAReq = DMA_Sx::DMAReq;
+#endif
 	/**
 	 * @brief Bit values delivered together to OnError(uint32_t).
 	 *
@@ -177,8 +190,8 @@ public:
 	 * @param baudrate Requested bits per second; validated against the kernel clock.
 	 * @param tx Named USART::_N::TX pin, or PIN{} to leave TX unconfigured.
 	 * @param rx Named USART::_N::RX pin, or PIN{} to leave RX unconfigured.
-	 * @param dma_tx TX DMA, nullptr by default. Binding cannot change after construction.
-	 * @param dma_rx RX DMA, nullptr by default. Do not pass the same object for TX/RX.
+	 * @param dma_tx Named TX request; {} means no DMA. On G0: {channel, request}.
+	 * @param dma_rx Named RX request; {} means no DMA. TX/RX resources must differ.
 	 * @param clock_source F7/G0 only: kernel clock, PCLK by default. Immutable;
 	 *        SetUp() applies the choice but never starts an oscillator. An unavailable
 	 *        source or an HSI/LSE source that is not enabled and ready gives InitError.
@@ -192,34 +205,37 @@ public:
 	 * F7/G0 HSI example, after the caller has enabled HSI and waited for HSIRDY:
 	 * @code
 	 *   USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-	 *              nullptr, nullptr, USART::ClockSource::HSI);
+	 *              {}, {}, USART::ClockSource::HSI);
 	 *   SysInitStatus status = link.SetUp();
 	 * @endcode
 	 *
 	 * G0 DMA example (select channels available on the chosen MCU):
 	 * @code
-	 *   DMA_Sx tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-	 *   DMA_Sx rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
-	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7, &tx, &rx);
+	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+	 *              {DMA1_Channel4, DMA_Sx::Req::Usart1::TX},
+	 *              {DMA1_Channel5, DMA_Sx::Req::Usart1::RX});
 	 *   SysInitStatus status = uart.SetUp(); // Configures UART and both DMA channels.
 	 * @endcode
 	 *
 	 * F4/F7 DMA construction (stream and CHSEL are part of DMAReq):
 	 * @code
-	 *   DMA_Sx tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7);
-	 *   DMA_Sx rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5);
-	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7, &tx, &rx);
+	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+	 *              DMA_Sx::Req::Usart1::TX_DMA2_Stream7,
+	 *              DMA_Sx::Req::Usart1::RX_DMA2_Stream5);
 	 *   SysInitStatus status = uart.SetUp();
 	 * @endcode
-	 * Keep the DMA objects alive for the UART lifetime. SetUp validates DMAReq,
-	 * configures Byte/MINC and the UART data-register address, and registers
-	 * separate DMA handlers. Do not call DMA SetUp beforehand. A failed setup
+	 * The constructor checks request validity, USART ownership, direction and
+	 * distinct TX/RX resources through DebugTrap, as for pin ownership. This is
+	 * a runtime construction check, not consteval. No Config wrapper is required.
+	 * USART embeds two DMA_Sx objects; no external objects or heap allocation.
+	 * SetUp acquires the selected resources, configures Byte/MINC and the UART
+	 * data-register address, and registers separate DMA handlers. A failed setup
 	 * releases only resources acquired by that call. DeInit releases DMA but
 	 * preserves these bindings. Blocking and IRQ methods remain available.
 	 */
 	explicit USART(USART_TypeDef* usartx, uint32_t baudrate,
 		PIN tx = PIN{}, PIN rx = PIN{},
-		DMA_Sx* dma_tx = nullptr, DMA_Sx* dma_rx = nullptr
+		DMAReq dma_tx = {}, DMAReq dma_rx = {}
 #if defined(STM32F7) || defined(STM32G0)
 		, ClockSource clock_source = ClockSource::PCLK
 #endif
@@ -228,13 +244,40 @@ public:
 #if defined(STM32F7) || defined(STM32G0)
 		, _clock_source(clock_source)
 #endif
+#if defined(STM32G0)
+		, _dma_tx(dma_tx.channel, dma_tx.request), _dma_rx(dma_rx.channel, dma_rx.request)
+#else
 		, _dma_tx(dma_tx), _dma_rx(dma_rx)
+#endif
 		, _dma_tx_irq(*this), _dma_rx_irq(*this)
 	{
 		if (tx.IsValid() && tx.periph_base && tx.periph_base != (uint32_t)usartx)
 			System::DebugTrap("USART: TX pin belongs to wrong peripheral");
 		if (rx.IsValid() && rx.periph_base && rx.periph_base != (uint32_t)usartx)
 			System::DebugTrap("USART: RX pin belongs to wrong peripheral");
+#if defined(STM32G0)
+		const auto& tx_req = dma_tx.request;
+		const auto& rx_req = dma_rx.request;
+		const bool has_tx = dma_tx.channel || tx_req.ch || tx_req.periph_base;
+		const bool has_rx = dma_rx.channel || rx_req.ch || rx_req.periph_base;
+		const bool same_resource = dma_tx.channel == dma_rx.channel;
+#else
+		const auto& tx_req = dma_tx;
+		const auto& rx_req = dma_rx;
+		const bool has_tx = tx_req.stream || tx_req.ch || tx_req.periph_base;
+		const bool has_rx = rx_req.stream || rx_req.ch || rx_req.periph_base;
+		const bool same_resource = tx_req.stream == rx_req.stream;
+#endif
+		if (has_tx && (!_dma_tx.HasSelection() || !tx_req.IsValid()
+			|| tx_req.periph_base != reinterpret_cast<uintptr_t>(usartx)
+			|| tx_req.direction != DMA_Sx::DIR::To_Per))
+			System::DebugTrap("USART: invalid TX DMA request");
+		if (has_rx && (!_dma_rx.HasSelection() || !rx_req.IsValid()
+			|| rx_req.periph_base != reinterpret_cast<uintptr_t>(usartx)
+			|| rx_req.direction != DMA_Sx::DIR::From_Per))
+			System::DebugTrap("USART: invalid RX DMA request");
+		if (has_tx && has_rx && same_resource)
+			System::DebugTrap("USART: TX and RX require different DMA resources");
 	}
 	USART() = delete;
 	USART(const USART&) = delete;
@@ -256,7 +299,8 @@ public:
 	 * and requested baud must not exceed kernel_clock/16. G0 PRESC is /1.
 	 * HSI/LSE must already be enabled and ready; SetUp() only checks their state.
 	 * SetUp() registers this object and each bound DMA direction separately.
-	 * It rejects wrong/busy DMA routes and rolls back its own acquired resources.
+	 * Request compatibility was checked by construction. Busy/invalid hardware
+	 * resources are rejected at acquisition; partial setup releases its acquisitions.
 	 * Transfer sources themselves are enabled later by the selected operation.
 	 *
 	 * @param fifo NO by default. EN is supported only on FIFO-capable G0 instances.
@@ -552,7 +596,7 @@ public:
 	inline void SetParity(uint32_t parity) { (void)parity; }
 
 	/**
-	 * @brief Stop this UART, release attached DMA and remove its IRQ registrations.
+	 * @brief Stop this UART, release owned DMA and remove its IRQ registrations.
 	 *
 	 * Disables UART sources/requests, stops DMA with EN=0 confirmation and
 	 * returns an active F7 RX buffer to CPU through the System cache helper.
@@ -619,10 +663,18 @@ private:
 	volatile uint32_t data_received_count{0};
 	volatile bool data_overflow{false};
 	volatile uint32_t data_overflow_count{0};
-	DMA_Sx* const _dma_tx;
-	DMA_Sx* const _dma_rx;
+	DMA_Sx _dma_tx; ///< Owned TX resource; null hardware selection when absent.
+	DMA_Sx _dma_rx; ///< Owned RX resource; no external DMA object or rebinding.
 	const PeriphInfo* _info = nullptr;
 	SysInitStatus SetUpDMA(); ///< Configure constructor-bound DMA during SetUp().
+	/// Maximum ready words serviced in one direction per IRQ entry.
+	uint32_t FifoDepth() const {
+#if defined(STM32G0)
+		return (USARTx->CR1 & USART_CR1_FIFOEN) ? 8U : 1U;
+#else
+		return 1U;
+#endif
+	}
 	volatile bool _rx_dma_idle = false; ///< IDLE requested a DMA stop; TC finishes RX.
 	volatile uint32_t _rx_errors = 0; ///< UART errors retained until DMA has stopped.
 
