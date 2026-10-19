@@ -28,6 +28,9 @@
  * on G0 with FIFO enabled, otherwise one byte. IDLE owns its RX tail budget.
  * USART IRQ uses entry snapshots for source/DMA-gate checks, except TCIE/TC,
  * which are re-read after callbacks and TX handling.
+ * Control-bit updates use ST ATOMIC_* macros: F4/F7 use LDREX/STREX retries;
+ * G0 briefly masks interrupts for each update and restores the prior PRIMASK.
+ * UART clock-gate/source field updates use the same macros.
  *
  * Packet reception
  * ----------------
@@ -100,7 +103,8 @@
  * @brief Owns one USART/UART and its registered IRQ/DMA integration.
  *
  * TX and RX can operate independently. Configuration and buffer handover for
- * one object must be serialized by its caller; no internal locks are provided.
+ * one object must be serialized by its caller. Atomic register updates do not
+ * serialize whole transfers or protect the associated buffer/state fields.
  * Do not copy/move the object. Keep it and active buffers
  * alive until their operations and registrations are stopped by DeInit().
  */
@@ -328,6 +332,7 @@ public:
 	 * SetUp() owns the UART registration until DeInit(). This method neither
 	 * registers/unregisters handlers nor changes NVIC, and is usable in callbacks.
 	 * Before SetUp() it has no effect. FIFO sources require SetUp(FIFO::EN).
+	 * Uses ATOMIC_SET_BIT/ATOMIC_CLEAR_BIT for the selected control register.
 	 * Transfer methods manage their own sources; disabling one manually during
 	 * an operation does not by itself complete that operation or change Busy.
 	 *
@@ -345,8 +350,8 @@ public:
 #else
 		auto& reg = USARTx->CR1;
 #endif
-		if (en) reg |= static_cast<uint32_t>(irq);
-		else reg &= ~static_cast<uint32_t>(irq);
+		if (en) ATOMIC_SET_BIT(reg, static_cast<uint32_t>(irq));
+		else ATOMIC_CLEAR_BIT(reg, static_cast<uint32_t>(irq));
 	}
 
 	/**
@@ -358,11 +363,12 @@ public:
 	 * disable the UART receiver, or perform cache/buffer handover. Normal *_DMA()
 	 * operations manage these gates themselves: DMA starts before requests are
 	 * enabled; RX completion disables requests and waits for DMA EN=0.
+	 * DMAT/DMAR changes use ST ATOMIC_SET_BIT/ATOMIC_CLEAR_BIT.
 	 */
 	inline void DMA_en(FunctionalState en, DMA dma = DMA::TXRX)
 	{
-		if (en) USARTx->CR3 |= static_cast<uint32_t>(dma);
-		else USARTx->CR3 &= ~static_cast<uint32_t>(dma);
+		if (en) ATOMIC_SET_BIT(USARTx->CR3, static_cast<uint32_t>(dma));
+		else ATOMIC_CLEAR_BIT(USARTx->CR3, static_cast<uint32_t>(dma));
 	}
 
 #if defined(STM32F4)
@@ -576,8 +582,9 @@ public:
 	 *         Busy while software TX or RX is active.
 	 *         Rejected calls leave BRR and the stored BaudRate unchanged.
 	 *
-	 * Writes BRR with UE=0, restores CR1 and stores the new BaudRate so it is
-	 * retained for a later setup. Uses the same rounded x16 divider and the same
+	 * Writes BRR with UE=0, atomically restores the previous UE bit and stores
+	 * the new BaudRate for a later setup. Other CR1 bits are not restored from
+	 * an old snapshot. Uses the same rounded x16 divider and the same
 	 * constructor-selected source as SetUp(); the clock source is not changed.
 	 * @pre Caller has ensured physical TX completion via TC/OnTC(), RX is stopped,
 	 *      and the peer will not transmit while the UART is temporarily disabled.
