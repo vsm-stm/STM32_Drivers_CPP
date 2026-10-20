@@ -54,7 +54,7 @@ does not serialize a full transfer or buffer handover. No CMake setting is added
 DMA GetIRQFlags() returns HT/TC/errors in one ISR access; public FLAG_HT,
 FLAG_TC and FLAG_ERRORS decode it. FEIF remains excluded in direct mode.
 I2C has fixed constructor DMA, inherited callbacks, one-time setup and DeInit;
-bus recovery is application code. Timing is calculated at compile time: SetUp<pclk_hz, I2C::SPEED::FAST>(); pclk_hz must match the configured APB1 clock. See [I2C.md](I2C.md).
+bus recovery is application code. Timing is calculated at compile time: SetUp<clocks, I2C::SPEED::FAST>() takes the same ClockSystem::Config as RCC Init. APB1 comes from RCC preparation; Apply checks System::APB1BusClock before hardware setup. See [I2C.md](I2C.md).
 These source changes have not been built or hardware-tested.
 
 ## Integration and build
@@ -1132,7 +1132,7 @@ I2C_USE_ATOMIC, DAC_USE_ATOMIC, DMA_USE_ATOMIC и EXTI_USE_ATOMIC задаютс
 GetIRQFlags возвращает HT/TC/ошибки одним чтением, публичные FLAG_HT/FLAG_TC/
 FLAG_ERRORS используются потребителями. В I2C добавлены фиксированные DMA,
 callbacks через наследование и DeInit; Recover перенесён в приложение.
-Тайминги рассчитываются при компиляции: SetUp<pclk_hz, I2C::SPEED::FAST>(); частота должна совпадать с настроенной APB1. Runtime-поиск и массив 2560 байт удалены. Подробности — [I2C.md](I2C.md). Сборки и аппаратные тесты миграции не запускались.
+Тайминги рассчитываются при компиляции: SetUp<clocks, I2C::SPEED::FAST>() получает ту же ClockSystem::Config, что и RCC Init. APB1 берётся из расчёта RCC; Apply сверяет её с System::APB1BusClock до настройки оборудования. Runtime-поиск и массив 2560 байт удалены. Подробности — [I2C.md](I2C.md). Сборки и аппаратные тесты миграции не запускались.
 
 
 Универсальная C++ библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4**, **STM32F7**.

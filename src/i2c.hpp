@@ -23,14 +23,16 @@
  * - SetUp is allowed once until DeInit. Pins and DMA selection are fixed by
  *   construction; there is no AttachDMA or run-time replacement.
  * - Recovery of a slave-held bus belongs to the application, not this driver.
- * - F4: STANDARD and FAST only (FAST_PLUS -> InitError; FMPI2C1 is another IP).
+ * - F4: STANDARD and FAST only (FAST_PLUS -> compile error; FMPI2C1 is another IP).
  *
  * ============================================================================
  * Usage
  * ============================================================================
  * @code
+ *   constexpr ClockSystem::Config clocks{}; // Default HSI, bus dividers /1.
+ *   // In main, after successful System::Init() and ClockSystem::Init<clocks>():
  *   I2C i2c(I2C1, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9);
- *   i2c.SetUp<16000000, I2C::SPEED::FAST>();              // PCLK=16 MHz, bus=400 kHz
+ *   i2c.SetUp<clocks, I2C::SPEED::FAST>();                // Bus=400 kHz.
  *
  *   uint8_t id;
  *   i2c.ReadReg(0x68, 0x75, &id, 1);                      // blocking
@@ -59,7 +61,7 @@
  *   // F4/F7: pass named routes instead of the physical G0 channels:
  *   // DMA_Sx::Req::I2c1::TX_DMA1_Stream6,
  *   // DMA_Sx::Req::I2c1::RX_DMA1_Stream0.
- *   if (bus.SetUp<16000000, I2C::SPEED::FAST>() == SysInitStatus::InitOK)
+ *   if (bus.SetUp<clocks, I2C::SPEED::FAST>() == SysInitStatus::InitOK)
  *       bus.ReadReg_DMA(0x68, 0x3B, buf, 14);
  *   // Check the start status; keep buf alive through completion.
  *   // On F7 the application owns all cache lines touched by this buffer.
@@ -179,19 +181,22 @@ public:
 	/**
 	 * @brief Configure clock, pins, timing, owned DMA and IRQ registrations once.
 	 * Kernel clock is PCLK (APB1). No source generator is started by this driver.
-	 * @tparam pclk_hz Actual APB1/kernel clock configured by the application RCC.
+	 * @tparam clocks The same ClockSystem::Config passed to ClockSystem::Init.
+	 *         APB1 frequency comes from RCC's compiler-only calculation.
 	 * @tparam speed Nominal bus speed. Timing calculation and validation are
 	 *         compile-time, including F4 CCR/TRISE. Invalid timing is a compile error.
 	 *         F7/G0 retain the ST calculator's rise/fall/filter assumptions.
-	 * @return InitError on repeated setup, unsupported peripheral, a busy DMA
-	 *         resource or failed IRQ registration; partial acquisition is rolled back.
-	 * @pre System/RCC initialized, actual PCLK equals pclk_hz; main only.
-	 *         No runtime clock check or timing search. DeInit before another SetUp.
-	 *         Example: bus.SetUp<16000000, SPEED::FAST>() with PCLK=16 MHz.
+	 * @return InitError on repeated setup, APB1 mismatch, unsupported peripheral,
+	 *         a busy DMA resource or failed IRQ registration; acquisition is rolled back.
+	 * @pre System and ClockSystem::Init<clocks>() succeeded; main only.
+	 *         Apply compares derived APB1 with System::APB1BusClock before acquiring
+	 *         hardware resources. No runtime timing search. DeInit before another SetUp.
+	 *         Example: bus.SetUp<clocks, SPEED::FAST>().
 	 */
-	template<uint32_t pclk_hz, SPEED speed = SPEED::STANDARD>
+	template<ClockSystem::Config clocks, SPEED speed = SPEED::STANDARD>
 	SysInitStatus SetUp()
 	{
+		static constexpr uint32_t pclk_hz = ClockSystem::GetAPB1Clock<clocks>();
 		static_assert(pclk_hz > 0, "I2C: PCLK must be nonzero");
 		static_assert(speed == SPEED::STANDARD || speed == SPEED::FAST || speed == SPEED::FAST_PLUS,
 			"I2C: unsupported bus speed");
@@ -204,7 +209,7 @@ public:
 #endif
 		static constexpr uint32_t timing = CalculateTiming(pclk_hz, speed);
 		static_assert(timing != 0, "I2C: no valid timing for this PCLK and speed");
-		return Apply(timing, speed);
+		return Apply(timing, speed, pclk_hz);
 	}
 
 	// -----------------------------------------------------------------------
@@ -311,7 +316,7 @@ private:
 #endif
 	}
 	/// Main-only application of compiler-produced timing, ownership and IRQ setup.
-	SysInitStatus Apply(uint32_t timing, SPEED speed);
+	SysInitStatus Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk);
 	struct PeriphInfo {
 		I2C_TypeDef*        periph;
 		volatile uint32_t*  clk_reg;

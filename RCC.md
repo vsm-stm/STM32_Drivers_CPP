@@ -264,3 +264,25 @@ sysmem.c из LTO остаётся отдельным вопросом наст�
 - [RM0431 — F72/73 Flash/VOS timing](https://www.st.com/resource/en/reference_manual/rm0431-stm32f72xxx-and-stm32f73xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [F746 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f746zg.pdf)
 - [F767 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f767zi.pdf)
+
+## APB1 из конфигурации для I2C — 20.10.2026
+
+ClockSystem::GetAPB1Clock<clocks>() — consteval-метод получения номинальной
+частоты APB1 из ClockSystem::Config. Используется существующий Prepare:
+формулы частот и проверка устройства не дублируются. Неверный Config даёт
+static_assert. Метод не запускает генераторы и не меняет регистры.
+
+```cpp
+constexpr ClockSystem::Config clocks{}; // HSI, все делители /1.
+// В main, после успешного System::Init():
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
+// bus — объект I2C с закреплёнными пинами/DMA:
+auto status = bus.SetUp<clocks, I2C::SPEED::FAST>();
+```
+
+I2C сам берёт APB1 через этот метод. Перед аппаратной настройкой Apply сверяет
+результат с System::APB1BusClock. Равенство частот не доказывает идентичность
+конфигураций или успешность Init: результат RCC Init нужно проверять явно.
+Это номинальные расчёты, измерения реальной частоты генератора здесь нет.
+Порядок применения RCC, его runtime-состояние и остальные драйверы не менялись.
+Сборки и тесты данной интеграции в этом проходе не запускались.

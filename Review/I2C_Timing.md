@@ -5,11 +5,10 @@
 
 ## Принятое решение
 
-Расчёт перенесён в consteval. I2C::SetUp<pclk_hz, SPEED>() рассчитывает слова
+Расчёт перенесён в consteval. I2C::SetUp<clocks, SPEED>() рассчитывает слова
 регистров и проверяет результат через static_assert, как RCC. На F4 используется
 расчёт CCR/TRISE/FREQ в i2c.hpp, на F7/G0 — адаптированный алгоритм ST для TIMINGR.
-Приложение обеспечивает соответствие pclk_hz реальной APB1; динамическая
-перенастройка тактирования и runtime-поиск не добавлены.
+clocks — та же ClockSystem::Config, что передана RCC Init. GetAPB1Clock<clocks>() использует общий RCC Prepare. В Apply частота сверяется с System::APB1BusClock до аппаратных изменений; при несовпадении InitError. Динамическая перенастройка и runtime-поиск не добавлены.
 
 ## Статус замечаний
 

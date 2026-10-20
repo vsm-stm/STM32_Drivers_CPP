@@ -170,6 +170,21 @@ public:
         return Apply(prepared);
     }
 
+    /**
+     * @brief Nominal APB1 frequency derived from a constant Config, in Hz.
+     * Uses the same preparation and device validation as Init<config>(), without
+     * applying clocks or accessing hardware. Invalid Config is a compile error.
+     * For example I2C::SetUp<config>() uses this result for its timing calculation.
+     * A derived value alone does not prove that Init<config>() succeeded at runtime.
+     */
+    template<Config config>
+    static consteval uint32_t GetAPB1Clock()
+    {
+        constexpr Prepared prepared = Prepare(config);
+        static_assert(prepared.error == Error::None, "RCC: invalid clock configuration for APB1 calculation");
+        return prepared.apb1;
+    }
+
     /// Nominal HSE input used by the completed clock setup; zero if unused/not published.
     static uint32_t GetHSEClock() noexcept { return HSESrcClk; }
 

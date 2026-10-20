@@ -35,9 +35,10 @@ uint32_t I2C::DmaRequest(I2C_TypeDef* i2c, bool tx)
 
 // Initialization/ownership changes are main-only. The application serializes
 // starts/Abort/DeInit with this object's I2C and DMA IRQs; its handlers do not nest.
-SysInitStatus I2C::Apply(uint32_t timing, SPEED speed)
+SysInitStatus I2C::Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk)
 {
-    if (_info) return SysInitStatus::InitError;
+    // Check RCC's published APB1 before changing registers or acquiring resources.
+    if (_info || System::APB1BusClock != expected_pclk) return SysInitStatus::InitError;
     const PeriphInfo* info = nullptr;
     for (const auto& e : i2c_table)
         if (e.periph == I2Cx) { info = &e; break; }
