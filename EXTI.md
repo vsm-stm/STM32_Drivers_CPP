@@ -1,21 +1,40 @@
-# External GPIO EXTI / Внешние GPIO EXTI
+# EXTI / EXTI_Line — Detailed Description
 
-## Constant initialization / Постоянная инициализация
+*[English](#english) · [Русский](#русский)*
 
-Fixed peripheral bindings now use `constexpr` constructors and static/global
-objects declared with `constinit`. The first argument is `_N::instance` from the
-driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
-G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
-separate Config object or template driver API. See [Initialization.md](Initialization.md).
-
-Постоянные привязки проверяются при объявлении статического/глобального объекта
-через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
-константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
-`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
-Подробнее: [Initialization.md](Initialization.md).
-
+---
 
 ## English
+
+## Table of Contents
+
+1. [Why This Is Needed](#1-why-this-is-needed)
+2. [Constant Initialization and Constructor Diagnostics](#2-constant-initialization-and-constructor-diagnostics)
+3. [Module Selection and Dependencies](#3-module-selection-and-dependencies)
+4. [Binding and initialization](#4-binding-and-initialization)
+5. [IRQ and capacity](#5-irq-and-capacity)
+6. [Masking and teardown](#6-masking-and-teardown)
+7. [Usage Examples](#7-usage-examples)
+8. [Edge Cases](#8-edge-cases)
+9. [See Also](#see-also)
+
+---
+
+## 1. Why This Is Needed
+
+EXTI_Line binds an external GPIO line and edge selection. SetUp configures GPIO/routing and registers one object in the existing shared IRQ registry. Internal EXTI sources are outside this module.
+
+---
+
+## 2. Constant Initialization and Constructor Diagnostics
+
+Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. EXTI takes PIN and Edge, without an Instance argument or DMA.
+
+For peripheral binding checks, each failing condition calls non-constexpr `System::DebugTrap` with its cause. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+
+---
+
+## 3. Module Selection and Dependencies
 
 Enable the optional module in project.json:
 
@@ -26,7 +45,9 @@ Enable the optional module in project.json:
 Include `exti.hpp`. System/RCC, GPIO and IRQ_Registry are core dependencies;
 this module needs no DMA or timer. It supports external lines 0..15 on F4/F7/G0.
 
-### Binding and initialization
+---
+
+## 4. Binding and initialization
 
 ```cpp
 #include "exti.hpp"
@@ -60,7 +81,9 @@ not modify GPIO/EXTI. Failed registry insertion restores the previous NVIC mask.
 One owner per number: PA0 and PB0 cannot simultaneously own EXTI0. No copy/move
 or runtime pin/edge changes. Reconfiguration requires explicit main-only DeInit.
 
-### IRQ and capacity
+---
+
+## 5. IRQ and capacity
 
 Each object registers separately in IRQ_Registry. Each handler reads only its
 line's mask/pending flags, acknowledges that line and calls protected virtual
@@ -85,7 +108,9 @@ Serialize main-side configuration/registry/shared-register changes with affected
 EXTI IRQs. SetUp/DeInit must not run in callbacks; do not change GPIO configuration
 or EXTI routing behind an active owner. Keep objects alive while registered.
 
-### Masking and teardown
+---
+
+## 6. Masking and teardown
 
 ```cpp
 button.IRQ_en(DISABLE); // Own source only, no NVIC changes.
@@ -107,7 +132,79 @@ EXTI_USE_ATOMIC defaults to 0 in exti.hpp. Value 1 uses ST ATOMIC_* for control
 RMW; pending flags always use direct W1C writes. This does not serialize whole
 operations or replace the caller's registry/configuration contract.
 
+---
+
+## 7. Usage Examples
+
+Independent example; check device/package availability and every returned status.
+
+```cpp
+#include "exti.hpp"
+class Button : public EXTI_Line {
+public:
+    constexpr Button() : EXTI_Line(PIN(GPIOC_BASE, 13), Edge::Falling) {}
+    volatile bool pressed = false;
+protected:
+    void OnInterrupt() override { pressed = true; }
+};
+constinit Button button;
+// In main, after successful System/RCC initialization:
+// Check button.SetUp(PIN::TYPE::INPUT_PullUp).
+```
+
+---
+
+## 8. Edge Cases
+
+One owner per line number; PA0 and PB0 cannot own EXTI0 together. Shared-vector capacity is IRQ_MAX_SHARED. Callbacks do not count every physical edge and must not alter registry/setup. Serialize shared-register changes with the affected IRQs.
+
+---
+
+## See Also
+
+- [ST G0 LL EXTI](https://github.com/STMicroelectronics/stm32g0xx-hal-driver/blob/master/Inc/stm32g0xx_ll_exti.h): EXTICR layout, port selection, RPR1/FPR1 acknowledgement.
+- [ST F4 LL EXTI](https://github.com/STMicroelectronics/stm32f4xx-hal-driver/blob/master/Inc/stm32f4xx_ll_exti.h): masks, edge selection and PR acknowledgement.
+
+**Status:** source/diff inspection only. No build, tests or hardware execution.
+
+- [Initialization.md](Initialization.md)
+- [GPIO.md](GPIO.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+- [System.md](System.md)
+
+---
+
 ## Русский
+
+## Содержание
+
+1. [Зачем это нужно](#1-зачем-это-нужно)
+2. [Постоянная инициализация и диагностика конструктора](#2-постоянная-инициализация-и-диагностика-конструктора)
+3. [Подключение и зависимости](#3-подключение-и-зависимости)
+4. [Привязка и настройка](#4-привязка-и-настройка)
+5. [Прерывания и ограничение реестра](#5-прерывания-и-ограничение-реестра)
+6. [Маскирование и освобождение](#6-маскирование-и-освобождение)
+7. [Примеры использования](#7-примеры-использования)
+8. [Угловые случаи](#8-угловые-случаи)
+9. [См. также](#см-также)
+
+---
+
+## 1. Зачем это нужно
+
+EXTI_Line закрепляет внешнюю линию GPIO и выбор фронта. SetUp настраивает GPIO/маршрутизацию и регистрирует объект в общем реестре IRQ. Внутренние источники EXTI в этот модуль не входят.
+
+---
+
+## 2. Постоянная инициализация и диагностика конструктора
+
+Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. EXTI принимает PIN и Edge, без Instance и DMA.
+
+При проверке привязок периферии каждое неверное условие вызывает неконстантный `System::DebugTrap` с причиной. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+
+---
+
+## 3. Подключение и зависимости
 
 Подключение в project.json:
 
@@ -118,7 +215,9 @@ operations or replace the caller's registry/configuration contract.
 Заголовок — `exti.hpp`. Модуль использует ядро System/RCC/GPIO/IRQ_Registry;
 DMA и таймер не требуются. Поддерживаются внешние линии 0–15 на F4/F7/G0.
 
-### Привязка и настройка
+---
+
+## 4. Привязка и настройка
 
 В примере Button выше PIN и фронт закреплены конструктором. Доступны
 Edge::Rising/Falling/Both. Отсутствующий пин, номер вне 0–15 и неверный enum
@@ -136,7 +235,9 @@ GPIO/EXTI. При отказе регистрации прежняя маска 
 не могут. Копирование/перемещение запрещены. Для смены роли нужен DeInit;
 пин и фронт остаются привязаны к объекту.
 
-### Прерывания и ограничение реестра
+---
+
+## 5. Прерывания и ограничение реестра
 
 Каждый объект отдельно зарегистрирован в IRQ_Registry. Обработчик проверяет
 только маску/флаги собственной линии, подтверждает событие и вызывает
@@ -157,7 +258,9 @@ EXTI4_15; четвёртый SetUp вернёт InitError. Такое же ог�
 с затронутыми EXTI IRQ. SetUp/DeInit из callback запрещены. Во время владения
 линией не меняют её GPIO/маршрутизацию напрямую. Объект сохраняют до снятия регистрации.
 
-### Маскирование и освобождение
+---
+
+## 6. Маскирование и освобождение
 
 IRQ_en(DISABLE/ENABLE) меняет только маску своей линии, не затрагивая GPIO,
 фронты, флаги, регистрацию и общий NVIC. До SetUp вызов ничего не делает.
@@ -174,11 +277,42 @@ EXTI_USE_ATOMIC в exti.hpp по умолчанию 0; при 1 использу
 для управляющих RMW. Pending подтверждается прямой W1C-записью независимо
 от define. Это не заменяет согласование составных операций вызывающим кодом.
 
-## Register references / Регистры
+---
+
+## 7. Примеры использования
+
+Отдельный пример; проверьте наличие блока/пинов в корпусе и каждый возвращаемый статус.
+
+```cpp
+#include "exti.hpp"
+class Button : public EXTI_Line {
+public:
+    constexpr Button() : EXTI_Line(PIN(GPIOC_BASE, 13), Edge::Falling) {}
+    volatile bool pressed = false;
+protected:
+    void OnInterrupt() override { pressed = true; }
+};
+constinit Button button;
+// In main, after successful System/RCC initialization:
+// Check button.SetUp(PIN::TYPE::INPUT_PullUp).
+```
+
+---
+
+## 8. Угловые случаи
+
+На номер линии допускается один владелец: PA0 и PB0 не могут одновременно занять EXTI0. Вместимость общего вектора задаёт IRQ_MAX_SHARED. Callback не гарантирует подсчёт каждого фронта и не меняет реестр/настройку. Изменения общих регистров согласуются с соответствующими IRQ.
+
+---
+
+## См. также
 
 - [ST G0 LL EXTI](https://github.com/STMicroelectronics/stm32g0xx-hal-driver/blob/master/Inc/stm32g0xx_ll_exti.h): EXTICR layout, port selection, RPR1/FPR1 acknowledgement.
 - [ST F4 LL EXTI](https://github.com/STMicroelectronics/stm32f4xx-hal-driver/blob/master/Inc/stm32f4xx_ll_exti.h): masks, edge selection and PR acknowledgement.
 
-**Status:** source/diff inspection only. No build, tests or hardware execution.
-
 **Статус:** просмотр исходников/diff. Сборки, тесты и запуск на железе не выполнялись.
+
+- [Initialization.md](Initialization.md)
+- [GPIO.md](GPIO.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+- [System.md](System.md)

@@ -1,25 +1,42 @@
-# UART / USART
+# UART / USART — Detailed Description
 
-## Constant initialization / Постоянная инициализация
+*[English](#english) · [Русский](#русский)*
 
-Fixed peripheral bindings now use `constexpr` constructors and static/global
-objects declared with `constinit`. The first argument is `_N::instance` from the
-driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
-G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
-separate Config object or template driver API. See [Initialization.md](Initialization.md).
-
-Постоянные привязки проверяются при объявлении статического/глобального объекта
-через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
-константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
-`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
-Подробнее: [Initialization.md](Initialization.md).
-
-
-[English](#english) · [Русский](#русский)
+---
 
 ## English
 
-### Initialization and ownership
+## Table of Contents
+
+1. [Why This Is Needed](#1-why-this-is-needed)
+2. [Constant Initialization and Constructor Diagnostics](#2-constant-initialization-and-constructor-diagnostics)
+3. [Initialization and ownership](#3-initialization-and-ownership)
+4. [Kernel clock (F7/G0)](#4-kernel-clock-f7g0)
+5. [Transfer contract](#5-transfer-contract)
+6. [One packet at a time](#6-one-packet-at-a-time)
+7. [DMA and cache](#7-dma-and-cache)
+8. [Errors, FIFO and callbacks](#8-errors-fifo-and-callbacks)
+9. [Usage Examples](#9-usage-examples)
+10. [Edge Cases](#10-edge-cases)
+11. [See Also](#see-also)
+
+---
+
+## 1. Why This Is Needed
+
+USART provides independent byte-oriented TX/RX, blocking/IRQ/DMA operations and packet completion on IDLE. Constructor bindings fix pins, DMA and the supported kernel-clock source; separate handlers service UART and each DMA direction.
+
+---
+
+## 2. Constant Initialization and Constructor Diagnostics
+
+Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use the provided _N::instance, named pins and optional _N::DMA routes. G0 takes numeric DMAx_Channely_BASE selections; the peripheral fixes the request source.
+
+For peripheral binding checks, each failing condition calls non-constexpr `System::DebugTrap` with its cause. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+
+---
+
+## 3. Initialization and ownership
 
 One USART object controls one UART. Call System/RCC initialization first.
 The constructor fixes optional DMA TX/RX and the kernel clock; PCLK is the default. SetUp() applies
@@ -58,7 +75,9 @@ buffer/state access and setup/deinitialization follow the caller's serialization
 Status reads, SR/ICR flag acknowledgement and whole-register initialization remain
 direct accesses with their hardware semantics.
 
-### Kernel clock (F7/G0)
+---
+
+## 4. Kernel clock (F7/G0)
 
 The optional last constructor argument is `USART::ClockSource`:
 
@@ -88,7 +107,9 @@ running and RCC frequencies/dividers unchanged while using the UART. SetBaud()
 uses the same source, checks readiness and returns Error if it is no longer ready;
 it does not change the source. With x16 oversampling, LSE limits baud to 2048.
 
-### Transfer contract
+---
+
+## 5. Transfer contract
 
 | Mode | Methods | Length and completion |
 |---|---|---|
@@ -117,7 +138,9 @@ Blocking timeouts require a running System tick; see [System.md](System.md).
 Blocking Receive() reads exactly the requested length and does not publish the
 asynchronous packet-ready flag.
 
-### One packet at a time
+---
+
+## 6. One packet at a time
 
 Receive_IRQ/DMA starts a fresh packet and clears the previous ready/count/overflow state.
 IDLE ends the packet. On F4/F7 DMA RX follows this order without waiting in IRQ:
@@ -153,15 +176,20 @@ before the next Receive can fill RDR/FIFO or cause ORE. A new Receive discards s
 input/errors before arming the buffer. This is packet reception with explicit
 rearming, not continuous reception without gaps.
 
-### DMA and cache
+---
+
+## 7. DMA and cache
 
 Pass named DMA_Sx::DMAReq constants directly
 after the pins: USART(instance, baud, tx_pin, rx_pin, dma_tx, dma_rx).
 Both default to {}. On G0 pass DMAx_Channely_BASE; USART selects its TX/RX request.
 F4/F7 requests already contain the stream. USART embeds both DMA_Sx objects.
 With constinit, the constexpr constructor checks request validity, ownership,
-direction and distinct TX/RX resources during compilation. Only the deprecated
-CMSIS-pointer overload retains runtime DebugTrap checks. No Config object is needed.
+direction and distinct TX/RX resources during compilation. Each failed check calls
+DebugTrap with a specific cause: constinit rejects the call at compilation;
+an ordinary runtime construction stops instead of invoking undefined behavior.
+constinit remains mandatory by the API contract. The deprecated CMSIS-pointer
+overload additionally performs runtime instance lookup. No Config object is needed.
 SetUp configures Byte/MINC, direction and DR/TDR/RDR and acquires the resources;
 there is no external DMA object, manual DMA SetUp or AttachDMA method.
 SetUp returns SysInitStatus and rejects repeated setup, invalid/busy hardware
@@ -208,7 +236,9 @@ Operation cost scales with touched cache lines and dirty writebacks, plus barrie
 Non-cacheable F7 buffers still incur the System range check. No cycle/size benchmark
 was performed for these changes. See [ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf).
 
-### Errors, FIFO and callbacks
+---
+
+## 8. Errors, FIFO and callbacks
 
 UART PE/FE/NE/ORE are checked by a common enabled-error mask. DMA errors take
 precedence over completion. The affected operation stops, becomes Error and invokes
@@ -238,7 +268,9 @@ arrivals after IDLE belong to the next packet and retain the documented gap cont
 Oversampling is performed by hardware and does not multiply CPU interrupts.
 Select the frame once using SetUp(fifo, tx_threshold, rx_threshold, FrameFormat::E8_1/O8_1/N8_2/N8_1). All formats retain eight payload bits; parity uses the ninth hardware word bit. The legacy SetParity method still ignores its argument; use FrameFormat instead.
 
-### Example
+---
+
+## 9. Usage Examples
 
 ~~~cpp
 // G0: physical channels are selected explicitly, DMA objects belong to UART.
@@ -266,9 +298,69 @@ Existing consumers that relied on GetDataReceivedCount() clearing the flag must
 now call ClearDataReceivedFlag() explicitly. Modbus constructor arguments have been
 migrated to these request descriptions; its current transfer/framing contract is described in [Modbus.md](Modbus.md).
 
+Independent example; check device/package availability and every returned status.
+
+```cpp
+#include "uart.hpp"
+using U = USART::_3;
+constinit USART port(U::instance, 115200, U::TX::PD8, U::RX::PD9);
+// In main, after System/RCC initialization:
+if (port.SetUp() != SysInitStatus::InitOK)
+    System::DebugTrap("UART setup");
+// Select blocking/IRQ methods, or constructor-bound DMA as described above.
+```
+
+---
+
+## 10. Edge Cases
+
+IDLE ends a packet and stops RX DMA. Do not treat it as strict Modbus RTU t1.5/t3.5 framing. On G0 the final request must be serviced before the normal IDLE stop. TX DMA completion is not physical TC; buffer/cache ownership and control/IRQ serialization remain application obligations.
+
+---
+
+## See Also
+
+- [Initialization.md](Initialization.md)
+- [DMA.md](DMA.md)
+- [GPIO.md](GPIO.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+- [Modbus.md](Modbus.md)
+
+---
+
 ## Русский
 
-### Настройка и владение
+## Содержание
+
+1. [Зачем это нужно](#1-зачем-это-нужно)
+2. [Постоянная инициализация и диагностика конструктора](#2-постоянная-инициализация-и-диагностика-конструктора)
+3. [Настройка и владение](#3-настройка-и-владение)
+4. [Источник тактирования (F7/G0)](#4-источник-тактирования-f7g0)
+5. [Обмен и готовность пакета](#5-обмен-и-готовность-пакета)
+6. [DMA, кеш и ошибки](#6-dma-кеш-и-ошибки)
+7. [Совместимость](#7-совместимость)
+8. [Источники для таблиц](#8-источники-для-таблиц)
+9. [Примеры использования](#9-примеры-использования)
+10. [Угловые случаи](#10-угловые-случаи)
+11. [См. также](#см-также)
+
+---
+
+## 1. Зачем это нужно
+
+USART предоставляет независимые TX/RX, блокирующие/IRQ/DMA-операции и завершение пакета по IDLE. Конструктор закрепляет пины, DMA и доступный источник частоты; UART и каждое направление DMA обслуживаются отдельно.
+
+---
+
+## 2. Постоянная инициализация и диагностика конструктора
+
+Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте готовый _N::instance, именованные пины и необязательные маршруты _N::DMA. На G0 передаются числовые DMAx_Channely_BASE, источник запроса закрепляет периферия.
+
+При проверке привязок периферии каждое неверное условие вызывает неконстантный `System::DebugTrap` с причиной. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+
+---
+
+## 3. Настройка и владение
 
 Один объект обслуживает один UART. Сначала настраиваются System и RCC.
 Источник фиксируется в конструкторе, по умолчанию PCLK. SetUp() применяет
@@ -305,7 +397,9 @@ UART_USE_ATOMIC в uart.hpp выбирает изменение управляю
 флагов SR/ICR и полная инициализация регистров выполняются прямыми обращениями
 с учётом аппаратной семантики.
 
-### Источник тактирования (F7/G0)
+---
+
+## 4. Источник тактирования (F7/G0)
 
 Последний необязательный параметр конструктора — `USART::ClockSource`:
 
@@ -335,7 +429,9 @@ SetBaud() рассчитывает BRR от того же источника и 
 перестал быть готов; источник не переключается. При oversampling x16 частота
 LSE ограничивает baud значением 2048.
 
-### Обмен и готовность пакета
+---
+
+## 5. Обмен и готовность пакета
 
 Нулевой указатель, нулевая длина, ненастроенное направление — Error.
 До SetUp — NotInit, при занятом направлении — Busy.
@@ -387,7 +483,9 @@ DMAR отключает запросы DMA, но не приёмник UART. Д�
 могут заполнить регистр/FIFO и вызвать ORE. Следующий Receive удаляет старый ввод
 и ошибки. Непрерывный приём без пауз эта модель не обеспечивает.
 
-### DMA, кеш и ошибки
+---
+
+## 6. DMA, кеш и ошибки
 
 Конструктор принимает описания dma_tx и dma_rx после пинов, по умолчанию {}.
 На F4/F7 передаётся именованный DMAReq с потоком; на G0 —
@@ -449,7 +547,9 @@ RX — полный FIFO, TX — пустой. Oversampling остаётся x16
 следующего Receive.
 Формат выбирается один раз: SetUp(fifo, tx_threshold, rx_threshold, FrameFormat::E8_1/O8_1/N8_2/N8_1). Во всех вариантах восемь полезных бит; parity занимает девятый аппаратный бит слова. Старый SetParity по-прежнему игнорирует аргумент: используйте FrameFormat.
 
-### Совместимость
+---
+
+## 7. Совместимость
 
 USART1 DMA2_Stream5 / CH4 назван RX_DMA2_Stream5: это маршрут RX.
 Добавлены UART7/8 и G0 USART3..6 DMAReq; исправлены G0 AF USART1/4 и общие IRQ.
@@ -459,7 +559,9 @@ USART1 DMA2_Stream5 / CH4 назван RX_DMA2_Stream5: это маршрут RX
 ClearDataReceivedFlag() явно. Конструктор Modbus переведён на описания Req;
 актуальный контракт передачи/IDLE описан в [Modbus.md](Modbus.md).
 
-### Источники для таблиц
+---
+
+## 8. Источники для таблиц
 
 - [ST USART F7 — источники тактирования](https://www.st.com/resource/en/product_training/STM32F7_Peripheral_USART.pdf).
 - [ST RM0444 — RCC/USART G0x1](https://www.st.com/resource/en/reference_manual/dm00371828.pdf).
@@ -468,3 +570,35 @@ ClearDataReceivedFlag() явно. Конструктор Modbus переведё
 - [ST G0 LL DMAMUX — идентификаторы запросов](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h).
 - [ST G071 datasheet — AF USART1/4](https://www.st.com/resource/en/datasheet/stm32g071kb.pdf).
 - [ST G0B1 datasheet — AF USART3..6](https://www.st.com/resource/en/datasheet/stm32g0b1me.pdf).
+
+---
+
+## 9. Примеры использования
+
+Отдельный пример; проверьте наличие блока/пинов в корпусе и каждый возвращаемый статус.
+
+```cpp
+#include "uart.hpp"
+using U = USART::_3;
+constinit USART port(U::instance, 115200, U::TX::PD8, U::RX::PD9);
+// In main, after System/RCC initialization:
+if (port.SetUp() != SysInitStatus::InitOK)
+    System::DebugTrap("UART setup");
+// Select blocking/IRQ methods, or constructor-bound DMA as described above.
+```
+
+---
+
+## 10. Угловые случаи
+
+IDLE завершает пакет и останавливает RX DMA. Это не строгий Modbus RTU framing t1.5/t3.5. На G0 последний запрос должен быть обслужен до штатной остановки по IDLE. Завершение TX DMA не равно физическому TC; владение буфером/кеш-линиями и согласование управления с IRQ остаются приложению.
+
+---
+
+## См. также
+
+- [Initialization.md](Initialization.md)
+- [DMA.md](DMA.md)
+- [GPIO.md](GPIO.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+- [Modbus.md](Modbus.md)

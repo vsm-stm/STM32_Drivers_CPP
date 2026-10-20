@@ -7,10 +7,10 @@
 SysInitStatus TIM::Init()
 {
 	if (_info) return SysInitStatus::InitError;
-    // Object-to-object binding cannot be read through TIM* during constinit.
-    if (_counter && (_counter == this || _counter->_instance.periph == _instance.periph
-        || FindITR(GetTIMx(), _counter->GetTIMx()) < 0))
-        return SysInitStatus::InitError;
+	// Object-to-object binding cannot be read through TIM* during constinit.
+	if (_counter && (_counter == this || _counter->_instance.periph == _instance.periph
+		|| FindITR(GetTIMx(), _counter->GetTIMx()) < 0))
+		return SysInitStatus::InitError;
 
 	const PeriphInfo* info = &_instance;
 	TIMx = reinterpret_cast<TIM_TypeDef*>(info->periph);

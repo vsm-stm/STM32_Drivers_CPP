@@ -1,8 +1,35 @@
-# RCC / ClockSystem
+# RCC / ClockSystem — Detailed Description
 
 *[English](#english) · [Русский](#русский)*
 
+---
+
 ## English
+
+## Table of Contents
+
+1. [Why This Is Needed](#1-why-this-is-needed)
+2. [Initialization Order](#2-initialization-order)
+3. [Automatic PLL selection](#3-automatic-pll-selection)
+4. [Manual configuration](#4-manual-configuration)
+5. [Static validation and supported devices](#5-static-validation-and-supported-devices)
+6. [Runtime sequence](#6-runtime-sequence)
+7. [SysTick precision](#7-systick-precision)
+8. [Migration](#8-migration)
+9. [APB1 from the RCC Configuration for I2C](#9-apb1-from-the-rcc-configuration-for-i2c)
+10. [Usage Examples](#10-usage-examples)
+11. [Edge Cases](#11-edge-cases)
+12. [See Also](#see-also)
+
+---
+
+## 1. Why This Is Needed
+
+ClockSystem calculates and validates a fixed clock configuration during compilation, then applies it once during initialization. Runtime oscillator and switching handshakes remain hardware operations.
+
+---
+
+## 2. Initialization Order
 
 ClockSystem performs one clock setup per hardware reset on STM32F4/F7/G0.
 Call `System::Init()` first, before configuring peripherals. Configurations,
@@ -10,7 +37,9 @@ PLL selection, bus frequencies, Flash latency and SysTick periods are evaluated
 at compile time. Runtime code applies register values and waits for hardware.
 C++20 is required; the base already selects it.
 
-### Automatic PLL selection
+---
+
+## 3. Automatic PLL selection
 
 ```cpp
 constexpr auto clocks = ClockSystem::CalcPLL(
@@ -45,7 +74,9 @@ If no exact legal solution exists, the returned configuration has M=0.
 `Init<clocks>()` then fails its static assertion. Choose another target or
 provide a manual configuration; there is no approximate automatic fallback.
 
-### Manual configuration
+---
+
+## 4. Manual configuration
 
 Example: F407, HSE 8 MHz, SYSCLK/HCLK 168 MHz, APB1 42 MHz, APB2 84 MHz:
 
@@ -74,7 +105,9 @@ On F446, `PLL_R` selects the R system output; ordinary F4/F7 `PLL` selects P.
 On G0 `PLL` selects R; P/Q divisors are written where present, but P/Q outputs
 remain disabled. R is ignored on devices without an R field; G0 has no APB2.
 
-### Static validation and supported devices
+---
+
+## 5. Static validation and supported devices
 
 `Init<config>()` diagnoses unsupported sources, HSE limits, coefficient ranges,
 PLL input/VCO/output limits, invalid enum values, bus limits and SysTick capacity.
@@ -109,7 +142,9 @@ R=2..8 and P=2..32; Q=2..8 where available ([G030 datasheet](https://www.st.com/
 [RM0444](https://www.st.com/resource/en/reference_manual/dm00371828-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)).
 PLL SYSCLK minimum is 24 MHz on F4/F7 except F446 (12.5 MHz); G0 uses 12 MHz.
 
-### Runtime sequence
+---
+
+## 6. Runtime sequence
 
 1. Reject a second attempt before touching registers. A hardware failure also
    consumes the single attempt; recover with a hardware reset.
@@ -132,7 +167,9 @@ must be stopped before this initial setup. Dynamic reconfiguration is unsupporte
 Clock changes restart SysTick and discard its partial period; the software tick
 counter is retained. No oscillator fallback, retry state machine or IRQ locks are added.
 
-### SysTick precision
+---
+
+## 7. SysTick precision
 
 `cycles_per_tick = floor(HCLK / TICK_BASE)`; LOAD is one less. A nonzero period
 must fit the 24-bit timer. Actual tick rate is `HCLK / cycles_per_tick`.
@@ -142,7 +179,9 @@ quantization error. LSI also has its oscillator tolerance. No fractional-period
 scheduler is used. Exact automatic PLL selection refers to nominal SYSCLK,
 not measured crystal accuracy or necessarily an exact 1 kHz SysTick.
 
-### Migration
+---
+
+## 8. Migration
 
 Replace runtime `Init(...)` / `InitCalcPLL(...)` with a constexpr Config or
 CalcPLL result and `Init<config>()`. GetHSEClock and System clock variables remain.
@@ -150,13 +189,92 @@ CalcPLL result and `Init<config>()`. GetHSEClock and System clock variables rema
 version remains available for existing callers. Compile-time preparation does
 not require LTO. LTO and the syscalls/sysmem exclusions remain a separate build topic.
 
+---
+
+## 9. APB1 from the RCC Configuration for I2C
+
+ClockSystem::GetAPB1Clock<clocks>() is a consteval query using the same Prepare/validation as RCC Init. It performs no MMIO and rejects an invalid Config with static_assert. I2C SetUp<clocks, speed>() uses that nominal APB1 and Apply compares it with System::APB1BusClock before acquiring hardware. Equal frequencies do not prove successful Init or equal configurations: check RCC Init explicitly. This is a nominal calculation, not a measurement.
+
+```cpp
+constexpr ClockSystem::Config clocks{};
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
+auto status = bus.SetUp<clocks, I2C::SPEED::FAST>();
+```
+
+---
+
+## 10. Usage Examples
+
+Independent example; check device/package availability and every returned status.
+
+```cpp
+#include "rcc.hpp"
+constexpr ClockSystem::Config clocks{}; // HSI, bus dividers /1.
+// In main:
+if (System::Init() != SysInitStatus::InitOK)
+    System::DebugTrap("System init");
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("RCC init");
+// A configured I2C uses the same config: bus.SetUp<clocks>().
+```
+
+---
+
+## 11. Edge Cases
+
+VDD assumptions and supported model limits belong to the current configuration validator. Reconfiguration after successful initialization is not supported. Exact PLL synthesis may fail; supply a valid manual configuration. SysTick uses integer reload, including the documented LSE precision limit.
+
+---
+
+## See Also
+
+- [RM0090 — F405/407/415/417/427/429/437/439](https://www.st.com/resource/en/reference_manual/dm00031020-stm32f405-407-415-417-437-455-469-application-note-stmicroelectronics.pdf)
+- [RM0383 — F411](https://www.st.com/resource/en/reference_manual/rm0383-stm32f411xce-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0401 — F410](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0402 — F412](https://www.st.com/resource/en/reference_manual/rm0402-stm32f412-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0430 — F413/423](https://www.st.com/resource/en/reference_manual/rm0430-stm32f413423-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0431 — F72/73 Flash/VOS timing](https://www.st.com/resource/en/reference_manual/rm0431-stm32f72xxx-and-stm32f73xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [F746 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f746zg.pdf)
+- [F767 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f767zi.pdf)
+
+- [System.md](System.md)
+- [I2C.md](I2C.md)
+- [UART.md](UART.md)
+
+---
+
 ## Русский
+
+## Содержание
+
+1. [Зачем это нужно](#1-зачем-это-нужно)
+2. [Порядок инициализации](#2-порядок-инициализации)
+3. [API и проверка при компиляции](#3-api-и-проверка-при-компиляции)
+4. [Точная частота и приоритет для jitter](#4-точная-частота-и-приоритет-для-jitter)
+5. [Модели, питание и порядок переключения](#5-модели-питание-и-порядок-переключения)
+6. [Погрешность SysTick](#6-погрешность-systick)
+7. [APB1 из конфигурации RCC для I2C](#7-apb1-из-конфигурации-rcc-для-i2c)
+8. [Примеры использования](#8-примеры-использования)
+9. [Угловые случаи](#9-угловые-случаи)
+10. [См. также](#см-также)
+
+---
+
+## 1. Зачем это нужно
+
+ClockSystem рассчитывает и проверяет постоянную конфигурацию тактирования при компиляции, затем однократно применяет её при инициализации. Готовность генераторов и переключение проверяются на оборудовании во время выполнения.
+
+---
+
+## 2. Порядок инициализации
 
 ClockSystem выполняет одну настройку тактирования после аппаратного сброса для
 STM32F4/F7/G0. Сначала вызывается System::Init(), затем RCC, затем настройка
 периферии. Нужен C++20, который уже выбран в базе.
 
-### API и проверка при компиляции
+---
+
+## 3. API и проверка при компиляции
 
 ```cpp
 constexpr auto clocks = ClockSystem::CalcPLL(
@@ -187,7 +305,9 @@ G0 поддерживает HSI/HSE/PLL/LSI/LSE; PLL использует вых
 LSE включается с временным разрешением записи в backup domain; исходный DBP
 восстанавливается, RTC не сбрасывается.
 
-### Точная частота и приоритет для jitter
+---
+
+## 4. Точная частота и приоритет для jitter
 
 CalcPLL(frequency, source, hse_clock=0, pll_q=2) рассчитывает точный номинальный
 SYSCLK, оставляет AHB /1 и выбирает минимальные допустимые делители APB.
@@ -205,7 +325,9 @@ P/R. Ориентиры ST: 2 МГц на входе PLL F4/F7, 16 МГц для
 вниз; автоматический расчёт соответствует заданным Гц точно. Делитель Q задаёт
 пользователь: требования USB/SDIO/RNG не выводятся из одной целевой SYSCLK.
 
-### Модели, питание и порядок переключения
+---
+
+## 5. Модели, питание и порядок переключения
 
 Поддерживаются все F4/F7 из текущих карт STM32-base_files и семейство G0.
 Группы лимитов приведены в таблице выше; неизвестная модель — явный #error.
@@ -241,7 +363,9 @@ SysTick должен обслуживаться: вызов из main с раз�
 Динамическая переконфигурация не поддерживается. При смене HCLK SysTick
 перезапускается с потерей части текущего периода, счётчик GetTick сохраняется.
 
-### Погрешность SysTick
+---
+
+## 6. Погрешность SysTick
 
 Период — `floor(HCLK / TICK_BASE)` тактов, LOAD на единицу меньше. Если HCLK
 не кратна TICK_BASE, частота тика отличается от 1 кГц. При LSE 32768 Гц и AHB /1:
@@ -254,18 +378,9 @@ RC-генератора. Период 0 или больше возможност
 Старая перегрузка без аргумента сохранена. Идея LTO и исключения syscalls.c/
 sysmem.c из LTO остаётся отдельным вопросом настройки сборки.
 
-## Additional primary references / Дополнительные первичные источники
+---
 
-- [RM0090 — F405/407/415/417/427/429/437/439](https://www.st.com/resource/en/reference_manual/dm00031020-stm32f405-407-415-417-437-455-469-application-note-stmicroelectronics.pdf)
-- [RM0383 — F411](https://www.st.com/resource/en/reference_manual/rm0383-stm32f411xce-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
-- [RM0401 — F410](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
-- [RM0402 — F412](https://www.st.com/resource/en/reference_manual/rm0402-stm32f412-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
-- [RM0430 — F413/423](https://www.st.com/resource/en/reference_manual/rm0430-stm32f413423-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
-- [RM0431 — F72/73 Flash/VOS timing](https://www.st.com/resource/en/reference_manual/rm0431-stm32f72xxx-and-stm32f73xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
-- [F746 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f746zg.pdf)
-- [F767 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f767zi.pdf)
-
-## APB1 из конфигурации для I2C — 20.10.2026
+## 7. APB1 из конфигурации RCC для I2C
 
 ClockSystem::GetAPB1Clock<clocks>() — consteval-метод получения номинальной
 частоты APB1 из ClockSystem::Config. Используется существующий Prepare:
@@ -286,3 +401,43 @@ I2C сам берёт APB1 через этот метод. Перед аппар
 Это номинальные расчёты, измерения реальной частоты генератора здесь нет.
 Порядок применения RCC, его runtime-состояние и остальные драйверы не менялись.
 Сборки и тесты данной интеграции в этом проходе не запускались.
+
+---
+
+## 8. Примеры использования
+
+Отдельный пример; проверьте наличие блока/пинов в корпусе и каждый возвращаемый статус.
+
+```cpp
+#include "rcc.hpp"
+constexpr ClockSystem::Config clocks{}; // HSI, bus dividers /1.
+// In main:
+if (System::Init() != SysInitStatus::InitOK)
+    System::DebugTrap("System init");
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("RCC init");
+// A configured I2C uses the same config: bus.SetUp<clocks>().
+```
+
+---
+
+## 9. Угловые случаи
+
+Предположения о VDD и пределах моделей заданы текущей валидацией. Перенастройка после успешной инициализации не поддерживается. Точный PLL может не подбираться: задайте допустимую конфигурацию вручную. SysTick использует целочисленный reload, включая описанную погрешность LSE.
+
+---
+
+## См. также
+
+- [RM0090 — F405/407/415/417/427/429/437/439](https://www.st.com/resource/en/reference_manual/dm00031020-stm32f405-407-415-417-437-455-469-application-note-stmicroelectronics.pdf)
+- [RM0383 — F411](https://www.st.com/resource/en/reference_manual/rm0383-stm32f411xce-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0401 — F410](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0402 — F412](https://www.st.com/resource/en/reference_manual/rm0402-stm32f412-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0430 — F413/423](https://www.st.com/resource/en/reference_manual/rm0430-stm32f413423-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0431 — F72/73 Flash/VOS timing](https://www.st.com/resource/en/reference_manual/rm0431-stm32f72xxx-and-stm32f73xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [F746 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f746zg.pdf)
+- [F767 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f767zi.pdf)
+
+- [System.md](System.md)
+- [I2C.md](I2C.md)
+- [UART.md](UART.md)

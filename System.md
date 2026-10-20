@@ -1,4 +1,4 @@
-# System
+# System — Detailed Description
 
 *[English](#english) · [Русский](#русский)*
 
@@ -6,30 +6,23 @@
 
 ## English
 
-## System — Detailed Description
+## Table of Contents
 
-### Contents
-
-- [System — Detailed Description](#system--detailed-description)
-	- [Contents](#contents)
-	- [1. Why this exists — the connective layer between all drivers](#1-why-this-exists--the-connective-layer-between-all-drivers)
-	- [2. System::Init() — what gets configured at startup](#2-systeminit--what-gets-configured-at-startup)
-	- [3. Clock variables — shared memory between RCC and all drivers](#3-clock-variables--shared-memory-between-rcc-and-all-drivers)
-	- [4. SysTick and the millisecond counter](#4-systick-and-the-millisecond-counter)
-	- [5. Microsecond delay via DWT CYCCNT](#5-microsecond-delay-via-dwt-cyccnt)
-	- [MPU on STM32F7](#mpu-on-stm32f7)
-	- [6. DebugTrap — a single failure point for all drivers](#6-debugtrap--a-single-failure-point-for-all-drivers)
-	- [7. Bit-banding and SysStatus/SysInitStatus](#7-bit-banding-and-sysstatussysinitstatus)
-	- [8. Usage examples](#8-usage-examples)
-		- [Standard startup sequence (as in main.cpp)](#standard-startup-sequence-as-in-maincpp)
-		- [Microsecond delay](#microsecond-delay)
-		- [DebugTrap with SWO output](#debugtrap-with-swo-output)
-	- [9. Edge cases](#9-edge-cases)
-	- [See also](#see-also)
+1. [Why this exists — the connective layer between all drivers](#1-why-this-exists--the-connective-layer-between-all-drivers)
+2. [System::Init() — what gets configured at startup](#2-systeminit--what-gets-configured-at-startup)
+3. [Clock variables — shared memory between RCC and all drivers](#3-clock-variables--shared-memory-between-rcc-and-all-drivers)
+4. [SysTick and the millisecond counter](#4-systick-and-the-millisecond-counter)
+5. [Microsecond delay via DWT CYCCNT](#5-microsecond-delay-via-dwt-cyccnt)
+6. [MPU on STM32F7](#6-mpu-on-stm32f7)
+7. [DebugTrap — a single failure point for all drivers](#7-debugtrap--a-single-failure-point-for-all-drivers)
+8. [Bit-banding and SysStatus/SysInitStatus](#8-bit-banding-and-sysstatussysinitstatus)
+9. [Usage Examples](#9-usage-examples)
+10. [Edge Cases](#10-edge-cases)
+11. [See Also](#see-also)
 
 ---
 
-### 1. Why this exists — the connective layer between all drivers
+## 1. Why this exists — the connective layer between all drivers
 
 `system.hpp`/`system.cpp` is not a separate peripheral but **shared infrastructure** that
 literally every other driver in this project depends on:
@@ -55,7 +48,7 @@ literally every other driver in this project depends on:
 Three things that `System` gives to all other drivers:
 
 1. **`SysStatus`/`SysInitStatus`** — two shared result enums for operations/initialization,
-   used by literally every `.hpp` in `Drivers/src` (see §7) — a single "success/error/busy/
+   used by literally every `.hpp` in `Drivers/src` (see §8) — a single "success/error/busy/
    timeout" vocabulary instead of each driver inventing its own set of codes.
 2. **Clock variables** (`SystemCoreClock`, `APB1BusClock`, ...) — written by
    [`ClockSystem::Init<config>()`](RCC.md), read by `UART`/`TIM`/`SPI` to calculate dividers/BRR
@@ -70,7 +63,9 @@ SysTick periods use integer HCLK cycles. If HCLK is not divisible by 1000,
 GetTick/Delay_ms/timeouts inherit the resulting rate error; for G0 LSE at
 32768 Hz, AHB /1, the rate is 1024 ticks/s. See [RCC.md](RCC.md).
 
-### 2. System::Init() — what gets configured at startup
+---
+
+## 2. System::Init() — what gets configured at startup
 
 ```cpp
 static SysInitStatus Init();
@@ -139,13 +134,13 @@ SysTick: it has not been started and startup still masks interrupts.
 
 ---
 
-### 3. Clock variables — shared memory between RCC and all drivers
+## 3. Clock variables — shared memory between RCC and all drivers
 
 ```cpp
 static uint32_t SystemCoreClock; // AHB/core/GPIO/DMA/USB
 static uint32_t APB1BusClock;    // WWDG, SPI2/3, USART2/3, UART4/5, I2C1-3, CAN1/2, DAC
 static uint32_t APB2BusClock;    // USART1/6, ADC1-3, SPI1/4, SYSCFG, SAI1/2
-static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (taking the "x2" rule into account, see RCC.md §2)
+static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (taking the "x2" rule into account, see RCC.md)
 static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 ```
 
@@ -168,7 +163,7 @@ frequency.
 
 ---
 
-### 4. SysTick and the millisecond counter
+## 4. SysTick and the millisecond counter
 
 `System::WaitBits(reg, mask, value, timeout)` waits for `(reg & mask) == value`.
 Use value=0 for cleared bits, value=mask for all bits set, or an encoded field
@@ -211,7 +206,7 @@ capped at `0x7FFFFFFF` ticks (about 24.9 days at 1 kHz). Larger requests saturat
 subtraction wraps again, polling must resume within half the counter range.
 
 Subtraction instead of a direct comparison is the same "wrap-around safe" reasoning as in
-[`TIM_HWCounter`](TIM.md#67-tim_hwcounter)/`Delay_us()` below: unsigned subtraction works
+[`TIM_HWCounter`](TIM.md#11-дополнительные-режимы-и-интеграция)/`Delay_us()` below: unsigned subtraction works
 correctly even when `Tick` manages to wrap around (after ~49.7 days of continuous operation)
 right in the middle of a wait — `target - tick_start` stays the correct distance in ticks,
 while `GetTick() < target` would give a wrong answer at that moment. All timeouts in the
@@ -236,7 +231,9 @@ default priority 0 therefore run ahead of SysTick and cannot call `Delay_ms()`
 or wait for a `GetTick()` timeout inside their handlers. Equal preemption
 priorities also cannot interrupt one another, regardless of subpriority.
 
-### 5. Microsecond delay via DWT CYCCNT
+---
+
+## 5. Microsecond delay via DWT CYCCNT
 
 ```cpp
 #if not defined(STM32L0) && not defined(STM32G0)
@@ -281,7 +278,7 @@ not do that. Availability on F4/F7 follows the core's ITM capabilities.
 
 ---
 
-### MPU on STM32F7
+## 6. MPU on STM32F7
 
 `System::MPU_Init()` installs an access guard in MPU region 0. It prevents
 ordinary and speculative CPU accesses to unused external-memory addresses.
@@ -334,7 +331,7 @@ System::Init();                // Enables the F7 caches after the MPU setup
 The guard itself does not change the cacheability of internal SRAM.
 `MPU_Init()` remains optional and does not create DMA areas.
 
-#### Optional non-cacheable DMA areas (F7 + base)
+### Optional non-cacheable DMA areas (F7 + base)
 
 In the base's `project.json`, enable drivers and specify named areas:
 
@@ -427,7 +424,9 @@ for MPU region attributes and
 [ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf)
 for cache/DMA coherency.
 
-### 6. DebugTrap — a single failure point for all drivers
+---
+
+## 7. DebugTrap — a single failure point for all drivers
 
 ```cpp
 [[noreturn]] static void DebugTrap(const char* msg);
@@ -445,8 +444,15 @@ Behavior depends on the build:
   optimization inlines/destroys the stack). On F4/F7, when trace and ITM channel 0
   are enabled, the null-terminated message is sent through **blocking SWO** using
   `ITM_SendChar()`. Then `__BKPT(0)` is executed and the function loops forever.
-- **Release**: ignores the argument and loops forever. String elimination
-  depends on compiler/linker optimization; it is not guaranteed by this function.
+- **Release**: an inline body in system.hpp ignores the argument and loops
+  forever. Optimisation can discard unused diagnostic strings without LTO;
+  their removal still depends on the build settings.
+
+DebugTrap is deliberately non-constexpr. Fixed-binding constructor checks call
+it with distinct messages. A failed check under constinit/consteval therefore
+rejects compilation at the relevant call; without constinit, a failed runtime
+construction stops in DebugTrap. constinit remains required by the driver API
+contract. See [Initialization.md](Initialization.md) for examples and diagnostics.
 
 The debugger must configure ITM/SWO. Disabled trace or `nullptr` skips the
 output; G0/L0 have no ITM output. An enabled but stalled ITM channel can keep
@@ -457,7 +463,7 @@ there is no output callback or UART setup for `DebugTrap()`.
 
 ---
 
-### 7. Bit-banding and SysStatus/SysInitStatus
+## 8. Bit-banding and SysStatus/SysInitStatus
 
 ```cpp
 enum class SysStatus     : uint8_t { OK, Error, Busy, NotInit, Timeout };
@@ -480,9 +486,9 @@ rather than a GPIO-specific one.
 
 ---
 
-### 8. Usage examples
+## 9. Usage Examples
 
-#### Standard startup sequence (as in main.cpp)
+### Standard startup sequence (as in main.cpp)
 
 ```cpp
 int main() {
@@ -505,14 +511,14 @@ extern "C" void NMI_Handler(void)       { while(1){} }
 extern "C" void HardFault_Handler(void) { while(1){} }
 ```
 
-#### Microsecond delay
+### Microsecond delay
 
 ```cpp
 System::Enable_CYCCNT();     // once
 System::Delay_us(50);        // 50 us, blocking
 ```
 
-#### DebugTrap with SWO output
+### DebugTrap with SWO output
 
 ```cpp
 // Enable ITM channel 0 / SWO in the debugger (F4/F7, DEBUG build).
@@ -521,7 +527,7 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
 
 ---
 
-### 9. Edge cases
+## 10. Edge Cases
 
 - **Call order matters**: `System::Init()` →
   `ClockSystem::Init<config>()` → `System::Enable_CYCCNT()` → `SetUp()` of any
@@ -541,45 +547,43 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
 
 ---
 
-### See also
+## See Also
 
 - [RCC.md](RCC.md) — the only writer of the clock variables described in §3.
-- [GPIO.md](GPIO.md) — `BIT_BB`/`BB_RD`/`BB_WR` (§7) are used by the `PIN::*_BB()` methods.
+- [GPIO.md](GPIO.md) — `BIT_BB`/`BB_RD`/`BB_WR` (§8) are used by the `PIN::*_BB()` methods.
 - [IRQ_Registry.md](IRQ_Registry.md) — an independent mechanism for dispatching peripheral
   IRQs; `SysTick_Handler`/`NMI_Handler`/`HardFault_Handler` and similar Cortex-M exceptions
   are not part of it and are configured separately (see `src/main.cpp`).
 - [UART.md](UART.md), [TIM.md](TIM.md), [SPI.md](SPI.md), [RTC.md](RTC.md), [DMA.md](DMA.md),
-  [Flash.md](Flash.md) — all read `SysStatus`/`SysInitStatus` (§7) and `System::GetTick()`
+  [Flash.md](Flash.md) — all read `SysStatus`/`SysInitStatus` (§8) and `System::GetTick()`
   (§4) from this module.
+
+- [RCC.md](RCC.md)
+- [DMA.md](DMA.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+- [Initialization.md](Initialization.md)
 
 ---
 
 ## Русский
 
-## System — подробное описание
+## Содержание
 
-### Содержание
-
-- [System — подробное описание](#system--подробное-описание)
-	- [Содержание](#содержание)
-	- [1. Зачем это нужно — связующая часть между всеми драйверами](#1-зачем-это-нужно--связующая-часть-между-всеми-драйверами)
-	- [2. System::Init() — что настраивается при старте](#2-systeminit--что-настраивается-при-старте)
-	- [3. Тактовые переменные — общая память между RCC и всеми драйверами](#3-тактовые-переменные--общая-память-между-rcc-и-всеми-драйверами)
-	- [4. SysTick и миллисекундный счётчик](#4-systick-и-миллисекундный-счётчик)
-	- [5. Микросекундная задержка через DWT CYCCNT](#5-микросекундная-задержка-через-dwt-cyccnt)
-	- [MPU на STM32F7](#mpu-на-stm32f7)
-	- [6. DebugTrap — единая точка отказа для всех драйверов](#6-debugtrap--единая-точка-отказа-для-всех-драйверов)
-	- [7. Bit-banding и SysStatus/SysInitStatus](#7-bit-banding-и-sysstatussysinitstatus)
-	- [8. Примеры использования](#8-примеры-использования)
-		- [Стандартная последовательность старта (как в main.cpp)](#стандартная-последовательность-старта-как-в-maincpp)
-		- [Микросекундная задержка](#микросекундная-задержка)
-		- [DebugTrap с выводом через SWO](#debugtrap-с-выводом-через-swo)
-	- [9. Угловые случаи](#9-угловые-случаи)
-	- [См. также](#см-также)
+1. [Зачем это нужно — связующая часть между всеми драйверами](#1-зачем-это-нужно--связующая-часть-между-всеми-драйверами)
+2. [System::Init() — что настраивается при старте](#2-systeminit--что-настраивается-при-старте)
+3. [Тактовые переменные — общая память между RCC и всеми драйверами](#3-тактовые-переменные--общая-память-между-rcc-и-всеми-драйверами)
+4. [SysTick и миллисекундный счётчик](#4-systick-и-миллисекундный-счётчик)
+5. [Микросекундная задержка через DWT CYCCNT](#5-микросекундная-задержка-через-dwt-cyccnt)
+6. [MPU на STM32F7](#6-mpu-на-stm32f7)
+7. [DebugTrap — единая точка отказа для всех драйверов](#7-debugtrap--единая-точка-отказа-для-всех-драйверов)
+8. [Bit-banding и SysStatus/SysInitStatus](#8-bit-banding-и-sysstatussysinitstatus)
+9. [Примеры использования](#9-примеры-использования)
+10. [Угловые случаи](#10-угловые-случаи)
+11. [См. также](#см-также)
 
 ---
 
-### 1. Зачем это нужно — связующая часть между всеми драйверами
+## 1. Зачем это нужно — связующая часть между всеми драйверами
 
 `system.hpp`/`system.cpp` — не отдельная периферия, а **общая инфраструктура**, от которой
 зависят буквально все остальные драйверы этого проекта:
@@ -605,7 +609,7 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
 Три вещи, которые `System` даёт всем остальным драйверам:
 
 1. **`SysStatus`/`SysInitStatus`** — два общих enum'а результата операции/инициализации,
-   которые использует буквально каждый `.hpp` в `Drivers/src` (см. §7) — единый словарь
+   которые использует буквально каждый `.hpp` в `Drivers/src` (см. §8) — единый словарь
    "успех/ошибка/занято/таймаут" вместо своего набора кодов в каждом драйвере.
 2. **Тактовые переменные** (`SystemCoreClock`, `APB1BusClock`, ...) — записываются
    [`ClockSystem::Init<config>()`](RCC.md), читаются `UART`/`TIM`/`SPI` для расчёта делителей/BRR
@@ -620,7 +624,9 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
 GetTick/Delay_ms/таймауты имеют погрешность частоты тика; для G0 LSE 32768 Гц
 с AHB /1 это 1024 тика/с. Подробности — [RCC.md](RCC.md).
 
-### 2. System::Init() — что настраивается при старте
+---
+
+## 2. System::Init() — что настраивается при старте
 
 ```cpp
 static SysInitStatus Init();
@@ -685,13 +691,13 @@ int main() {
 
 ---
 
-### 3. Тактовые переменные — общая память между RCC и всеми драйверами
+## 3. Тактовые переменные — общая память между RCC и всеми драйверами
 
 ```cpp
 static uint32_t SystemCoreClock; // AHB/ядро/GPIO/DMA/USB
 static uint32_t APB1BusClock;    // WWDG, SPI2/3, USART2/3, UART4/5, I2C1-3, CAN1/2, DAC
 static uint32_t APB2BusClock;    // USART1/6, ADC1-3, SPI1/4, SYSCFG, SAI1/2
-static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (с учётом правила "x2", см. RCC.md §2)
+static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (с учётом правила "x2", см. RCC.md)
 static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 ```
 
@@ -713,7 +719,7 @@ HSI, а **ClockSystem::Init<config>() применяет выбранные ча
 
 ---
 
-### 4. SysTick и миллисекундный счётчик
+## 4. SysTick и миллисекундный счётчик
 
 `System::WaitBits(reg, mask, value, timeout)` ожидает `(reg & mask) == value`.
 Для сброса битов value=0, для установки всех битов value=mask; для поля регистра
@@ -758,7 +764,7 @@ while ((GetTick() - tick_start) < wait) {}
 половины диапазона счётчика.
 
 Вычитание вместо прямого сравнения — это то же самое "wrap-around safe" рассуждение, что и в
-[`TIM_HWCounter`](TIM.md#67-tim_hwcounter)/`Delay_us()` ниже: беззнаковое вычитание корректно
+[`TIM_HWCounter`](TIM.md#11-дополнительные-режимы-и-интеграция)/`Delay_us()` ниже: беззнаковое вычитание корректно
 работает даже когда `Tick` успевает переполниться (после ~49.7 суток непрерывной работы) прямо
 посреди ожидания — `target - tick_start` останется верным расстоянием в тиках, а `GetTick() <
 target` в этот момент дало бы неверный результат. Все таймауты в проекте (`USART::Send`,
@@ -784,7 +790,9 @@ target` в этот момент дало бы неверный результа
 из их обработчиков нельзя вызывать `Delay_ms()` или ждать таймаут по `GetTick()`.
 Равные приоритеты вытеснения тоже не прерывают друг друга независимо от subpriority.
 
-### 5. Микросекундная задержка через DWT CYCCNT
+---
+
+## 5. Микросекундная задержка через DWT CYCCNT
 
 ```cpp
 #if not defined(STM32L0) && not defined(STM32G0)
@@ -830,7 +838,7 @@ CYCCNT должен работать, `SystemCoreClock` — соответств
 
 ---
 
-### MPU на STM32F7
+## 6. MPU на STM32F7
 
 `System::MPU_Init()` устанавливает защиту от доступа в регионе MPU №0.
 Она закрывает неиспользуемые адреса внешней памяти от обычных и спекулятивных
@@ -883,7 +891,7 @@ System::Init();                // Кеши F7 включаются после н
 Сама защита не меняет кешируемость внутренней SRAM.
 `MPU_Init()` остаётся необязательным и не создаёт DMA-области.
 
-#### Необязательные некешируемые DMA-области (F7 + base)
+### Необязательные некешируемые DMA-области (F7 + base)
 
 В `project.json` базы включите драйверы и задайте именованные области:
 
@@ -980,7 +988,9 @@ CMSIS обрабатывает пересекающиеся 32-байтные с
 согласование кеша и DMA — в
 [ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf).
 
-### 6. DebugTrap — единая точка отказа для всех драйверов
+---
+
+## 7. DebugTrap — единая точка отказа для всех драйверов
 
 ```cpp
 [[noreturn]] static void DebugTrap(const char* msg);
@@ -997,8 +1007,15 @@ CMSIS обрабатывает пересекающиеся 32-байтные с
   инлайнит/уничтожает стек). На F4/F7 при включённой трассировке и канале ITM №0
   строка с нулевым завершением выводится через **блокирующий SWO** посредством
   `ITM_SendChar()`. Затем выполняется `__BKPT(0)` и бесконечный цикл.
-- **Release**: аргумент игнорируется, выполняется бесконечный цикл. Удаление
-  строк зависит от оптимизации компилятора/линкера и функцией не гарантируется.
+- **Release**: тело inline в system.hpp игнорирует аргумент и выполняет
+  бесконечный цикл. Оптимизатор может удалить неиспользуемые строки без LTO;
+  фактическое удаление зависит от параметров сборки.
+
+DebugTrap намеренно не constexpr. Проверки постоянных привязок вызывают его с
+разными сообщениями. Неверный аргумент при constinit/consteval отклоняется при
+компиляции на строке соответствующего вызова. Без constinit неверное
+runtime-создание останавливается в DebugTrap. По контракту API драйверы требуется
+объявлять с constinit. Примеры и диагностика: [Initialization.md](Initialization.md).
 
 ITM/SWO настраивает отладчик. При выключенной трассировке или `nullptr` вывод
 пропускается; на G0/L0 ITM-вывода нет. Включённый, но остановившийся канал ITM
@@ -1009,7 +1026,7 @@ UART для `DebugTrap()` нет.
 
 ---
 
-### 7. Bit-banding и SysStatus/SysInitStatus
+## 8. Bit-banding и SysStatus/SysInitStatus
 
 ```cpp
 enum class SysStatus     : uint8_t { OK, Error, Busy, NotInit, Timeout };
@@ -1031,9 +1048,9 @@ bit-banding и почему она доступна только на F4 — в 
 
 ---
 
-### 8. Примеры использования
+## 9. Примеры использования
 
-#### Стандартная последовательность старта (как в main.cpp)
+### Стандартная последовательность старта (как в main.cpp)
 
 ```cpp
 int main() {
@@ -1056,14 +1073,14 @@ extern "C" void NMI_Handler(void)       { while(1){} }
 extern "C" void HardFault_Handler(void) { while(1){} }
 ```
 
-#### Микросекундная задержка
+### Микросекундная задержка
 
 ```cpp
 System::Enable_CYCCNT();     // один раз
 System::Delay_us(50);        // 50 мкс, блокирующая
 ```
 
-#### DebugTrap с выводом через SWO
+### DebugTrap с выводом через SWO
 
 ```cpp
 // Включить канал ITM №0 / SWO в отладчике (F4/F7, сборка DEBUG).
@@ -1072,7 +1089,7 @@ System::DebugTrap("Invalid peripheral pin"); // блокирующий выво�
 
 ---
 
-### 9. Угловые случаи
+## 10. Угловые случаи
 
 - **Порядок вызовов важен**: `System::Init()` →
   `ClockSystem::Init<config>()` → `System::Enable_CYCCNT()` → `SetUp()` любых
@@ -1092,13 +1109,18 @@ System::DebugTrap("Invalid peripheral pin"); // блокирующий выво�
 
 ---
 
-### См. также
+## См. также
 
 - [RCC.md](RCC.md) — единственный писатель тактовых переменных, описанных в §3.
-- [GPIO.md](GPIO.md) — `BIT_BB`/`BB_RD`/`BB_WR` (§7) используются `PIN::*_BB()`-методами.
+- [GPIO.md](GPIO.md) — `BIT_BB`/`BB_RD`/`BB_WR` (§8) используются `PIN::*_BB()`-методами.
 - [IRQ_Registry.md](IRQ_Registry.md) — независимый механизм диспетчеризации периферийных IRQ;
   `SysTick_Handler`/`NMI_Handler`/`HardFault_Handler` и подобные исключения Cortex-M сюда не
   входят и настраиваются отдельно (см. `src/main.cpp`).
 - [UART.md](UART.md), [TIM.md](TIM.md), [SPI.md](SPI.md), [RTC.md](RTC.md), [DMA.md](DMA.md),
-  [Flash.md](Flash.md) — все читают `SysStatus`/`SysInitStatus` (§7) и `System::GetTick()` (§4)
+  [Flash.md](Flash.md) — все читают `SysStatus`/`SysInitStatus` (§8) и `System::GetTick()` (§4)
   из этого модуля.
+
+- [RCC.md](RCC.md)
+- [DMA.md](DMA.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+- [Initialization.md](Initialization.md)

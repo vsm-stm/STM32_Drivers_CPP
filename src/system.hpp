@@ -294,13 +294,19 @@ public:
 	 *       blocking ITM channel 0 on F4/F7 when trace is enabled, then executes
 	 *       BKPT and loops forever. The debugger must configure SWO; an enabled
 	 *       but stalled ITM port can hold this call before BKPT. G0/L0 have no SWO.
-	 *       Release ignores the message and loops forever; elimination of the
-	 *       caller's string literals depends on compiler/linker optimisation.
+	 *       Release uses an inline body which ignores the message and loops forever.
+	 *       This lets optimisation discard unused diagnostic strings at call sites.
+	 *       This function is deliberately not constexpr: a failing constructor
+	 *       check cannot be evaluated in a constinit/consteval initializer.
 	 *
 	 * @param msg  Null-terminated ASCII description of the fault.
 	 *             Must remain readable; nullptr skips the output.
 	 */
+#ifdef DEBUG
 	[[noreturn]] static void DebugTrap(const char* msg);
+#else
+	[[noreturn]] static inline void DebugTrap(const char*) { while (1) {} }
+#endif
 };
 
 // ---------------------------------------------------------------------------

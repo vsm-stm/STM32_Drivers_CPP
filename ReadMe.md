@@ -12,7 +12,17 @@ separate Config object or template driver API. See [Initialization.md](Initializ
 через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
 константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
 `DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
-Подробнее: [Initialization.md](Initialization.md).
+Подробнее: [Initialization.md](Initialization.md): порядок настройки, варианты
+с DMA/без DMA, триггеры, каналы TIM, наследование и сообщения ошибок.
+
+Документация существующих модулей оформлена по образцу [GPIO.md](GPIO.md):
+English/Русский, оглавление для каждого языка, нумерованные разделы с описанием
+работы, примеры использования, ограничения и ссылки на связанные модули.
+
+`constinit` обязателен по контракту API. Каждая неверная привязка вызывает
+`DebugTrap` с конкретной причиной: при `constinit` это ошибка компиляции, без него
+при runtime-создании — останов программы. `__builtin_unreachable` для этих проверок
+не используется. В Release DebugTrap определён inline без вывода сообщения.
 
 
 *[English](#english) · [Русский](#русский)*
@@ -109,15 +119,16 @@ Only **compilation** has been checked (release, one module at a time; F446RE, F7
 | DSP | subset of CMSIS-DSP v1.16.2 | ok | not tested | not tested |
 | CRC | `crc/crc32.*` (no tables, no HW peripheral — portable to any family) | ok | ok | ok |
 
-Current RTC/ADC status is tracked in their Review files; implementation without a build does not establish hardware correctness. DAC revisions are described in [Review/DAC.md](Review/DAC.md). DMA changes and remaining integration work are tracked in [Review/DMA.md](Review/done/DMA.md).
+RTC/ADC behavior and limitations are documented in [RTC.md](RTC.md) and
+[ADC.md](ADC.md); implementation without a build does not establish hardware
+correctness. DAC and DMA contracts are described in [DAC.md](DAC.md) and [DMA.md](DMA.md).
 
 ADC configuration, status/callback API and cache handover are described in [ADC.md](ADC.md).
 Conversion policy, DMA and TIM/source are fixed by the constructor. One Start()
 uses the bound resources; Start(buffer, count) is required when DMA is present.
 ADC and DMA have separate handlers with no hardware waits. HT is explicitly enabled
-through IRQ_en; finite DMA always uses TC. See [Review/ADC.md](Review/ADC.md).
-The older [assembly comparison](Review/ADC_IRQ_Timing.md) applies to the previous
-combined IRQ. The new ADC API has not been rebuilt or tested on hardware.
+through IRQ_en; finite DMA always uses TC. See [ADC.md](ADC.md).
+The new ADC API has not been rebuilt or tested on hardware.
 
 Families other than F4 / F7 / G0 (including G4) are not supported by the drivers: set `"drivers": null` and write directly against the registers, or port the library (see "Adding a new MCU").
 
@@ -193,7 +204,10 @@ Pins for USART and SPI are selected from nested structures:
 constinit USART debug(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
-Each pin from `USART::_1::TX::PB6` carries its owning peripheral base. A mismatched pin rejects constinit construction at compilation. The deprecated CMSIS-pointer USART constructor retains runtime DebugTrap checks.
+Each pin from `USART::_1::TX::PB6` carries its owning peripheral base. A mismatched
+pin rejects constinit construction at compilation through a specific DebugTrap
+call. Without constinit, an invalid runtime construction stops in that trap.
+The deprecated CMSIS-pointer constructor also retains runtime instance lookup.
 
 ### IRQ_Registry — a single interrupt dispatcher
 
@@ -235,7 +249,7 @@ unless it initializes FPU itself. On F7 the core caches remain enabled;
 System provides common cache operations; peripheral drivers will call them
 during buffer handover as their individual reviews are completed.
 MPU region setup and external-memory access permissions are described in
-[System.md](System.md#mpu-on-stm32f7).
+[System.md](System.md#6-mpu-on-stm32f7).
 
 ### Working with time
 
@@ -979,7 +993,7 @@ built or tested on hardware in this pass.
 F4/F7/G0 are supported. `init()` checks the generated bank map against the
 hardware mode and rejects bank swap; it does not change option bytes.
 `erase_sector()` uses a map index. `mass_erase()` takes 1/2/3 for bank 1/2/both.
-GetFlashSector(index) provides geometry: uniform pages use bank constants and arithmetic, irregular sectors use a table. Config format 4 requires the matching flash_config.h.in template; see [Review/FlashGeometry.md](Review/FlashGeometry.md).
+GetFlashSector(index) provides geometry: uniform pages use bank constants and arithmetic, irregular sectors use a table. Config format 4 requires the matching flash_config.h.in template; see [Flash.md](Flash.md).
 
 ```cpp
 if (flash_base::init() != SysInitStatus::InitOK) return;
@@ -1218,14 +1232,16 @@ callbacks через наследование и DeInit; Recover перенес�
 | DSP | подмножество CMSIS-DSP v1.16.2 | ок | не проверялось | не проверялось |
 | CRC | `crc/crc32.*` (без таблиц, без HW-периферии — переносимо на любое семейство) | ок | ок | ок |
 
-Текущий статус RTC и ADC указан в соответствующих Review-файлах; реализация без сборки не считается проверенной на плате. Правки DAC описаны в [Review/DAC.md](Review/DAC.md). Правки DMA и оставшаяся интеграция отмечены в [Review/DMA.md](Review/done/DMA.md).
+Поведение и ограничения RTC и ADC описаны в [RTC.md](RTC.md) и [ADC.md](ADC.md);
+реализация без сборки не считается проверенной на плате. Условия работы DAC и DMA
+описаны в [DAC.md](DAC.md) и [DMA.md](DMA.md).
 
 Настройка ADC, статусы/callbacks и обслуживание кеша описаны в [ADC.md](ADC.md).
 Режим преобразований, DMA и TIM/источник закреплены конструктором. Используется
 один Start(); при наличии DMA — Start(buffer, count). ADC и DMA обслуживаются
 отдельными обработчиками без аппаратных ожиданий. HT включается явно через
-IRQ_en, конечный DMA всегда использует TC. См. [Review/ADC.md](Review/ADC.md).
-Прежнее [сравнение ассемблера](Review/ADC_IRQ_Timing.md) относится к общему IRQ
+IRQ_en, конечный DMA всегда использует TC. См. [ADC.md](ADC.md).
+Прежнее сравнение ассемблера относится к общему IRQ
 старой версии. Сборка и аппаратные тесты нового ADC API не запускались.
 
 Семейства, отличные от F4 / F7 / G0 (в т.ч. G4), драйверами не поддерживаются: ставьте `"drivers": null` и пишите под регистры, либо портируйте (см. «Добавление нового МК»).
@@ -1346,7 +1362,7 @@ FPU, выполненную startup. При другом startup уберите 
 сам не включает FPU. На F7 кеши ядра остаются включёнными; обслуживание кеша
 реализовано общими функциями System, которые подключим в периферии при её
 разборе. Настройка MPU и разрешение
-доступа к внешней памяти описаны в [System.md](System.md#mpu-на-stm32f7).
+доступа к внешней памяти описаны в [System.md](System.md#6-mpu-на-stm32f7).
 
 ### Работа со временем
 
@@ -2095,7 +2111,7 @@ DeInit выключает собственные события и удаляе�
 Поддерживаются F4/F7/G0. `init()` сверяет карту банков с аппаратным режимом и
 отклоняет bank swap; option bytes не меняет. `erase_sector()` принимает индекс
 карты. `mass_erase()` принимает 1/2/3 для первого/второго/обоих банков.
-Геометрия доступна через GetFlashSector(index): равномерные страницы вычисляются по константам банков, неравномерные используют таблицу. Формат конфигурации 4 требует согласованного flash_config.h.in; миграция — [Review/FlashGeometry.md](Review/FlashGeometry.md).
+Геометрия доступна через GetFlashSector(index): равномерные страницы вычисляются по константам банков, неравномерные используют таблицу. Формат конфигурации 4 требует согласованного flash_config.h.in; описание — [Flash.md](Flash.md).
 
 ```cpp
 if (flash_base::init() != SysInitStatus::InitOK) return;

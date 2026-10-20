@@ -208,18 +208,28 @@ public:
           _dma_tx_irq(*this), _dma_rx_irq(*this),
           _instance(instance), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
     {
-        if (!sck.IsValid()
-            || (sck.periph_base && sck.periph_base != instance.periph)
-            || (mosi.IsValid() && mosi.periph_base && mosi.periph_base != instance.periph)
-            || (miso.IsValid() && miso.periph_base && miso.periph_base != instance.periph)
-            || (ss.IsValid() && ss.periph_base && ss.periph_base != instance.periph)
-            || !DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per)
-            || !DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per)
-            || DMA_Sx::SameResource(dma_tx, dma_rx)
-            || (direction != Direction::TX && direction != Direction::RX && direction != Direction::TXRX)
-            || (direction == Direction::TX && _dma_rx.HasSelection())
-            || (direction == Direction::RX && _dma_tx.HasSelection()))
-            __builtin_unreachable();
+        if (!sck.IsValid())
+            System::DebugTrap("SPI: SCK pin is required");
+        if (sck.periph_base && sck.periph_base != instance.periph)
+            System::DebugTrap("SPI: SCK pin belongs to another peripheral");
+        if (mosi.IsValid() && mosi.periph_base && mosi.periph_base != instance.periph)
+            System::DebugTrap("SPI: MOSI pin belongs to another peripheral");
+        if (miso.IsValid() && miso.periph_base && miso.periph_base != instance.periph)
+            System::DebugTrap("SPI: MISO pin belongs to another peripheral");
+        if (ss.IsValid() && ss.periph_base && ss.periph_base != instance.periph)
+            System::DebugTrap("SPI: NSS pin belongs to another peripheral");
+        if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
+            System::DebugTrap("SPI: invalid TX DMA route");
+        if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
+            System::DebugTrap("SPI: invalid RX DMA route");
+        if (DMA_Sx::SameResource(dma_tx, dma_rx))
+            System::DebugTrap("SPI: TX and RX require different DMA resources");
+        if (direction != Direction::TX && direction != Direction::RX && direction != Direction::TXRX)
+            System::DebugTrap("SPI: invalid direction");
+        if (direction == Direction::TX && _dma_rx.HasSelection())
+            System::DebugTrap("SPI: TX direction cannot use RX DMA");
+        if (direction == Direction::RX && _dma_tx.HasSelection())
+            System::DebugTrap("SPI: RX direction cannot use TX DMA");
     }
     SPI() = delete;
     SPI(const SPI&) = delete;

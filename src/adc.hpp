@@ -37,7 +37,7 @@ struct ADC_PIN : public PIN {
 	consteval ADC_PIN(uintptr_t port, uint32_t pin, uint32_t ch, uint32_t adc_base)
 		: PIN(port, pin, 0, adc_base), channel(static_cast<uint8_t>(ch))
 	{
-		if (ch > 18) __builtin_unreachable();
+		if (ch > 18) System::DebugTrap("ADC_PIN: channel must be in 0..18");
 		switch (adc_base) {
 		case ADC1_BASE:
 #if defined(ADC2_BASE)
@@ -48,7 +48,7 @@ struct ADC_PIN : public PIN {
 #endif
 			break;
 		default:
-			__builtin_unreachable();
+			System::DebugTrap("ADC_PIN: ADC is not available on this device");
 		}
 	}
 };
@@ -157,11 +157,14 @@ public:
 #endif
 		  _timer(timer), _trigger(source), _dma_irq(*this)
     {
-        if (!DMA_Sx::RouteMatches(dma, instance.periph, DMA_Sx::DIR::From_Per)
-            || (conversion != Conversion::Single && conversion != Conversion::Continuous)
-            || (conversion == Conversion::Continuous && source != Trigger::None)
-            || ((source != Trigger::None && source != Trigger::EXTI11) != (timer != nullptr)))
-            __builtin_unreachable();
+        if (!DMA_Sx::RouteMatches(dma, instance.periph, DMA_Sx::DIR::From_Per))
+            System::DebugTrap("ADC: invalid RX DMA route");
+        if (conversion != Conversion::Single && conversion != Conversion::Continuous)
+            System::DebugTrap("ADC: invalid conversion mode");
+        if (conversion == Conversion::Continuous && source != Trigger::None)
+            System::DebugTrap("ADC: continuous conversion cannot use a trigger");
+        if ((source != Trigger::None && source != Trigger::EXTI11) != (timer != nullptr))
+            System::DebugTrap("ADC: timer pointer is required only for a timer trigger");
     }
 	ADC_N() = delete;
 	ADC_N(const ADC_N&) = delete;

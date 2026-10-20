@@ -34,7 +34,6 @@
 #  define ADC_N_G0_IRQN  ADC1_IRQn
 #endif
 
-	#undef ADC_N_G0_IRQN
 #elif defined(STM32F4) || defined(STM32F7)
 // DMA routes are constructor parameters; this table contains hardware clocks/IRQs only.
 
@@ -331,6 +330,7 @@ struct _1 {
     };
 
 };
+#undef ADC_N_G0_IRQN
 #endif
 
 #endif  // Section A: defined(ADC_HPP_) && !defined(ADC_DEFS_CPP)

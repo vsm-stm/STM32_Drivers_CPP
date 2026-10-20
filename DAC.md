@@ -1,25 +1,39 @@
-# DAC
+# DAC / DAC_Module — Detailed Description
 
-## Constant initialization / Постоянная инициализация
+*[English](#english) · [Русский](#русский)*
 
-Fixed peripheral bindings now use `constexpr` constructors and static/global
-objects declared with `constinit`. The first argument is `_N::instance` from the
-driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
-G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
-separate Config object or template driver API. See [Initialization.md](Initialization.md).
-
-Постоянные привязки проверяются при объявлении статического/глобального объекта
-через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
-константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
-`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
-Подробнее: [Initialization.md](Initialization.md).
-
-
-[English](#english) · [Русский](#русский)
+---
 
 ## English
 
-### Configuration and API
+## Table of Contents
+
+1. [Why This Is Needed](#1-why-this-is-needed)
+2. [Constant Initialization and Constructor Diagnostics](#2-constant-initialization-and-constructor-diagnostics)
+3. [Configuration and API](#3-configuration-and-api)
+4. [Setup and writes](#4-setup-and-writes)
+5. [Devices and channel lifetime](#5-devices-and-channel-lifetime)
+6. [Usage Examples](#6-usage-examples)
+7. [Edge Cases](#7-edge-cases)
+8. [See Also](#see-also)
+
+---
+
+## 1. Why This Is Needed
+
+One DAC_Module binds one available DAC channel. It configures its analog output and accepts 12-bit right-aligned values; the second channel can be used independently.
+
+---
+
+## 2. Constant Initialization and Constructor Diagnostics
+
+Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. DAC takes DAC_Module::_1::instance and a channel; it has no DMA binding.
+
+For peripheral binding checks, each failing condition calls non-constexpr `System::DebugTrap` with its cause. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+
+---
+
+## 3. Configuration and API
 
 DAC_USE_ATOMIC in dac.hpp defaults to 0 (ordinary control-register RMW).
 Set 1 for ST ATOMIC_* updates to CR/MCR and clock-enable fields; rebuild DAC
@@ -60,7 +74,9 @@ if (output.SetUp() == SysInitStatus::InitOK) {
 output.DeInit();
 ~~~
 
-### Setup and writes
+---
+
+## 4. Setup and writes
 
 SetUp rejects an invalid instance/channel and repeated initialization before
 touching hardware. After DeInit the same object can be initialized again.
@@ -88,12 +104,14 @@ startup, settling, output buffer and load. Direct DHR writes update DOR without
 a trigger when TEN is clear; see
 [ST RM0401, DAC channel enable and conversion](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 
-### Devices and channel lifetime
+---
+
+## 5. Devices and channel lifetime
 
 Supported families are F4/F7/G0 where the selected CMSIS header exposes DAC1.
 Selecting this module on a device without DAC produces a compile-time diagnostic.
 
-F410 supports only CH1; CH2 returns InitError. Other supported F4 DAC devices use
+F410 supports only CH1; CH2 is rejected during constinit construction. Other supported F4 DAC devices use
 the CMSIS DAC_CHANNEL2_SUPPORT capability. F7/G0 devices with DAC expose both
 channel slots. Check that the chosen output is bonded in the selected package.
 F410's single channel is documented in
@@ -109,14 +127,78 @@ Repeated DeInit is harmless. DAC/GPIO clocks and the analog pin configuration
 are retained. A disabled output is not a promise to hold the previous voltage.
 The destructor is passive: explicitly call DeInit before destroying an active object.
 
+---
+
+## 6. Usage Examples
+
+Independent example; check device/package availability and every returned status.
+
+```cpp
+#include "dac.hpp"
+constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1);
+// In main, after successful System/RCC initialization:
+if (output.SetUp() == SysInitStatus::InitOK) {
+    SysStatus written = output.SetValue(2048);
+    // Check written before relying on the output.
+}
+```
+
+---
+
+## 7. Edge Cases
+
+Values above 4095 return Error. Repeated SetUp requires DeInit; call configuration from main. GPIO/clock resources shared with another channel must be preserved.
+
+---
+
+## See Also
+
+- [Initialization.md](Initialization.md)
+- [GPIO.md](GPIO.md)
+- [System.md](System.md)
+
+---
+
 ## Русский
+
+## Содержание
+
+1. [Зачем это нужно](#1-зачем-это-нужно)
+2. [Постоянная инициализация и диагностика конструктора](#2-постоянная-инициализация-и-диагностика-конструктора)
+3. [Атомарные операции](#3-атомарные-операции)
+4. [Подключение и API](#4-подключение-и-api)
+5. [Настройка и запись](#5-настройка-и-запись)
+6. [Поддержка МК и время жизни](#6-поддержка-мк-и-время-жизни)
+7. [Примеры использования](#7-примеры-использования)
+8. [Угловые случаи](#8-угловые-случаи)
+9. [См. также](#см-также)
+
+---
+
+## 1. Зачем это нужно
+
+Один DAC_Module закрепляет один доступный канал DAC, настраивает аналоговый выход и принимает 12-битные значения с правым выравниванием. Второй канал может использоваться независимо.
+
+---
+
+## 2. Постоянная инициализация и диагностика конструктора
+
+Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. DAC принимает DAC_Module::_1::instance и канал; привязки DMA нет.
+
+При проверке привязок периферии каждое неверное условие вызывает неконстантный `System::DebugTrap` с причиной. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+
+---
+
+## 3. Атомарные операции
 
 DAC_USE_ATOMIC в dac.hpp: 0 по умолчанию — обычные изменения управляющих
 полей, 1 — ATOMIC_* ST для CR/MCR и включения тактирования. Пересоберите DAC
 и приложение после изменения. Запись данных и очистка W1C остаются прямыми.
 Настройка не заменяет согласование целой операции с каналом.
 
-### Подключение и API
+---
+
+## 4. Подключение и API
 
 Модуль включается в project.json:
 
@@ -152,7 +234,9 @@ if (output.SetUp() == SysInitStatus::InitOK) {
 output.DeInit();
 ~~~
 
-### Настройка и запись
+---
+
+## 5. Настройка и запись
 
 SetUp до обращения к регистрам проверяет экземпляр, канал и отсутствие повторной
 инициализации. Повторный SetUp — InitError; после DeInit настройка снова разрешена.
@@ -180,12 +264,14 @@ SetValue сначала проверяет инициализацию:
 без триггера; см.
 [ST RM0401, включение и преобразование DAC](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 
-### Поддержка МК и время жизни
+---
+
+## 6. Поддержка МК и время жизни
 
 Поддерживаются F4/F7/G0, если в выбранном CMSIS есть DAC1.
 При подключении модуля на МК без DAC выдаётся понятная ошибка компиляции.
 
-У F410 есть только CH1: SetUp для CH2 возвращает InitError.
+У F410 есть только CH1: CH2 отклоняется при constinit-конструировании.
 Для остальных F4 доступность CH2 проверяется по DAC_CHANNEL2_SUPPORT из CMSIS.
 У поддерживаемых F7/G0 с DAC доступны оба канала. Наличие вывода в конкретном
 корпусе проверяет пользователь. Единственный канал F410 описан в
@@ -200,3 +286,33 @@ DeInit отключает только выбранный канал и обну
 Повторный вызов безопасен. Общие тактовые сигналы DAC/GPIO и analog-настройка
 пина сохраняются. Отключение не гарантирует удержания прежнего напряжения.
 Деструктор не меняет аппаратуру: перед уничтожением активного объекта нужен DeInit.
+
+---
+
+## 7. Примеры использования
+
+Отдельный пример; проверьте наличие блока/пинов в корпусе и каждый возвращаемый статус.
+
+```cpp
+#include "dac.hpp"
+constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1);
+// In main, after successful System/RCC initialization:
+if (output.SetUp() == SysInitStatus::InitOK) {
+    SysStatus written = output.SetValue(2048);
+    // Check written before relying on the output.
+}
+```
+
+---
+
+## 8. Угловые случаи
+
+Значения выше 4095 возвращают Error. Повторный SetUp требует DeInit; настройка вызывается из main. Общие GPIO/такты другого канала должны сохраняться.
+
+---
+
+## См. также
+
+- [Initialization.md](Initialization.md)
+- [GPIO.md](GPIO.md)
+- [System.md](System.md)

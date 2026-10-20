@@ -1,25 +1,45 @@
-# TIM
+# TIM — Detailed Description
 
-## Constant initialization / Постоянная инициализация
+*[English](#english) · [Русский](#русский)*
 
-Fixed peripheral bindings now use `constexpr` constructors and static/global
-objects declared with `constinit`. The first argument is `_N::instance` from the
-driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
-G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
-separate Config object or template driver API. See [Initialization.md](Initialization.md).
-
-Постоянные привязки проверяются при объявлении статического/глобального объекта
-через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
-константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
-`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
-Подробнее: [Initialization.md](Initialization.md).
-
-
-[English](#english) · [Русский](#русский)
+---
 
 ## English
 
-### 1. One timer and its channel resources
+## Table of Contents
+
+1. [Why This Is Needed](#1-why-this-is-needed)
+2. [Constant Initialization and Constructor Diagnostics](#2-constant-initialization-and-constructor-diagnostics)
+3. [One timer and its channel resources](#3-one-timer-and-its-channel-resources)
+4. [Common setup and units](#4-common-setup-and-units)
+5. [PWM and exact 0/100%](#5-pwm-and-exact-0100)
+6. [Capture and pin-free compare](#6-capture-and-pin-free-compare)
+7. [Hardware triggers](#7-hardware-triggers)
+8. [Independent PWM DMA](#8-independent-pwm-dma)
+9. [WS2812B through the common TIM](#9-ws2812b-through-the-common-tim)
+10. [IRQ and teardown](#10-irq-and-teardown)
+11. [Additional Modes and Integration](#11-additional-modes-and-integration)
+12. [Usage Examples](#12-usage-examples)
+13. [Edge Cases](#13-edge-cases)
+14. [See Also](#see-also)
+
+---
+
+## 1. Why This Is Needed
+
+One TIM object owns a counter base and configures channel roles through functions. Channels share PSC/ARR; whole-timer modes reserve the required resources. DMA and an optional second timer are fixed at construction.
+
+---
+
+## 2. Constant Initialization and Constructor Diagnostics
+
+Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use the provided _N::instance, named pins and optional _N::DMA routes. G0 takes numeric DMAx_Channely_BASE selections; the peripheral fixes the request source.
+
+For peripheral binding checks, each failing condition calls non-constexpr `System::DebugTrap` with its cause. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+
+---
+
+## 3. One timer and its channel resources
 
 TIM_USE_ATOMIC in tim.hpp defaults to 0; 1 selects ST ATOMIC_* control/RCC
 updates. Rebuild TIM and its users after changing it. DMA_USE_ATOMIC is separate.
@@ -64,7 +84,9 @@ available as compatibility classes. Current encoder, pulse-burst and hardware
 counter and finite quadrature functions are described below. Their old commented
 implementations are not active.
 
-### 2. Common setup and units
+---
+
+## 4. Common setup and units
 
 ```cpp
 SysInitStatus SetUp(uint32_t freq, void (*callback)() = nullptr, uint32_t period = 0);
@@ -104,7 +126,9 @@ constinit TIM tick(TIM::_3::instance);
 if (tick.SetUp(1000, &Tick) == SysInitStatus::InitOK) tick.Start();
 ```
 
-### 3. PWM and exact 0/100%
+---
+
+## 5. PWM and exact 0/100%
 
 ```cpp
 constinit TIM pwm(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
@@ -133,7 +157,9 @@ with an explicit valid PWM period, through DeInit/SetUp.
 Both return NotInit, Error, Busy (DMA owns this CCR) or OK. PWM writes apply via
 preload; they do not promise an immediate phase change.
 
-### 4. Capture and pin-free compare
+---
+
+## 6. Capture and pin-free compare
 
 All channels share PSC/ARR. Different channel roles can coexist, but do not
 have independent counter frequencies.
@@ -169,7 +195,9 @@ configures only hardware compare without an interrupt; the channel is still
 owned and cannot be initialized again. This is also how a direct ADC CCx event
 is prepared.
 
-### 5. Hardware triggers
+---
+
+## 7. Hardware triggers
 
 `SetUpTrigger(TIM::Trigger::Update)` selects TRGO without any timer IRQ. It is
 one-time, stopped configuration and requires a master-capable timer. Available
@@ -190,7 +218,9 @@ ADC constructor accepts `TIM*` and an ADC source. Configure TIM before ADC SetUp
 ADC Start arms the capture before starting this TIM. Stop/error stops the timer.
 No separate TIM_TriggerGenerator is used. See [ADC.md](ADC.md).
 
-### 6. Independent PWM DMA
+---
+
+## 8. Independent PWM DMA
 
 DMAReq is passed in the constructor; TIM owns/configures DMA in SetUpPWM.
 F4/F7 take a named Req; G0 takes only a physical channel. The route is checked
@@ -245,7 +275,9 @@ at priorities that prevent mutual preemption.
 SetUpPWM enables DMA sources and NVIC during initialization. SendDMA restores
 TE/DME through Enable_IRQ(..., false), preserving the caller's NVIC mask.
 
-### 7. WS2812B through the common TIM
+---
+
+## 9. WS2812B through the common TIM
 
 ```cpp
 constexpr uint32_t period = 80; // Example: 64 MHz CNT clock / 800 kHz.
@@ -266,7 +298,9 @@ CCR values and reset-trailer length for the actual clock and LED requirements.
 The existing encoder buffer remains unchanged; no GetOutput/AttachDMA is needed.
 DMA TC concerns the buffer, while physical/reset timing remains in the waveform.
 
-### 8. IRQ and teardown
+---
+
+## 10. IRQ and teardown
 
 SetUp registers TIM on its Update/CC vectors (once for a shared vector).
 SetUpPWM registers a distinct DMA handler for each bound DMA, even if their
@@ -286,9 +320,241 @@ only owned registrations, reset/disable this TIM and clear callbacks/roles.
 Shared handlers/NVIC and shared DMA clocks remain. Constructor bindings survive
 for a later explicit setup. DeInit may wait for DMA stop and invokes no callback.
 
+---
+
+## 11. Additional Modes and Integration
+
+### Additional TIM modes
+
+All modes below use the same TIM class and constructor channel bindings.
+Whole-timer initialization replaces ordinary SetUp; configuration is fixed until
+DeInit. Callbacks are optional and are passed only at initialization. No IRQ
+waits for hardware. ETR is deferred.
+
+### Encoder
+
+```cpp
+constinit TIM encoder(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+if (encoder.SetUpEncoder(65536, TIM::EncoderMode::X4) == SysInitStatus::InitOK)
+    encoder.Start();
+const uint32_t position = encoder.Count();
+```
+
+Only CH1/CH2 support hardware encoder input. SetUpEncoder requires both pins,
+no DMA; it occupies the whole timer. period is explicit, ARR=period-1, PSC=0.
+X2_CH1/X2_CH2 count both edges of that input; X4 counts both inputs. Count reads
+raw CNT, with hardware wrap and no signed conversion/software extension. No
+IRQ or callback is required. [RM0431, TIMx_SMCR](https://www.st.com/resource/en/reference_manual/dm00305990.pdf).
+
+### Quadrature generation
+
+```cpp
+void Done(); // Optional; called from the second TIM's IRQ after both timers stop.
+constinit TIM counter(TIM::_2::instance);
+constinit TIM generator(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
+if (generator.SetUpQuadrature(TIM::Channel::CH1, TIM::Channel::CH2,
+        1000, 1000, &Done) == SysInitStatus::InitOK) {
+    generator.GenPulse(100); // Check SysStatus; starts both timers.
+}
+// In main: counter.Count() reads full A/B cycles directly from CNT.
+// After stopping: generator.GenPulse(-100) reverses phase order. Check status.
+```
+
+SetUpQuadrature replaces ordinary SetUp and reserves the whole generator plus
+its constructor-bound counter. a/b select two distinct bound output pins, with
+no DMA. freq is full cycles/s; period is generator ticks per half cycle (even,
+at least 4). Two toggle channels have compare values floor(period/4) and
+floor(period/4)+period/2. Thus their separation is one quarter of the full A/B
+cycle. Base calculation uses the existing integer divider policy; requested Hz
+can differ from actual Hz.
+
+The counter is initialized automatically over ITR/Update, PSC=1: two generator
+Updates advance its CNT by one full cycle. There is no IRQ/software accumulation
+per cycle. GenPulse(N) resets both CNT/prescaler phases, arms one compare and
+starts the counter before the generator. Service UG is hidden from TRGO while
+the source is stopped, so it is not included in the count. See [RM0090, MMS
+Enable/Update](https://www.st.com/resource/en/reference_manual/rm0090-stm32f407-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+and [RM0444, EGR.UG](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+
+- Positive N: A leads B; negative N: B leads A. Direction changes the polarity
+  of the selected A channel, not an unconditional CH1. Magnitude is full cycles.
+- Zero leaves a stopped pair unchanged. Busy if either timer is running. Error
+  if |N| exceeds the counter range: 65535 on 16-bit hardware; all int32_t
+  magnitudes, including INT32_MIN, fit a 32-bit counter. No signed negation overflow.
+- Optional Done is fixed in SetUpQuadrature. The counter's compare IRQ stops
+  both timers, disarms CC1IE and then calls Done once. The generator has no
+  enabled interrupt source. IRQ latency may allow excess edges or a partial cycle;
+  no exact hardware termination is promised.
+- Stop stops both timers without forcing A/B LOW. GenPulse resets phase for a
+  new series, including after manual Stop. Use GenPulse to start, not plain Start.
+- The caller serializes main operations with both timers' IRQs. GenPulse and
+  DeInit belong to main. DeInit releases both acquired TIMs; constructor bindings
+  survive. The counter must be free before setup and must not be independently
+  reconfigured while owned. Neither destructor performs teardown.
+
+### PWM input
+
+```cpp
+constinit TIM measure(TIM::_3::instance, {TIM::_3::CH1::PA6});
+if (measure.SetUp(100, nullptr, 10000) == SysInitStatus::InitOK
+    && measure.SetUpPulseMeasure(TIM::Channel::CH1) == SysInitStatus::InitOK)
+    measure.Start();
+const uint32_t period_ticks = measure.GetCapture(TIM::Channel::CH1);
+const uint32_t high_ticks = measure.GetCapture(TIM::Channel::CH2);
+```
+
+Ordinary SetUp needs an explicit period. SetUpPulseMeasure accepts input CH1
+or CH2, reserves both channels and SMCR. The selected channel captures rising
+edges/period and resets CNT; the paired channel captures the falling edge/HIGH
+width. For input CH2, swap CH1/CH2 in the two reads. No DMA on either channel.
+Optional callback reports the period edge only; no RAM snapshot. Two CCR reads
+are not an atomic pair. First-cycle validity, overflow, missing edges and
+overcapture are application responsibilities. Other channels share the resetting
+counter and cannot provide an independent time base.
+
+### ITR and common controls
+
+After ordinary SetUp, SetUpSlave(&source, SlaveMode::Reset/Gated/Trigger/
+ExternalClock) configures SMCR once, while both timers are stopped. The source
+must already have SetUpTrigger configured. TIM neither reconfigures the source
+nor enables it automatically. GetCounterClock reports the internal clock/PSC;
+it does not measure external event frequency. ExternalClock retains PSC and
+counts one CNT step per PSC+1 source edges. SetUpOnePulse fixes OPM once before
+Start; hardware clears CEN at Update. These functions affect the whole timer.
+
+ITR0..ITR3 use normal TRGO mapping, filtered by the selected CMSIS device.
+OC1-only slots and remapped inputs are not treated as TRGO. Unsupported routes
+return InitError. F410 has TIM5 → TIM1; its TIM5 LPTIM input is outside this API.
+The source must stay initialized while the receiver is in use.
+
+### Finite pulse series
+
+```cpp
+constinit TIM burst(TIM::_1::instance, {TIM::_1::CH1::PA8});
+if (burst.SetUpPulseBurst(TIM::Channel::CH1, 1000, 1000) == SysInitStatus::InitOK)
+    burst.RunPulses(100); // Check SysStatus; starts the burst.
+```
+
+The whole-timer mode uses PWM2, high time floor(period/2), with LOW at CNT=0
+and after terminal overflow. RCR=count-1 and OPM stop in hardware; optional
+completion callback needs only the final Update. Service UG loads registers
+with URS and its flag is cleared before Start. Zero count does not start.
+Maximum count: F4 256; F7 65536; G0 TIM1 65536, TIM15/16/17 256. Unsupported
+hardware/overflow returns an error. No software per-pulse count or automatic
+fallback to a second timer. [RM0410, TIMx_RCR](https://www.st.com/resource/en/reference_manual/rm0410-stm32f76xxx-and-stm32f77xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf),
+[RM0444, TIM15_RCR](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+
+```cpp
+constinit TIM pulses(TIM::_3::instance, {TIM::_3::CH1::PA6});
+constinit TIM counter(TIM::_2::instance);
+if (pulses.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
+    && pulses.SetUpPWM(TIM::Channel::CH1, 500) == SysInitStatus::InitOK
+    && pulses.SetUpTrigger() == SysInitStatus::InitOK
+    && counter.SetUpCounter(&pulses, 65536) == SysInitStatus::InitOK
+    && counter.StopAfter(100) == SysStatus::OK) {
+    counter.Start();
+    pulses.Start();
+}
+// counter.Count() reads CNT; no IRQ copy or software accumulation.
+```
+
+SetUpCounter replaces ordinary SetUp, fixes source/period and optional completion
+callback, uses PSC=0 and reserves CH1 for the stop compare. Source TRGO must be
+Update; its configuration is not changed. With no stop armed, Count works without
+IRQ. StopAfter/StopAt arm one compare while both timers are stopped; targets must
+be ahead of CNT within the current period. Before rearming a new series, Reset
+the counter as needed. Pending CC1IF is cleared on arm. Completion disables CC1IE,
+stops both timers and invokes the optional callback once.
+
+**IRQ stop has latency:** the source can emit additional pulses before the CPU
+clears CEN, and the last pulse can be partial. Stopping CNT does not force an
+output LOW. Hardware gating feedback is not implemented; use the separate RCR
+solution when exact hardware termination is required and supported.
+
+---
+
+## 12. Usage Examples
+
+Independent example; check device/package availability and every returned status.
+
+```cpp
+#include "tim.hpp"
+using T = TIM::_3;
+constinit TIM pwm(T::instance, {T::CH1::PA6});
+// In main, after System/RCC initialization:
+if (pwm.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
+    && pwm.SetUpPWM(TIM::Channel::CH1, 500) == SysInitStatus::InitOK)
+    pwm.Start();
+// Other examples are in their mode sections: capture, compare, DMA,
+// encoder, quadrature, pulse burst and a second hardware counter.
+```
+
+---
+
+## 13. Edge Cases
+
+Channels share the same counter frequency/period. A 16-bit PWM period is limited to 65535 ticks to represent 100%. IRQ-driven stop can emit extra/partial pulses. The caller masks affected IRQs for shared DIER changes. TC does not mean the last PWM period reached the output.
+
+---
+
+## See Also
+
+- [ST F4 LL TIM — PWM modes, preload, CCDS](https://github.com/STMicroelectronics/stm32f4xx-hal-driver/blob/master/Inc/stm32f4xx_ll_tim.h).
+- [ST G0 LL TIM — CC DMA selection](https://github.com/STMicroelectronics/stm32g0xx-hal-driver/blob/master/Inc/stm32g0xx_ll_tim.h).
+- [ST AN4031 — DMA requests and stopping F4/F7 streams](https://www.st.com/resource/en/application_note/dm00046011.pdf).
+- [ST AN5224 — DMAMUX request routing](https://www.st.com/resource/en/application_note/an5224-stm32-dmamux-the-dma-request-router-stmicroelectronics.pdf).
+- [RM0383 — F411 DMA maps](https://www.st.com/resource/en/reference_manual/DM00119316.pdf).
+- [RM0385 — F74/F75 DMA maps](https://www.st.com/resource/en/reference_manual/dm00124865.pdf).
+- [RM0410 — F76/F77 DMA maps](https://www.st.com/resource/en/reference_manual/rm0410-stm32f76xxx-and-stm32f77xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+- [RM0444 — G0 DMAMUX map](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+
+**Validation:** source/diff inspection only. No build, tests or hardware execution
+were performed for this API migration; the old compilation report is historical.
+
+- [Initialization.md](Initialization.md)
+- [GPIO.md](GPIO.md)
+- [DMA.md](DMA.md)
+- [ADC.md](ADC.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+
+---
+
 ## Русский
 
-### 1. Общий объект и привязки
+## Содержание
+
+1. [Зачем это нужно](#1-зачем-это-нужно)
+2. [Постоянная инициализация и диагностика конструктора](#2-постоянная-инициализация-и-диагностика-конструктора)
+3. [Общий объект и привязки](#3-общий-объект-и-привязки)
+4. [Один SetUp, прежние параметры](#4-один-setup-прежние-параметры)
+5. [PWM без forced active](#5-pwm-без-forced-active)
+6. [Capture и compare](#6-capture-и-compare)
+7. [TRGO и ADC](#7-trgo-и-adc)
+8. [Независимые PWM DMA](#8-независимые-pwm-dma)
+9. [WS2812B](#9-ws2812b)
+10. [IRQ и освобождение](#10-irq-и-освобождение)
+11. [Дополнительные режимы и интеграция](#11-дополнительные-режимы-и-интеграция)
+12. [Примеры использования](#12-примеры-использования)
+13. [Угловые случаи](#13-угловые-случаи)
+14. [См. также](#см-также)
+
+---
+
+## 1. Зачем это нужно
+
+Один TIM владеет базой счётчика и настраивает роли каналов функциями. Каналы используют общие PSC/ARR; режимы всего таймера занимают соответствующие ресурсы. DMA и необязательный второй таймер закрепляются конструктором.
+
+---
+
+## 2. Постоянная инициализация и диагностика конструктора
+
+Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте готовый _N::instance, именованные пины и необязательные маршруты _N::DMA. На G0 передаются числовые DMAx_Channely_BASE, источник запроса закрепляет периферия.
+
+При проверке привязок периферии каждое неверное условие вызывает неконстантный `System::DebugTrap` с причиной. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+
+---
+
+## 3. Общий объект и привязки
 
 Один TIM владеет одним аппаратным таймером и внутренними DMA его каналов.
 Сначала настраиваются System/RCC. В конструктор передаются DMAReq F4/F7 либо
@@ -329,7 +595,9 @@ constinit TIM generator(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::P
 энкодера, серий импульсов, аппаратного счётчика и конечной квадратуры описаны ниже.
 Их прежние закомментированные реализации не активны.
 
-### 2. Один SetUp, прежние параметры
+---
+
+## 4. Один SetUp, прежние параметры
 
 ```cpp
 SysInitStatus SetUp(uint32_t freq, void (*callback)() = nullptr, uint32_t period = 0);
@@ -358,7 +626,9 @@ constinit TIM tick(TIM::_3::instance);
 if (tick.SetUp(1000, &Tick) == SysInitStatus::InitOK) tick.Start();
 ```
 
-### 3. PWM без forced active
+---
+
+## 5. PWM без forced active
 
 ```cpp
 constinit TIM pwm(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
@@ -384,7 +654,9 @@ SetDuty ограничивает проценты значением 100; рас
 0..period. Возвращаются NotInit/Error/Busy/OK. При активном DMA менять CCR
 через эти методы нельзя. Новое значение применяется через preload.
 
-### 4. Capture и compare
+---
+
+## 6. Capture и compare
 
 PSC/ARR общие для всех каналов. Роли каналов могут различаться, частота CNT — одна.
 
@@ -419,7 +691,9 @@ Compare не требует GPIO: используется frozen OC, значе
 настраивается только аппаратное событие без IRQ; канал всё равно занят до
 DeInit. Такой compare может служить прямым CCx-триггером ADC.
 
-### 5. TRGO и ADC
+---
+
+## 7. TRGO и ADC
 
 SetUpTrigger(Trigger::Update) выбирает аппаратный TRGO без IRQ. Настройка
 однократная, до Start; нужен таймер с master mode. Доступны Update,
@@ -439,7 +713,9 @@ if (sampling.SetUp(1000) == SysInitStatus::InitOK) {
 запускает таймер. Stop/ошибка его останавливают. Отдельного TIM_TriggerGenerator
 нет. Примеры совместной работы — в [ADC.md](ADC.md).
 
-### 6. Независимые PWM DMA
+---
+
+## 8. Независимые PWM DMA
 
 DMA закреплён конструктором и настраивается внутри SetUpPWM. Самостоятельно
 SetUp у него не вызывают. Проверяется полный маршрут TIM/CHx/DMA. При отказе
@@ -488,7 +764,9 @@ TC означает, что DMA прочитал буфер, **не заверш
 SetUpPWM при инициализации включает источники DMA и NVIC. SendDMA восстанавливает
 TE/DME через Enable_IRQ(..., false), сохраняя маску NVIC вызывающего кода.
 
-### 7. WS2812B
+---
+
+## 9. WS2812B
 
 ```cpp
 constexpr uint32_t period = 80; // Пример: CNT 64 МГц / 800 кГц.
@@ -509,7 +787,9 @@ period=80 означает ARR=79. CCR и число нулей reset trailer в
 не менялся. GetOutput/AttachDMA больше не нужны. DMA TC освобождает буфер;
 физическое завершение и reset interval обеспечиваются самой последовательностью.
 
-### 8. IRQ и освобождение
+---
+
+## 10. IRQ и освобождение
 
 SetUp регистрирует TIM на Update/CC, один раз при общем векторе. Каждый DMA
 имеет отдельный объект обработчика; общий вектор требует места для каждого.
@@ -528,19 +808,18 @@ DeInit из main отключает запросы, останавливает/�
 такты контроллера DMA сохраняются. DeInit может ждать остановки DMA, callbacks
 при этом не вызывает. Автоматической очистки в деструкторе нет.
 
-## Additional TIM modes / Дополнительные режимы TIM
+---
 
-All modes below use the same TIM class and constructor channel bindings.
-Whole-timer initialization replaces ordinary SetUp; configuration is fixed until
-DeInit. Callbacks are optional and are passed only at initialization. No IRQ
-waits for hardware. ETR is deferred.
+## 11. Дополнительные режимы и интеграция
+
+### Дополнительные режимы TIM
 
 Все режимы ниже — функции общего TIM с прежними привязками каналов конструктора.
 Настройка целого таймера заменяет обычный SetUp и сохраняется до DeInit.
 Callbacks необязательны и задаются только при инициализации. Ожиданий аппаратуры
 в IRQ нет. ETR отложен.
 
-### Encoder / Энкодер
+### Энкодер
 
 ```cpp
 constinit TIM encoder(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
@@ -549,19 +828,13 @@ if (encoder.SetUpEncoder(65536, TIM::EncoderMode::X4) == SysInitStatus::InitOK)
 const uint32_t position = encoder.Count();
 ```
 
-Only CH1/CH2 support hardware encoder input. SetUpEncoder requires both pins,
-no DMA; it occupies the whole timer. period is explicit, ARR=period-1, PSC=0.
-X2_CH1/X2_CH2 count both edges of that input; X4 counts both inputs. Count reads
-raw CNT, with hardware wrap and no signed conversion/software extension. No
-IRQ or callback is required. [RM0431, TIMx_SMCR](https://www.st.com/resource/en/reference_manual/dm00305990.pdf).
-
 Аппаратный энкодер использует только CH1/CH2. Нужны оба пина, без DMA;
 SetUpEncoder занимает таймер целиком. Период явный, ARR=period-1, PSC=0.
 X2_CH1/X2_CH2 считают оба фронта соответствующего входа, X4 — обоих входов.
 Count возвращает CNT напрямую, без программного накопления, преобразования
 знака или расширения разрядности. IRQ и callback не требуются.
 
-### Quadrature generation / Генерация квадратуры
+### Генерация квадратуры
 
 ```cpp
 void Done(); // Optional; called from the second TIM's IRQ after both timers stop.
@@ -575,14 +848,6 @@ if (generator.SetUpQuadrature(TIM::Channel::CH1, TIM::Channel::CH2,
 // After stopping: generator.GenPulse(-100) reverses phase order. Check status.
 ```
 
-SetUpQuadrature replaces ordinary SetUp and reserves the whole generator plus
-its constructor-bound counter. a/b select two distinct bound output pins, with
-no DMA. freq is full cycles/s; period is generator ticks per half cycle (even,
-at least 4). Two toggle channels have compare values floor(period/4) and
-floor(period/4)+period/2. Thus their separation is one quarter of the full A/B
-cycle. Base calculation uses the existing integer divider policy; requested Hz
-can differ from actual Hz.
-
 SetUpQuadrature заменяет обычный SetUp, занимает генератор целиком и второй TIM
 из конструктора. a/b — два разных выходных канала с закреплёнными пинами, без DMA.
 freq — полные циклы A/B в секунду; period — тики генератора на полуцикл, чётное
@@ -591,35 +856,11 @@ floor(period/4)+period/2; разница составляет четверть �
 Делители рассчитываются с прежним целочисленным усечением: фактическая частота
 может отличаться от заданной.
 
-The counter is initialized automatically over ITR/Update, PSC=1: two generator
-Updates advance its CNT by one full cycle. There is no IRQ/software accumulation
-per cycle. GenPulse(N) resets both CNT/prescaler phases, arms one compare and
-starts the counter before the generator. Service UG is hidden from TRGO while
-the source is stopped, so it is not included in the count. See [RM0090, MMS
-Enable/Update](https://www.st.com/resource/en/reference_manual/rm0090-stm32f407-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
-and [RM0444, EGR.UG](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
-
 Счётчик настраивается автоматически через ITR/Update с PSC=1: два Update
 генератора увеличивают CNT на один полный цикл. IRQ/программного накопления
 на каждый цикл нет. GenPulse(N) сбрасывает CNT и фазы делителей, взводит один
 compare и запускает сначала счётчик, затем генератор. Служебный UG при
 остановленном генераторе не передаётся в TRGO и в счёт не входит.
-
-- Positive N: A leads B; negative N: B leads A. Direction changes the polarity
-  of the selected A channel, not an unconditional CH1. Magnitude is full cycles.
-- Zero leaves a stopped pair unchanged. Busy if either timer is running. Error
-  if |N| exceeds the counter range: 65535 on 16-bit hardware; all int32_t
-  magnitudes, including INT32_MIN, fit a 32-bit counter. No signed negation overflow.
-- Optional Done is fixed in SetUpQuadrature. The counter's compare IRQ stops
-  both timers, disarms CC1IE and then calls Done once. The generator has no
-  enabled interrupt source. IRQ latency may allow excess edges or a partial cycle;
-  no exact hardware termination is promised.
-- Stop stops both timers without forcing A/B LOW. GenPulse resets phase for a
-  new series, including after manual Stop. Use GenPulse to start, not plain Start.
-- The caller serializes main operations with both timers' IRQs. GenPulse and
-  DeInit belong to main. DeInit releases both acquired TIMs; constructor bindings
-  survive. The counter must be free before setup and must not be independently
-  reconfigured while owned. Neither destructor performs teardown.
 
 - N>0: A опережает B; N<0: B опережает A. Меняется полярность выбранного канала A,
   а не всегда CH1. Модуль N задаёт число полных циклов.
@@ -638,7 +879,7 @@ compare и запускает сначала счётчик, затем гене
   счётчик должен быть свободен; пока он занят, его независимо не перенастраивают.
   Деструкторы не выполняют освобождение аппаратуры.
 
-### PWM input / Измерение импульса
+### Измерение импульса
 
 ```cpp
 constinit TIM measure(TIM::_3::instance, {TIM::_3::CH1::PA6});
@@ -649,15 +890,6 @@ const uint32_t period_ticks = measure.GetCapture(TIM::Channel::CH1);
 const uint32_t high_ticks = measure.GetCapture(TIM::Channel::CH2);
 ```
 
-Ordinary SetUp needs an explicit period. SetUpPulseMeasure accepts input CH1
-or CH2, reserves both channels and SMCR. The selected channel captures rising
-edges/period and resets CNT; the paired channel captures the falling edge/HIGH
-width. For input CH2, swap CH1/CH2 in the two reads. No DMA on either channel.
-Optional callback reports the period edge only; no RAM snapshot. Two CCR reads
-are not an atomic pair. First-cycle validity, overflow, missing edges and
-overcapture are application responsibilities. Other channels share the resetting
-counter and cannot provide an independent time base.
-
 После обычного SetUp с явным периодом SetUpPulseMeasure выбирает вход CH1
 или CH2, занимает оба канала и SMCR. Выбранный канал по нарастающему фронту
 фиксирует период и сбрасывает CNT; парный по спадающему фиксирует длительность
@@ -667,15 +899,7 @@ HIGH. Для входа CH2 в примере меняются местами к
 переполнение, пропавшие фронты и overcapture обрабатывает приложение. Остальные
 каналы используют тот же сбрасываемый CNT, независимой временной базы у них нет.
 
-### ITR and common controls / ITR и функции общей базы
-
-After ordinary SetUp, SetUpSlave(&source, SlaveMode::Reset/Gated/Trigger/
-ExternalClock) configures SMCR once, while both timers are stopped. The source
-must already have SetUpTrigger configured. TIM neither reconfigures the source
-nor enables it automatically. GetCounterClock reports the internal clock/PSC;
-it does not measure external event frequency. ExternalClock retains PSC and
-counts one CNT step per PSC+1 source edges. SetUpOnePulse fixes OPM once before
-Start; hardware clears CEN at Update. These functions affect the whole timer.
+### ITR и функции общей базы
 
 После обычного SetUp функция SetUpSlave(&source, SlaveMode::Reset/Gated/Trigger/
 ExternalClock) однократно настраивает SMCR при остановленных таймерах. У источника
@@ -685,11 +909,6 @@ GetCounterClock показывает внутреннюю базу/PSC, а не 
 SetUpOnePulse до Start однократно задаёт OPM: аппаратный Update снимает CEN.
 Эти функции относятся ко всему таймеру.
 
-ITR0..ITR3 use normal TRGO mapping, filtered by the selected CMSIS device.
-OC1-only slots and remapped inputs are not treated as TRGO. Unsupported routes
-return InitError. F410 has TIM5 → TIM1; its TIM5 LPTIM input is outside this API.
-The source must stay initialized while the receiver is in use.
-
 ITR0..ITR3 используют обычное отображение TRGO с учётом наличия таймеров в CMSIS.
 Слоты с прямым OC1 и переназначенные входы не выдаются за TRGO. Неподдерживаемый
 маршрут возвращает InitError. У F410 поддерживается TIM5 → TIM1; вход LPTIM
@@ -697,7 +916,7 @@ ITR0..ITR3 используют обычное отображение TRGO с у
 работы приёмника. [RM0401, tables 59/63](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf),
 [RM0444, tables 119/123/130](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 
-### Finite pulse series / Конечная серия импульсов
+### Конечная серия импульсов
 
 **1. RCR + OPM on one timer / RCR + OPM одного таймера**
 
@@ -706,15 +925,6 @@ constinit TIM burst(TIM::_1::instance, {TIM::_1::CH1::PA8});
 if (burst.SetUpPulseBurst(TIM::Channel::CH1, 1000, 1000) == SysInitStatus::InitOK)
     burst.RunPulses(100); // Check SysStatus; starts the burst.
 ```
-
-The whole-timer mode uses PWM2, high time floor(period/2), with LOW at CNT=0
-and after terminal overflow. RCR=count-1 and OPM stop in hardware; optional
-completion callback needs only the final Update. Service UG loads registers
-with URS and its flag is cleared before Start. Zero count does not start.
-Maximum count: F4 256; F7 65536; G0 TIM1 65536, TIM15/16/17 256. Unsupported
-hardware/overflow returns an error. No software per-pulse count or automatic
-fallback to a second timer. [RM0410, TIMx_RCR](https://www.st.com/resource/en/reference_manual/rm0410-stm32f76xxx-and-stm32f77xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf),
-[RM0444, TIM15_RCR](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 
 Режим занимает таймер целиком. PWM2 даёт HIGH длительностью floor(period/2),
 LOW при CNT=0 и после конечного переполнения. RCR=count-1 и OPM останавливают
@@ -740,14 +950,6 @@ if (pulses.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
 // counter.Count() reads CNT; no IRQ copy or software accumulation.
 ```
 
-SetUpCounter replaces ordinary SetUp, fixes source/period and optional completion
-callback, uses PSC=0 and reserves CH1 for the stop compare. Source TRGO must be
-Update; its configuration is not changed. With no stop armed, Count works without
-IRQ. StopAfter/StopAt arm one compare while both timers are stopped; targets must
-be ahead of CNT within the current period. Before rearming a new series, Reset
-the counter as needed. Pending CC1IF is cleared on arm. Completion disables CC1IE,
-stops both timers and invokes the optional callback once.
-
 SetUpCounter заменяет обычный SetUp, закрепляет источник/период и необязательный
 callback, задаёт PSC=0 и занимает CH1 под compare остановки. Источник уже должен
 выдавать Update в TRGO. Без взведённой остановки Count работает без IRQ.
@@ -756,17 +958,38 @@ StopAfter/StopAt взводят один compare при остановленны
 сначала Reset счётчика. При взведении очищается старый CC1IF; завершение снимает
 CC1IE, останавливает оба таймера и один раз вызывает необязательный callback.
 
-**IRQ stop has latency:** the source can emit additional pulses before the CPU
-clears CEN, and the last pulse can be partial. Stopping CNT does not force an
-output LOW. Hardware gating feedback is not implemented; use the separate RCR
-solution when exact hardware termination is required and supported.
-
 **Остановка из IRQ имеет задержку:** до снятия CEN источник может выдать лишние
 импульсы, последний может оказаться неполным. Остановка CNT не переводит выход
 принудительно в LOW. Аппаратная обратная связь gated не добавлена; когда нужна
 точная аппаратная остановка и есть подходящий RCR, используется первое решение.
 
-## References / Источники
+---
+
+## 12. Примеры использования
+
+Отдельный пример; проверьте наличие блока/пинов в корпусе и каждый возвращаемый статус.
+
+```cpp
+#include "tim.hpp"
+using T = TIM::_3;
+constinit TIM pwm(T::instance, {T::CH1::PA6});
+// In main, after System/RCC initialization:
+if (pwm.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
+    && pwm.SetUpPWM(TIM::Channel::CH1, 500) == SysInitStatus::InitOK)
+    pwm.Start();
+// Other examples are in their mode sections: capture, compare, DMA,
+// encoder, quadrature, pulse burst and a second hardware counter.
+```
+
+---
+
+## 13. Угловые случаи
+
+Каналы используют общую частоту/период счётчика. Период 16-битного PWM ограничен 65535 тиками для представления 100%. Остановка из IRQ может допустить лишние/неполные импульсы. Приложение маскирует нужные IRQ при изменении общего DIER. TC не означает, что последний PWM-период уже выдан.
+
+---
+
+## См. также
 
 - [ST F4 LL TIM — PWM modes, preload, CCDS](https://github.com/STMicroelectronics/stm32f4xx-hal-driver/blob/master/Inc/stm32f4xx_ll_tim.h).
 - [ST G0 LL TIM — CC DMA selection](https://github.com/STMicroelectronics/stm32g0xx-hal-driver/blob/master/Inc/stm32g0xx_ll_tim.h).
@@ -777,5 +1000,8 @@ solution when exact hardware termination is required and supported.
 - [RM0410 — F76/F77 DMA maps](https://www.st.com/resource/en/reference_manual/rm0410-stm32f76xxx-and-stm32f77xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 - [RM0444 — G0 DMAMUX map](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 
-**Validation:** source/diff inspection only. No build, tests or hardware execution
-were performed for this API migration; the old compilation report is historical.
+- [Initialization.md](Initialization.md)
+- [GPIO.md](GPIO.md)
+- [DMA.md](DMA.md)
+- [ADC.md](ADC.md)
+- [IRQ_Registry.md](IRQ_Registry.md)

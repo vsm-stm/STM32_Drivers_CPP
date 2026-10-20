@@ -190,8 +190,15 @@ public:
 	 * @param sec Logical erase-unit index, not an address/hardware page number.
 	 * @param _data Persistent RAM source/destination used by write_data/read_data.
 	 * @param sz Fixed payload size in bytes; keep layout and size stable for the log.
+	 * Use constinit with a static byte array passed directly, without reinterpret_cast:
+	 * @code
+	 * static uint8_t payload[16]{};
+	 * // Index 3 must first be reserved outside the application image/other data.
+	 * constinit flash_data settings(3, payload, sizeof payload);
+	 * @endcode
+	 * Sector/layout validation remains in SetUp; construction only stores arguments.
 	 */
-	flash_data(uint32_t sec, uint8_t *_data, uint32_t sz) :
+	constexpr flash_data(uint32_t sec, uint8_t *_data, uint32_t sz) :
 		sector(sec),
 		offset(0),
 		next_offset(0),

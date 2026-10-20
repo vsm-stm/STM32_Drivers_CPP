@@ -123,7 +123,8 @@ public:
 		  af(static_cast<uint8_t>(a)), periph_base(periph)
 	{
 		// Reaching a non-constant expression rejects an invalid definition at build time.
-		if (p >= 16 || a >= 16) __builtin_unreachable();
+		if (p >= 16) System::DebugTrap("PIN: pin number must be in 0..15");
+		if (a >= 16) System::DebugTrap("PIN: alternate function must be in 0..15");
 		switch (port_base) {
 		case GPIOA_BASE:
 		case GPIOB_BASE:
@@ -156,7 +157,7 @@ public:
 #endif
 			break;
 		default:
-			__builtin_unreachable();
+			System::DebugTrap("PIN: GPIO port is not available on this device");
 		}
 	}
 

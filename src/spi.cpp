@@ -13,16 +13,20 @@
 static const uint16_t spi_dummy_word = 0xFFFFU;
 static uint16_t spi_discard_word;
 
+// DR requires halfword accesses for 16-bit frames. CMSIS declares DR as uint32_t;
+// may_alias permits the required narrower MMIO access under GCC strict aliasing.
+using SpiHalfwordRegister = uint16_t __attribute__((__may_alias__));
+
 uint16_t SPI::ReadFrame() const
 {
     if (_frame_format == Data_frame_format::Byte) return *reinterpret_cast<volatile uint8_t*>(&SPIx->DR);
-    return *reinterpret_cast<volatile uint16_t*>(&SPIx->DR);
+    return *reinterpret_cast<volatile SpiHalfwordRegister*>(&SPIx->DR);
 }
 
 void SPI::WriteFrame(uint16_t frame)
 {
     if (_frame_format == Data_frame_format::Byte) *reinterpret_cast<volatile uint8_t*>(&SPIx->DR) = static_cast<uint8_t>(frame);
-    else *reinterpret_cast<volatile uint16_t*>(&SPIx->DR) = frame;
+    else *reinterpret_cast<volatile SpiHalfwordRegister*>(&SPIx->DR) = frame;
 }
 
 SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,

@@ -102,9 +102,10 @@ public:
 		: _instance(instance), ch(channel),
 		  out_pin(channel == CHANNEL::CH1 ? PIN(GPIOA_BASE, 4) : PIN(GPIOA_BASE, 5))
 	{
-		if ((channel != CHANNEL::CH1 && channel != CHANNEL::CH2)
-			|| (channel == CHANNEL::CH2 && !instance.has_ch2))
-			__builtin_unreachable();
+		if (channel != CHANNEL::CH1 && channel != CHANNEL::CH2)
+			System::DebugTrap("DAC: invalid channel");
+		if (channel == CHANNEL::CH2 && !instance.has_ch2)
+			System::DebugTrap("DAC: channel 2 is not available on this device");
 	}
 	DAC_Module() = delete;
 	DAC_Module(const DAC_Module&) = delete;

@@ -164,12 +164,20 @@ public:
 #endif
 		  _dma_tx_irq(*this), _dma_rx_irq(*this)
     {
-        if (!scl.IsValid() || scl.periph_base != instance.periph
-            || !sda.IsValid() || sda.periph_base != instance.periph
-            || !DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per)
-            || !DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per)
-            || DMA_Sx::SameResource(dma_tx, dma_rx))
-            __builtin_unreachable();
+        if (!scl.IsValid())
+            System::DebugTrap("I2C: SCL pin is required");
+        if (scl.periph_base != instance.periph)
+            System::DebugTrap("I2C: SCL pin belongs to another peripheral");
+        if (!sda.IsValid())
+            System::DebugTrap("I2C: SDA pin is required");
+        if (sda.periph_base != instance.periph)
+            System::DebugTrap("I2C: SDA pin belongs to another peripheral");
+        if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
+            System::DebugTrap("I2C: invalid TX DMA route");
+        if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
+            System::DebugTrap("I2C: invalid RX DMA route");
+        if (DMA_Sx::SameResource(dma_tx, dma_rx))
+            System::DebugTrap("I2C: TX and RX require different DMA resources");
     }
 
 	I2C() = delete;

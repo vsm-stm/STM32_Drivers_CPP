@@ -261,7 +261,8 @@ public:
 	 * @endcode
 	 * The constructor checks request validity, USART ownership, direction and
 	 * distinct TX/RX resources during constinit initialization. No Config wrapper
-	 * or template API is required. Only the deprecated pointer overload uses DebugTrap.
+	 * or template API is required. Each failed check calls DebugTrap with its cause:
+	 * constinit rejects that call at compilation; a runtime call stops execution.
 	 * USART embeds two DMA_Sx objects; no external objects or heap allocation.
 	 * SetUp acquires the selected resources, configures Byte/MINC and the UART
 	 * data-register address, and registers separate DMA handlers. A failed setup
@@ -286,16 +287,21 @@ public:
 #endif
 		, _dma_tx_irq(*this), _dma_rx_irq(*this)
 	{
-		if ((tx.IsValid() && tx.periph_base && tx.periph_base != instance.periph)
-			|| (rx.IsValid() && rx.periph_base && rx.periph_base != instance.periph)
-			|| !DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per)
-			|| !DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per)
-			|| DMA_Sx::SameResource(dma_tx, dma_rx))
-			__builtin_unreachable();
+		if (tx.IsValid() && tx.periph_base && tx.periph_base != instance.periph)
+			System::DebugTrap("USART: TX pin belongs to another peripheral");
+		if (rx.IsValid() && rx.periph_base && rx.periph_base != instance.periph)
+			System::DebugTrap("USART: RX pin belongs to another peripheral");
+		if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
+			System::DebugTrap("USART: invalid TX DMA route");
+		if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
+			System::DebugTrap("USART: invalid RX DMA route");
+		if (DMA_Sx::SameResource(dma_tx, dma_rx))
+			System::DebugTrap("USART: TX and RX require different DMA resources");
 #if defined(STM32F7) || defined(STM32G0)
-		if (static_cast<uint32_t>(clock_source) > static_cast<uint32_t>(ClockSource::LSE)
-			|| (!instance.clock_select && clock_source != ClockSource::PCLK))
-			__builtin_unreachable();
+		if (static_cast<uint32_t>(clock_source) > static_cast<uint32_t>(ClockSource::LSE))
+			System::DebugTrap("USART: invalid clock source");
+		if (!instance.clock_select && clock_source != ClockSource::PCLK)
+			System::DebugTrap("USART: this peripheral supports only PCLK");
 #endif
 	}
 

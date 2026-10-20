@@ -1,10 +1,36 @@
-# IRQ Registry
+# IRQ Registry — Detailed Description
 
 *[English](#english) · [Русский](#русский)*
 
+---
+
 ## English
 
-### Model and dispatch
+## Table of Contents
+
+1. [Why This Is Needed](#1-why-this-is-needed)
+2. [Model and dispatch](#2-model-and-dispatch)
+3. [Registration and errors](#3-registration-and-errors)
+4. [Object registration](#4-object-registration)
+5. [Registration without inheritance](#5-registration-without-inheritance)
+6. [Cancellation and shared IRQs](#6-cancellation-and-shared-irqs)
+7. [Callback contract](#7-callback-contract)
+8. [Capacity and memory](#8-capacity-and-memory)
+9. [Include order and IRQ_MAX_SHARED](#9-include-order-and-irq_max_shared)
+10. [Integration Details](#10-integration-details)
+11. [Usage Examples](#11-usage-examples)
+12. [Edge Cases](#12-edge-cases)
+13. [See Also](#see-also)
+
+---
+
+## 1. Why This Is Needed
+
+The registry connects generated hardware ISR stubs to separately registered peripheral/DMA handlers. Shared vectors keep multiple entries; cancellation removes only the selected handler.
+
+---
+
+## 2. Model and dispatch
 
 A peripheral uses one IIRQHandler object. Its HandleIRQ() checks enabled
 peripheral/DMA sources, clears flags and invokes per-source callbacks. The same
@@ -21,7 +47,9 @@ The table is zero-initialized in .bss. No heap allocation is used. A plain
 function gets an IIRQHandler adapter from a separate static pool. Object and
 context lifetimes must cover their entire registration.
 
-### Registration and errors
+---
+
+## 3. Registration and errors
 
 ```cpp
 static SysInitStatus Register(IRQn_Type irqn, IIRQHandler* handler);
@@ -40,7 +68,9 @@ same object/function can register on a different IRQ. Errors do not add entries,
 replace existing registrations or permanently consume adapter slots. There is
 no BKPT or infinite loop on exhaustion.
 
-### Object registration
+---
+
+## 4. Object registration
 
 ```cpp
 // Configure the peripheral, with this IRQ still disabled.
@@ -52,7 +82,9 @@ Register once for the object's IRQ line. Additional sources of this peripheral
 are routed by that same HandleIRQ(); enabling another source needs no new entry.
 The registry itself does not enable NVIC or change peripheral interrupt bits.
 
-### Registration without inheritance
+---
+
+## 5. Registration without inheritance
 
 ```cpp
 void OnIrq(void* ctx)
@@ -71,7 +103,9 @@ ctx is an opaque user-data pointer passed unchanged to fn(ctx). It can be
 nullptr. Ordinary functions and non-capturing lambdas need no IIRQHandler class.
 Function identity on a given IRQ is fn, regardless of ctx.
 
-### Cancellation and shared IRQs
+---
+
+## 6. Cancellation and shared IRQs
 
 ```cpp
 static void Unregister(IRQn_Type irqn, IIRQHandler* handler);
@@ -100,7 +134,9 @@ and register it again while the line is masked, checking the returned status.
 The existing one-argument Unregister(irqn) explicitly clears the whole row and
 releases all its adapters. Use addressed cancellation to remove one owner.
 
-### Callback contract
+---
+
+## 7. Callback contract
 
 Register and every Unregister overload are forbidden from HandleIRQ and its
 callbacks, including modification of another IRQ line. Dispatch walks the live
@@ -112,7 +148,9 @@ A callback may disable the relevant peripheral interrupt source without
 changing its registry entry. Registration is then cancelled later from main.
 Changes to existing peripheral drivers are handled in their separate reviews.
 
-### Capacity and memory
+---
+
+## 8. Capacity and memory
 
 IRQ_MAX_SHARED defaults to 3 for F4/F7/G0. It limits handler registrations on
 one IRQ line. Three slots accommodate ADC1/ADC2/ADC3 on devices sharing ADC_IRQn.
@@ -126,7 +164,9 @@ IRQ_MAX_FUNCTION_HANDLERS defaults to 8 and separately limits simultaneously
 registered function adapters across all lines. Repeated registration/cancellation
 can reuse them; failed registration does not consume a slot.
 
-### 5. Include order and IRQ_MAX_SHARED
+---
+
+## 9. Include order and IRQ_MAX_SHARED
 
 The settings live in `Drivers/src/irq_registry_settings.hpp`. This header is
 included by irq_registry.hpp, so the dispatcher, peripheral drivers and
@@ -161,9 +201,85 @@ with the updated STM32-base_files version, then reconfigure. download_one()
 keeps existing files, so reconfiguration alone does not refresh an old template
 that still defines IRQ_MAX_SHARED.
 
+---
+
+## 10. Integration Details
+
+### Files and execution cost
+
+| File | Responsibility |
+|---|---|
+| src/irq_registry.hpp | Interfaces and API contracts |
+| src/irq_registry_settings.hpp | User capacity settings |
+| src/irq_registry.cpp | Registry, dispatch and function-adapter pool |
+| STM32-base_files/cmake/irq_registry_config.h.in | Generated ISR/table template |
+
+The dispatcher adds table traversal and virtual calls to ISR execution. Exact
+cycle counts depend on the MCU, compiler, optimization, memory and cache state;
+no cycle or percentage claims are made without measuring a concrete build.
+
+---
+
+## 11. Usage Examples
+
+Independent example; check device/package availability and every returned status.
+
+```cpp
+class Handler : public IIRQHandler {
+public:
+    void HandleIRQ() override { /* acknowledge this peripheral's source */ }
+};
+static Handler handler;
+// In main with this IRQ serialized; irq is the chosen hardware vector:
+// Check IRQ_Registry::Register(irq, &handler) == SysInitStatus::InitOK.
+// Later: IRQ_Registry::Unregister(irq, &handler).
+// Registration does not replace peripheral/NVIC source configuration.
+```
+
+---
+
+## 12. Edge Cases
+
+Duplicate registration and exhausted capacity return InitError. Callback code must not change the table. The caller serializes registration/cancellation with dispatch; the registry adds traversal and calls whose cycle cost depends on the concrete build.
+
+---
+
+## See Also
+
+- [System.md](System.md)
+- [EXTI.md](EXTI.md)
+- [UART.md](UART.md)
+- [TIM.md](TIM.md)
+
+---
+
 ## Русский
 
-### Модель и диспетчеризация
+## Содержание
+
+1. [Зачем это нужно](#1-зачем-это-нужно)
+2. [Модель и диспетчеризация](#2-модель-и-диспетчеризация)
+3. [Регистрация и ошибки](#3-регистрация-и-ошибки)
+4. [Регистрация объекта](#4-регистрация-объекта)
+5. [Регистрация функции](#5-регистрация-функции)
+6. [Отмена регистрации и общие IRQ](#6-отмена-регистрации-и-общие-irq)
+7. [Правила для callback](#7-правила-для-callback)
+8. [Вместимость и память](#8-вместимость-и-память)
+9. [Порядок include и IRQ_MAX_SHARED](#9-порядок-include-и-irq_max_shared)
+10. [Подробности интеграции](#10-подробности-интеграции)
+11. [Примеры использования](#11-примеры-использования)
+12. [Угловые случаи](#12-угловые-случаи)
+13. [См. также](#см-также)
+
+---
+
+## 1. Зачем это нужно
+
+Реестр связывает сгенерированные аппаратные ISR с отдельно зарегистрированными обработчиками периферии/DMA. Общий вектор содержит несколько записей; адресная отмена удаляет только выбранный обработчик.
+
+---
+
+## 2. Модель и диспетчеризация
 
 У периферии один объект IIRQHandler. Его HandleIRQ() проверяет разрешённые
 источники периферии/DMA, очищает флаги и вызывает callback соответствующего
@@ -181,7 +297,9 @@ that still defines IRQ_MAX_SHARED.
 адаптер IIRQHandler из отдельного статического пула. Объект и данные контекста
 должны оставаться действительными всё время регистрации.
 
-### Регистрация и ошибки
+---
+
+## 3. Регистрация и ошибки
 
 ```cpp
 static SysInitStatus Register(IRQn_Type irqn, IIRQHandler* handler);
@@ -200,7 +318,9 @@ static SysInitStatus Register(IRQn_Type irqn, IRQHandlerFn fn, void* ctx = nullp
 запись, не заменяет существующую регистрацию и не расходует адаптер навсегда.
 При заполнении нет BKPT или бесконечного цикла.
 
-### Регистрация объекта
+---
+
+## 4. Регистрация объекта
 
 ```cpp
 // Периферия настроена, эта IRQ-линия пока отключена.
@@ -212,7 +332,9 @@ if (IRQ_Registry::Register(TIM3_IRQn, &handler) == SysInitStatus::InitOK)
 этой периферии обслуживает тот же HandleIRQ(); новая запись для них не требуется.
 Сам реестр не включает NVIC и не изменяет биты прерываний периферии.
 
-### Регистрация функции
+---
+
+## 5. Регистрация функции
 
 ```cpp
 void OnIrq(void* ctx)
@@ -232,7 +354,9 @@ ctx — пользовательский указатель на данные, �
 наследования от IIRQHandler. На конкретном IRQ функция определяется адресом fn,
 независимо от ctx.
 
-### Отмена регистрации и общие IRQ
+---
+
+## 6. Отмена регистрации и общие IRQ
 
 ```cpp
 static void Unregister(IRQn_Type irqn, IIRQHandler* handler);
@@ -261,7 +385,9 @@ if (IRQ_Registry::HasHandlers(irqn)) NVIC_EnableIRQ(irqn);
 Существующая перегрузка Unregister(irqn) явно очищает всю строку и освобождает
 все её адаптеры. Для удаления одного владельца используется адресная отмена.
 
-### Правила для callback
+---
+
+## 7. Правила для callback
 
 Register и все перегрузки Unregister запрещено вызывать из HandleIRQ и его
 callback, в том числе для изменения другой IRQ-линии. Dispatch обходит живую
@@ -275,7 +401,9 @@ API, описанное в документации и комментариях.
 Приведение существующих периферийных драйверов к этому порядку выполняется
 при их отдельном разборе.
 
-### Вместимость и память
+---
+
+## 8. Вместимость и память
 
 IRQ_MAX_SHARED по умолчанию равен 3 для F4/F7/G0. Он ограничивает число
 регистраций на одной IRQ-линии. Трёх мест хватает для ADC1/ADC2/ADC3 на МК
@@ -290,7 +418,9 @@ IRQ_MAX_SHARED по умолчанию равен 3 для F4/F7/G0. Он огр
 одновременно зарегистрированных адаптеров функций на всех линиях. Циклы
 регистрации/отмены используют освобождённые адаптеры; ошибка не расходует слот.
 
-### 5. Порядок include и IRQ_MAX_SHARED
+---
+
+## 9. Порядок include и IRQ_MAX_SHARED
 
 Настройки находятся в `Drivers/src/irq_registry_settings.hpp`. Заголовок
 подключается из irq_registry.hpp: диспетчер, периферийные драйверы и приложение
@@ -325,17 +455,50 @@ IRQ_MAX_SHARED по умолчанию равен 3 для F4/F7/G0. Он огр
 сохраняет существующие файлы: одна переконфигурация не обновит старый шаблон,
 который ещё определяет IRQ_MAX_SHARED.
 
-### Files and execution cost / Файлы и стоимость исполнения
+---
+
+## 10. Подробности интеграции
+
+### Файлы и стоимость исполнения
 
 - `src/irq_registry.hpp`: interfaces and API contracts / интерфейсы и условия API.
 - `src/irq_registry_settings.hpp`: shared user settings / общие пользовательские настройки.
 - `src/irq_registry.cpp`: registration, cancellation, dispatch and adapter pool / реестр и пул.
 - `STM32-base_files/cmake/irq_registry_config.h.in`: generated table and ISR template / шаблон таблицы и ISR.
 
-The dispatcher adds table traversal and virtual calls to ISR execution. Exact
-cycle counts depend on the MCU, compiler, optimization, memory and cache state;
-no cycle or percentage claims are made without measuring a concrete build.
-
 Диспетчер добавляет обход таблицы и виртуальные вызовы. Точные такты зависят
 от МК, компилятора, оптимизации, памяти и кеша; без измерений конкретной сборки
 числа тактов и процентов не приводятся.
+
+---
+
+## 11. Примеры использования
+
+Отдельный пример; проверьте наличие блока/пинов в корпусе и каждый возвращаемый статус.
+
+```cpp
+class Handler : public IIRQHandler {
+public:
+    void HandleIRQ() override { /* acknowledge this peripheral's source */ }
+};
+static Handler handler;
+// In main with this IRQ serialized; irq is the chosen hardware vector:
+// Check IRQ_Registry::Register(irq, &handler) == SysInitStatus::InitOK.
+// Later: IRQ_Registry::Unregister(irq, &handler).
+// Registration does not replace peripheral/NVIC source configuration.
+```
+
+---
+
+## 12. Угловые случаи
+
+Повторная регистрация и исчерпанная вместимость возвращают InitError. Из callback менять таблицу запрещено. Приложение согласует регистрацию/отмену с Dispatch; обход и вызовы имеют стоимость, зависящую от конкретной сборки.
+
+---
+
+## См. также
+
+- [System.md](System.md)
+- [EXTI.md](EXTI.md)
+- [UART.md](UART.md)
+- [TIM.md](TIM.md)

@@ -76,8 +76,8 @@ struct _2 {
       SPI2_3_IRQn
 #else
       SPI2_IRQn
-#endif,
-        DMA::TX.ch, DMA::RX.ch
+#endif
+        , DMA::TX.ch, DMA::RX.ch
     };
 
 	struct SCK {

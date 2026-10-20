@@ -428,13 +428,6 @@ static const char* volatile _debug_trap_msg = nullptr;
 	while (1) {}
 }
 
-#else // Release ignores the message; removal of string literals depends on the build.
-
-[[noreturn]] void System::DebugTrap(const char*)
-{
-	while (1) {}
-}
-
 #endif // DEBUG
 
 // ---------------------------------------------------------------------------

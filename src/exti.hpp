@@ -73,9 +73,10 @@ public:
      */
     constexpr EXTI_Line(PIN pin, Edge edge) : _pin(pin), _edge(edge)
     {
-        if (!pin.IsValid() || pin.GetNumber() >= 16U
-            || static_cast<uint32_t>(edge) < 1U || static_cast<uint32_t>(edge) > 3U)
-            __builtin_unreachable();
+        if (!pin.IsValid() || pin.GetNumber() >= 16U)
+            System::DebugTrap("EXTI: a valid external GPIO pin is required");
+        if (static_cast<uint32_t>(edge) < 1U || static_cast<uint32_t>(edge) > 3U)
+            System::DebugTrap("EXTI: invalid edge selection");
     }
     EXTI_Line(const EXTI_Line&) = delete;
     EXTI_Line(EXTI_Line&&) = delete;

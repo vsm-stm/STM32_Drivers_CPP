@@ -60,11 +60,12 @@ public:
 		rs_DE(pin_de)
 	{
 #if defined(STM32G0)
-		if (!tx_req || !rx_req)
+		if (!tx_req) System::DebugTrap("Modbus: TX DMA is required");
+		if (!rx_req) System::DebugTrap("Modbus: RX DMA is required");
 #else
-		if (!tx_req.IsValid() || !rx_req.IsValid())
+		if (!tx_req.IsValid()) System::DebugTrap("Modbus: TX DMA is required");
+		if (!rx_req.IsValid()) System::DebugTrap("Modbus: RX DMA is required");
 #endif
-			__builtin_unreachable();
 	}
 
 	/// Main only; select 8E1/8O1/8N2, or legacy 8N1 (default).
