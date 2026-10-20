@@ -10,7 +10,7 @@
  *                    "#include "adc_defs.hpp"" is reached inside the class body)
  *         also !ADC_DEFS_CPP to prevent re-emission at file scope.
  * Scope:  ADC_N class body — public nested types.
- * Result: ADC_N::IN::PA0_IN0 / ADC_N::_1::PA0_IN0 tables, INTERNAL, SMPL / CH_SMPL enums, EXTSEL_EXTI11.
+ * Result: ADC_N::IN::PA0_IN0 / ADC_N::_1::PA0_IN0 tables, INTERNAL, SMPL / CH_SMPL and Trigger enums.
  * ADC_PIN is defined before ADC_N in adc.hpp and exposed as ADC_N::ADC_PIN.
  *
  * Section B — peripheral-info table (adc_table)
@@ -77,15 +77,53 @@ static constexpr uint8_t  CH_TEMP    = 18;   // shared with VBAT
 #endif
 
 // ---------------------------------------------------------------------------
-// EXTSEL value of the external trigger "EXTI line 11" (AttachExtTrig()).
-// Timer triggers come from the separately planned TIM_TriggerGenerator.
-// Verified against the ST LL headers (LL_ADC_REG_TRIG_EXT_EXTI_LINE11).
+// Regular-group EXTSEL values, before shifting into CFGR1/CR2. None has a
+// separate value because EXTSEL=0 is a real timer route, not software start.
+// Sources follow ST LL ADC headers; expose only present timer instances.
+// TIM supplies TRGO or direct CCx events; ADC owns this family-specific mapping.
+// TRGO2 configuration is not part of the current common TIM API and is omitted.
 // ---------------------------------------------------------------------------
+enum class Trigger : uint8_t {
+	None = 0xFF,
 #if defined(STM32G0)
-static constexpr uint8_t EXTSEL_EXTI11 = 7;    // CFGR1.EXTSEL[2:0]
-#else
-static constexpr uint8_t EXTSEL_EXTI11 = 15;   // CR2.EXTSEL[3:0]
+	TIM1_CC4 = 1,
+#if defined(TIM2_BASE)
+	TIM2_TRGO = 2,
 #endif
+	TIM3_TRGO = 3,
+#if defined(TIM15_BASE)
+	TIM15_TRGO = 4,
+#endif
+#if defined(TIM6_BASE)
+	TIM6_TRGO = 5,
+#endif
+#if defined(TIM4_BASE)
+	TIM4_TRGO = 6,
+#endif
+	EXTI11 = 7
+#elif defined(STM32F7)
+	TIM1_CC1 = 0, TIM1_CC2 = 1, TIM1_CC3 = 2,
+	TIM2_CC2 = 3, TIM5_TRGO = 4, TIM4_CC4 = 5, TIM3_CC4 = 6,
+	TIM8_TRGO = 7, TIM1_TRGO = 9, TIM2_TRGO = 11, TIM4_TRGO = 12,
+	TIM6_TRGO = 13, EXTI11 = 15
+#elif defined(STM32F4)
+	TIM1_CC1 = 0, TIM1_CC2 = 1, TIM1_CC3 = 2,
+#if defined(TIM2_BASE)
+	TIM2_CC2 = 3, TIM2_CC3 = 4, TIM2_CC4 = 5, TIM2_TRGO = 6,
+#endif
+#if defined(TIM3_BASE)
+	TIM3_CC1 = 7, TIM3_TRGO = 8,
+#endif
+#if defined(TIM4_BASE)
+	TIM4_CC4 = 9,
+#endif
+	TIM5_CC1 = 10, TIM5_CC2 = 11, TIM5_CC3 = 12,
+#if defined(TIM8_BASE)
+	TIM8_CC1 = 13, TIM8_TRGO = 14,
+#endif
+	EXTI11 = 15
+#endif
+};
 
 // ---------------------------------------------------------------------------
 // Sampling time. The same SetUp() / AddChannel() signatures on every family;
@@ -274,18 +312,18 @@ struct _3 {
 #  define ADC_N_G0_IRQN  ADC1_IRQn
 #endif
 const ADC_N::PeriphInfo ADC_N::adc_table[] = {
-	{ ADC1, &RCC->APBENR2, RCC_APBENR2_ADCEN, ADC_N_G0_IRQN, { DMA_Sx::Req::Adc1::RX } }
+	{ ADC1, &RCC->APBENR2, RCC_APBENR2_ADCEN, ADC_N_G0_IRQN }
 };
 #undef ADC_N_G0_IRQN
 #elif defined(STM32F4) || defined(STM32F7)
-// Primary and alternate hardware routes, including the stream and CHSEL.
+// DMA routes are constructor parameters; this table contains hardware clocks/IRQs only.
 const ADC_N::PeriphInfo ADC_N::adc_table[] = {
-	{ ADC1, &RCC->APB2ENR, RCC_APB2ENR_ADC1EN, ADC_IRQn, { DMA_Sx::Req::Adc1::RX_DMA2_Stream0, DMA_Sx::Req::Adc1::RX_DMA2_Stream4 } },
+	{ ADC1, &RCC->APB2ENR, RCC_APB2ENR_ADC1EN, ADC_IRQn },
 #if defined(ADC2_BASE)
-	{ ADC2, &RCC->APB2ENR, RCC_APB2ENR_ADC2EN, ADC_IRQn, { DMA_Sx::Req::Adc2::RX_DMA2_Stream2, DMA_Sx::Req::Adc2::RX_DMA2_Stream3 } },
+	{ ADC2, &RCC->APB2ENR, RCC_APB2ENR_ADC2EN, ADC_IRQn },
 #endif
 #if defined(ADC3_BASE)
-	{ ADC3, &RCC->APB2ENR, RCC_APB2ENR_ADC3EN, ADC_IRQn, { DMA_Sx::Req::Adc3::RX_DMA2_Stream0, DMA_Sx::Req::Adc3::RX_DMA2_Stream1 } },
+	{ ADC3, &RCC->APB2ENR, RCC_APB2ENR_ADC3EN, ADC_IRQn },
 #endif
 };
 #endif

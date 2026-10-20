@@ -9,8 +9,6 @@
 class ModbusRTU_Slave : protected USART{
 private:
 	PIN rs_DE{};
-	DMA_Sx* dma_tx = nullptr;
-	DMA_Sx* dma_rx = nullptr;
 
 	uint8_t rx_buffer[256]{};
 	void (*Rx_Parse)(uint8_t* data, uint32_t len) = nullptr;
@@ -23,16 +21,24 @@ private:
 
 	uint8_t tx_buffer[256]{};
 	TxBuffStatus tx_buffer_status = TxBuffStatus::Free;
-	void OnTC();
+	void OnTC() override;
 
 public:
+	// USART owns DMA. F4/F7: named Req; G0: physical channel, request selected by USART.
+	// Both directions are mandatory; constructor checks use DebugTrap.
 	ModbusRTU_Slave(USART_TypeDef *usartx, uint32_t baudrate,
 					PIN pin_tx, PIN pin_rx, PIN pin_de,
-					DMA_Sx* _dma_tx, DMA_Sx* _dma_rx) :
-		USART(usartx, baudrate, pin_tx, pin_rx),
-		rs_DE(pin_de),
-		dma_tx(_dma_tx),
-		dma_rx(_dma_rx){};
+					USART::DMAReq tx_req, USART::DMAReq rx_req) :
+		USART(usartx, baudrate, pin_tx, pin_rx, tx_req, rx_req),
+		rs_DE(pin_de)
+	{
+#if defined(STM32G0)
+		if (!tx_req || !rx_req)
+#else
+		if (!tx_req.IsValid() || !rx_req.IsValid())
+#endif
+			System::DebugTrap("Modbus: TX and RX DMA requests are required");
+	}
 
 	SysInitStatus SetUp();
 

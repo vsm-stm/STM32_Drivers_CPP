@@ -28,9 +28,10 @@
  * on G0 with FIFO enabled, otherwise one byte. IDLE owns its RX tail budget.
  * USART IRQ uses entry snapshots for source/DMA-gate checks, except TCIE/TC,
  * which are re-read after callbacks and TX handling.
- * Control-bit updates use ST ATOMIC_* macros: F4/F7 use LDREX/STREX retries;
- * G0 briefly masks interrupts for each update and restores the prior PRIMASK.
- * UART clock-gate/source field updates use the same macros.
+ * UART_USE_ATOMIC in this header selects control-bit and UART clock-field updates:
+ * 0 (default) uses ordinary SET_BIT/CLEAR_BIT/MODIFY_REG; 1 uses ST ATOMIC_*.
+ * In atomic mode F4/F7 use LDREX/STREX retries; G0 briefly masks interrupts for
+ * each update and restores the prior PRIMASK. Rebuild all UART users after changing it.
  *
  * Packet reception
  * ----------------
@@ -98,12 +99,27 @@
 #include "irq_registry.hpp"
 #include "dma.hpp"
 
+// Shared by uart.cpp and inline methods. Change here and rebuild all UART users.
+#ifndef UART_USE_ATOMIC
+#define UART_USE_ATOMIC 0
+#endif
+
+#if UART_USE_ATOMIC
+#define UART_SET_BIT ATOMIC_SET_BIT
+#define UART_CLEAR_BIT ATOMIC_CLEAR_BIT
+#define UART_MODIFY_REG ATOMIC_MODIFY_REG
+#else
+#define UART_SET_BIT SET_BIT
+#define UART_CLEAR_BIT CLEAR_BIT
+#define UART_MODIFY_REG MODIFY_REG
+#endif
+
 /**
  * @class USART
  * @brief Owns one USART/UART and its registered IRQ/DMA integration.
  *
  * TX and RX can operate independently. Configuration and buffer handover for
- * one object must be serialized by its caller. Atomic register updates do not
+ * one object must be serialized by its caller. Enabling atomic register updates does not
  * serialize whole transfers or protect the associated buffer/state fields.
  * Do not copy/move the object. Keep it and active buffers
  * alive until their operations and registrations are stopped by DeInit().
@@ -160,11 +176,7 @@ public:
 	};
 
 #if defined(STM32G0)
-	/// G0 selects a physical channel as well as the named DMAMUX request.
-	struct DMAReq {
-		DMA_Channel_TypeDef* channel;
-		DMA_Sx::DMAReq request;
-	};
+	using DMAReq = DMA_Channel_TypeDef*; ///< Request source follows USART and TX/RX.
 #else
 	using DMAReq = DMA_Sx::DMAReq;
 #endif
@@ -218,8 +230,8 @@ public:
 	 * G0 DMA example (select channels available on the chosen MCU):
 	 * @code
 	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-	 *              {DMA1_Channel4, DMA_Sx::Req::Usart1::TX},
-	 *              {DMA1_Channel5, DMA_Sx::Req::Usart1::RX});
+	 *              DMA1_Channel4,
+	 *              DMA1_Channel5);
 	 *   SysInitStatus status = uart.SetUp(); // Configures UART and both DMA channels.
 	 * @endcode
 	 *
@@ -251,7 +263,7 @@ public:
 		, _clock_source(clock_source)
 #endif
 #if defined(STM32G0)
-		, _dma_tx(dma_tx.channel, dma_tx.request), _dma_rx(dma_rx.channel, dma_rx.request)
+		, _dma_tx(dma_tx, DmaRequest(usartx, true)), _dma_rx(dma_rx, DmaRequest(usartx, false))
 #else
 		, _dma_tx(dma_tx), _dma_rx(dma_rx)
 #endif
@@ -262,18 +274,14 @@ public:
 		if (rx.IsValid() && rx.periph_base && rx.periph_base != (uint32_t)usartx)
 			System::DebugTrap("USART: RX pin belongs to wrong peripheral");
 #if defined(STM32G0)
-		const auto& tx_req = dma_tx.request;
-		const auto& rx_req = dma_rx.request;
-		const bool has_tx = dma_tx.channel || tx_req.ch || tx_req.periph_base;
-		const bool has_rx = dma_rx.channel || rx_req.ch || rx_req.periph_base;
-		const bool same_resource = dma_tx.channel == dma_rx.channel;
+		if (dma_tx && dma_tx == dma_rx)
+			System::DebugTrap("USART: TX and RX require different DMA channels");
 #else
 		const auto& tx_req = dma_tx;
 		const auto& rx_req = dma_rx;
 		const bool has_tx = tx_req.stream || tx_req.ch || tx_req.periph_base;
 		const bool has_rx = rx_req.stream || rx_req.ch || rx_req.periph_base;
 		const bool same_resource = tx_req.stream == rx_req.stream;
-#endif
 		if (has_tx && (!_dma_tx.HasSelection() || !tx_req.IsValid()
 			|| tx_req.periph_base != reinterpret_cast<uintptr_t>(usartx)
 			|| tx_req.direction != DMA_Sx::DIR::To_Per))
@@ -284,6 +292,7 @@ public:
 			System::DebugTrap("USART: invalid RX DMA request");
 		if (has_tx && has_rx && same_resource)
 			System::DebugTrap("USART: TX and RX require different DMA resources");
+#endif
 	}
 	USART() = delete;
 	USART(const USART&) = delete;
@@ -332,7 +341,7 @@ public:
 	 * SetUp() owns the UART registration until DeInit(). This method neither
 	 * registers/unregisters handlers nor changes NVIC, and is usable in callbacks.
 	 * Before SetUp() it has no effect. FIFO sources require SetUp(FIFO::EN).
-	 * Uses ATOMIC_SET_BIT/ATOMIC_CLEAR_BIT for the selected control register.
+	 * UART_USE_ATOMIC selects ordinary or atomic changes of the control bits.
 	 * Transfer methods manage their own sources; disabling one manually during
 	 * an operation does not by itself complete that operation or change Busy.
 	 *
@@ -350,8 +359,8 @@ public:
 #else
 		auto& reg = USARTx->CR1;
 #endif
-		if (en) ATOMIC_SET_BIT(reg, static_cast<uint32_t>(irq));
-		else ATOMIC_CLEAR_BIT(reg, static_cast<uint32_t>(irq));
+		if (en) UART_SET_BIT(reg, static_cast<uint32_t>(irq));
+		else UART_CLEAR_BIT(reg, static_cast<uint32_t>(irq));
 	}
 
 	/**
@@ -363,12 +372,12 @@ public:
 	 * disable the UART receiver, or perform cache/buffer handover. Normal *_DMA()
 	 * operations manage these gates themselves: DMA starts before requests are
 	 * enabled; RX completion disables requests and waits for DMA EN=0.
-	 * DMAT/DMAR changes use ST ATOMIC_SET_BIT/ATOMIC_CLEAR_BIT.
+	 * UART_USE_ATOMIC selects ordinary or atomic DMAT/DMAR changes.
 	 */
 	inline void DMA_en(FunctionalState en, DMA dma = DMA::TXRX)
 	{
-		if (en) ATOMIC_SET_BIT(USARTx->CR3, static_cast<uint32_t>(dma));
-		else ATOMIC_CLEAR_BIT(USARTx->CR3, static_cast<uint32_t>(dma));
+		if (en) UART_SET_BIT(USARTx->CR3, static_cast<uint32_t>(dma));
+		else UART_CLEAR_BIT(USARTx->CR3, static_cast<uint32_t>(dma));
 	}
 
 #if defined(STM32F4)
@@ -385,11 +394,16 @@ public:
 	/**
 	 * @brief F7/G0 flags cleared through ICR, including noise error (NE).
 	 * Values are ICR masks; F4 instead provides the SR-based ClearFlags().
+	 * CMSIS names the noise-clear bit NCF on F7 and NECF on G0.
 	 */
 	enum class ISR_FLAGS {
 		PE = USART_ICR_PECF,
 		FE = USART_ICR_FECF,
+#if defined(STM32G0)
+		NE = USART_ICR_NECF,
+#else
 		NE = USART_ICR_NCF,
+#endif
 		ORE = USART_ICR_ORECF,
 		IDLE = USART_ICR_IDLECF,
 		TC = USART_ICR_TCCF
@@ -582,8 +596,8 @@ public:
 	 *         Busy while software TX or RX is active.
 	 *         Rejected calls leave BRR and the stored BaudRate unchanged.
 	 *
-	 * Writes BRR with UE=0, atomically restores the previous UE bit and stores
-	 * the new BaudRate for a later setup. Other CR1 bits are not restored from
+	 * Writes BRR with UE=0 and restores the previous UE bit using UART_USE_ATOMIC.
+	 * Stores the new BaudRate for a later setup. Other CR1 bits are not restored from
 	 * an old snapshot. Uses the same rounded x16 divider and the same
 	 * constructor-selected source as SetUp(); the clock source is not changed.
 	 * @pre Caller has ensured physical TX completion via TC/OnTC(), RX is stopped,
@@ -651,6 +665,9 @@ private:
 #endif
 	/// Selected nominal kernel frequency; zero for an unavailable/not-ready source.
 	uint32_t KernelClock(const PeriphInfo& info) const;
+#if defined(STM32G0)
+	static uint32_t DmaRequest(USART_TypeDef* usart, bool tx);
+#endif
 
 	/**
 	 * @brief Asynchronous transfer descriptor, initialized before enabling a source.

@@ -4,7 +4,7 @@
  *
  * One object owns one hardware SPI and its IRQ/DMA registrations. Initialize
  * System/RCC first. SetUp() fixes clock polarity/phase, divider and 8/16-bit frame
- * width. Direction and optional DMA objects are fixed by the constructor.
+ * width. Direction and optional DMA selections are fixed by the constructor.
  * TX uses transmit-only BIDIMODE/BIDIOE and needs no RX DMA or RX IRQ.
  * RX uses full duplex without RXONLY: master TX IRQ supplies 0xFF/0xFFFF dummy
  * frames; slave RX needs no dummy writer. TXRX permits Send, Receive and simultaneous
@@ -29,6 +29,9 @@
  * automatic software-CS release, final status and OnComplete()/OnError().
  * IRQ callbacks feed/drain data and handle DMA TC; they do not finish the wire
  * transaction or mutate the IRQ registry. Busy lasts until Process() finishes.
+ * SPI IRQ shares entry CR2/SR snapshots; FIFO reads refresh SR only for the next
+ * frame. DMA handlers read TC and supported errors together in one ISR access.
+ * Hardware CRC and TI mode are disabled; only OVR/MODF are SPI error reasons.
  * No asynchronous timeout is imposed; the application owns its deadline and
  * can cancel/release through DeInit(). GetStatus() is a pure read.
  *
@@ -49,10 +52,12 @@
  *
  * DMA and F7 cache
  * ----------------
- * Pass DMA pointers after SS in the constructor. SetUp() owns their configuration
- * and registration; do not SetUp() the DMA separately. Direction and pointers
- * cannot change, even after DeInit(). DMA objects must outlive the SPI object.
- * UART-style DMAReq checks use the complete stream/CHSEL pair or DMAMUX ID.
+ * Pass DMAReq after SS: named requests on F4/F7, physical channels on G0.
+ * SPI owns both DMA objects. SetUp() acquires/configures/registers them;
+ * DeInit releases resources and preserves constructor selections. F4/F7 requests
+ * are checked in the constructor for SPI ownership, direction and distinct streams.
+ * G0 derives the request source from SPI and TX/RX; only channels are user-selected.
+ * SPI_USE_ATOMIC selects ordinary (0, default) or ST atomic (1) control updates.
  * Unattached directions use SPI IRQ servicing where the operation permits it.
  * F7 RX buffers own all touched 32-byte cache lines, including padding; CPU
  * must not access them while Busy. System cache helpers skip project-defined
@@ -82,10 +87,10 @@
  *
  * Async master with automatic software CS
  * @code
- *   DMA_Sx tx(DMA_Sx::Req::Spi1::TX_DMA2_Stream3); // F4/F7
- *   DMA_Sx rx(DMA_Sx::Req::Spi1::RX_DMA2_Stream0);
+ *   const SPI::DMAReq tx = DMA_Sx::Req::Spi1::TX_DMA2_Stream3; // F4/F7
+ *   const SPI::DMAReq rx = DMA_Sx::Req::Spi1::RX_DMA2_Stream0;
  *   SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
- *           SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN(GPIOB, 0), &tx, &rx);
+ *           SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN(GPIOB, 0), tx, rx);
  *   // After successful bus.SetUp(Master, Software):
  *   // Start SendReceive_DMA(tx_buffer, rx_buffer, frame_count); check the result.
  *   // In main, call bus.Process() until it returns OK/Error; only then use RX.
@@ -93,9 +98,9 @@
  *
  * Receive-only master with one DMA (G0 example)
  * @code
- *   DMA_Sx rx(DMA1_Channel3, DMA_Sx::Req::Spi1::RX);
+ *   const SPI::DMAReq rx = DMA1_Channel3;
  *   SPI bus(SPI1, SPI::Direction::RX, SPI::_1::SCK::PA5,
- *           PIN{}, SPI::_1::MISO::PA6, PIN{}, nullptr, &rx);
+ *           PIN{}, SPI::_1::MISO::PA6, PIN{}, {}, rx);
  *   // Check bus.SetUp(Master, Software), then Receive_DMA(buffer, frame_count).
  *   // TX IRQ provides dummy clocks; no MOSI pin or TX DMA is required.
  *   // Call Process() from main and check OK before using the buffer.
@@ -112,6 +117,21 @@
 #include "gpio.hpp"
 #include "dma.hpp"
 #include "irq_registry.hpp"
+
+// Change here and rebuild this driver and its consumers.
+#ifndef SPI_USE_ATOMIC
+#define SPI_USE_ATOMIC 0
+#endif
+
+#if SPI_USE_ATOMIC
+#define SPI_SET_BIT ATOMIC_SET_BIT
+#define SPI_CLEAR_BIT ATOMIC_CLEAR_BIT
+#define SPI_MODIFY_REG ATOMIC_MODIFY_REG
+#else
+#define SPI_SET_BIT SET_BIT
+#define SPI_CLEAR_BIT CLEAR_BIT
+#define SPI_MODIFY_REG MODIFY_REG
+#endif
 
 class SPI : public IIRQHandler
 {
@@ -138,9 +158,15 @@ public:
     enum class IRQ { TXE = SPI_CR2_TXEIE, RXNE = SPI_CR2_RXNEIE, ERR = SPI_CR2_ERRIE };
     /// Combined reasons reported to OnError(); DMA errors use separate high bits.
     enum class Error : uint32_t {
-        Overrun = SPI_SR_OVR, ModeFault = SPI_SR_MODF, Crc = SPI_SR_CRCERR,
-        Frame = SPI_SR_FRE, DmaTx = 1U << 16, DmaRx = 1U << 17
+        Overrun = SPI_SR_OVR, ModeFault = SPI_SR_MODF,
+        DmaTx = 1U << 16, DmaRx = 1U << 17
     };
+
+#if defined(STM32G0)
+    using DMAReq = DMA_Channel_TypeDef*; ///< Source is implied by SPI and direction.
+#else
+    using DMAReq = DMA_Sx::DMAReq;
+#endif
 
 #include "spi_defs.hpp"
 
@@ -159,8 +185,13 @@ public:
      */
     explicit SPI(SPI_TypeDef* spix, Direction direction, PIN sck, PIN mosi = PIN{},
                  PIN miso = PIN{}, PIN ss = PIN{},
-                 DMA_Sx* dma_tx = nullptr, DMA_Sx* dma_rx = nullptr)
-        : _direction(direction), _dma_tx(dma_tx), _dma_rx(dma_rx),
+                 DMAReq dma_tx = {}, DMAReq dma_rx = {})
+        : _direction(direction),
+#if defined(STM32G0)
+          _dma_tx(dma_tx, DmaRequest(spix, true)), _dma_rx(dma_rx, DmaRequest(spix, false)),
+#else
+          _dma_tx(dma_tx), _dma_rx(dma_rx),
+#endif
           _dma_tx_irq(*this), _dma_rx_irq(*this),
           SPIx(spix), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
     {
@@ -172,6 +203,20 @@ public:
             System::DebugTrap("SPI: MISO pin belongs to wrong peripheral");
         if (ss.IsValid() && ss.periph_base && ss.periph_base != (uint32_t)spix)
             System::DebugTrap("SPI: SS pin belongs to wrong peripheral");
+#if defined(STM32G0)
+        if (dma_tx && dma_tx == dma_rx)
+            System::DebugTrap("SPI: TX and RX require different DMA channels");
+#else
+        const uintptr_t base = reinterpret_cast<uintptr_t>(spix);
+        if ((dma_tx.stream || dma_tx.ch || dma_tx.periph_base)
+            && (!dma_tx.IsValid() || dma_tx.periph_base != base || dma_tx.direction != DMA_Sx::DIR::To_Per))
+            System::DebugTrap("SPI: invalid TX DMA request");
+        if ((dma_rx.stream || dma_rx.ch || dma_rx.periph_base)
+            && (!dma_rx.IsValid() || dma_rx.periph_base != base || dma_rx.direction != DMA_Sx::DIR::From_Per))
+            System::DebugTrap("SPI: invalid RX DMA request");
+        if (dma_tx.stream && dma_tx.stream == dma_rx.stream)
+            System::DebugTrap("SPI: TX and RX require different DMA streams");
+#endif
     }
     SPI() = delete;
     SPI(const SPI&) = delete;
@@ -200,7 +245,7 @@ public:
      * Byte uses 8-bit DR access and the 8-bit RX threshold on F7/G0; Half_Word
      * uses 16-bit DR access, the half-word threshold and 16-bit DMA transfers.
      * TX sets BIDIMODE/BIDIOE; RX/TXRX leave RXONLY clear. Default NSS is Hard;
-     * DMA pointers are configured here, with full DMAReq validation and separate
+     * Owned DMA objects are configured here, after constructor DMAReq validation, with separate
      * registration per direction. On failure only newly acquired resources are
      * released. No DMA is required for blocking/IRQ calls. Pass Software explicitly
      * for a master without a hardware NSS pin.
@@ -219,8 +264,8 @@ public:
                        cPolPha cpolpha = cPolPha::None, BaudRate br = BaudRate::DIV2);
 
     /// Low-level SPE controls; do not use to interrupt an owned active operation.
-    void Enable() { if (_info) SPIx->CR1 |= SPI_CR1_SPE; }
-    void Disable() { if (_info) SPIx->CR1 &= ~SPI_CR1_SPE; }
+    void Enable() { if (_info) SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE); }
+    void Disable() { if (_info) SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE); }
     /// Optional active-low software master CS. Hard NSS and absent CS are untouched.
     void SlaveSelect(FunctionalState en) {
         if (_info && Master_slave == Master_sel::Master
@@ -228,17 +273,17 @@ public:
     }
     /// Raw request gates; normal transfers manage them in start/stop order.
     void DMA_TX(FunctionalState en) {
-        if (en) SPIx->CR2 |= SPI_CR2_TXDMAEN; else SPIx->CR2 &= ~SPI_CR2_TXDMAEN;
+        if (en) SPI_SET_BIT(SPIx->CR2, SPI_CR2_TXDMAEN); else SPI_CLEAR_BIT(SPIx->CR2, SPI_CR2_TXDMAEN);
     }
     void DMA_RX(FunctionalState en) {
-        if (en) SPIx->CR2 |= SPI_CR2_RXDMAEN; else SPIx->CR2 &= ~SPI_CR2_RXDMAEN;
+        if (en) SPI_SET_BIT(SPIx->CR2, SPI_CR2_RXDMAEN); else SPI_CLEAR_BIT(SPIx->CR2, SPI_CR2_RXDMAEN);
     }
     /// Changes CR2 only; safe for a callback to disable its own source.
     /// Enable sources only for an active transfer; SetUp() owns NVIC registration.
     void IRQ_en(IRQ irq, FunctionalState en) {
         if (!_info) return;
-        if (en) SPIx->CR2 |= static_cast<uint32_t>(irq);
-        else SPIx->CR2 &= ~static_cast<uint32_t>(irq);
+        if (en) SPI_SET_BIT(SPIx->CR2, static_cast<uint32_t>(irq));
+        else SPI_CLEAR_BIT(SPIx->CR2, static_cast<uint32_t>(irq));
     }
 
     /**
@@ -376,7 +421,8 @@ private:
     static const PeriphInfo spi_table[];
     static constexpr uint32_t IRQ_MASK = SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE;
     static constexpr uint32_t DMA_MASK = SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN;
-    static constexpr uint32_t SPI_ERRORS = SPI_SR_OVR | SPI_SR_MODF | SPI_SR_CRCERR | SPI_SR_FRE;
+    // Motorola SPI without hardware CRC; TI frame errors are not applicable.
+    static constexpr uint32_t SPI_ERRORS = SPI_SR_OVR | SPI_SR_MODF;
 
     const uint8_t* _tx_data = nullptr;
     uint8_t* _rx_data = nullptr;
@@ -390,8 +436,11 @@ private:
     volatile bool _truncated = false;
     volatile bool _nss_ended = false;
     const Direction _direction;
-    DMA_Sx* const _dma_tx;
-    DMA_Sx* const _dma_rx;
+    DMA_Sx _dma_tx;
+    DMA_Sx _dma_rx;
+#if defined(STM32G0)
+    static uint32_t DmaRequest(SPI_TypeDef* spi, bool tx);
+#endif
     // Active directions awaiting a DMA completion/stop event; SPI CR2 bit values.
     volatile uint8_t _dma_pending = 0;
 
@@ -417,8 +466,16 @@ private:
     uint16_t ReadFrame() const;
     void WriteFrame(uint16_t frame);
     void StoreFrame(uint16_t frame);
-    void DrainRx();
-    uint32_t ReadErrors();
+    // RX/error handling share the SR snapshot and budget, including OVR discard.
+    uint32_t FifoFrames() const {
+#if defined(STM32F4)
+        return 1U;
+#else
+        return _frame_format == Data_frame_format::Byte ? 4U : 2U;
+#endif
+    }
+    void DrainRx(uint32_t& sr, uint32_t& remaining);
+    uint32_t ReadErrors(uint32_t& sr, uint32_t& remaining);
     void StopTransfer();
     SysInitStatus SetUpDMA();
     void Finish(SysStatus result, uint32_t errors = 0);

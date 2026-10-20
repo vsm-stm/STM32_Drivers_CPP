@@ -18,7 +18,7 @@ bool ADC_N::Enable()
 	const uint32_t start = System::GetTick();
 	// ADEN can be ignored just after calibration; retry until ADRDY or timeout.
 	while (!(ADCx->ISR & ADC_ISR_ADRDY)) {
-		if (!(ADCx->CR & ADC_CR_ADEN)) ADCx->CR |= ADC_CR_ADEN;
+		if (!(ADCx->CR & ADC_CR_ADEN)) ADC_SET_BIT(ADCx->CR, ADC_CR_ADEN);
 		if (System::GetTick() - start >= ADC_TIMEOUT_MS) return false;
 	}
 	return true;
@@ -26,12 +26,14 @@ bool ADC_N::Enable()
 
 bool ADC_N::Disable()
 {
-	if ((ADCx->CR & ADC_CR_ADSTART) && !(ADCx->CR & ADC_CR_ADSTP))
-		ADCx->CR |= ADC_CR_ADSTP;
+	uint32_t cr = ADCx->CR;
+	if ((cr & ADC_CR_ADSTART) && !(cr & ADC_CR_ADSTP))
+		ADC_SET_BIT(ADCx->CR, ADC_CR_ADSTP);
 	if (!System::WaitBits(ADCx->CR, ADC_CR_ADSTART | ADC_CR_ADSTP, 0u, ADC_TIMEOUT_MS))
 		return false;
-	if ((ADCx->CR & ADC_CR_ADEN) && !(ADCx->CR & ADC_CR_ADDIS))
-		ADCx->CR |= ADC_CR_ADDIS;
+	cr = ADCx->CR; // ADSTART/ADSTP have changed during the completed wait.
+	if ((cr & ADC_CR_ADEN) && !(cr & ADC_CR_ADDIS))
+		ADC_SET_BIT(ADCx->CR, ADC_CR_ADDIS);
 	return System::WaitBits(ADCx->CR, ADC_CR_ADEN | ADC_CR_ADDIS, 0u, ADC_TIMEOUT_MS);
 }
 
@@ -48,7 +50,7 @@ bool ADC_N::WriteChselr(uint32_t chsel)
 bool ADC_N::WriteCfgr1(uint32_t clear, uint32_t set)
 {
 	if (!Disable()) return false;
-	ADCx->CFGR1 = (ADCx->CFGR1 & ~clear) | set;
+	ADC_MODIFY_REG(ADCx->CFGR1, clear, set);
 	return Enable();
 }
 
@@ -84,14 +86,20 @@ static void ClearRunFlags(ADC_TypeDef* adc)
 SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 {
 	if (_info) return SysInitStatus::InitError;
+	if ((_conversion != Conversion::Single && _conversion != Conversion::Continuous)
+		|| (_conversion == Conversion::Continuous && _trigger != Trigger::None))
+		return SysInitStatus::InitError;
+	const bool timer_source = _trigger != Trigger::None && _trigger != Trigger::EXTI11;
+	if (timer_source != (_timer != nullptr) || (_timer && !_timer->GetPeriod()))
+		return SysInitStatus::InitError;
 	const PeriphInfo* info = nullptr;
 	for (const auto& e : adc_table)
 		if (e.periph == ADCx) { info = &e; break; }
 	if (!info) return SysInitStatus::InitError;
-	*info->clk_reg |= info->clk_bit;
+	ADC_SET_BIT(*info->clk_reg, info->clk_bit);
 	(void)*info->clk_reg;
 
-	if (ADCx == ADC1) ADC->CCR &= ~(EN_VREFINT | EN_TEMP | EN_VBAT);
+	if (ADCx == ADC1) ADC_CLEAR_BIT(ADC->CCR, (EN_VREFINT | EN_TEMP | EN_VBAT));
 	bool ready = true;
 #if defined(STM32G0)
 	ADCx->IER = 0;
@@ -99,9 +107,9 @@ SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 	if (ready) {
 		ADCx->CFGR1 = 0;
 		ADCx->CFGR2 = ADC_CFGR2_CKMODE_0; // Synchronous PCLK/2.
-		ADCx->CR |= ADC_CR_ADVREGEN;
+		ADC_SET_BIT(ADCx->CR, ADC_CR_ADVREGEN);
 		System::Delay_ms(1);             // Regulator startup.
-		ADCx->CR |= ADC_CR_ADCAL;
+		ADC_SET_BIT(ADCx->CR, ADC_CR_ADCAL);
 		ready = System::WaitBits(ADCx->CR, ADC_CR_ADCAL, 0u, ADC_TIMEOUT_MS);
 	}
 	if (ready) {
@@ -120,7 +128,7 @@ SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 	ADCx->CR1 = 0;
 	// ADCPRE is shared by the ADCs even when conversion is independent.
 	if ((ADC->CCR & ADC_CCR_ADCPRE) != ADC_CCR_ADCPRE_0)
-		ADC->CCR = (ADC->CCR & ~ADC_CCR_ADCPRE) | ADC_CCR_ADCPRE_0;
+		ADC_MODIFY_REG(ADC->CCR, ADC_CCR_ADCPRE, ADC_CCR_ADCPRE_0);
 	ADCx->SMPR1 = 0;
 	ADCx->SMPR2 = 0;
 	ADCx->SQR1 = 0;
@@ -132,7 +140,7 @@ SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 #endif
 	ClearRunFlags(ADCx);
 	if (!ready) {
-		*info->clk_reg &= ~info->clk_bit;
+		ADC_CLEAR_BIT(*info->clk_reg, info->clk_bit);
 		return SysInitStatus::InitError;
 	}
 
@@ -144,13 +152,18 @@ SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 #else
 		ADCx->CR2 = 0;
 #endif
-		*info->clk_reg &= ~info->clk_bit;
+		ADC_CLEAR_BIT(*info->clk_reg, info->clk_bit);
 		if (enabled) NVIC_EnableIRQ(info->irqn);
 		return SysInitStatus::InitError;
 	}
 	_ch_count = 0;
 	_status = SysStatus::OK;
 	_info = info;
+	if (_dma.HasSelection() && SetUpDMA() != SysInitStatus::InitOK) {
+		DeInit();
+		if (enabled) NVIC_EnableIRQ(info->irqn);
+		return SysInitStatus::InitError;
+	}
 	NVIC_EnableIRQ(info->irqn);
 	return SysInitStatus::InitOK;
 }
@@ -193,8 +206,8 @@ SysStatus ADC_N::AddRank(uint8_t ch, CH_SMPL smpl)
 			return SysStatus::Timeout;
 		}
 	}
-	if (sel2) ADCx->SMPR |= sel_bit;
-	else ADCx->SMPR &= ~sel_bit;
+	if (sel2) ADC_SET_BIT(ADCx->SMPR, sel_bit);
+	else ADC_CLEAR_BIT(ADCx->SMPR, sel_bit);
 	_ascending = _ascending && ascending;
 	_last_ch = ch;
 #else
@@ -203,13 +216,13 @@ SysStatus ADC_N::AddRank(uint8_t ch, CH_SMPL smpl)
 	volatile uint32_t& smpr = ch < 10 ? ADCx->SMPR2 : ADCx->SMPR1;
 	const uint32_t shift = (ch < 10 ? ch : ch - 10u) * 3u;
 	if (present && ((smpr >> shift) & 7u) != v) return SysStatus::Error;
-	smpr = (smpr & ~(7u << shift)) | (v << shift);
+	ADC_MODIFY_REG(smpr, 7u << shift, v << shift);
 	const uint8_t n = _ch_count;
 	volatile uint32_t& sqr = n < 6 ? ADCx->SQR3 : n < 12 ? ADCx->SQR2 : ADCx->SQR1;
 	const uint32_t rank_shift = (n % 6u) * 5u;
-	sqr = (sqr & ~(0x1Fu << rank_shift)) | (static_cast<uint32_t>(ch) << rank_shift);
-	ADCx->SQR1 = (ADCx->SQR1 & ~ADC_SQR1_L) | (static_cast<uint32_t>(n) << ADC_SQR1_L_Pos);
-	if (n) ADCx->CR1 |= ADC_CR1_SCAN;
+	ADC_MODIFY_REG(sqr, 0x1Fu << rank_shift, static_cast<uint32_t>(ch) << rank_shift);
+	ADC_MODIFY_REG(ADCx->SQR1, ADC_SQR1_L, static_cast<uint32_t>(n) << ADC_SQR1_L_Pos);
+	if (n) ADC_SET_BIT(ADCx->CR1, ADC_CR1_SCAN);
 #endif
 	++_ch_count;
 	return SysStatus::OK;
@@ -248,7 +261,7 @@ SysStatus ADC_N::AddChannel(INTERNAL in, CH_SMPL smpl)
 	const SysStatus result = AddRank(ch, smpl);
 	if (result != SysStatus::OK) return result;
 	if (!(ADC->CCR & en)) {
-		ADC->CCR |= en;
+		ADC_SET_BIT(ADC->CCR, en);
 		System::Delay_ms(1); // Source startup, not sampling time.
 	}
 	return SysStatus::OK;
@@ -268,69 +281,46 @@ SysStatus ADC_N::ClearChannels()
 	_seq_mode = true;
 	_ascending = true;
 	_last_ch = 0;
-	ADCx->SMPR &= ~SMPSEL_ALL;
+	ADC_CLEAR_BIT(ADCx->SMPR, SMPSEL_ALL);
 #else
 	ADCx->SQR1 = 0;
 	ADCx->SQR2 = 0;
 	ADCx->SQR3 = 0;
-	ADCx->CR1 &= ~ADC_CR1_SCAN;
+	ADC_CLEAR_BIT(ADCx->CR1, ADC_CR1_SCAN);
 #endif
 	_ch_count = 0;
-	if (ADCx == ADC1) ADC->CCR &= ~(EN_VREFINT | EN_TEMP | EN_VBAT);
+	if (ADCx == ADC1) ADC_CLEAR_BIT(ADC->CCR, (EN_VREFINT | EN_TEMP | EN_VBAT));
 	ClearRunFlags(ADCx);
 	_status = SysStatus::OK;
 	return SysStatus::OK;
 }
 
-// Validate the selected route and acquire once, as in USART::AttachDMA.
-SysInitStatus ADC_N::AttachDMA(DMA_Sx* dma)
+// Constructor-bound DMA is acquired once, with its own registry object.
+SysInitStatus ADC_N::SetUpDMA()
 {
-	if (!_info || !dma || _dma || IsBusy()) return SysInitStatus::InitError;
-	DMA_Sx::DMAReq req{};
-	for (const auto& route : _info->dma_req)
-		if (dma->CanUseRequest(route)) { req = route; break; }
-	if (!req.IsValid()) return SysInitStatus::InitError;
 	DMA_Sx::StreamSettings cfg;
-	cfg.channel = req.ch;
 	cfg.direction = DMA_Sx::DIR::From_Per;
 	cfg.data_size = DMA_Sx::SIZE::Half_Word;
 	cfg.minc = true;
+	cfg.circ = IsRepeating();
 	cfg.per_address = reinterpret_cast<uint32_t>(&ADCx->DR);
-	if (dma->SetUp(cfg) != SysInitStatus::InitOK) return SysInitStatus::InitError;
+	if (_dma.SetUp(cfg) != SysInitStatus::InitOK) return SysInitStatus::InitError;
 
-	const IRQn_Type irqn = dma->GetIRQn();
+	const IRQn_Type irqn = _dma.GetIRQn();
 	const bool enabled = NVIC_GetEnableIRQ(irqn) != 0;
 	NVIC_DisableIRQ(irqn);
-	if (IRQ_Registry::Register(irqn, this) != SysInitStatus::InitOK) {
-		dma->Release();
+	if (IRQ_Registry::Register(irqn, &_dma_irq) != SysInitStatus::InitOK) {
+		_dma.Release();
 		if (enabled) NVIC_EnableIRQ(irqn);
 		return SysInitStatus::InitError;
 	}
-	_dma = dma;
+	_dma_owned = true;
 	_dma_tc_irq = true;
-	dma->Enable_IRQ(DMA_Sx::IRQ::TC);
-	dma->Enable_IRQ(DMA_Sx::IRQ::TE);
+	_dma.Enable_IRQ(DMA_Sx::IRQ::TC);
+	_dma.Enable_IRQ(DMA_Sx::IRQ::TE);
 #if defined(STM32F4) || defined(STM32F7)
-	dma->Enable_IRQ(DMA_Sx::IRQ::DME);
+	_dma.Enable_IRQ(DMA_Sx::IRQ::DME);
 #endif
-	return SysInitStatus::InitOK;
-}
-
-SysInitStatus ADC_N::AttachTrig(TIM_TriggerGenerator* trg)
-{
-	if (!_info || !trg || IsBusy()) return SysInitStatus::InitError;
-	_trg = trg;
-	_extsel = trg->GetReq().extsel;
-	_trig_set = true;
-	return SysInitStatus::InitOK;
-}
-
-SysInitStatus ADC_N::AttachExtTrig()
-{
-	if (!_info || IsBusy()) return SysInitStatus::InitError;
-	_trg = nullptr;
-	_extsel = EXTSEL_EXTI11;
-	_trig_set = true;
 	return SysInitStatus::InitOK;
 }
 
@@ -340,113 +330,80 @@ bool ADC_N::SetRunMode(uint32_t bits)
 	return WriteCfgr1(RUN_FIELDS, bits);
 #else
 	const bool enabled = (ADCx->CR2 & ADC_CR2_ADON) != 0u;
-	ADCx->CR2 = (ADCx->CR2 & ~RUN_FIELDS) | bits | ADC_CR2_ADON;
+	ADC_MODIFY_REG(ADCx->CR2, RUN_FIELDS, bits | ADC_CR2_ADON);
 	if (!enabled) System::Delay_ms(1);
 	return true;
 #endif
 }
 
-SysStatus ADC_N::Start()
+SysStatus ADC_N::Start(uint16_t* buf, uint32_t len)
 {
 	if (!_info) return SysStatus::NotInit;
 	if (IsBusy()) return SysStatus::Busy;
 	if (!_ch_count) return SysStatus::Error;
-	if (!SetRunMode(0u)) {
-		_status = SysStatus::Timeout;
-		return SysStatus::Timeout;
-	}
-	ClearRunFlags(ADCx);
-	_mode = Mode::Single;
-	_status = SysStatus::Busy;
-#if defined(STM32G0)
-	ADCx->CR |= ADC_CR_ADSTART;
-#else
-	ADCx->CR2 |= ADC_CR2_SWSTART;
-#endif
-	return SysStatus::OK;
-}
-
-SysStatus ADC_N::Start_DMA(uint16_t* buf) { return StartDma(buf, _ch_count, Mode::Dma); }
-SysStatus ADC_N::StartTrig_DMA(uint16_t* buf, uint32_t len) { return StartDma(buf, len, Mode::Trig); }
-SysStatus ADC_N::StartCont_DMA(uint16_t* buf, uint32_t len) { return StartDma(buf, len, Mode::ContDma); }
-
-SysStatus ADC_N::StartDma(uint16_t* buf, uint32_t len, Mode mode)
-{
-	if (!_info) return SysStatus::NotInit;
-	if (IsBusy()) return SysStatus::Busy;
-	if (!_dma || !buf || !_ch_count || !len || len > 0xFFFFu || len % _ch_count)
-		return SysStatus::Error;
-	if (mode == Mode::Trig && !_trig_set) return SysStatus::Error;
+	if (_dma.HasSelection()) {
+		if (!buf || (reinterpret_cast<uintptr_t>(buf) & 1u) || !len
+			|| len > 0xFFFFu || len % _ch_count || (!IsRepeating() && len != _ch_count)
+			|| (_dma_ht_irq && (len & 1u)))
+			return SysStatus::Error;
+		if (_dma.IsEnabled()) return SysStatus::Busy;
+	} else if (buf || len) return SysStatus::Error;
 	_status = SysStatus::OK; // A previously polled single capture has already ended.
 	ClearRunFlags(ADCx); // Clear an earlier EOC before enabling ADC DMA requests.
 #if defined(STM32G0)
-	uint32_t bits = ADC_CFGR1_DMAEN;
-	if (mode != Mode::Dma) bits |= ADC_CFGR1_DMACFG;
-	if (mode == Mode::ContDma) bits |= ADC_CFGR1_CONT;
-	if (mode == Mode::Trig)
-		bits |= ADC_CFGR1_EXTEN_0 | (static_cast<uint32_t>(_extsel) << ADC_CFGR1_EXTSEL_Pos);
+	uint32_t bits = _dma.HasSelection() ? ADC_CFGR1_DMAEN : 0u;
+	if (_dma.HasSelection() && IsRepeating()) bits |= ADC_CFGR1_DMACFG;
+	if (_conversion == Conversion::Continuous) {
+		bits |= ADC_CFGR1_CONT;
+		if (!_dma.HasSelection()) bits |= ADC_CFGR1_OVRMOD;
+	}
+	if (_trigger != Trigger::None)
+		bits |= ADC_CFGR1_EXTEN_0 | (static_cast<uint32_t>(_trigger) << ADC_CFGR1_EXTSEL_Pos);
 #else
-	uint32_t bits = ADC_CR2_DMA;
-	if (mode != Mode::Dma) bits |= ADC_CR2_DDS;
-	if (mode == Mode::ContDma) bits |= ADC_CR2_CONT;
-	if (mode == Mode::Trig) bits |= static_cast<uint32_t>(_extsel) << ADC_CR2_EXTSEL_Pos;
+	uint32_t bits = _dma.HasSelection() ? ADC_CR2_DMA : 0u;
+	if (_dma.HasSelection() && IsRepeating()) bits |= ADC_CR2_DDS;
+	if (_conversion == Conversion::Continuous) bits |= ADC_CR2_CONT;
+	if (_trigger != Trigger::None)
+		bits |= static_cast<uint32_t>(_trigger) << ADC_CR2_EXTSEL_Pos;
 #endif
 	if (!SetRunMode(bits)) {
 		_status = SysStatus::Timeout;
 		return SysStatus::Timeout;
 	}
-	_dma->CIRC(mode == Mode::Dma ? DISABLE : ENABLE);
-	if (_dma->SetMemAddr(reinterpret_cast<uint32_t>(buf)) != SysStatus::OK
-		|| _dma->SetCount(len) != SysStatus::OK) return SysStatus::Error;
-	_dma->ClearFlags();
-	System::CacheCleanInvalidate(buf, len * sizeof(uint16_t));
-	_buf = buf;
-	_buf_bytes = len * sizeof(uint16_t);
-	if (mode == Mode::Dma) {
-		_dma_tc_irq = true; // Finite DMA completion is serviced automatically.
-		_dma->Enable_IRQ(DMA_Sx::IRQ::TC);
+	_errors = 0;
+	if (_dma.HasSelection()) {
+		if (_dma.SetMemAddr(reinterpret_cast<uint32_t>(buf)) != SysStatus::OK
+			|| _dma.SetCount(len) != SysStatus::OK) return SysStatus::Error;
+		_dma.ClearFlags();
+		System::CacheCleanInvalidate(buf, len * sizeof(uint16_t));
+		_buf = buf;
+		_buf_bytes = len * sizeof(uint16_t);
+		if (_dma_tc_irq || !IsRepeating()) {
+			_dma.Enable_IRQ(DMA_Sx::IRQ::TC, false);
+		} else _dma.Disable_IRQ(DMA_Sx::IRQ::TC);
+		if (_dma_ht_irq) _dma.Enable_IRQ(DMA_Sx::IRQ::HTC, false);
+		else _dma.Disable_IRQ(DMA_Sx::IRQ::HTC);
+		_dma.Enable_IRQ(DMA_Sx::IRQ::TE, false);
+#if defined(STM32F4) || defined(STM32F7)
+		_dma.Enable_IRQ(DMA_Sx::IRQ::DME, false);
+#endif
 	}
-	_mode = mode;
 	_status = SysStatus::Busy;
-	_dma->Stream_EN(ENABLE);
+	if (_dma.HasSelection()) _dma.Stream_EN(ENABLE);
 #if defined(STM32G0)
-	ADCx->CR |= ADC_CR_ADSTART;
+	ADC_SET_BIT(ADCx->CR, ADC_CR_ADSTART);
 #else
-	if (mode == Mode::Trig) ADCx->CR2 |= ADC_CR2_EXTEN_0;
-	else ADCx->CR2 |= ADC_CR2_SWSTART;
+	if (_trigger != Trigger::None) ADC_SET_BIT(ADCx->CR2, ADC_CR2_EXTEN_0);
+	else ADC_SET_BIT(ADCx->CR2, ADC_CR2_SWSTART);
 #endif
-	if (mode == Mode::Trig && _trg) _trg->Start(); // Timer last, after ADC is armed.
-	return SysStatus::OK;
-}
-
-SysStatus ADC_N::StartCont()
-{
-	if (!_info) return SysStatus::NotInit;
-	if (IsBusy()) return SysStatus::Busy;
-	if (_ch_count != 1) return SysStatus::Error;
-#if defined(STM32G0)
-	if (!SetRunMode(ADC_CFGR1_CONT | ADC_CFGR1_OVRMOD)) {
-		_status = SysStatus::Timeout;
-		return SysStatus::Timeout;
-	}
-#else
-	SetRunMode(ADC_CR2_CONT);
-#endif
-	ClearRunFlags(ADCx);
-	_mode = Mode::Cont;
-	_status = SysStatus::Busy;
-#if defined(STM32G0)
-	ADCx->CR |= ADC_CR_ADSTART;
-#else
-	ADCx->CR2 |= ADC_CR2_SWSTART;
-#endif
+	if (_timer) _timer->Start(); // Timer last, after ADC is armed.
 	return SysStatus::OK;
 }
 
 bool ADC_N::IsBusy() const
 {
 	if (!_info || _status != SysStatus::Busy) return false;
-	if (_mode != Mode::Single) return true;
+	if (_dma.HasSelection() || IsRepeating()) return true;
 #if defined(STM32G0)
 	return (ADCx->CR & ADC_CR_ADSTART) != 0u;
 #else
@@ -463,7 +420,7 @@ uint16_t ADC_N::GetData()
 {
 	if (!_info) return 0;
 #if defined(STM32F4) || defined(STM32F7)
-	if (_mode == Mode::Single && _status == SysStatus::Busy) {
+	if (!_dma.HasSelection() && !IsRepeating() && _status == SysStatus::Busy) {
 		if (!(ADCx->SR & ADC_SR_EOC)) return _last_data;
 		_status = SysStatus::OK;
 	}
@@ -477,11 +434,25 @@ uint16_t ADC_N::GetData()
 // Main-loop Stop/DeInit only. Failed DMA data is discarded without cache handover.
 uint32_t ADC_N::StopDMA()
 {
-	if (!_dma || !_buf) return 0;
-	_dma->Stream_EN(DISABLE);
-	const uint32_t errors = _dma->GetErrorFlags();
-	_dma->ClearFlags();
-	if (!errors) System::CacheInvalidate(_buf, _buf_bytes);
+	if (!_dma.HasSelection() || !_buf) return 0;
+	// Main owns this stop. Preserve completion/error flags until they are read;
+	// no pending DMA callback may consume the software-stop TC in the meantime.
+	_dma.Disable_IRQ(DMA_Sx::IRQ::HTC);
+	_dma.Disable_IRQ(DMA_Sx::IRQ::TC);
+	_dma.Disable_IRQ(DMA_Sx::IRQ::TE);
+#if defined(STM32F4) || defined(STM32F7)
+	_dma.Disable_IRQ(DMA_Sx::IRQ::DME);
+#endif
+	_dma.Stream_EN(DISABLE);
+	uint32_t flags = _dma.GetIRQFlags();
+#if defined(STM32F4) || defined(STM32F7)
+	// Main only: EN can clear before the FIFO finishes; TC confirms software
+	// stop. Hardware TE terminates without requiring a normal TC event.
+	while (!(flags & (DMA_Sx::FLAG_TC | DMA_LISR_TEIF0))) flags = _dma.GetIRQFlags();
+#endif
+	const uint32_t errors = flags & DMA_Sx::FLAG_ERRORS;
+	_dma.ClearFlags();
+	if (!errors && !_errors) System::CacheInvalidate(_buf, _buf_bytes);
 	_buf = nullptr;
 	_buf_bytes = 0;
 	return errors;
@@ -490,21 +461,22 @@ uint32_t ADC_N::StopDMA()
 SysStatus ADC_N::Stop()
 {
 	if (!_info) return SysStatus::NotInit;
-	_status = SysStatus::OK; // Suppress capture notifications while stopping in main.
-	if (_trg) _trg->Stop();
+	_status = SysStatus::NotInit; // Suppress notifications while stopping in main.
+	if (_timer) _timer->Stop();
 #if defined(STM32G0)
-	if ((ADCx->CR & ADC_CR_ADSTART) && !(ADCx->CR & ADC_CR_ADSTP))
-		ADCx->CR |= ADC_CR_ADSTP;
+	const uint32_t cr = ADCx->CR;
+	if ((cr & ADC_CR_ADSTART) && !(cr & ADC_CR_ADSTP))
+		ADC_SET_BIT(ADCx->CR, ADC_CR_ADSTP);
 #else
-	ADCx->CR2 &= ~(ADC_CR2_ADON | RUN_FIELDS);
+	ADC_CLEAR_BIT(ADCx->CR2, (ADC_CR2_ADON | RUN_FIELDS));
 #endif
-	const uint32_t errors = StopDMA();
+	const uint32_t errors = StopDMA() | _errors;
 #if defined(STM32G0)
 	if (!Disable()) {
 		_status = SysStatus::Timeout;
 		return SysStatus::Timeout;
 	}
-	ADCx->CFGR1 &= ~RUN_FIELDS;
+	ADC_CLEAR_BIT(ADCx->CFGR1, RUN_FIELDS);
 	if (!Enable()) {
 		_status = SysStatus::Timeout;
 		return SysStatus::Timeout;
@@ -518,22 +490,61 @@ SysStatus ADC_N::Stop()
 void ADC_N::IRQ_en(IRQ irq, FunctionalState en)
 {
 	if (!_info) return;
-	if (irq == IRQ::DMA_TC) {
-		if (!_dma) return;
-		_dma_tc_irq = en != DISABLE;
-		if (en) _dma->Enable_IRQ(DMA_Sx::IRQ::TC);
-		else _dma->Disable_IRQ(DMA_Sx::IRQ::TC);
+	if (irq == IRQ::DMA_TC || irq == IRQ::DMA_HT) {
+		if (!_dma_owned) return;
+		if (irq == IRQ::DMA_HT && IsBusy()) return; // Fix half-buffer layout before Start.
+		if (irq == IRQ::DMA_TC && !IsRepeating() && en == DISABLE) return;
+		bool& enabled = irq == IRQ::DMA_HT ? _dma_ht_irq : _dma_tc_irq;
+		enabled = en != DISABLE;
+		const DMA_Sx::IRQ source = irq == IRQ::DMA_HT ? DMA_Sx::IRQ::HTC : DMA_Sx::IRQ::TC;
+		if (en) _dma.Enable_IRQ(source, false);
+		else _dma.Disable_IRQ(source);
 		return;
 	}
 #if defined(STM32G0)
-	if (en) ADCx->IER |= static_cast<uint32_t>(irq);
-	else ADCx->IER &= ~static_cast<uint32_t>(irq);
+	if (en) ADC_SET_BIT(ADCx->IER, static_cast<uint32_t>(irq));
+	else ADC_CLEAR_BIT(ADCx->IER, static_cast<uint32_t>(irq));
 #else
-	if (en) ADCx->CR1 |= static_cast<uint32_t>(irq);
-	else ADCx->CR1 &= ~static_cast<uint32_t>(irq);
+	if (en) ADC_SET_BIT(ADCx->CR1, static_cast<uint32_t>(irq));
+	else ADC_CLEAR_BIT(ADCx->CR1, static_cast<uint32_t>(irq));
 #endif
 }
 
+// Shared error action, not a dispatcher: no DMA/ADC flag polling or wait loops.
+void ADC_N::StopOnError(uint32_t errors)
+{
+	_errors = _errors | errors;
+	if (_timer) _timer->Stop();
+#if defined(STM32G0)
+	const uint32_t cr = ADCx->CR;
+	if ((cr & ADC_CR_ADSTART) && !(cr & ADC_CR_ADSTP))
+		ADC_SET_BIT(ADCx->CR, ADC_CR_ADSTP);
+#else
+	ADC_CLEAR_BIT(ADCx->CR2, (ADC_CR2_ADON | RUN_FIELDS));
+#endif
+	if (_buf) {
+		_dma.Disable_IRQ(DMA_Sx::IRQ::HTC);
+		_dma.Disable_IRQ(DMA_Sx::IRQ::TE);
+#if defined(STM32F4) || defined(STM32F7)
+		_dma.Disable_IRQ(DMA_Sx::IRQ::DME);
+		_dma.Enable_IRQ(DMA_Sx::IRQ::TC, false); // Also needed if circular TC was off.
+		_dma.RequestStop();
+		// Ensure the DMA handler observes a stop that was already complete.
+		NVIC_SetPendingIRQ(_dma.GetIRQn());
+		return;
+#else
+		_dma.RequestStop(); // Error packet is discarded; no CNDTR/buffer read.
+		_dma.ClearFlags();
+#endif
+	}
+	_buf = nullptr;
+	_buf_bytes = 0;
+	__DMB();
+	_status = SysStatus::Error;
+	OnError(_errors);
+}
+
+// ADC flags only. DMA completion and errors have a distinct registered handler.
 void ADC_N::HandleIRQ()
 {
 	if (!_info) return;
@@ -552,55 +563,18 @@ void ADC_N::HandleIRQ()
 	const uint32_t flags = (eos ? ADC_SR_EOC : 0u) | (overrun ? ADC_SR_OVR : 0u);
 	if (flags) ADCx->SR = ~flags;
 #endif
-	if (_status != SysStatus::Busy) {
-		// Stop/DeInit may be preempted by an already pending DMA IRQ. Clear
-		// only our resource's flags so it cannot keep retriggering this line.
-		if (_dma) _dma->ClearFlags();
+	if (_status != SysStatus::Busy && !(_dma.HasSelection() && _status == SysStatus::OK)) return;
+	if (_errors) return; // Await the separate DMA error-stop completion.
+	if (overrun && (_dma.HasSelection() || _conversion != Conversion::Continuous)) {
+		StopOnError(static_cast<uint32_t>(Error::Overrun));
 		return;
 	}
-	uint32_t errors = 0;
-	if (overrun && _mode != Mode::Cont) errors |= static_cast<uint32_t>(Error::Overrun);
-	if (_buf) {
-		const bool complete = _dma_tc_irq && _dma->GetTC_Flag();
-		// Stop a finite transfer before the single error snapshot and handover.
-		if (complete && _mode == Mode::Dma) _dma->Stream_EN(DISABLE);
-		if (_dma->GetErrorFlags()) errors |= static_cast<uint32_t>(Error::Dma);
-		if (!errors && complete) {
-			// Selective HT/TC clearing awaits the separate DMA API update.
-			_dma->ClearFlags();
-			System::CacheInvalidate(_buf, _buf_bytes);
-			if (_mode == Mode::Dma) {
-				_buf = nullptr;
-				_buf_bytes = 0;
-				_status = SysStatus::OK;
-			}
-			OnDmaComplete();
-		}
-	} else if (_mode == Mode::Single) {
+	if (!_dma.HasSelection() && !IsRepeating()) {
 #if defined(STM32G0)
 		if (!(ADCx->CR & ADC_CR_ADSTART)) _status = SysStatus::OK;
 #else
 		if (sr & ADC_SR_EOC) _status = SysStatus::OK;
 #endif
-	}
-	if (errors) {
-		if (_trg && _mode == Mode::Trig) _trg->Stop();
-#if defined(STM32G0)
-		if ((ADCx->CR & ADC_CR_ADSTART) && !(ADCx->CR & ADC_CR_ADSTP))
-			ADCx->CR |= ADC_CR_ADSTP; // No SysTick wait from IRQ.
-#else
-		ADCx->CR2 &= ~(ADC_CR2_ADON | RUN_FIELDS);
-#endif
-		if (_buf) {
-			_dma->Stream_EN(DISABLE);
-			_dma->ClearFlags();
-			// Partial data is invalid: no cache operation or success notification.
-			_buf = nullptr;
-			_buf_bytes = 0;
-		}
-		_status = SysStatus::Error;
-		OnError(errors);
-		return;
 	}
 #if defined(STM32G0)
 	if (eoc) OnEOC();
@@ -608,36 +582,88 @@ void ADC_N::HandleIRQ()
 	if (eos) OnEOS();
 }
 
+void ADC_N::HandleDmaIRQ()
+{
+	if (!_info || !_dma_owned) return;
+	if (_status != SysStatus::Busy || !_buf) {
+		// Stop/DeInit disabled the sources and still need their final flags.
+		if (_status != SysStatus::NotInit) _dma.ClearFlags();
+		return;
+	}
+	const uint32_t flags = _dma.GetIRQFlags();
+	const uint32_t dma_errors = flags & DMA_Sx::FLAG_ERRORS;
+	if (dma_errors && !(_errors & static_cast<uint32_t>(Error::Dma)))
+		StopOnError(static_cast<uint32_t>(Error::Dma));
+	if (_errors) {
+#if defined(STM32F4) || defined(STM32F7)
+		// No spin: a later TC IRQ confirms software stop. Hardware TE can stop
+		// without TC. Checking EN also rejects a stale circular TC during abort.
+		if (_dma.IsEnabled()) return;
+		if (!(flags & DMA_Sx::FLAG_TC) && !(dma_errors & DMA_LISR_TEIF0)) return;
+		_dma.ClearFlags();
+		_buf = nullptr;
+		_buf_bytes = 0;
+		__DMB();
+		_status = SysStatus::Error;
+		OnError(_errors);
+#endif
+		return;
+	}
+	const bool half = _dma_ht_irq && (flags & DMA_Sx::FLAG_HT);
+	const bool complete = _dma_tc_irq && (flags & DMA_Sx::FLAG_TC);
+	__DMB(); // Observe completed DMA writes before accessing/notifying buffer data.
+	if (half) {
+		_dma.ClearHT_Flag();
+		System::CacheInvalidate(_buf, _buf_bytes / 2u);
+		OnDmaHalf();
+	}
+	if (!complete) return;
+	_dma.ClearTC_Flag();
+	if (!IsRepeating()) {
+		_dma.RequestStop(); // TC already confirms finite completion; no EN wait.
+		System::CacheInvalidate(_buf, _buf_bytes);
+		_buf = nullptr;
+		_buf_bytes = 0;
+		__DMB();
+		_status = SysStatus::OK;
+	} else if (_dma_ht_irq) {
+		System::CacheInvalidate(_buf + _buf_bytes / (2u * sizeof(uint16_t)), _buf_bytes / 2u);
+	} else System::CacheInvalidate(_buf, _buf_bytes);
+	OnDmaComplete();
+}
+
 void ADC_N::DeInit()
 {
 	if (!_info) return;
 	_status = SysStatus::NotInit;
-	if (_trg) _trg->Stop();
+	if (_timer) _timer->Stop();
 #if defined(STM32G0)
 	ADCx->IER = 0;
-	if ((ADCx->CR & ADC_CR_ADSTART) && !(ADCx->CR & ADC_CR_ADSTP))
-		ADCx->CR |= ADC_CR_ADSTP;
+	const uint32_t cr = ADCx->CR;
+	if ((cr & ADC_CR_ADSTART) && !(cr & ADC_CR_ADSTP))
+		ADC_SET_BIT(ADCx->CR, ADC_CR_ADSTP);
 #else
 	ADCx->CR1 = 0;
 	ADCx->CR2 = 0;
 #endif
 	StopDMA();
 	const IRQn_Type none = static_cast<IRQn_Type>(-1);
-	const IRQn_Type irqs[2] = { _info->irqn, _dma ? _dma->GetIRQn() : none };
+	const IRQn_Type irqs[2] = { _info->irqn, _dma_owned ? _dma.GetIRQn() : none };
+	IIRQHandler* const handlers[2] = { this, &_dma_irq };
 	for (unsigned i = 0; i < 2; ++i) {
-		if (irqs[i] == none || (i && irqs[i] == irqs[0])) continue;
+		if (irqs[i] == none) continue;
 		const bool enabled = NVIC_GetEnableIRQ(irqs[i]) != 0;
 		NVIC_DisableIRQ(irqs[i]);
-		IRQ_Registry::Unregister(irqs[i], this);
+		IRQ_Registry::Unregister(irqs[i], handlers[i]);
 		if (IRQ_Registry::HasHandlers(irqs[i])) {
 			if (enabled) NVIC_EnableIRQ(irqs[i]);
 		} else NVIC_ClearPendingIRQ(irqs[i]);
 	}
-	if (_dma) _dma->Release();
+	if (_dma_owned) _dma.Release();
 #if defined(STM32G0)
 	// G0 has one ADC: its reset also releases the regulator/common configuration.
-	RCC->APBRSTR2 |= RCC_APBRSTR2_ADCRST;
-	RCC->APBRSTR2 &= ~RCC_APBRSTR2_ADCRST;
+	ADC_SET_BIT(RCC->APBRSTR2, RCC_APBRSTR2_ADCRST);
+	ADC_CLEAR_BIT(RCC->APBRSTR2, RCC_APBRSTR2_ADCRST);
 #else
 	ADCx->SQR1 = 0;
 	ADCx->SQR2 = 0;
@@ -645,15 +671,13 @@ void ADC_N::DeInit()
 	ADCx->SMPR1 = 0;
 	ADCx->SMPR2 = 0;
 	_last_data = 0;
-	if (ADCx == ADC1) ADC->CCR &= ~(EN_VREFINT | EN_TEMP | EN_VBAT);
+	if (ADCx == ADC1) ADC_CLEAR_BIT(ADC->CCR, (EN_VREFINT | EN_TEMP | EN_VBAT));
 #endif
-	*_info->clk_reg &= ~_info->clk_bit;
+	ADC_CLEAR_BIT(*_info->clk_reg, _info->clk_bit);
 	_info = nullptr;
-	_dma = nullptr;
-	_trg = nullptr;
-	_trig_set = false;
+	_dma_owned = false;
+	_dma_ht_irq = false;
 	_dma_tc_irq = false;
-	_extsel = 0;
+	_errors = 0;
 	_ch_count = 0;
-	_mode = Mode::Single;
 }

@@ -11,12 +11,18 @@
  *   internally with RELOAD).
  * - Register access (WriteReg / ReadReg) with 8- or 16-bit register address;
  *   ReadReg uses a repeated START between the register write and the read.
- * - Interrupts are off until a non-blocking transfer is started; the
- *   driver registers itself in IRQ_Registry (EV and ER lines on F7, one line
+ * - Interrupt sources are off until a non-blocking transfer is started;
+ *   SetUp registers the driver in IRQ_Registry (EV and ER on F4/F7, one line
  *   on G0 — shared between I2C2 and I2C3 on G0B0/G0B1/G0C1).
- * - G0/F7 DMA transfers do not use the DMA interrupt: completion is the
- *   STOP detected by the I2C interrupt. F4 uses the RX DMA TC interrupt to
- *   generate the STOP after the last byte.
+ * - I2C and each DMA direction have separate registered handlers. DMA TC
+ *   confirms the buffer transfer; I2C STOP (F4 TX: BTF then STOP command)
+ *   confirms the bus phase. No handler waits for hardware.
+ * - Buffers stay owned until IsBusy() becomes false / OnComplete or OnError.
+ *   All IRQs of one object must not preempt each other. The caller serializes
+ *   starts, Abort and DeInit against those IRQs; there are no internal locks.
+ * - SetUp is allowed once until DeInit. Pins and DMA selection are fixed by
+ *   construction; there is no AttachDMA or run-time replacement.
+ * - Recovery of a slave-held bus belongs to the application, not this driver.
  * - F4: STANDARD and FAST only (FAST_PLUS -> InitError; FMPI2C1 is another IP).
  *
  * ============================================================================
@@ -31,14 +37,32 @@
  *   i2c.WriteReg(0x50, 0x0010, page, 16, I2C::REG::_16BIT);
  *
  *   i2c.Receive_IRQ(0x40, buf, 6);                        // interrupt-driven
- *   while (i2c.IsBusy()) {}
- *   if (i2c.GetError() != I2C::ERR::None) { ... }
+ *   // Bound the wait in main. Abort() generates no callback.
+ *   const uint32_t started = System::GetTick();
+ *   while (i2c.IsBusy() && System::GetTick() - started < 100u) {}
+ *   if (i2c.IsBusy()) i2c.Abort();
+ *   // Check i2c.GetError() and handle failure in the application.
  *
- *   DMA_Sx dma_tx(DMA1_Channel1, DMA_Sx::Req::I2c1::TX);  // G0
- *   DMA_Sx dma_rx(DMA1_Channel2, DMA_Sx::Req::I2c1::RX);
- *   i2c.AttachDMA(&dma_tx, &dma_rx);
- *   i2c.SetDoneCallback(on_done);
- *   i2c.ReadReg_DMA(0x68, 0x3B, buf, 14);
+ *   class SensorBus : public I2C {
+ *   public:
+ *       using I2C::I2C;
+ *   protected:
+ *       void OnComplete() override { done = true; }
+ *       void OnError(ERR error) override { last_error = error; }
+ *   private:
+ *       volatile bool done = false;
+ *       volatile ERR last_error = ERR::None;
+ *   };
+ *   // G0: the driver chooses the I2C1 TX/RX request sources itself.
+ *   SensorBus bus(I2C1, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9,
+ *                 DMA1_Channel1, DMA1_Channel2);
+ *   // F4/F7: pass named routes instead of the physical G0 channels:
+ *   // DMA_Sx::Req::I2c1::TX_DMA1_Stream6,
+ *   // DMA_Sx::Req::I2c1::RX_DMA1_Stream0.
+ *   if (bus.SetUp(I2C::SPEED::FAST) == SysInitStatus::InitOK)
+ *       bus.ReadReg_DMA(0x68, 0x3B, buf, 14);
+ *   // Check the start status; keep buf alive through completion.
+ *   // On F7 the application owns all cache lines touched by this buffer.
  * @endcode
  */
 
@@ -50,6 +74,20 @@
 #include "gpio.hpp"
 #include "dma.hpp"
 #include "irq_registry.hpp"
+
+// Change here and rebuild I2C and its users. Ordinary control RMW by default.
+#ifndef I2C_USE_ATOMIC
+#define I2C_USE_ATOMIC 0
+#endif
+#if I2C_USE_ATOMIC
+#define I2C_SET_BIT ATOMIC_SET_BIT
+#define I2C_CLEAR_BIT ATOMIC_CLEAR_BIT
+#define I2C_MODIFY_REG ATOMIC_MODIFY_REG
+#else
+#define I2C_SET_BIT SET_BIT
+#define I2C_CLEAR_BIT CLEAR_BIT
+#define I2C_MODIFY_REG MODIFY_REG
+#endif
 
 class I2C : public IIRQHandler
 {
@@ -83,27 +121,65 @@ public:
 	// -----------------------------------------------------------------------
 #include "i2c_defs.hpp"
 
+
+#if defined(STM32G0)
+	using DMAReq = DMA_Channel_TypeDef*;
+#else
+	using DMAReq = DMA_Sx::DMAReq;
+#endif
+
 	/**
-	 * @brief Binds the driver to a peripheral and its pins.
-	 * A pin from another I2C's table is a programming error (DebugTrap).
+	 * @brief Fix peripheral, pins and optional TX/RX DMA at construction.
+	 * F4/F7: named DMAReq includes stream, channel selection, owner and direction.
+	 * G0: pass physical DMA channels; request sources follow I2Cx and direction.
+	 * Wrong pin/route ownership or a shared TX/RX resource causes DebugTrap.
+	 * Empty DMA selections keep blocking and IRQ methods available.
 	 */
-	I2C(I2C_TypeDef* i2cx, PIN scl, PIN sda)
-		: I2Cx(i2cx), _scl(scl), _sda(sda)
+	I2C(I2C_TypeDef* i2cx, PIN scl, PIN sda, DMAReq dma_tx = {}, DMAReq dma_rx = {})
+		: I2Cx(i2cx), _scl(scl), _sda(sda),
+#if defined(STM32G0)
+		  _dma_tx(dma_tx, DmaRequest(i2cx, true)), _dma_rx(dma_rx, DmaRequest(i2cx, false)),
+#else
+		  _dma_tx(dma_tx), _dma_rx(dma_rx),
+#endif
+		  _dma_tx_irq(*this), _dma_rx_irq(*this)
 	{
-		if (scl.periph_base != (uint32_t)i2cx)
+		if (!scl.IsValid() || scl.periph_base != reinterpret_cast<uintptr_t>(i2cx))
 			System::DebugTrap("I2C: SCL pin belongs to wrong peripheral");
-		if (sda.periph_base != (uint32_t)i2cx)
+		if (!sda.IsValid() || sda.periph_base != reinterpret_cast<uintptr_t>(i2cx))
 			System::DebugTrap("I2C: SDA pin belongs to wrong peripheral");
+#if defined(STM32G0)
+		if (dma_tx && dma_tx == dma_rx)
+			System::DebugTrap("I2C: TX and RX require different DMA channels");
+#else
+		if ((dma_tx.stream || dma_tx.ch || dma_tx.periph_base)
+			&& (!dma_tx.IsValid() || dma_tx.periph_base != reinterpret_cast<uintptr_t>(i2cx)
+				|| dma_tx.direction != DMA_Sx::DIR::To_Per))
+			System::DebugTrap("I2C: invalid TX DMA request");
+		if ((dma_rx.stream || dma_rx.ch || dma_rx.periph_base)
+			&& (!dma_rx.IsValid() || dma_rx.periph_base != reinterpret_cast<uintptr_t>(i2cx)
+				|| dma_rx.direction != DMA_Sx::DIR::From_Per))
+			System::DebugTrap("I2C: invalid RX DMA request");
+		if (dma_tx.stream && dma_tx.stream == dma_rx.stream)
+			System::DebugTrap("I2C: TX and RX require different DMA streams");
+#endif
 	}
 
 	I2C() = delete;
-	I2C(I2C const&)            = delete;
+	I2C(I2C const&) = delete;
 	I2C& operator=(I2C const&) = delete;
+	I2C(I2C&&) = delete;
+	I2C& operator=(I2C&&) = delete;
+	/// Call DeInit from main before destroying an initialized object.
+	~I2C() = default;
 
 	/**
-	 * @brief Clock, reset, pins, timing. The kernel clock is PCLK (APB1).
-	 * @return InitError if the timing cannot be met from the current PCLK
-	 *         (Fm+ needs PCLK >= ~16 MHz) or the peripheral is unknown.
+	 * @brief Configure clock, pins, timing, owned DMA and IRQ registrations once.
+	 * Kernel clock is PCLK (APB1). No source generator is started by this driver.
+	 * @return InitError on repeated setup, unsupported speed/peripheral/timing,
+	 *         a busy DMA resource or failed IRQ registration. Partial acquisition
+	 *         is rolled back. F4 supports STANDARD/FAST, not FMPI2C1.
+	 * @pre System/RCC initialized; main only. Call DeInit before another SetUp.
 	 */
 	SysInitStatus SetUp(SPEED speed = SPEED::STANDARD);
 
@@ -138,17 +214,15 @@ public:
 	// -----------------------------------------------------------------------
 
 	/**
-	 * @brief Sets the DMA channels of this I2C (call after SetUp()).
-	 * nullptr = no DMA in that direction (a channel attached before is
-	 * released). Replacing a channel moves the interrupt registration.
-	 * @return InitError while a transfer runs or if a channel cannot be set up.
-	 */
-	SysInitStatus AttachDMA(DMA_Sx* tx, DMA_Sx* rx);
-
-	/**
-	 * @return Error if the needed DMA channel is not attached, or (F7 with
-	 *         D-cache on, receive) the buffer is not 32-byte aligned with a
-	 *         length multiple of 32 — see DMA_Sx::CacheRxOk().
+	 * @brief Transfer through constructor-bound DMA; no run-time attachment.
+	 * @return Error if the direction has no DMA, data/length/register size is
+	 *         invalid, or DMA preparation fails; NotInit before SetUp; Busy while
+	 *         the driver or bus is occupied; OK once started.
+	 * TX is cleaned before DMA. RX is cleaned/invalidated before DMA and
+	 * invalidated after successful completion. On F7 the caller owns every
+	 * touched 32-byte cache line, including padding; len need not be a multiple
+	 * of 32. System skips maintenance for configured non-cacheable DMA regions.
+	 * Error/aborted buffers are not valid data and must not be inspected.
 	 */
 	SysStatus Send_DMA(uint8_t addr, const uint8_t* data, uint16_t len);
 	SysStatus Receive_DMA(uint8_t addr, uint8_t* data, uint16_t len);
@@ -164,20 +238,27 @@ public:
 	inline bool IsBusy()   const { return _state != State::Idle; }
 	inline ERR  GetError() const { return _err; }
 
-	/** @brief Called from the interrupt when a non-blocking transfer ends without error. */
-	inline void SetDoneCallback(void (*cb)(void))  { _done_cb = cb; }
-	/** @brief Called from the interrupt when a non-blocking transfer ends with an error. */
-	inline void SetErrorCallback(void (*cb)(void)) { _err_cb = cb; }
-
-	/** @brief Stops a running non-blocking transfer (peripheral reset, no callback). */
+	/**
+	 * @brief Stop a pending asynchronous transfer from main, without callbacks.
+	 * Disables requests, confirms DMA stop and resets this peripheral.
+	 * Retains DMA ownership and IRQ registrations; GetError returns Aborted.
+	 * @pre Serialize with this object's I2C/DMA IRQs. Never call from a callback.
+	 */
 	void Abort();
 
 	/**
-	 * @brief Frees a bus held by a slave stuck in the middle of a byte:
-	 *        up to 9 SCL pulses until SDA is released, then a STOP.
-	 * @return OK if SDA is high afterwards.
+	 * @brief Main-only release of this object's IRQ entries, DMA and pins.
+	 * Other handlers sharing a vector and other peripherals remain registered.
+	 * Stops an active transfer without callbacks; repeated DeInit is harmless.
 	 */
-	SysStatus Recover();
+	void DeInit();
+
+protected:
+	/// Non-blocking success, after DMA/cache handover. Executes in I2C or DMA IRQ.
+	virtual void OnComplete() {}
+	/// Non-blocking failure; the buffer is unusable. Executes in I2C or DMA IRQ.
+	virtual void OnError(ERR error) { (void)error; }
+	// Callbacks may publish flags; no blocking calls, Abort/DeInit or registry changes.
 
 private:
 	struct PeriphInfo {
@@ -190,8 +271,6 @@ private:
 		uint32_t            ksel_mask;  ///< Cleared -> PCLK
 		IRQn_Type           irq_ev;
 		IRQn_Type           irq_er;     ///< Same as irq_ev on G0
-		DMA_Sx::RequestSet  dma_tx;
-		DMA_Sx::RequestSet  dma_rx;
 		uint32_t            fmp_bit;    ///< SYSCFG Fm+ enable (0: none)
 	};
 	static const PeriphInfo i2c_table[];
@@ -205,7 +284,7 @@ private:
 	 */
 	enum class State : uint8_t {
 		Idle,
-		Config,     ///< Reserved: a transfer is being set up, or SetUp/AttachDMA/Recover runs
+		DmaStop,    ///< Bus phase ended; DMA completion/stop IRQ still owns the buffer
 		Start,      ///< F4: SB -> address
 		Addr,       ///< F4: ADDR -> ACK/POS for the length, ADDR cleared
 		TxReg,      ///< TXE/TXIS -> register byte
@@ -225,35 +304,54 @@ private:
 	/** @brief G0/F7: CR2 = @p cr2 + next chunk of at most 255 bytes, RELOAD or AUTOEND. */
 	void LoadNBytes(uint32_t cr2);
 	/** @brief One step of the state machine; shared by polling and the interrupt. */
-	void Process();
-	/**
-	 * @brief Ends the transfer: interrupts and DMA off, Idle. With @p notify
-	 *        (non-blocking modes) the callback is queued in _pending_cb; the
-	 *        caller runs it after leaving its IrqLock.
-	 */
-	void Finish(bool notify);
-	/** @brief Atomically Idle -> Config; false if busy. */
-	bool Reserve();
-	/** @brief Config -> Idle. */
-	void Release();
-	/** @brief Moves this object's registration from the old DMA lines to those of @p tx / @p rx. */
-	void BindDmaIrqs(DMA_Sx* tx, DMA_Sx* rx);
-	/** @brief Aborts whatever the peripheral was doing (G0/F7: PE off/on, F4: SWRST + timing). */
+	void Process(uint32_t status);
+	inline uint32_t StatusReg() const {
+#if defined(STM32F4)
+		return I2Cx->SR1;
+#else
+		return I2Cx->ISR;
+#endif
+	}
+	/// Bus phase ended: disable sources, then complete now or on DMA TC/TE.
+	void Finish();
+	/// Final handover after confirmed DMA completion/stop. No waits or ISR reads.
+	void Complete(bool notify);
+	/// Reset this I2C; F4 restores its timing after SWRST.
 	void ResetPeriph();
-	/** @brief Registers this object on the I2C interrupt line(s) once. */
-	void EnableIRQ();
+	SysInitStatus SetUpDMA();
 
 	void HandleIRQ() override final;
+	void HandleDmaTxIRQ();
+	void HandleDmaRxIRQ();
+#if defined(STM32G0)
+	static uint32_t DmaRequest(I2C_TypeDef* i2c, bool tx);
+#endif
 
-	I2C_TypeDef*      I2Cx;
-	PIN               _scl;
-	PIN               _sda;
+	class DmaTxIRQ final : public IIRQHandler {
+	public:
+		explicit DmaTxIRQ(I2C& i2c) : _i2c(i2c) {}
+		void HandleIRQ() override { _i2c.HandleDmaTxIRQ(); }
+	private:
+		I2C& _i2c;
+	};
+	class DmaRxIRQ final : public IIRQHandler {
+	public:
+		explicit DmaRxIRQ(I2C& i2c) : _i2c(i2c) {}
+		void HandleIRQ() override { _i2c.HandleDmaRxIRQ(); }
+	private:
+		I2C& _i2c;
+	};
+
+	I2C_TypeDef* const I2Cx;
+	const PIN         _scl;
+	const PIN         _sda;
 	const PeriphInfo* _info = nullptr;
 	uint32_t _timing = 0;   ///< G0/F7: TIMINGR; F4: CCR | TRISE << 16 | FREQ << 24
 
-	DMA_Sx*  _dma_tx = nullptr;
-	DMA_Sx*  _dma_rx = nullptr;
-	bool     _irq_registered = false;
+	DMA_Sx _dma_tx;
+	DMA_Sx _dma_rx;
+	DmaTxIRQ _dma_tx_irq;
+	DmaRxIRQ _dma_rx_irq;
 
 	// Transfer state
 	uint8_t  _addr    = 0;
@@ -270,9 +368,6 @@ private:
 	volatile State _state = State::Idle;
 	volatile ERR   _err   = ERR::None;
 
-	void (*_done_cb)(void) = nullptr;
-	void (*_err_cb)(void)  = nullptr;
-	void (*_pending_cb)(void) = nullptr;   ///< Set by Finish(), run by HandleIRQ after its lock
 };
 
 #endif /* I2C_HPP_ */

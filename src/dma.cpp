@@ -155,13 +155,13 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 
 	// Enable DMA clock
 #if defined(STM32F4) || defined(STM32F7)
-	RCC->AHB1ENR |= (_info->ctrl == DMA1) ? RCC_AHB1ENR_DMA1EN : RCC_AHB1ENR_DMA2EN;
+	DMA_SET_BIT(RCC->AHB1ENR, (_info->ctrl == DMA1) ? RCC_AHB1ENR_DMA1EN : RCC_AHB1ENR_DMA2EN);
 	(void)RCC->AHB1ENR; // Complete the clock-enable write before accessing DMA.
 #elif defined(STM32G0)
 #if defined(DMA2_Channel1)
-	RCC->AHBENR |= (_info->ctrl == DMA1) ? RCC_AHBENR_DMA1EN : RCC_AHBENR_DMA2EN;
+	DMA_SET_BIT(RCC->AHBENR, (_info->ctrl == DMA1) ? RCC_AHBENR_DMA1EN : RCC_AHBENR_DMA2EN);
 #else
-	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
+	DMA_SET_BIT(RCC->AHBENR, RCC_AHBENR_DMA1EN);
 #endif
 	(void)RCC->AHBENR; // Either DMA enable also clocks DMAMUX1.
 #endif

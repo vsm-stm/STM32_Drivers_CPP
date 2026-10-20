@@ -16,10 +16,10 @@ SysInitStatus DAC_Module::SetUp()
 #endif
 
 #if defined(STM32G0)
-	RCC->APBENR1 |= RCC_APBENR1_DAC1EN;
+	DAC_SET_BIT(RCC->APBENR1, RCC_APBENR1_DAC1EN);
 	(void)RCC->APBENR1;
 #else
-	RCC->APB1ENR |= RCC_APB1ENR_DACEN;
+	DAC_SET_BIT(RCC->APB1ENR, RCC_APB1ENR_DACEN);
 	(void)RCC->APB1ENR;
 #endif
 
@@ -33,15 +33,15 @@ SysInitStatus DAC_Module::SetUp()
 #else
 		| DAC_CR_BOFF1;
 #endif
-	DACx->CR &= ~(channel_mask << shift);
+	DAC_CLEAR_BIT(DACx->CR, (channel_mask << shift));
 #if defined(STM32G0)
 	// Normal operation, external output, buffer enabled. Change only this channel.
-	DACx->MCR &= ~(DAC_MCR_MODE1 << shift);
+	DAC_CLEAR_BIT(DACx->MCR, (DAC_MCR_MODE1 << shift));
 #endif
 	DACx->SR = DAC_SR_DMAUDR1 << shift; // W1C: clear only this channel's old underrun.
 	volatile uint32_t* output = ch == CHANNEL::CH1 ? &DACx->DHR12R1 : &DACx->DHR12R2;
 	*output = 0;
-	DACx->CR |= DAC_CR_EN1 << shift;
+	DAC_SET_BIT(DACx->CR, DAC_CR_EN1 << shift);
 	data_out = output;
 	return SysInitStatus::InitOK;
 }
@@ -49,7 +49,7 @@ SysInitStatus DAC_Module::SetUp()
 void DAC_Module::DeInit()
 {
 	if (!data_out) return;
-	DACx->CR &= ~(ch == CHANNEL::CH1 ? DAC_CR_EN1 : DAC_CR_EN2);
+	DAC_CLEAR_BIT(DACx->CR, (ch == CHANNEL::CH1 ? DAC_CR_EN1 : DAC_CR_EN2));
 	data_out = nullptr;
 }
 

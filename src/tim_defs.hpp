@@ -17,7 +17,7 @@
  * -----------------------------------------------
  * Guard:  TIM_DEFS_CPP  (defined in tim.cpp just before the include)
  * Scope:  file scope inside tim.cpp.
- * Result: TIM::tim_table[] is defined (replaces the inline #if block).
+ * Result: TIM::tim_table[], tim_dma_routes[] and TIM::itr_table[] are defined.
  *
  * Usage
  * -----
@@ -353,10 +353,10 @@ struct _8 {
 #ifdef TIM_DEFS_CPP
 
 #if defined(STM32G0)
-#define TIM_INFO(dev, bus, up, cc, bdtr, channels, width, request) \
+#define TIM_INFO(dev, bus, up, cc, bdtr, channels, width) \
 	{ dev, &RCC->APBENR##bus, RCC_APBENR##bus##_##dev##EN, \
 	  &RCC->APBRSTR##bus, RCC_APBRSTR##bus##_##dev##RST, \
-	  &System::TIMxAPB1Clock, up, cc, bdtr, channels, width, request }
+	  &System::TIMxAPB1Clock, up, cc, bdtr, channels, width }
 #if defined(TIM4_BASE)
 #define TIM3_VECTOR TIM3_TIM4_IRQn
 #else
@@ -378,34 +378,34 @@ struct _8 {
 #endif
 const TIM::PeriphInfo TIM::tim_table[] = {
 #if defined(TIM1_BASE)
-	TIM_INFO(TIM1, 2, TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn, true, 4, 0xFFFFu, DMA_Sx::Req::Tim1::UP.ch),
+	TIM_INFO(TIM1, 2, TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn, true, 4, 0xFFFFu),
 #endif
 #if defined(TIM2_BASE)
-	TIM_INFO(TIM2, 1, TIM2_IRQn, TIM2_IRQn, false, 4, UINT32_MAX, 0),
+	TIM_INFO(TIM2, 1, TIM2_IRQn, TIM2_IRQn, false, 4, UINT32_MAX),
 #endif
 #if defined(TIM3_BASE)
-	TIM_INFO(TIM3, 1, TIM3_VECTOR, TIM3_VECTOR, false, 4, 0xFFFFu, DMA_Sx::Req::Tim3::UP.ch),
+	TIM_INFO(TIM3, 1, TIM3_VECTOR, TIM3_VECTOR, false, 4, 0xFFFFu),
 #endif
 #if defined(TIM4_BASE)
-	TIM_INFO(TIM4, 1, TIM3_VECTOR, TIM3_VECTOR, false, 4, 0xFFFFu, 0),
+	TIM_INFO(TIM4, 1, TIM3_VECTOR, TIM3_VECTOR, false, 4, 0xFFFFu),
 #endif
 #if defined(TIM6_BASE)
-	TIM_INFO(TIM6, 1, TIM6_VECTOR, TIM6_VECTOR, false, 0, 0xFFFFu, 0),
+	TIM_INFO(TIM6, 1, TIM6_VECTOR, TIM6_VECTOR, false, 0, 0xFFFFu),
 #endif
 #if defined(TIM7_BASE)
-	TIM_INFO(TIM7, 1, TIM7_VECTOR, TIM7_VECTOR, false, 0, 0xFFFFu, 0),
+	TIM_INFO(TIM7, 1, TIM7_VECTOR, TIM7_VECTOR, false, 0, 0xFFFFu),
 #endif
 #if defined(TIM14_BASE)
-	TIM_INFO(TIM14, 2, TIM14_IRQn, TIM14_IRQn, false, 1, 0xFFFFu, 0),
+	TIM_INFO(TIM14, 2, TIM14_IRQn, TIM14_IRQn, false, 1, 0xFFFFu),
 #endif
 #if defined(TIM15_BASE)
-	TIM_INFO(TIM15, 2, TIM15_IRQn, TIM15_IRQn, true, 2, 0xFFFFu, 0),
+	TIM_INFO(TIM15, 2, TIM15_IRQn, TIM15_IRQn, true, 2, 0xFFFFu),
 #endif
 #if defined(TIM16_BASE)
-	TIM_INFO(TIM16, 2, TIM16_VECTOR, TIM16_VECTOR, true, 1, 0xFFFFu, DMA_Sx::Req::Tim16::UP.ch),
+	TIM_INFO(TIM16, 2, TIM16_VECTOR, TIM16_VECTOR, true, 1, 0xFFFFu),
 #endif
 #if defined(TIM17_BASE)
-	TIM_INFO(TIM17, 2, TIM17_VECTOR, TIM17_VECTOR, true, 1, 0xFFFFu, DMA_Sx::Req::Tim17::UP.ch),
+	TIM_INFO(TIM17, 2, TIM17_VECTOR, TIM17_VECTOR, true, 1, 0xFFFFu),
 #endif
 };
 #undef TIM3_VECTOR
@@ -415,16 +415,11 @@ const TIM::PeriphInfo TIM::tim_table[] = {
 #undef TIM17_VECTOR
 #undef TIM_INFO
 
-// G0 ITR routes remain unsupported pending the HWCounter review.
-const TIM::ITR_Route TIM::itr_table[] = {
-	{ TIM3, TIM1, 0xFF },
-	{ TIM1, TIM3, 0xFF },
-};
 #elif defined(STM32F4) || defined(STM32F7)
 #define TIM_INFO(dev, bus, up, cc, bdtr, channels, width) \
 	{ dev, &RCC->bus##ENR, RCC_##bus##ENR_##dev##EN, \
 	  &RCC->bus##RSTR, RCC_##bus##RSTR_##dev##RST, \
-	  &System::TIMx##bus##Clock, up, cc, bdtr, channels, width, 0 }
+	  &System::TIMx##bus##Clock, up, cc, bdtr, channels, width }
 #if defined(TIM10_BASE)
 #define TIM1_UP_VECTOR TIM1_UP_TIM10_IRQn
 #else
@@ -435,7 +430,7 @@ const TIM::ITR_Route TIM::itr_table[] = {
 #else
 #define TIM6_VECTOR TIM6_IRQn
 #endif
-// Update DMA routes are unchanged here; PWM DMA is a separate work item.
+// IRQ/clock/counter capabilities; PWM DMA routes follow this table.
 const TIM::PeriphInfo TIM::tim_table[] = {
 #if defined(TIM1_BASE)
 	TIM_INFO(TIM1, APB2, TIM1_UP_VECTOR, TIM1_CC_IRQn, true, 4, 0xFFFFu),
@@ -484,84 +479,260 @@ const TIM::PeriphInfo TIM::tim_table[] = {
 #undef TIM6_VECTOR
 #undef TIM_INFO
 
-#if defined(STM32F4)
-// Existing RM0090 TRGO routes, filtered by actual peripheral availability.
-// F7 routing will be handled in its separate HWCounter review.
-const TIM::ITR_Route TIM::itr_table[] = {
-#if defined(TIM5_BASE) && defined(TIM1_BASE)
-	{ TIM5, TIM1, 0 },
-#endif
-#if defined(TIM2_BASE) && defined(TIM1_BASE)
-	{ TIM2, TIM1, 1 },
-#endif
-#if defined(TIM3_BASE) && defined(TIM1_BASE)
-	{ TIM3, TIM1, 2 },
-#endif
-#if defined(TIM4_BASE) && defined(TIM1_BASE)
-	{ TIM4, TIM1, 3 },
-#endif
-#if defined(TIM1_BASE) && defined(TIM2_BASE)
-	{ TIM1, TIM2, 0 },
-#endif
-#if defined(TIM8_BASE) && defined(TIM2_BASE)
-	{ TIM8, TIM2, 1 },
-#endif
-#if defined(TIM3_BASE) && defined(TIM2_BASE)
-	{ TIM3, TIM2, 2 },
-#endif
-#if defined(TIM4_BASE) && defined(TIM2_BASE)
-	{ TIM4, TIM2, 3 },
-#endif
-#if defined(TIM1_BASE) && defined(TIM3_BASE)
-	{ TIM1, TIM3, 0 },
-#endif
-#if defined(TIM2_BASE) && defined(TIM3_BASE)
-	{ TIM2, TIM3, 1 },
-#endif
-#if defined(TIM5_BASE) && defined(TIM3_BASE)
-	{ TIM5, TIM3, 2 },
-#endif
-#if defined(TIM4_BASE) && defined(TIM3_BASE)
-	{ TIM4, TIM3, 3 },
-#endif
-#if defined(TIM1_BASE) && defined(TIM4_BASE)
-	{ TIM1, TIM4, 0 },
-#endif
-#if defined(TIM2_BASE) && defined(TIM4_BASE)
-	{ TIM2, TIM4, 1 },
-#endif
-#if defined(TIM3_BASE) && defined(TIM4_BASE)
-	{ TIM3, TIM4, 2 },
-#endif
-#if defined(TIM8_BASE) && defined(TIM4_BASE)
-	{ TIM8, TIM4, 3 },
-#endif
-#if defined(TIM2_BASE) && defined(TIM5_BASE)
-	{ TIM2, TIM5, 0 },
-#endif
-#if defined(TIM3_BASE) && defined(TIM5_BASE)
-	{ TIM3, TIM5, 1 },
-#endif
-#if defined(TIM4_BASE) && defined(TIM5_BASE)
-	{ TIM4, TIM5, 2 },
-#endif
-#if defined(TIM8_BASE) && defined(TIM5_BASE)
-	{ TIM8, TIM5, 3 },
-#endif
-#if defined(TIM1_BASE) && defined(TIM8_BASE)
-	{ TIM1, TIM8, 0 },
-#endif
-#if defined(TIM2_BASE) && defined(TIM8_BASE)
-	{ TIM2, TIM8, 1 },
-#endif
-#if defined(TIM4_BASE) && defined(TIM8_BASE)
-	{ TIM4, TIM8, 2 },
-#endif
-#if defined(TIM5_BASE) && defined(TIM8_BASE)
-	{ TIM5, TIM8, 3 },
-#endif
-};
-#endif // STM32F4 ITR routes
+
 #endif // STM32 family
 
 #endif // TIM_DEFS_CPP (Section B)
+
+#ifdef TIM_DEFS_CPP
+// Separate CC request per channel, selected through DMA_Sx::Req.
+struct TimDmaRoute { TIM_TypeDef* periph; uint8_t channel; DMA_Sx::DMAReq request; };
+static const TimDmaRoute tim_dma_routes[] = {
+#if defined(STM32G0)
+#ifdef TIM1_BASE
+    { TIM1, 0, DMA_Sx::Req::Tim1::CH1 },
+    { TIM1, 1, DMA_Sx::Req::Tim1::CH2 },
+    { TIM1, 2, DMA_Sx::Req::Tim1::CH3 },
+    { TIM1, 3, DMA_Sx::Req::Tim1::CH4 },
+#endif
+#ifdef TIM2_BASE
+    { TIM2, 0, DMA_Sx::Req::Tim2::CH1 },
+    { TIM2, 1, DMA_Sx::Req::Tim2::CH2 },
+    { TIM2, 2, DMA_Sx::Req::Tim2::CH3 },
+    { TIM2, 3, DMA_Sx::Req::Tim2::CH4 },
+#endif
+#ifdef TIM3_BASE
+    { TIM3, 0, DMA_Sx::Req::Tim3::CH1 },
+    { TIM3, 1, DMA_Sx::Req::Tim3::CH2 },
+    { TIM3, 2, DMA_Sx::Req::Tim3::CH3 },
+    { TIM3, 3, DMA_Sx::Req::Tim3::CH4 },
+#endif
+#ifdef TIM4_BASE
+    { TIM4, 0, DMA_Sx::Req::Tim4::CH1 },
+    { TIM4, 1, DMA_Sx::Req::Tim4::CH2 },
+    { TIM4, 2, DMA_Sx::Req::Tim4::CH3 },
+    { TIM4, 3, DMA_Sx::Req::Tim4::CH4 },
+#endif
+#ifdef TIM15_BASE
+    { TIM15, 0, DMA_Sx::Req::Tim15::CH1 },
+    { TIM15, 1, DMA_Sx::Req::Tim15::CH2 },
+#endif
+#ifdef TIM16_BASE
+    { TIM16, 0, DMA_Sx::Req::Tim16::CH1 },
+#endif
+#ifdef TIM17_BASE
+    { TIM17, 0, DMA_Sx::Req::Tim17::CH1 },
+#endif
+#else
+#ifdef TIM1_BASE
+    { TIM1, 0, DMA_Sx::Req::Tim1::CH1_DMA2_Stream1 },
+    { TIM1, 0, DMA_Sx::Req::Tim1::CH1_DMA2_Stream3 },
+    { TIM1, 1, DMA_Sx::Req::Tim1::CH2_DMA2_Stream2 },
+    { TIM1, 2, DMA_Sx::Req::Tim1::CH3_DMA2_Stream6 },
+    { TIM1, 3, DMA_Sx::Req::Tim1::CH4_DMA2_Stream4 },
+#endif
+#ifdef TIM2_BASE
+    { TIM2, 0, DMA_Sx::Req::Tim2::CH1_DMA1_Stream5 },
+    { TIM2, 1, DMA_Sx::Req::Tim2::CH2_DMA1_Stream6 },
+    { TIM2, 2, DMA_Sx::Req::Tim2::CH3_DMA1_Stream1 },
+    { TIM2, 3, DMA_Sx::Req::Tim2::CH4_DMA1_Stream7 },
+#endif
+#ifdef TIM3_BASE
+    { TIM3, 0, DMA_Sx::Req::Tim3::CH1_DMA1_Stream4 },
+    { TIM3, 1, DMA_Sx::Req::Tim3::CH2_DMA1_Stream5 },
+    { TIM3, 2, DMA_Sx::Req::Tim3::CH3_DMA1_Stream7 },
+    { TIM3, 3, DMA_Sx::Req::Tim3::CH4_DMA1_Stream2 },
+#endif
+#ifdef TIM4_BASE
+    { TIM4, 0, DMA_Sx::Req::Tim4::CH1_DMA1_Stream0 },
+    { TIM4, 1, DMA_Sx::Req::Tim4::CH2_DMA1_Stream3 },
+    { TIM4, 2, DMA_Sx::Req::Tim4::CH3_DMA1_Stream7 },
+#endif
+#ifdef TIM5_BASE
+    { TIM5, 0, DMA_Sx::Req::Tim5::CH1_DMA1_Stream2 },
+    { TIM5, 1, DMA_Sx::Req::Tim5::CH2_DMA1_Stream4 },
+    { TIM5, 2, DMA_Sx::Req::Tim5::CH3_DMA1_Stream0 },
+    { TIM5, 3, DMA_Sx::Req::Tim5::CH4_DMA1_Stream1 },
+    { TIM5, 3, DMA_Sx::Req::Tim5::CH4_DMA1_Stream3 },
+#endif
+#ifdef TIM8_BASE
+    { TIM8, 0, DMA_Sx::Req::Tim8::CH1_DMA2_Stream2 },
+    { TIM8, 1, DMA_Sx::Req::Tim8::CH2_DMA2_Stream3 },
+    { TIM8, 2, DMA_Sx::Req::Tim8::CH3_DMA2_Stream4 },
+    { TIM8, 3, DMA_Sx::Req::Tim8::CH4_DMA2_Stream7 },
+#endif
+#endif
+};
+#endif // TIM_DEFS_CPP
+
+#ifdef TIM_DEFS_CPP
+// Normal TRGO connections, ITR0..ITR3. OC-only slots and peripheral remaps are
+// deliberately null: a source TIM* denotes TRGO, not its OC1 wire.
+// F4: RM0090/0368/0383/0390/0401; F7: RM0385/0410/0431;
+// G0: RM0444 tables 119/123/130 and RM0454 tables 69/73/80.
+#ifdef TIM2_BASE
+#define TIM_ITR_2 TIM2
+#else
+#define TIM_ITR_2 nullptr
+#endif
+#ifdef TIM3_BASE
+#define TIM_ITR_3 TIM3
+#else
+#define TIM_ITR_3 nullptr
+#endif
+#ifdef TIM4_BASE
+#define TIM_ITR_4 TIM4
+#else
+#define TIM_ITR_4 nullptr
+#endif
+#ifdef TIM5_BASE
+#define TIM_ITR_5 TIM5
+#else
+#define TIM_ITR_5 nullptr
+#endif
+#ifdef TIM8_BASE
+#define TIM_ITR_8 TIM8
+#else
+#define TIM_ITR_8 nullptr
+#endif
+#ifdef TIM15_BASE
+#define TIM_ITR_15 TIM15
+#else
+#define TIM_ITR_15 nullptr
+#endif
+const TIM::ITRInfo TIM::itr_table[] = {
+#if defined(STM32G0)
+#ifdef TIM1_BASE
+    { TIM1, {TIM_ITR_15, TIM_ITR_2, TIM_ITR_3, nullptr} },
+#endif
+#ifdef TIM2_BASE
+    { TIM2, {TIM1, TIM_ITR_15, TIM_ITR_3, nullptr} },
+#endif
+#ifdef TIM3_BASE
+    { TIM3, {TIM1, TIM_ITR_2, TIM_ITR_15, nullptr} },
+#endif
+#ifdef TIM4_BASE
+    { TIM4, {TIM1, TIM_ITR_2, TIM_ITR_15, nullptr} },
+#endif
+#ifdef TIM15_BASE
+    { TIM15, {TIM_ITR_2, TIM_ITR_3, nullptr, nullptr} },
+#endif
+#else
+#ifdef TIM1_BASE
+    { TIM1, {TIM_ITR_5, TIM_ITR_2, TIM_ITR_3, TIM_ITR_4} },
+#endif
+#ifdef TIM8_BASE
+    { TIM8, {TIM1, TIM_ITR_2, TIM_ITR_4, TIM_ITR_5} },
+#endif
+#ifdef TIM2_BASE
+    { TIM2, {TIM1, TIM_ITR_8, TIM_ITR_3, TIM_ITR_4} },
+#endif
+#ifdef TIM3_BASE
+    { TIM3, {TIM1, TIM_ITR_2, TIM_ITR_5, TIM_ITR_4} },
+#endif
+#ifdef TIM4_BASE
+    { TIM4, {TIM1, TIM_ITR_2, TIM_ITR_3, TIM_ITR_8} },
+#endif
+#ifdef TIM5_BASE
+    { TIM5, {TIM_ITR_2, TIM_ITR_3, TIM_ITR_4, TIM_ITR_8} },
+#endif
+#ifdef TIM9_BASE
+    { TIM9, {TIM_ITR_2, TIM_ITR_3, nullptr, nullptr} },
+#endif
+#ifdef TIM12_BASE
+    { TIM12, {TIM_ITR_4, TIM_ITR_5, nullptr, nullptr} },
+#endif
+#endif
+};
+#undef TIM_ITR_2
+#undef TIM_ITR_3
+#undef TIM_ITR_4
+#undef TIM_ITR_5
+#undef TIM_ITR_8
+#undef TIM_ITR_15
+#endif // TIM_DEFS_CPP
+
+// Previous ITR maps, retained as historical reference only; not compiled.
+// // G0 ITR routes remain unsupported pending the HWCounter review.
+// const TIM::ITR_Route TIM::itr_table[] = {
+// 	{ TIM3, TIM1, 0xFF },
+// 	{ TIM1, TIM3, 0xFF },
+// };
+// #if defined(STM32F4)
+// // Existing RM0090 TRGO routes, filtered by actual peripheral availability.
+// // F7 routing will be handled in its separate HWCounter review.
+// const TIM::ITR_Route TIM::itr_table[] = {
+// #if defined(TIM5_BASE) && defined(TIM1_BASE)
+// 	{ TIM5, TIM1, 0 },
+// #endif
+// #if defined(TIM2_BASE) && defined(TIM1_BASE)
+// 	{ TIM2, TIM1, 1 },
+// #endif
+// #if defined(TIM3_BASE) && defined(TIM1_BASE)
+// 	{ TIM3, TIM1, 2 },
+// #endif
+// #if defined(TIM4_BASE) && defined(TIM1_BASE)
+// 	{ TIM4, TIM1, 3 },
+// #endif
+// #if defined(TIM1_BASE) && defined(TIM2_BASE)
+// 	{ TIM1, TIM2, 0 },
+// #endif
+// #if defined(TIM8_BASE) && defined(TIM2_BASE)
+// 	{ TIM8, TIM2, 1 },
+// #endif
+// #if defined(TIM3_BASE) && defined(TIM2_BASE)
+// 	{ TIM3, TIM2, 2 },
+// #endif
+// #if defined(TIM4_BASE) && defined(TIM2_BASE)
+// 	{ TIM4, TIM2, 3 },
+// #endif
+// #if defined(TIM1_BASE) && defined(TIM3_BASE)
+// 	{ TIM1, TIM3, 0 },
+// #endif
+// #if defined(TIM2_BASE) && defined(TIM3_BASE)
+// 	{ TIM2, TIM3, 1 },
+// #endif
+// #if defined(TIM5_BASE) && defined(TIM3_BASE)
+// 	{ TIM5, TIM3, 2 },
+// #endif
+// #if defined(TIM4_BASE) && defined(TIM3_BASE)
+// 	{ TIM4, TIM3, 3 },
+// #endif
+// #if defined(TIM1_BASE) && defined(TIM4_BASE)
+// 	{ TIM1, TIM4, 0 },
+// #endif
+// #if defined(TIM2_BASE) && defined(TIM4_BASE)
+// 	{ TIM2, TIM4, 1 },
+// #endif
+// #if defined(TIM3_BASE) && defined(TIM4_BASE)
+// 	{ TIM3, TIM4, 2 },
+// #endif
+// #if defined(TIM8_BASE) && defined(TIM4_BASE)
+// 	{ TIM8, TIM4, 3 },
+// #endif
+// #if defined(TIM2_BASE) && defined(TIM5_BASE)
+// 	{ TIM2, TIM5, 0 },
+// #endif
+// #if defined(TIM3_BASE) && defined(TIM5_BASE)
+// 	{ TIM3, TIM5, 1 },
+// #endif
+// #if defined(TIM4_BASE) && defined(TIM5_BASE)
+// 	{ TIM4, TIM5, 2 },
+// #endif
+// #if defined(TIM8_BASE) && defined(TIM5_BASE)
+// 	{ TIM8, TIM5, 3 },
+// #endif
+// #if defined(TIM1_BASE) && defined(TIM8_BASE)
+// 	{ TIM1, TIM8, 0 },
+// #endif
+// #if defined(TIM2_BASE) && defined(TIM8_BASE)
+// 	{ TIM2, TIM8, 1 },
+// #endif
+// #if defined(TIM4_BASE) && defined(TIM8_BASE)
+// 	{ TIM4, TIM8, 2 },
+// #endif
+// #if defined(TIM5_BASE) && defined(TIM8_BASE)
+// 	{ TIM5, TIM8, 3 },
+// #endif
+// };
+// #endif // STM32F4 ITR routes

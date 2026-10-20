@@ -7,6 +7,21 @@
 #include "dma.hpp"
 #include "tim.hpp"
 
+// Change here and rebuild this driver and its consumers.
+#ifndef ADC_USE_ATOMIC
+#define ADC_USE_ATOMIC 0
+#endif
+
+#if ADC_USE_ATOMIC
+#define ADC_SET_BIT ATOMIC_SET_BIT
+#define ADC_CLEAR_BIT ATOMIC_CLEAR_BIT
+#define ADC_MODIFY_REG ATOMIC_MODIFY_REG
+#else
+#define ADC_SET_BIT SET_BIT
+#define ADC_CLEAR_BIT CLEAR_BIT
+#define ADC_MODIFY_REG MODIFY_REG
+#endif
+
 /**
  * @brief Immutable GPIO binding with its ADC channel and peripheral ownership.
  *
@@ -38,29 +53,31 @@ struct ADC_PIN : public PIN {
 	}
 };
 
-// Implemented in the separate TIM work item; no substitute lives in ADC.
-class TIM_TriggerGenerator;
-
 /**
- * @brief One ADC: SetUp -> AddChannel -> optional DMA/trigger -> Start.
+ * @brief One ADC with fixed conversion mode, DMA and trigger bindings.
  *
- * Initialize System/RCC first. Setup, channel changes, attachment, Start,
+ * Initialize System/RCC first. Setup, channel changes, Start,
  * Stop and DeInit are serialized main-loop operations. Callbacks run in IRQ
  * and notify the application; do not configure/restart the ADC from callbacks.
+	 * The caller serializes control calls with ADC/DMA IRQs; these two handlers
+	 * must not preempt one another. No internal interrupt masking is added.
  * No internal locks, thread-context checks or configuration reservation exist.
  * System waits require a live SysTick; do not mask it during control methods.
  *
- * Start converts once; Start_DMA captures one sequence; StartTrig_DMA captures
- * on external events; StartCont_DMA captures continuously into circular DMA.
- * StartCont without DMA returns the latest single-channel value through GetData.
+ * Start() converts without DMA; Start(buf, len) uses constructor-bound DMA.
+ * Single without a trigger captures one sequence. Continuous and triggered
+ * DMA captures are circular until Stop. Continuous cannot use a trigger.
+ * Without DMA, DR retains only the latest conversion, not a sequence buffer.
  * After a finite capture, call Start again. A running capture returns Busy.
  *
- * SetUp registers the ADC IRQ once; AttachDMA registers its DMA IRQ once.
- * IRQ_en changes sources only. Stop retains configuration and attachments;
+ * SetUp registers separate ADC and DMA handlers once, without changing the
+ * registry API. Neither IRQ waits for hardware. IRQ_en changes sources only.
+ * Stop retains configuration and constructor bindings;
  * DeInit removes this object's registrations and releases its DMA.
  *
  * F7 DMA uses System cache helpers. Buffers own all intersected 32-byte lines,
- * including padding. Transfer length need not be a multiple of 32 bytes.
+	 * including padding. Without HT, transfer length need not be a multiple of
+	 * 32 bytes. With HT, cached buffer halves occupy separate complete cache lines.
  * The application must finish reading circular data before DMA overwrites it;
  * neither a callback nor invalidate freezes a circular buffer.
  *
@@ -75,13 +92,13 @@ class TIM_TriggerGenerator;
  *       void OnError(uint32_t causes) override { errors = causes; }
  *   };
  *
- *   Samples adc(ADC1);
  *   alignas(32) static uint16_t values[16]; // Full cache line, two samples used.
  * #if defined(STM32G0)
- *   DMA_Sx dma(DMA1_Channel1, DMA_Sx::Req::Adc1::RX);
+ *   const ADC_N::DMAReq dma = DMA1_Channel1;
  * #else
- *   DMA_Sx dma(DMA_Sx::Req::Adc1::RX_DMA2_Stream0);
+ *   const ADC_N::DMAReq dma = DMA_Sx::Req::Adc1::RX_DMA2_Stream0;
  * #endif
+ *   Samples adc(ADC1, ADC_N::Conversion::Single, dma);
  *   if (adc.SetUp() == SysInitStatus::InitOK) {
  * #if defined(STM32G0)
  *       adc.AddChannel(ADC_N::IN::PA0_IN0);
@@ -90,21 +107,53 @@ class TIM_TriggerGenerator;
  *       adc.AddChannel(ADC_N::_1::PA0_IN0);
  *       adc.AddChannel(ADC_N::_1::PB0_IN8);
  * #endif
- *       if (adc.AttachDMA(&dma) == SysInitStatus::InitOK)
- *           adc.Start_DMA(values); // Check each AddChannel/start result as well.
+ *       adc.Start(values, 2); // Check each AddChannel/start result as well.
  *   }
- *   // Main: consume values after ready, clear ready, then Start_DMA(values) again.
+ *   // Main: consume values after ready, clear ready, then Start(values, 2) again.
  * @endcode
- * See ADC.md for polling, circular capture, sampling and pending TIM/DMA work.
+ * See ADC.md for polling, circular capture, cache-line ownership and sampling.
  */
 class ADC_N : public IIRQHandler
 {
 public:
+	/// Immutable conversion policy; scan order follows AddChannel calls.
+	enum class Conversion : uint8_t { Single, Continuous };
 	using ADC_PIN = ::ADC_PIN;
 #include "adc_defs.hpp"
 
-	/// Bind ADC1/2/3 once; construction does not access hardware.
-	explicit ADC_N(ADC_TypeDef* adcx) : ADCx(adcx) {}
+#if defined(STM32G0)
+	using DMAReq = DMA_Channel_TypeDef*;
+#else
+	using DMAReq = DMA_Sx::DMAReq;
+#endif
+
+	/**
+	 * @brief Bind ADC, conversion policy, optional DMA and trigger once.
+	 * Construction performs no hardware access. SetUp acquires/registers DMA.
+	 * A timer source requires the matching, externally configured TIM; EXTI11
+	 * uses no TIM pointer. ADC does not configure timer frequency, TRGO or CCx.
+	 * Start arms ADC/DMA before starting this TIM; Stop stops it. Bindings survive
+	 * DeInit. Continuous plus any trigger is rejected by SetUp.
+	 * DMA is owned internally: F4/F7 named Req; G0 physical channel, fixed ADC request.
+	 * ADC_USE_ATOMIC: ordinary (0, default) or ST atomic (1) control updates.
+	 */
+	explicit ADC_N(ADC_TypeDef* adcx, Conversion conversion,
+		DMAReq dma = {}, TIM* timer = nullptr, Trigger source = Trigger::None)
+		: ADCx(adcx), _conversion(conversion),
+#if defined(STM32G0)
+		  _dma(dma, DMA_Sx::Req::Adc1::RX),
+#else
+		  _dma(dma),
+#endif
+		  _timer(timer), _trigger(source), _dma_irq(*this)
+	{
+#if defined(STM32F4) || defined(STM32F7)
+		if ((dma.stream || dma.ch || dma.periph_base)
+			&& (!dma.IsValid() || dma.periph_base != reinterpret_cast<uintptr_t>(adcx)
+				|| dma.direction != DMA_Sx::DIR::From_Per))
+			System::DebugTrap("ADC: invalid DMA request");
+#endif
+	}
 	ADC_N() = delete;
 	ADC_N(const ADC_N&) = delete;
 	ADC_N& operator=(const ADC_N&) = delete;
@@ -114,14 +163,17 @@ public:
 	~ADC_N() = default;
 
 	/**
-	 * @brief Enable clock, initialize an empty sequence and register the ADC IRQ.
+	 * @brief Enable clock, initialize an empty sequence and register ADC/DMA IRQs.
 	 * G0: PCLK/2, regulator/calibration, two common sampling times SMP1/SMP2.
 	 * F4/F7: PCLK2/4; smp1/smp2 are unused, sampling is selected per channel.
 	 *
 	 * ADCPRE is shared by ADC1/2/3 even in independent mode. Set up all ADCs
 	 * before starting conversion; no common/multimode manager is introduced.
-	 * @return InitOK or InitError for an unknown ADC, repeated setup, failed
-	 *         handshake or IRQ registration. Repeated setup requires DeInit.
+	 * Initializes constructor-bound DMA as half-word Per->Mem with MINC and ADC DR.
+	 * Do not initialize or release that DMA independently before DeInit.
+	 * @return InitOK or InitError for an unknown ADC, invalid fixed configuration,
+	 *         repeated setup, failed handshake, DMA acquisition or registration.
+	 * Failed setup releases only its own acquisitions. Repeated setup needs DeInit.
 	 */
 	SysInitStatus SetUp(SMPL smp1 = SMPL::DEFAULT, SMPL smp2 = SMPL::DEFAULT);
 
@@ -162,71 +214,25 @@ public:
 	inline uint8_t GetChannelCount() const { return _ch_count; }
 
 	/**
-	 * @brief Configure/attach one DMA resource and register its IRQ.
-	 * Validates the complete route using existing DMAReq/CanUseRequest.
-	 * Configures half-word Per->Mem, MINC, ADC DR; do not SetUp DMA separately.
-	 * TC/TE and F4/F7 DME sources are enabled, as in USART.
-	 * @return InitError before SetUp, for null/wrong/owned DMA, repeated
-	 *         attachment, Busy acquisition or a setup/registration failure.
-	 * The DMA object outlives the attachment; only DeInit releases it.
+	 * @brief Start the constructor-selected capture; no run-time mode switching.
+	 * Without DMA call Start(). With DMA pass an aligned, live uint16_t buffer
+	 * and 1..65535 samples, a multiple of GetChannelCount. Single/software capture
+	 * requires exactly one sequence; Continuous or a trigger uses circular DMA.
+	 * With DMA_HT enabled, len must be even; otherwise Start returns Error.
+	 * Timer triggering arms ADC/DMA first and then starts the configured TIM.
+	 * EXTI setup/edges remain the caller's responsibility.
+	 * Finite DMA always uses TC. DMA_HT is explicitly enabled through IRQ_en.
+	 * At HT the first half is returned; circular TC returns the second half when
+	 * HT is enabled, otherwise the entire buffer. Finite TC returns all samples.
+	 * Circular halves must be processed before DMA overwrites them. On F7 their
+	 * cache lines must not overlap the half DMA is writing; see ADC.md.
+	 * @return NotInit, Busy, Error for arguments/sequence/DMA preparation, Timeout
+	 *         on a G0 handshake, otherwise OK. Error data must not be read.
 	 */
-	SysInitStatus AttachDMA(DMA_Sx* dma);
+	SysStatus Start(uint16_t* buf = nullptr, uint32_t len = 0);
 
 	/**
-	 * @brief Attach an already configured TIM_TriggerGenerator.
-	 * StartTrig_DMA arms ADC/DMA first, then starts this timer; Stop stops it.
-	 * @return InitError before SetUp, for null or Busy acquisition.
-	 * TIM_TriggerGenerator is a pending TIM dependency, not implemented in ADC.
-	 */
-	SysInitStatus AttachTrig(TIM_TriggerGenerator* trg);
-
-	/// Select rising-edge EXTI11 instead of a timer; the application configures EXTI.
-	SysInitStatus AttachExtTrig();
-
-	/**
-	 * @brief Convert the sequence once, without DMA.
-	 * Poll IsBusy/IsEOC and read GetData, or enable EOC/EOS notifications.
-	 * Only the latest DR sample is retained without DMA.
-	 * @return NotInit, Busy, Error for an empty sequence, Timeout (G0), or OK.
-	 */
-	SysStatus Start();
-
-	/**
-	 * @brief Capture one sequence, then stop DMA and hand the buffer to CPU.
-	 * @param buf At least GetChannelCount half-words, DMA-accessible and kept alive.
-	 * TC is enabled automatically for completion; do not disable it during this run.
-	 * @return NotInit, Busy, Error for buffer/DMA/count/preparation, Timeout, or OK.
-	 * OnDmaComplete runs only after the DMA stop and cache invalidate.
-	 * OnError discards the buffer without invalidate; partial data must not be read.
-	 */
-	SysStatus Start_DMA(uint16_t* buf);
-
-	/**
-	 * @brief Circular DMA capture, one sequence per trigger, until Stop.
-	 * @param len Samples, 1..65535 and a multiple of GetChannelCount.
-	 * The application ensures conversion and processing fit the trigger interval.
-	 * At TC the buffer is invalidated and OnDmaComplete is called; DMA keeps running.
-	 * @return As Start_DMA; Error also when no trigger is attached.
-	 * Requires the separately planned TIM_TriggerGenerator for timer triggering.
-	 */
-	SysStatus StartTrig_DMA(uint16_t* buf, uint32_t len);
-
-	/**
-	 * @brief Continuous conversion with circular DMA until Stop.
-	 * @param len Samples, 1..65535 and a multiple of GetChannelCount.
-	 * Callback data is valid only until DMA overwrites it. Buffer length, sampling
-	 * time and CPU processing determine the available time; the caller owns this.
-	 * No buffering, copying, automatic pause or overtake detection is added.
-	 * HT integration awaits the separate DMA flag-interface work; see ADC.md.
-	 * @return Same status contract as Start_DMA.
-	 */
-	SysStatus StartCont_DMA(uint16_t* buf, uint32_t len);
-
-	/// Continuous single-channel conversion without DMA; unread data is overwritten.
-	SysStatus StartCont();
-
-	/**
-	 * @brief Stop timer, conversions and DMA; retain channels and attachments.
+	 * @brief Stop timer, conversions and DMA; retain channels and fixed bindings.
 	 * DMA EN=0 is confirmed before cache/buffer handover. G0 ADC handshakes
 	 * use System waits in main, never a hidden deferred configuration phase.
 	 * @return NotInit, Timeout on a hardware handshake, Error on DMA failure, or OK.
@@ -251,20 +257,23 @@ public:
 	inline bool IsEOC() const { return _info && (ADCx->SR & ADC_SR_EOC); }
 #endif
 
-	/// ADC peripheral sources plus the attached DMA's TC source.
+	/// ADC peripheral sources plus the constructor-bound DMA's HT/TC sources.
 	enum class IRQ : uint32_t {
 #if defined(STM32G0)
 		EOC = ADC_IER_EOCIE, EOS = ADC_IER_EOSIE, OVR = ADC_IER_OVRIE,
 #else
 		EOC = ADC_CR1_EOCIE, EOS = ADC_CR1_EOCIE, OVR = ADC_CR1_OVRIE,
 #endif
-		DMA_TC = 0x80000000u
+		DMA_HT = 0x40000000u, DMA_TC = 0x80000000u
 	};
 	/**
 	 * @brief Change source bits only; registrations persist until DeInit.
 	 * Usable for disabling a source in callbacks. F4/F7 EOC and EOS alias
 	 * the same source and invoke OnEOS only; G0 has separate EOC/EOS events.
-	 * DMA HT selection awaits the separate DMA API decision.
+	 * DMA_HT is off initially. DMA_TC cannot be disabled for a finite capture.
+	 * Configure HT while idle, before Start; preserve half-buffer layout until Stop.
+	 * This changes no NVIC state. Serialize control calls and this object's ADC/DMA
+	 * IRQs externally; the two handlers must not preempt each other.
 	 */
 	void IRQ_en(IRQ irq, FunctionalState en);
 
@@ -275,61 +284,72 @@ public:
 	 * @brief Explicitly stop and release ADC/DMA IRQ registrations and DMA ownership.
 	 * Call from main. Keeps other handlers and shared NVIC state intact.
 	 * ADC clock is disabled; shared GPIO/DMA clocks and GPIO analog settings remain.
-	 * Stops/detaches the externally configured trigger but does not destroy it.
+	 * Stops the externally configured TIM but does not destroy or reconfigure it.
+	 * Constructor bindings survive; a later SetUp uses the same DMA/TIM and policy.
 	 * No automatic destructor cleanup. The same object may subsequently SetUp again.
 	 */
 	void DeInit();
 
 protected:
-	// Notifications only: hardware/status/cache handling is complete before entry.
+	// Notifications follow source/status/cache handling; they do not finish it.
+	// G0 OnError follows a stop command, not a confirmed successful DMA packet.
 	// Do not call control methods or change IRQ Registry from these callbacks.
 #if defined(STM32G0)
 	/// G0 only: one conversion completed. F4/F7 notify via OnEOS instead.
 	virtual void OnEOC() {}
 #endif
 	virtual void OnEOS() {}
-	/// Reserved for the agreed HT integration after the separate DMA API update.
+	/// First half is ready; enabled explicitly through IRQ::DMA_HT before Start.
 	virtual void OnDmaHalf() {}
 	/// One-shot: stopped stable buffer. Circular: caller must meet its read deadline.
 	virtual void OnDmaComplete() {}
-	/// Capture is stopped; partial DMA data is invalid and must not be read.
+	/// Error data is invalid. F4/F7 notify after DMA stop; G0 after its stop command.
 	virtual void OnError(uint32_t errors) { (void)errors; }
 
 private:
 	ADC_TypeDef* const ADCx;
+	const Conversion _conversion;
+	DMA_Sx _dma; ///< Empty constructor selection means capture without DMA.
+	TIM* const _timer;
+	const Trigger _trigger;
 
 	struct PeriphInfo {
 		ADC_TypeDef* periph;
 		volatile uint32_t* clk_reg;
 		uint32_t clk_bit;
 		IRQn_Type irqn;
-#if defined(STM32G0)
-		DMA_Sx::DMAReq dma_req[1];
-#else
-		DMA_Sx::DMAReq dma_req[2];
-#endif
 	};
 	static const PeriphInfo adc_table[];
 	const PeriphInfo* _info = nullptr;
-	DMA_Sx* _dma = nullptr;
-	TIM_TriggerGenerator* _trg = nullptr;
 	uint16_t* _buf = nullptr;
 	uint32_t _buf_bytes = 0;
 	uint8_t _ch_count = 0;
-	uint8_t _extsel = 0;
-	bool _trig_set = false;
+	bool _dma_owned = false;
+	bool _dma_ht_irq = false;
 	bool _dma_tc_irq = false;
 
-	enum class Mode : uint8_t { Single, Dma, Trig, ContDma, Cont };
-	Mode _mode = Mode::Single;
 	volatile SysStatus _status = SysStatus::NotInit;
+	volatile uint32_t _errors = 0; // Retained until DMA confirms an error stop.
+	class DmaIRQ final : public IIRQHandler {
+	public:
+		explicit DmaIRQ(ADC_N& adc) : _adc(adc) {}
+		void HandleIRQ() override { _adc.HandleDmaIRQ(); }
+	private:
+		ADC_N& _adc;
+	};
+	DmaIRQ _dma_irq;
+	void HandleDmaIRQ();
+	/// Request an error stop without waiting; DMA IRQ finishes F4/F7 notification.
+	void StopOnError(uint32_t errors);
+	SysInitStatus SetUpDMA();
+	bool IsRepeating() const {
+		return _conversion == Conversion::Continuous || _trigger != Trigger::None;
+	}
 
 	bool InSequence(uint8_t ch) const;
 	SysStatus AddRank(uint8_t ch, CH_SMPL smpl);
 	/// Replace only the hardware run fields (G0 requires disabled ADC).
 	bool SetRunMode(uint32_t bits);
-	/// Shared hardware start for the three public DMA capture modes.
-	SysStatus StartDma(uint16_t* buf, uint32_t len, Mode mode);
 	/// Main Stop/DeInit: stop, read errors once, clear; hand over only valid data.
 	uint32_t StopDMA();
 
@@ -345,7 +365,7 @@ private:
 #else
 	uint16_t _last_data = 0;
 #endif
-	void HandleIRQ() override;
+	void HandleIRQ() override final;
 };
 
 #endif // ADC_HPP_

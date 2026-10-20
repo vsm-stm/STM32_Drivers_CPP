@@ -41,6 +41,9 @@ The pointer constructor supports ordinary GPIO objects such as PIN(GPIOA, 5).
 Compile-time tables use the consteval constructor with GPIOx_BASE; it validates
 their port, pin number and stored AF at build time. C++20 or later is required.
 
+PORT() returns the fixed port pointer; GetNumber() returns the fixed pin number,
+for example for external EXTI routing. Neither accessor permits rebinding.
+
 ---
 
 ## 2. TYPE Encoding — One Byte Instead of Three Registers
@@ -291,7 +294,7 @@ seg_pins[2].SetLevel(true);                // access a single pin within the arr
 struct MySpiPins {
     struct SCK { static constexpr PIN PA5 = { GPIOA_BASE, 5, 5, SPI1_BASE }; };
 };
-// usage: SPI spi(SPI1, MySpiPins::SCK::PA5, ...);
+// usage: SPI spi(SPI1, SPI::Direction::TXRX, MySpiPins::SCK::PA5, ...);
 // the SPI constructor will compare .periph_base with (uint32_t)SPI1 and stop in DebugTrap on a mismatch.
 ```
 
@@ -363,6 +366,9 @@ static constexpr PIN PA9 = { GPIOA_BASE, 9, 7, USART1_BASE };  // AF7, "прин
 Конструктор с указателем используется для обычных объектов, например PIN(GPIOA, 5).
 Для compile-time таблиц используется consteval-конструктор с GPIOx_BASE: он
 проверяет порт, номер и сохранённый AF при сборке. Требуется C++20 или новее.
+
+PORT() возвращает закреплённый порт, GetNumber() — закреплённый номер пина,
+например для маршрутизации внешней EXTI. Менять привязку через эти методы нельзя.
 
 ---
 
@@ -616,7 +622,7 @@ seg_pins[2].SetLevel(true);                // доступ к одному пи�
 struct MySpiPins {
     struct SCK { static constexpr PIN PA5 = { GPIOA_BASE, 5, 5, SPI1_BASE }; };
 };
-// использование: SPI spi(SPI1, MySpiPins::SCK::PA5, ...);
+// использование: SPI spi(SPI1, SPI::Direction::TXRX, MySpiPins::SCK::PA5, ...);
 // конструктор SPI сверит .periph_base с (uint32_t)SPI1 и остановится в DebugTrap при несовпадении.
 ```
 

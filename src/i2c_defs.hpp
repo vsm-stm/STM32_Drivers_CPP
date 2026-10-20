@@ -19,7 +19,7 @@
  * Guard:  I2C_DEFS_CPP  (defined in i2c.cpp just before the include)
  * Scope:  file scope inside i2c.cpp.
  * Result: I2C::i2c_table[] — clock/reset bits, kernel clock selector,
- *         NVIC lines, DMA requests, Fast-mode Plus bit.
+ *         NVIC lines and Fast-mode Plus bit.
  */
 
 // ===========================================================================
@@ -321,17 +321,9 @@ struct _4 {
 // ===========================================================================
 #ifdef I2C_DEFS_CPP
 
-#if defined(STM32F405xx) || defined(STM32F407xx) || defined(STM32F415xx) || defined(STM32F417xx) \
- || defined(STM32F427xx) || defined(STM32F429xx) || defined(STM32F437xx) || defined(STM32F439xx) \
- || defined(STM32F469xx) || defined(STM32F479xx)
-#  define I2C3_RX_ALTERNATE {}
-#else
-#  define I2C3_RX_ALTERNATE DMA_Sx::Req::I2c3::RX_alt
-#endif
-
 // Columns: periph, clk_reg, clk_bit, rst_reg, rst_bit,
 //          kernel-clock selector (cleared -> PCLK), irq_ev, irq_er,
-//          DMA TX / RX request (G0: DMAMUX ID, F4/F7: CHSEL), Fm+ bit in SYSCFG.
+//          Fm+ bit in SYSCFG. DMA selection lives only in dma_requests.hpp.
 #if defined(STM32G0)
 
 #if defined(I2C3_BASE)
@@ -346,16 +338,20 @@ struct _4 {
 #endif
 
 const I2C::PeriphInfo I2C::i2c_table[] = {
+#if defined(I2C1_BASE)
 	{ I2C1, &RCC->APBENR1, RCC_APBENR1_I2C1EN, &RCC->APBRSTR1, RCC_APBRSTR1_I2C1RST,
 	  &RCC->CCIPR, RCC_CCIPR_I2C1SEL, I2C1_IRQn, I2C1_IRQn,
-	  DMA_Sx::Req::I2c1::TX, DMA_Sx::Req::I2c1::RX, SYSCFG_CFGR1_I2C1_FMP },
+	  SYSCFG_CFGR1_I2C1_FMP },
+#endif
+#if defined(I2C2_BASE)
 	{ I2C2, &RCC->APBENR1, RCC_APBENR1_I2C2EN, &RCC->APBRSTR1, RCC_APBRSTR1_I2C2RST,
 	  &RCC->CCIPR, I2C2_KSEL, I2C2_IRQ_LINE, I2C2_IRQ_LINE,
-	  DMA_Sx::Req::I2c2::TX, DMA_Sx::Req::I2c2::RX, SYSCFG_CFGR1_I2C2_FMP },
+	  SYSCFG_CFGR1_I2C2_FMP },
+#endif
 #if defined(I2C3_BASE)
 	{ I2C3, &RCC->APBENR1, RCC_APBENR1_I2C3EN, &RCC->APBRSTR1, RCC_APBRSTR1_I2C3RST,
 	  &RCC->CCIPR, 0u, I2C2_3_IRQn, I2C2_3_IRQn,
-	  DMA_Sx::Req::I2c3::TX, DMA_Sx::Req::I2c3::RX, SYSCFG_CFGR1_I2C3_FMP },
+	  SYSCFG_CFGR1_I2C3_FMP },
 #endif
 };
 
@@ -365,19 +361,25 @@ const I2C::PeriphInfo I2C::i2c_table[] = {
 #elif defined(STM32F7)
 
 const I2C::PeriphInfo I2C::i2c_table[] = {
+#if defined(I2C1_BASE)
 	{ I2C1, &RCC->APB1ENR, RCC_APB1ENR_I2C1EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C1RST,
 	  &RCC->DCKCFGR2, RCC_DCKCFGR2_I2C1SEL, I2C1_EV_IRQn, I2C1_ER_IRQn,
-	  {DMA_Sx::Req::I2c1::TX_DMA1_Stream6, DMA_Sx::Req::I2c1::TX_alt}, {DMA_Sx::Req::I2c1::RX_DMA1_Stream0, DMA_Sx::Req::I2c1::RX_DMA1_Stream5}, SYSCFG_PMC_I2C1_FMP },
+	  SYSCFG_PMC_I2C1_FMP },
+#endif
+#if defined(I2C2_BASE)
 	{ I2C2, &RCC->APB1ENR, RCC_APB1ENR_I2C2EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C2RST,
 	  &RCC->DCKCFGR2, RCC_DCKCFGR2_I2C2SEL, I2C2_EV_IRQn, I2C2_ER_IRQn,
-	  DMA_Sx::Req::I2c2::TX_DMA1_Stream7, {DMA_Sx::Req::I2c2::RX_DMA1_Stream2, DMA_Sx::Req::I2c2::RX_DMA1_Stream3}, SYSCFG_PMC_I2C2_FMP },
+	  SYSCFG_PMC_I2C2_FMP },
+#endif
+#if defined(I2C3_BASE)
 	{ I2C3, &RCC->APB1ENR, RCC_APB1ENR_I2C3EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C3RST,
 	  &RCC->DCKCFGR2, RCC_DCKCFGR2_I2C3SEL, I2C3_EV_IRQn, I2C3_ER_IRQn,
-	  DMA_Sx::Req::I2c3::TX_DMA1_Stream4, {DMA_Sx::Req::I2c3::RX_DMA1_Stream2, I2C3_RX_ALTERNATE}, SYSCFG_PMC_I2C3_FMP },
+	  SYSCFG_PMC_I2C3_FMP },
+#endif
 #if defined(I2C4_BASE)
 	{ I2C4, &RCC->APB1ENR, RCC_APB1ENR_I2C4EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C4RST,
 	  &RCC->DCKCFGR2, RCC_DCKCFGR2_I2C4SEL, I2C4_EV_IRQn, I2C4_ER_IRQn,
-	  DMA_Sx::Req::I2c4::TX, DMA_Sx::Req::I2c4::RX, SYSCFG_PMC_I2C4_FMP },
+	  SYSCFG_PMC_I2C4_FMP },
 #endif
 };
 
@@ -385,21 +387,24 @@ const I2C::PeriphInfo I2C::i2c_table[] = {
 
 // F4 I2C (v1 IP) has no kernel clock selector and no Fm+ (FMPI2C1 is a separate IP).
 const I2C::PeriphInfo I2C::i2c_table[] = {
+#if defined(I2C1_BASE)
 	{ I2C1, &RCC->APB1ENR, RCC_APB1ENR_I2C1EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C1RST,
 	  nullptr, 0u, I2C1_EV_IRQn, I2C1_ER_IRQn,
-	  {DMA_Sx::Req::I2c1::TX_DMA1_Stream6, DMA_Sx::Req::I2c1::TX_alt}, {DMA_Sx::Req::I2c1::RX_DMA1_Stream0, DMA_Sx::Req::I2c1::RX_DMA1_Stream5}, 0u },
+	  0u },
+#endif
+#if defined(I2C2_BASE)
 	{ I2C2, &RCC->APB1ENR, RCC_APB1ENR_I2C2EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C2RST,
 	  nullptr, 0u, I2C2_EV_IRQn, I2C2_ER_IRQn,
-	  DMA_Sx::Req::I2c2::TX_DMA1_Stream7, {DMA_Sx::Req::I2c2::RX_DMA1_Stream2, DMA_Sx::Req::I2c2::RX_DMA1_Stream3}, 0u },
+	  0u },
+#endif
 #if defined(I2C3_BASE)
 	{ I2C3, &RCC->APB1ENR, RCC_APB1ENR_I2C3EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C3RST,
 	  nullptr, 0u, I2C3_EV_IRQn, I2C3_ER_IRQn,
-	  DMA_Sx::Req::I2c3::TX_DMA1_Stream4, {DMA_Sx::Req::I2c3::RX_DMA1_Stream2, I2C3_RX_ALTERNATE}, 0u },
+	  0u },
 #endif
 };
 
 #endif
 
-#undef I2C3_RX_ALTERNATE
 
 #endif  // I2C_DEFS_CPP (Section B)

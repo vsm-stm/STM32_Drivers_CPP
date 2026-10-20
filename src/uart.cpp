@@ -14,6 +14,33 @@
 #include "uart_defs.hpp"
 #undef UART_DEFS_CPP
 
+#if defined(STM32G0)
+uint32_t USART::DmaRequest(USART_TypeDef* usart, bool tx)
+{
+	switch (reinterpret_cast<uintptr_t>(usart)) {
+#ifdef USART1_BASE
+	case USART1_BASE: return (tx ? DMA_Sx::Req::Usart1::TX : DMA_Sx::Req::Usart1::RX).ch;
+#endif
+#ifdef USART2_BASE
+	case USART2_BASE: return (tx ? DMA_Sx::Req::Usart2::TX : DMA_Sx::Req::Usart2::RX).ch;
+#endif
+#ifdef USART3_BASE
+	case USART3_BASE: return (tx ? DMA_Sx::Req::Usart3::TX : DMA_Sx::Req::Usart3::RX).ch;
+#endif
+#ifdef USART4_BASE
+	case USART4_BASE: return (tx ? DMA_Sx::Req::Usart4::TX : DMA_Sx::Req::Usart4::RX).ch;
+#endif
+#ifdef USART5_BASE
+	case USART5_BASE: return (tx ? DMA_Sx::Req::Usart5::TX : DMA_Sx::Req::Usart5::RX).ch;
+#endif
+#ifdef USART6_BASE
+	case USART6_BASE: return (tx ? DMA_Sx::Req::Usart6::TX : DMA_Sx::Req::Usart6::RX).ch;
+#endif
+	default: return 0;
+	}
+}
+#endif
+
 // OVER8=0: 16-bit BRR, USARTDIV >= 16. G0 PRESC is /1.
 static uint32_t BaudRegister(uint32_t clock, uint32_t baud)
 {
@@ -74,7 +101,7 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 		return SysInitStatus::InitError;
 #endif
 
-	ATOMIC_SET_BIT(*info->clk_reg, info->clk_bit);
+	UART_SET_BIT(*info->clk_reg, info->clk_bit);
 	(void)*info->clk_reg;
 	USARTx->CR1 = 0; // BRR and FIFO configuration require UE=0.
 #if defined(STM32F7) || defined(STM32G0)
@@ -82,9 +109,9 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 		// Locate this instance's two-bit USARTxSEL field; the mask is nonzero here.
 		const uint32_t selection = static_cast<uint32_t>(_clock_source) << __builtin_ctz(info->clock_select);
 #if defined(STM32F7)
-		ATOMIC_MODIFY_REG(RCC->DCKCFGR2, info->clock_select, selection);
+		UART_MODIFY_REG(RCC->DCKCFGR2, info->clock_select, selection);
 #else
-		ATOMIC_MODIFY_REG(RCC->CCIPR, info->clock_select, selection);
+		UART_MODIFY_REG(RCC->CCIPR, info->clock_select, selection);
 #endif
 	}
 #endif
@@ -98,11 +125,11 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 		| (static_cast<uint32_t>(fifo_th_rx) << FIFO_TH_RX_Pos);
 	if (_TX.IsValid()) {
 		_TX.SetUp(PIN::TYPE::AF_PushPull);
-		ATOMIC_SET_BIT(USARTx->CR1, USART_CR1_TE);
+		UART_SET_BIT(USARTx->CR1, USART_CR1_TE);
 	}
 	if (_RX.IsValid()) {
 		_RX.SetUp(PIN::TYPE::AF_PushPull);
-		ATOMIC_SET_BIT(USARTx->CR1, USART_CR1_RE);
+		UART_SET_BIT(USARTx->CR1, USART_CR1_RE);
 	}
 #if defined(STM32F4)
 	(void)USARTx->SR;
@@ -110,7 +137,7 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 	USARTx->SR = ~USART_SR_TC;
 #else
 	USARTx->ICR = USART_ICR_IDLECF | USART_ICR_PECF | USART_ICR_FECF
-		| USART_ICR_NCF | USART_ICR_ORECF | USART_ICR_TCCF;
+		| static_cast<uint32_t>(ISR_FLAGS::NE) | USART_ICR_ORECF | USART_ICR_TCCF;
 	USARTx->RQR = USART_RQR_RXFRQ;
 #endif
 
@@ -131,7 +158,7 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 	}
 	rx_status = SysStatus::OK;
 	tx_status = SysStatus::OK;
-	ATOMIC_SET_BIT(USARTx->CR1, USART_CR1_UE);
+	UART_SET_BIT(USARTx->CR1, USART_CR1_UE);
 	NVIC_EnableIRQ(info->irq);
 	return SysInitStatus::InitOK;
 }
@@ -145,10 +172,10 @@ SysStatus USART::SetBaud(uint32_t baud)
 	if (tx_status == SysStatus::Busy || rx_status == SysStatus::Busy)
 		return SysStatus::Busy;
 	const uint32_t ue = USARTx->CR1 & USART_CR1_UE;
-	ATOMIC_CLEAR_BIT(USARTx->CR1, USART_CR1_UE);
+	UART_CLEAR_BIT(USARTx->CR1, USART_CR1_UE);
 	USARTx->BRR = brr;
 	// Restore UE only, preserving other control bits changed by an IRQ.
-	ATOMIC_MODIFY_REG(USARTx->CR1, USART_CR1_UE, ue);
+	UART_MODIFY_REG(USARTx->CR1, USART_CR1_UE, ue);
 	BaudRate = baud;
 	return SysStatus::OK;
 }
@@ -187,7 +214,8 @@ SysStatus USART::Receive(uint8_t* data, uint32_t len, uint32_t timeout)
 	(void)USARTx->SR;
 	(void)USARTx->DR;
 #else
-	USARTx->ICR = USART_ICR_IDLECF | USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NCF | USART_ICR_ORECF;
+	USARTx->ICR = USART_ICR_IDLECF | USART_ICR_PECF | USART_ICR_FECF
+		| static_cast<uint32_t>(ISR_FLAGS::NE) | USART_ICR_ORECF;
 	USARTx->RQR = USART_RQR_RXFRQ;
 #endif
 	const uint32_t start = System::GetTick();
@@ -252,13 +280,14 @@ SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len)
 	(void)USARTx->SR;
 	(void)USARTx->DR;
 #else
-	USARTx->ICR = USART_ICR_IDLECF | USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NCF | USART_ICR_ORECF;
+	USARTx->ICR = USART_ICR_IDLECF | USART_ICR_PECF | USART_ICR_FECF
+		| static_cast<uint32_t>(ISR_FLAGS::NE) | USART_ICR_ORECF;
 	USARTx->RQR = USART_RQR_RXFRQ;
 #endif
 	rx_status = SysStatus::Busy;
 	__DMB();
-	ATOMIC_SET_BIT(USARTx->CR3, USART_CR3_EIE);
-	ATOMIC_SET_BIT(USARTx->CR1, USART_CR1_PEIE);
+	UART_SET_BIT(USARTx->CR3, USART_CR3_EIE);
+	UART_SET_BIT(USARTx->CR1, USART_CR1_PEIE);
 #if defined(STM32G0)
 	if (USARTx->CR1 & USART_CR1_FIFOEN) IRQ_en(IRQ::RXFIFO, ENABLE);
 	else
@@ -313,7 +342,8 @@ SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len)
 	(void)USARTx->SR;
 	(void)USARTx->DR;
 #else
-	USARTx->ICR = USART_ICR_IDLECF | USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NCF | USART_ICR_ORECF;
+	USARTx->ICR = USART_ICR_IDLECF | USART_ICR_PECF | USART_ICR_FECF
+		| static_cast<uint32_t>(ISR_FLAGS::NE) | USART_ICR_ORECF;
 	USARTx->RQR = USART_RQR_RXFRQ;
 #endif
 	System::CacheCleanInvalidate(data, len);
@@ -323,8 +353,8 @@ SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len)
 	_dma_rx.Enable_IRQ(DMA_Sx::IRQ::DME);
 #endif
 	rx_status = SysStatus::Busy;
-	ATOMIC_SET_BIT(USARTx->CR1, USART_CR1_PEIE);
-	ATOMIC_SET_BIT(USARTx->CR3, USART_CR3_EIE);
+	UART_SET_BIT(USARTx->CR1, USART_CR1_PEIE);
+	UART_SET_BIT(USARTx->CR3, USART_CR3_EIE);
 	_dma_rx.Stream_EN(ENABLE);
 	DMA_en(ENABLE, DMA::RX);
 	IRQ_en(IRQ::IDLE, ENABLE);
@@ -402,8 +432,8 @@ void USART::HandleIRQ()
 			| ((cr3 & USART_CR3_EIE) ? (UART_ERRORS & ~static_cast<uint32_t>(Error::Parity)) : 0U);
 		const uint32_t errors = sr & enabled_errors;
 		if (errors) {
-			ATOMIC_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
-			ATOMIC_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
+			UART_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
+			UART_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
 			if (_dma_rx.HasSelection() && ((cr3 & USART_CR3_DMAR) || _rx_dma_idle)) {
 				_rx_errors = _rx_errors | errors;
 				_rx_dma_idle = true;
@@ -453,8 +483,8 @@ void USART::HandleIRQ()
 		// The ordinary RX callback was skipped for IDLE, so cr3 is still usable.
 		if (rx_status == SysStatus::Busy && (cr3 & USART_CR3_DMAR)) {
 			_rx_dma_idle = true;
-			ATOMIC_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
-			ATOMIC_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
+			UART_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
+			UART_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
 			DMA_en(DISABLE, DMA::RX);
 			_dma_rx.RequestStop();
 		} else
@@ -476,7 +506,8 @@ void USART::HandleIRQ()
 void USART::HandleDmaTxIRQ()
 {
 	if (!_info || tx_status != SysStatus::Busy) return;
-	const uint32_t errors = _dma_tx.GetErrorFlags();
+	const uint32_t flags = _dma_tx.GetIRQFlags();
+	const uint32_t errors = flags & DMA_Sx::FLAG_ERRORS;
 	if (errors) {
 		DMA_en(DISABLE, DMA::TX);
 		_dma_tx.RequestStop();
@@ -493,18 +524,19 @@ void USART::HandleDmaTxIRQ()
 		OnError(static_cast<uint32_t>(Error::DmaTx));
 		return;
 	}
-	if (_dma_tx.GetTC_Flag()) OnDmaTxComplete();
+	if (flags & DMA_Sx::FLAG_TC) OnDmaTxComplete();
 }
 
 void USART::HandleDmaRxIRQ()
 {
 	if (!_info || rx_status != SysStatus::Busy) return;
-	const uint32_t errors = _dma_rx.GetErrorFlags();
+	const uint32_t flags = _dma_rx.GetIRQFlags();
+	const uint32_t errors = flags & DMA_Sx::FLAG_ERRORS;
 	if (errors) {
 		_rx_errors = _rx_errors | static_cast<uint32_t>(Error::DmaRx);
 		_rx_dma_idle = true;
-		ATOMIC_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
-		ATOMIC_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
+		UART_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
+		UART_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
 		DMA_en(DISABLE, DMA::RX);
 		_dma_rx.Disable_IRQ(DMA_Sx::IRQ::TE);
 #if defined(STM32F4) || defined(STM32F7)
@@ -515,7 +547,7 @@ void USART::HandleDmaRxIRQ()
 		USART::OnIdle(); // Error cleanup only; do not notify a successful IDLE.
 		return;
 	}
-	if (!_dma_rx.GetTC_Flag()) return;
+	if (!(flags & DMA_Sx::FLAG_TC)) return;
 	if (_rx_errors) USART::OnIdle();
 	else if (_rx_dma_idle) OnIdle();
 	else OnDmaRxComplete();
@@ -528,8 +560,8 @@ void USART::OnTxEmpty()
 		--tx_data.size;
 	}
 	if (!tx_data.size) {
-		ATOMIC_CLEAR_BIT(USARTx->CR1, CR1_TXEIE);
-		ATOMIC_CLEAR_BIT(USARTx->CR3, CR3_TX_IRQ);
+		UART_CLEAR_BIT(USARTx->CR1, CR1_TXEIE);
+		UART_CLEAR_BIT(USARTx->CR3, CR3_TX_IRQ);
 		tx_status = SysStatus::OK;
 	}
 }
@@ -545,8 +577,8 @@ void USART::OnRxByte(uint8_t byte)
 	--rx_data.size;
 	data_received_count = data_received_count + 1;
 	if (!rx_data.size) {
-		ATOMIC_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
-		ATOMIC_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
+		UART_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
+		UART_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
 		rx_status = SysStatus::OK;
 		__DMB();
 		data_received = true;
@@ -558,8 +590,8 @@ void USART::OnIdle()
 	const bool receiving = rx_status == SysStatus::Busy;
 	const bool dma = receiving && _dma_rx.HasSelection() && (_rx_dma_idle || (USARTx->CR3 & USART_CR3_DMAR));
 	uint32_t errors = _rx_errors;
-	ATOMIC_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
-	ATOMIC_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
+	UART_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
+	UART_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ);
 	if (dma) {
 		DMA_en(DISABLE, DMA::RX);
 #if defined(STM32G0)

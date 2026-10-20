@@ -170,6 +170,7 @@ stm32_drivers_module(SPI    SOURCES src/spi.cpp DEPENDS DMA)
 stm32_drivers_module(DMA    SOURCES src/dma.cpp)
 stm32_drivers_module(TIM    SOURCES src/tim.cpp DEPENDS DMA)
 stm32_drivers_module(RTC    SOURCES src/rtc.cpp)
+stm32_drivers_module(EXTI   SOURCES src/exti.cpp)
 stm32_drivers_module(ADC    SOURCES src/adc.cpp DEPENDS DMA TIM)
 stm32_drivers_module(DAC    SOURCES src/dac.cpp)
 # i2c.hpp does `#include <i2c_timing_utility.h>` (angle brackets) - src/tools

@@ -36,6 +36,21 @@
 #include "system.hpp"
 #include "gpio.hpp"
 
+// Change here and rebuild this driver and its consumers.
+#ifndef DAC_USE_ATOMIC
+#define DAC_USE_ATOMIC 0
+#endif
+
+#if DAC_USE_ATOMIC
+#define DAC_SET_BIT ATOMIC_SET_BIT
+#define DAC_CLEAR_BIT ATOMIC_CLEAR_BIT
+#define DAC_MODIFY_REG ATOMIC_MODIFY_REG
+#else
+#define DAC_SET_BIT SET_BIT
+#define DAC_CLEAR_BIT CLEAR_BIT
+#define DAC_MODIFY_REG MODIFY_REG
+#endif
+
 #if !defined(STM32F4) && !defined(STM32F7) && !defined(STM32G0)
 #error "DAC_Module supports STM32F4/F7/G0 only."
 #elif !defined(DAC1)

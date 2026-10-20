@@ -6,6 +6,11 @@
 
 ### Configuration and API
 
+DAC_USE_ATOMIC in dac.hpp defaults to 0 (ordinary control-register RMW).
+Set 1 for ST ATOMIC_* updates to CR/MCR and clock-enable fields; rebuild DAC
+and its users. Data-register writes and W1C flag clearing remain direct.
+Individual atomic operations do not serialize the whole channel configuration.
+
 Enable the module in project.json:
 
 ~~~json
@@ -90,6 +95,11 @@ are retained. A disabled output is not a promise to hold the previous voltage.
 The destructor is passive: explicitly call DeInit before destroying an active object.
 
 ## Русский
+
+DAC_USE_ATOMIC в dac.hpp: 0 по умолчанию — обычные изменения управляющих
+полей, 1 — ATOMIC_* ST для CR/MCR и включения тактирования. Пересоберите DAC
+и приложение после изменения. Запись данных и очистка W1C остаются прямыми.
+Настройка не заменяет согласование целой операции с каналом.
 
 ### Подключение и API
 

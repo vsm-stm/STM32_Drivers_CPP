@@ -30,13 +30,13 @@
  * USART1 RX_DMA2_Stream5/CH4 is an RX route. G0 USART3..6 and UART7/8
  * request declarations are conditional on peripheral availability.
  *
- * USART consumes named requests directly and owns its DMA objects. Its
- * constructor checks the USART base and direction stored in these entries.
- * Other consumers retain their existing DMA_Sx object bindings and route checks.
- * CanUseRequest() compares a candidate against constructor selection; it neither
- * claims the channel nor proves its route is valid for a particular peripheral.
- * Consumers with external DMA objects select allowed entries before SetUp.
- * See the selected device's DMA request map and the UART.md references.
+ * USART/SPI/ADC/I2C consume F4/F7 named requests and own their DMA objects.
+ * Their constructors check periph_base and direction. TIM validates its channel
+ * route from the existing timer route table. G0 peripheral constructors receive
+ * only a physical channel and derive the request source internally.
+ * Standalone DMA_Sx still takes both G0 channel and request explicitly.
+ * CanUseRequest() only compares a selection; it does not acquire hardware.
+ * See the selected device's DMA request map and the module documentation.
  */
 
 #ifndef DMA_REQUESTS_H_
@@ -54,7 +54,7 @@
  *
  *  - G0:    DMAMUX1 request ID only (RM0444 Table 37).
  *           The DMA channel is chosen separately from those present on the MCU.
- * USART entries also carry periph_base and direction for constructor validation.
+ * USART/SPI/ADC/I2C entries also carry periph_base and direction for constructor validation.
  * Zero periph_base means that the existing consumer validates its own route;
  * direction is ignored in that case. This metadata does not reserve hardware.
  */
@@ -67,7 +67,7 @@ struct DMAReq {
 	uint32_t ch;                ///< DMAMUX1 request ID (0 = invalid / mem-to-mem)
 	constexpr bool IsValid() const noexcept { return ch != 0 && (ch & ~DMAMUX_CxCR_DMAREQ_ID_Msk) == 0; }
 #endif
-	// USART metadata: zero owner means another consumer validates the route.
+	// Peripheral metadata: zero owner means the consumer validates its own route.
 	uintptr_t periph_base;
 	DIR direction;
 
@@ -90,22 +90,43 @@ struct Req {
 #if defined(STM32G0)
 
 	// Common G0 request IDs; the peripheral driver checks device availability.
-	struct Adc1  { static constexpr DMAReq RX = {  5U, 0U, DIR::From_Per }; };
+#if defined(ADC1_BASE)
+	struct Adc1  { static constexpr DMAReq RX = {  5U, ADC1_BASE, DIR::From_Per }; };
+#endif
 
-	struct I2c1  {	static constexpr DMAReq RX = { 10U, 0U, DIR::From_Per };
-					static constexpr DMAReq TX = { 11U, 0U, DIR::From_Per }; };
-	struct I2c2  {	static constexpr DMAReq RX = { 12U, 0U, DIR::From_Per };
-					static constexpr DMAReq TX = { 13U, 0U, DIR::From_Per }; };
+#if defined(I2C1_BASE)
+	struct I2c1 {
+		static constexpr DMAReq RX = { 10U, I2C1_BASE, DIR::From_Per };
+		static constexpr DMAReq TX = { 11U, I2C1_BASE, DIR::To_Per };
+	};
+#endif
+#if defined(I2C2_BASE)
+	struct I2c2 {
+		static constexpr DMAReq RX = { 12U, I2C2_BASE, DIR::From_Per };
+		static constexpr DMAReq TX = { 13U, I2C2_BASE, DIR::To_Per };
+	};
+#endif
+#if defined(I2C3_BASE)
+	// RM0444, DMAMUX input assignment.
+	struct I2c3 {
+		static constexpr DMAReq RX = { 62U, I2C3_BASE, DIR::From_Per };
+		static constexpr DMAReq TX = { 63U, I2C3_BASE, DIR::To_Per };
+	};
+#endif
 
-	struct Spi1  {	static constexpr DMAReq RX = { 16U, 0U, DIR::From_Per };
-					static constexpr DMAReq TX = { 17U, 0U, DIR::From_Per }; };
-	struct Spi2  {	static constexpr DMAReq RX = { 18U, 0U, DIR::From_Per };
-					static constexpr DMAReq TX = { 19U, 0U, DIR::From_Per }; };
+#if defined(SPI1_BASE)
+	struct Spi1  {	static constexpr DMAReq RX = { 16U, SPI1_BASE, DIR::From_Per };
+					static constexpr DMAReq TX = { 17U, SPI1_BASE, DIR::To_Per }; };
+#endif
+#if defined(SPI2_BASE)
+	struct Spi2  {	static constexpr DMAReq RX = { 18U, SPI2_BASE, DIR::From_Per };
+					static constexpr DMAReq TX = { 19U, SPI2_BASE, DIR::To_Per }; };
+#endif
 
 #ifdef SPI3_BASE
 	struct Spi3 {
-		static constexpr DMAReq RX = { 66U, 0U, DIR::From_Per };
-		static constexpr DMAReq TX = { 67U, 0U, DIR::From_Per };
+		static constexpr DMAReq RX = { 66U, SPI3_BASE, DIR::From_Per };
+		static constexpr DMAReq TX = { 67U, SPI3_BASE, DIR::To_Per };
 	};
 #endif
 
@@ -289,73 +310,102 @@ struct Req {
 	};
 #endif
 
+#if defined(SPI1_BASE)
 	struct Spi1 {
-		static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 3U, 0U, DIR::From_Per };
-		static constexpr DMAReq TX_DMA2_Stream3 = { DMA2_Stream3_BASE, 3U, 0U, DIR::From_Per };
-		static constexpr DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 3U, 0U, DIR::From_Per };  // Stream2 Ch3
-		static constexpr DMAReq TX_DMA2_Stream5 = { DMA2_Stream5_BASE, 3U, 0U, DIR::From_Per };  // Stream5 Ch3
+		static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 3U, SPI1_BASE, DIR::From_Per };
+		static constexpr DMAReq TX_DMA2_Stream3 = { DMA2_Stream3_BASE, 3U, SPI1_BASE, DIR::To_Per };
+		static constexpr DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 3U, SPI1_BASE, DIR::From_Per };  // Stream2 Ch3
+		static constexpr DMAReq TX_DMA2_Stream5 = { DMA2_Stream5_BASE, 3U, SPI1_BASE, DIR::To_Per };  // Stream5 Ch3
 	};
+#endif
+#if defined(SPI2_BASE)
 	struct Spi2 {
-		static constexpr DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 0U, 0U, DIR::From_Per };
-		static constexpr DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 0U, 0U, DIR::From_Per };
+		static constexpr DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 0U, SPI2_BASE, DIR::From_Per };
+		static constexpr DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 0U, SPI2_BASE, DIR::To_Per };
 	};
+#endif
+#if defined(SPI3_BASE)
 	struct Spi3 {
-		static constexpr DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 0U, 0U, DIR::From_Per };
-		static constexpr DMAReq TX_DMA1_Stream5 = { DMA1_Stream5_BASE, 0U, 0U, DIR::From_Per };
-		static constexpr DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 0U, 0U, DIR::From_Per };  // Stream2 Ch0
-		static constexpr DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 0U, 0U, DIR::From_Per };  // Stream7 Ch0
+		static constexpr DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 0U, SPI3_BASE, DIR::From_Per };
+		static constexpr DMAReq TX_DMA1_Stream5 = { DMA1_Stream5_BASE, 0U, SPI3_BASE, DIR::To_Per };
+		static constexpr DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 0U, SPI3_BASE, DIR::From_Per };  // Stream2 Ch0
+		static constexpr DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 0U, SPI3_BASE, DIR::To_Per };  // Stream7 Ch0
 	};
+#endif
 
 #ifdef SPI4_BASE
     struct Spi4 {
-        static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 4U, 0U, DIR::From_Per };
-        static constexpr DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 5U, 0U, DIR::From_Per };
-        static constexpr DMAReq TX_DMA2_Stream1 = { DMA2_Stream1_BASE, 4U, 0U, DIR::From_Per };
-        static constexpr DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 5U, 0U, DIR::From_Per };
+        static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 4U, SPI4_BASE, DIR::From_Per };
+        static constexpr DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 5U, SPI4_BASE, DIR::From_Per };
+        static constexpr DMAReq TX_DMA2_Stream1 = { DMA2_Stream1_BASE, 4U, SPI4_BASE, DIR::To_Per };
+        static constexpr DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 5U, SPI4_BASE, DIR::To_Per };
     };
 #endif
 #ifdef SPI5_BASE
     struct Spi5 {
-        static constexpr DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 2U, 0U, DIR::From_Per };
-        static constexpr DMAReq RX_DMA2_Stream5 = { DMA2_Stream5_BASE, 7U, 0U, DIR::From_Per };
-        static constexpr DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 2U, 0U, DIR::From_Per };
-        static constexpr DMAReq TX_DMA2_Stream6 = { DMA2_Stream6_BASE, 7U, 0U, DIR::From_Per };
+        static constexpr DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 2U, SPI5_BASE, DIR::From_Per };
+        static constexpr DMAReq RX_DMA2_Stream5 = { DMA2_Stream5_BASE, 7U, SPI5_BASE, DIR::From_Per };
+        static constexpr DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 2U, SPI5_BASE, DIR::To_Per };
+        static constexpr DMAReq TX_DMA2_Stream6 = { DMA2_Stream6_BASE, 7U, SPI5_BASE, DIR::To_Per };
     };
 #endif
 #ifdef SPI6_BASE
     struct Spi6 {
-        static constexpr DMAReq RX_DMA2_Stream6 = { DMA2_Stream6_BASE, 1U, 0U, DIR::From_Per };
-        static constexpr DMAReq TX_DMA2_Stream5 = { DMA2_Stream5_BASE, 1U, 0U, DIR::From_Per };
+        static constexpr DMAReq RX_DMA2_Stream6 = { DMA2_Stream6_BASE, 1U, SPI6_BASE, DIR::From_Per };
+        static constexpr DMAReq TX_DMA2_Stream5 = { DMA2_Stream5_BASE, 1U, SPI6_BASE, DIR::To_Per };
     };
 #endif
 
+#if defined(I2C1_BASE)
 	struct I2c1 {
-		static constexpr DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 1U, 0U, DIR::From_Per };
-		static constexpr DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 1U, 0U, DIR::From_Per };
-		static constexpr DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 1U, 0U, DIR::From_Per };  // Stream5 Ch1
+		static constexpr DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 1U, I2C1_BASE, DIR::From_Per };
+		static constexpr DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 1U, I2C1_BASE, DIR::From_Per };
+		static constexpr DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 1U, I2C1_BASE, DIR::To_Per };
+		static constexpr DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 1U, I2C1_BASE, DIR::To_Per };
 	};
+#endif
+#if defined(I2C2_BASE)
 	struct I2c2 {
-		static constexpr DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 7U, 0U, DIR::From_Per };
-		static constexpr DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 7U, 0U, DIR::From_Per };
-		static constexpr DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 7U, 0U, DIR::From_Per };  // Stream3 Ch7
+		static constexpr DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 7U, I2C2_BASE, DIR::From_Per };
+		static constexpr DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 7U, I2C2_BASE, DIR::From_Per };
+		static constexpr DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 7U, I2C2_BASE, DIR::To_Per };
 	};
+#endif
+#if defined(I2C3_BASE)
 	struct I2c3 {
-		static constexpr DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 1U, 0U, DIR::From_Per };
-		static constexpr DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 3U, 0U, DIR::From_Per };
+		static constexpr DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 3U, I2C3_BASE, DIR::From_Per };
+		static constexpr DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 3U, I2C3_BASE, DIR::To_Per };
+#if defined(STM32F7)
+		static constexpr DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 1U, I2C3_BASE, DIR::From_Per };
+#endif
 	};
+#endif
+#if defined(STM32F7) && defined(I2C4_BASE)
+	// RM0385/RM0410: the CH2 routes are common to supported I2C4 instances.
+	struct I2c4 {
+		static constexpr DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 2U, I2C4_BASE, DIR::From_Per };
+		static constexpr DMAReq TX_DMA1_Stream5 = { DMA1_Stream5_BASE, 2U, I2C4_BASE, DIR::To_Per };
+	};
+#endif
 
+#if defined(ADC1_BASE)
 	struct Adc1 {
-		static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 0U, 0U, DIR::From_Per };
-		static constexpr DMAReq RX_DMA2_Stream4 = { DMA2_Stream4_BASE, 0U, 0U, DIR::From_Per };  // Stream4 Ch0
+		static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 0U, ADC1_BASE, DIR::From_Per };
+		static constexpr DMAReq RX_DMA2_Stream4 = { DMA2_Stream4_BASE, 0U, ADC1_BASE, DIR::From_Per };  // Stream4 Ch0
 	};
+#endif
+#if defined(ADC2_BASE)
 	struct Adc2 {
-		static constexpr DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 1U, 0U, DIR::From_Per };
-		static constexpr DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 1U, 0U, DIR::From_Per };  // Stream3 Ch1
+		static constexpr DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 1U, ADC2_BASE, DIR::From_Per };
+		static constexpr DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 1U, ADC2_BASE, DIR::From_Per };  // Stream3 Ch1
 	};
+#endif
+#if defined(ADC3_BASE)
 	struct Adc3 {
-		static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 2U, 0U, DIR::From_Per };
-		static constexpr DMAReq RX_DMA2_Stream1 = { DMA2_Stream1_BASE, 2U, 0U, DIR::From_Per };  // Stream1 Ch2
+		static constexpr DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 2U, ADC3_BASE, DIR::From_Per };
+		static constexpr DMAReq RX_DMA2_Stream1 = { DMA2_Stream1_BASE, 2U, ADC3_BASE, DIR::From_Per };  // Stream1 Ch2
 	};
+#endif
 
 #endif
 

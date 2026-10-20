@@ -7,7 +7,7 @@
 ### Initialization and ownership
 
 One USART object controls one UART. Call System/RCC initialization first.
-The constructor fixes the kernel clock; PCLK is the default. SetUp() applies
+The constructor fixes optional DMA TX/RX and the kernel clock; PCLK is the default. SetUp() applies
 that source, oversampling x16 and 8N1; G0 PRESC is /1.
 Baud is rounded to the nearest representable divider:
 BRR = (kernel_clock + baud/2) / baud, with 16 <= BRR <= 65535
@@ -29,6 +29,20 @@ without unregistering anything. DeInit() removes this object's registrations and
 preserves other handlers on shared vectors. The object must outlive registration;
 its destructor does not call DeInit().
 
+UART_USE_ATOMIC in uart.hpp selects control-bit and UART RCC clock-field updates:
+
+- 0 (default): ordinary SET_BIT/CLEAR_BIT/MODIFY_REG.
+- 1: ST ATOMIC_SET_BIT/ATOMIC_CLEAR_BIT/ATOMIC_MODIFY_REG. F4/F7 use LDREX/STREX
+  with retry; G0 briefly masks interrupts per update and restores the previous PRIMASK.
+
+Change the definition in uart.hpp, then rebuild both drivers and application.
+The value must match in every translation unit using UART; defining it only in
+main.cpp does not configure uart.cpp. Selection uses the preprocessor and adds no
+run-time branch. Atomic mode protects individual register updates. Transfer calls,
+buffer/state access and setup/deinitialization follow the caller's serialization contract.
+Status reads, SR/ICR flag acknowledgement and whole-register initialization remain
+direct accesses with their hardware semantics.
+
 ### Kernel clock (F7/G0)
 
 The optional last constructor argument is `USART::ClockSource`:
@@ -43,7 +57,7 @@ The optional last constructor argument is `USART::ClockSource`:
 ```cpp
 // F7/G0; the caller must enable HSI and wait for HSIRDY before SetUp().
 USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-           USART::ClockSource::HSI);
+           {}, {}, USART::ClockSource::HSI);
 SysInitStatus status = link.SetUp();
 ```
 
@@ -51,7 +65,8 @@ SysInitStatus status = link.SetUp();
 an oscillator nor waits for one. An unavailable/not-ready source returns InitError
 before UART configuration. On G0, instances without an RCC USARTxSEL field accept
 PCLK only; passing another source also returns InitError. F4 retains its original
-constructor and PCLK clocking.
+PCLK clocking. DMA request descriptions follow the pins on every supported family;
+ClockSource follows both DMA requests on F7/G0.
 
 The source is immutable, including across DeInit()/SetUp(). Keep the oscillator
 running and RCC frequencies/dividers unchanged while using the UART. SetBaud()
@@ -64,7 +79,7 @@ it does not change the source. With x16 oversampling, LSE limits baud to 2048.
 |---|---|---|
 | Blocking | Send / Receive | Nonzero uint32_t length; timeout covers the entire call |
 | IRQ | Send_IRQ / Receive_IRQ | 1..65535 bytes; RX ends at capacity or IDLE |
-| DMA | Send_DMA / Receive_DMA | 1..65535 bytes; requires successful AttachDMA; RX ends at capacity or IDLE |
+| DMA | Send_DMA / Receive_DMA | 1..65535 bytes; constructor-bound DMA configured by SetUp; RX ends at capacity or IDLE |
 
 Before initialization: NotInit. Null pointer, zero length, unsupported asynchronous
 length or an unconfigured direction: Error. An operation already active in the
@@ -75,6 +90,7 @@ Send() OK means all bytes were queued into UART; IRQ/DMA TX OK means the source
 buffer can be reused. The last stop bit may still be on the wire.
 Use the UART TC event for physical completion, for example before releasing RS-485 DE.
 SetBaud() validates the new divider, writes BRR with UE=0 and stores BaudRate.
+It restores only the previous UE bit using UART_USE_ATOMIC, preserving other current CR1 bits.
 It returns NotInit, Error or Busy when the change cannot be performed.
 
 Before SetBaud(), the caller must also ensure that the last stop bit has finished;
@@ -89,17 +105,28 @@ asynchronous packet-ready flag.
 ### One packet at a time
 
 Receive_IRQ/DMA starts a fresh packet and clears the previous ready/count/overflow state.
-IDLE ends the packet. DMA RX then follows this order:
+IDLE ends the packet. On F4/F7 DMA RX follows this order without waiting in IRQ:
 
 1. Disable UART RX interrupt sources and DMAR requests.
-2. Stop DMA and wait for EN=0.
-3. Read the remaining count and invalidate the bytes written by DMA.
+2. Request a DMA stop and return from the USART handler; RX remains Busy.
+3. DMA RX TC confirms the stop; read the remaining count and invalidate written bytes.
 4. Retain any pending UART/FIFO tail that fits the buffer.
 5. Publish the byte count, OK and the ready flag.
 
 On F4, the SR/DR sequence clearing IDLE occurs after DMA stops, and a pending
 RXNE byte is retained when there is space. On G0, a FIFO tail below RXFT is drained.
 DMA TC and IDLE cannot publish the same operation twice.
+OnIdle() for F4/F7 DMA RX therefore runs from DMA RX IRQ, after the stop.
+For IRQ reception it still runs from USART IRQ. USART and its DMA IRQ handlers
+must not preempt one another for the same object.
+
+On G0, IDLE disables DMAR, requests a DMA stop without waiting, and completes
+the packet in USART IRQ. Capacity completion runs from DMA RX IRQ. This assumes
+that the last DMA request has already been serviced by IDLE handling. Aborting
+an active DMA transfer can leave CNDTR inaccurate; a failed packet is discarded
+without reading its DMA length. The application must allow the final DMA request
+to complete before the IDLE stop. This API does not provide arbitrary abort with
+recovery of partial data. No Process call or additional completion timer is used.
 
 GetDataReceivedCount() is a pure read: zero while Busy or without a completed
 packet, otherwise the completed count. ClearDataReceivedFlag() clears ready/count.
@@ -113,12 +140,22 @@ rearming, not continuous reception without gaps.
 
 ### DMA and cache
 
-Construct DMA resources with DMA_Sx::DMAReq constants, then call AttachDMA(tx, rx).
-It configures Byte/MINC, direction and DR/TDR/RDR itself; do not call DMA SetUp first.
-The UART validates the complete stream/CHSEL pair on F4/F7 or request ID on G0.
-AttachDMA() returns SysInitStatus and rejects repeated attachment, wrong routes and
-busy resources. Failure releases only resources acquired by that call.
-A shared TX/RX DMA vector receives one registration.
+Pass named DMA_Sx::DMAReq constants directly
+after the pins: USART(instance, baud, tx_pin, rx_pin, dma_tx, dma_rx).
+Both default to {}. On G0 pass only DMAx_Channely; USART selects its TX/RX request.
+F4/F7 requests already contain the stream. USART embeds both DMA_Sx objects.
+The constructor checks request validity, peripheral/direction and distinct TX/RX
+resources through DebugTrap, like its pin ownership checks. This is a runtime
+construction check; there is no Config wrapper or consteval USART constructor.
+SetUp configures Byte/MINC, direction and DR/TDR/RDR and acquires the resources;
+there is no external DMA object, manual DMA SetUp or AttachDMA method.
+SetUp returns SysInitStatus and rejects repeated setup, invalid/busy hardware
+resources. Failure releases only resources acquired by that call. DeInit releases
+DMA, preserving the constructor bindings for another explicit SetUp.
+Bound DMA does not prevent blocking or IRQ transfers.
+USART, DMA TX and DMA RX have separate handlers. A shared TX/RX DMA vector
+receives two registrations and requires two registry slots for this UART.
+The registry itself and the plain-function adapter pool are unchanged.
 
 Shared UART vectors also use IRQ_Registry capacity. If all four G0B0/B1
 USART3..6 are used, configure at least four slots in irq_registry_settings.hpp.
@@ -126,7 +163,8 @@ An exhausted IRQ row returns InitError; this is not configured through CMake.
 
 USART1 DMA2_Stream5 / CH4 is named RX_DMA2_Stream5; it is an RX route.
 UART7/8 routes and G0 USART3..6 request IDs are provided where those peripherals exist.
-DMA_Sx::CanUseRequest() inspects constructor selection without changing ownership.
+USART reads ownership/direction from the named request. The duplicated UART DMA
+route table was removed. SPI and ADC now validate request metadata in their constructors too.
 GetErrorFlags() reads hardware error flags; UART enables TC/TE and F4/F7 DME interrupts.
 
 Cache maintenance belongs to UART, using [System helpers](System.md):
@@ -166,24 +204,35 @@ For blocking Receive, OnError runs in the calling context; asynchronous errors r
 Callbacks are protected. Overrides of OnRxByte, OnTxEmpty, OnIdle,
 OnDmaTxComplete and OnDmaRxComplete call the base implementation to retain standard
 buffer/completion handling. OnTC and OnError are notifications with empty defaults.
-No Register/Unregister, AttachDMA, SetUp or DeInit from callbacks.
+No Register/Unregister, SetUp or DeInit from callbacks.
+
+USART IRQ uses its initial status/CR1/CR3 snapshots for source and DMA-gate
+checks. F4/F7 read the single RX byte without a second RXNE check. TCIE and TC
+are read again after TX handling: callbacks may enable TCIE, and writing TDR/DR
+clears TC.
 
 G0 FIFO is accepted only for instances listed by IS_UART_FIFO_INSTANCE.
 Threshold codes are 0..5; FIFO_TH::all is 5 (RX full, TX empty).
 F4/F7 accept FIFO::NO only. Oversampling remains x16; no x8 selection was added.
+
+Ready RX/TX processing is bounded by hardware FIFO depth per direction and IRQ
+entry: eight words on G0 with FIFO enabled, one byte otherwise. IDLE handles its
+own bounded RX tail; normal RX draining is skipped in that entry. Processing does
+not wait for future bytes. RX/TX sources service remaining data in later IRQs;
+arrivals after IDLE belong to the next packet and retain the documented gap contract.
 Oversampling is performed by hardware and does not multiply CPU interrupts.
 SetParity remains an unimplemented reserved API.
 
 ### Example
 
 ~~~cpp
-USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
-DMA_Sx tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX); // G0
-DMA_Sx rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+// G0: physical channels are selected explicitly, DMA objects belong to UART.
+USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+           DMA1_Channel4,
+           DMA1_Channel5);
 alignas(32) static uint8_t packet[128];
 
-if (uart.SetUp() == SysInitStatus::InitOK &&
-    uart.AttachDMA(&tx, &rx) == SysInitStatus::InitOK)
+if (uart.SetUp() == SysInitStatus::InitOK)
     uart.Receive_DMA(packet, sizeof(packet));
 
 // Main:
@@ -195,12 +244,12 @@ if (uart.GetDataReceivedFlag()) {
 }
 ~~~
 
-For F4/F7 construct DMA_Sx tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7)
-and the matching RX object, for example DMA_Sx rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5).
+For F4/F7 pass DMA_Sx::Req::Usart1::TX_DMA2_Stream7 and
+DMA_Sx::Req::Usart1::RX_DMA2_Stream5 directly in the last two DMA positions.
 
 Existing consumers that relied on GetDataReceivedCount() clearing the flag must
-now call ClearDataReceivedFlag() explicitly. Modbus migration is deferred to its
-module review; it was not changed here.
+now call ClearDataReceivedFlag() explicitly. Modbus constructor arguments have been
+migrated to these request descriptions; its protocol/transfer logic is unchanged.
 
 ## Русский
 
@@ -224,6 +273,23 @@ SetUp() один раз регистрирует объект на UART IRQ и �
 ресурсы и удаляет только свои обработчики, сохраняя общие IRQ других устройств.
 Настройка/подключение/удаление выполняются в main, объект живёт до снятия регистрации.
 
+UART_USE_ATOMIC в uart.hpp выбирает изменение управляющих битов CR1/CR3,
+включая IRQ_en/DMA_en, бита тактирования UART и поля источника в RCC:
+
+- 0 (по умолчанию): обычные SET_BIT/CLEAR_BIT/MODIFY_REG.
+- 1: ATOMIC_SET_BIT/ATOMIC_CLEAR_BIT/ATOMIC_MODIFY_REG ST. F4/F7 используют
+  LDREX/STREX с повтором; G0 кратко маскирует прерывания на одну операцию,
+  восстанавливая прежний PRIMASK.
+
+Измените значение в uart.hpp и пересоберите драйверы вместе с приложением.
+Значение должно совпадать во всех единицах трансляции с UART: define только
+в main.cpp не меняет настройку uart.cpp. Выбор выполняется препроцессором,
+ветвления при выполнении нет. Атомарный режим защищает отдельное изменение
+регистра. Сериализация вызовов, работа с буферами/состоянием и настройка/освобождение
+сохраняют прежний контракт вызывающего кода. Чтение статуса, подтверждение
+флагов SR/ICR и полная инициализация регистров выполняются прямыми обращениями
+с учётом аппаратной семантики.
+
 ### Источник тактирования (F7/G0)
 
 Последний необязательный параметр конструктора — `USART::ClockSource`:
@@ -238,7 +304,7 @@ SetUp() один раз регистрирует объект на UART IRQ и �
 ```cpp
 // F7/G0: вызывающий код заранее включает HSI и ждёт HSIRDY.
 USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-           USART::ClockSource::HSI);
+           {}, {}, USART::ClockSource::HSI);
 SysInitStatus status = link.SetUp();
 ```
 
@@ -270,6 +336,7 @@ TX OK означает передачу данных в UART и возможно
 Физическое завершение определяется UART TC; это нужно, например, для RS-485 DE.
 SetBaud() проверяет divider, записывает BRR при UE=0, сохраняет новый BaudRate
 и возвращает SysStatus.
+Прежний бит UE восстанавливается с учётом UART_USE_ATOMIC; остальные текущие биты CR1 сохраняются.
 
 Перед SetBaud вызывающий код должен дождаться последнего стопового бита;
 проверка Busy относится только к программной операции. Ожидание физического TC —
@@ -277,11 +344,24 @@ SetBaud() проверяет divider, записывает BRR при UE=0, со
 Если обработчик IRQ очищает TC, завершение можно учитывать по уведомлению OnTC().
 
 Receive_IRQ/DMA заканчивается по IDLE или заполнению буфера.
-При IDLE отключаются источники RX и DMAR, DMA останавливается с ожиданием EN=0,
-затем читается счётчик и обслуживается кеш. Оставшийся в UART/FIFO хвост
+На F4/F7 при IDLE отключаются источники RX и DMAR и запрашивается остановка DMA.
+USART IRQ сразу возвращается; статус RX остаётся Busy. Остановка завершается
+событием DMA TC: отдельный DMA RX IRQ читает счётчик и обслуживает кеш.
+Ожиданий в этих обработчиках нет. Оставшийся в UART/FIFO хвост
 добавляется, если есть место. Только после этого публикуются длина и готовность.
 На F4 чтение SR/DR для очистки IDLE выполняется после остановки DMA.
 Повторного завершения одной операции по DMA TC и IDLE нет.
+OnIdle для DMA RX F4/F7 вызывается из DMA RX IRQ после остановки; для приёма
+через IRQ — из USART IRQ. Обработчики USART и его DMA не должны вытеснять друг
+друга.
+
+На G0 IDLE отключает DMAR, затем DMA без ожидания и завершает пакет в USART IRQ.
+Заполнение буфера обрабатывается в DMA RX IRQ. Условие: последний запрос DMA
+уже обслужен к моменту остановки по IDLE. Abort посреди переноса может оставить
+CNDTR недостоверным; повреждённый пакет отбрасывается без чтения длины из DMA.
+Приложение должно обеспечить обслуживание последнего запроса до остановки.
+Восстановление частичных данных после произвольного abort не поддерживается.
+Process и дополнительный таймер завершения не используются.
 
 GetDataReceivedCount() ничего не сбрасывает: при Busy/отсутствии готового пакета
 возвращает 0, после завершения — длину. После обработки вызвать
@@ -294,10 +374,22 @@ DMAR отключает запросы DMA, но не приёмник UART. Д�
 
 ### DMA, кеш и ошибки
 
-AttachDMA() возвращает SysInitStatus, проверяет полный маршрут DMAReq и результаты
-настройки/регистрации. Повторное подключение — ошибка до DeInit().
+Конструктор принимает описания dma_tx и dma_rx после пинов, по умолчанию {}.
+На F4/F7 передаётся именованный DMAReq с потоком; на G0 —
+только DMAx_Channely; запрос TX/RX выбирает USART. USART содержит два объекта DMA_Sx внутри;
+отдельные DMA-объекты в приложении не создаются. Совместимость периферии,
+направления и выбор разных TX/RX ресурсов проверяются через DebugTrap в
+конструкторе, как принадлежность PIN. Это runtime-проверка при создании;
+Config и consteval-конструктор USART не вводились. Дублирующая таблица UART DMA удалена.
+На F7/G0 ClockSource следует после обоих DMA. Привязки неизменяемые;
+блокирующие и IRQ-методы доступны и при наличии DMA. AttachDMA удалён.
+SetUp возвращает SysInitStatus, приобретает выбранные ресурсы и проверяет
+результаты настройки/регистрации. Занятость проверяется при приобретении.
+Повторная настройка — ошибка до DeInit().
+DeInit освобождает DMA, но сохраняет привязки для следующего SetUp.
 Отказ освобождает только ресурсы, полученные текущим вызовом.
-TX/RX на общем DMA-векторе регистрируются один раз.
+USART, DMA TX и DMA RX имеют отдельные обработчики. На общем DMA-векторе
+TX/RX занимают два места реестра. Реестр и пул адаптеров обычных функций не меняются.
 
 Для одновременного использования G0B0/B1 USART3..6 на общем UART-векторе
 нужно не менее четырёх мест в irq_registry_settings.hpp. Настройка выполняется
@@ -324,10 +416,22 @@ PE/FE/NE/ORE проверяются общей маской разрешённы
 Callbacks доступны наследникам как protected. Для сохранения стандартной обработки
 переопределения вызывают базовые OnRxByte/OnTxEmpty/OnIdle/OnDmaTxComplete/
 OnDmaRxComplete. OnTC/OnError — уведомления с пустой реализацией по умолчанию.
-Из callback нельзя менять реестр или вызывать SetUp/AttachDMA/DeInit.
+Из callback нельзя менять реестр или вызывать SetUp/DeInit.
+
+USART IRQ проверяет источники и разрешения DMA по начальным снимкам
+status/CR1/CR3. На F4/F7 один RX-байт читается без повторной проверки RXNE.
+После обработки TX повторно читаются TCIE и TC: callbacks могут включить TCIE,
+а запись TDR/DR сбрасывает TC.
 
 FIFO G0 проверяется по возможностям конкретного USART. Код all исправлен на 5:
 RX — полный FIFO, TX — пустой. Oversampling остаётся x16, режим x8 не добавлен.
+
+За вход в IRQ обслуживается не больше глубины FIFO в каждом направлении:
+8 слов на G0 при включённом FIFO, иначе один байт. При IDLE обычное чтение RX
+пропускается, хвост обрабатывает OnIdle с тем же пределом. Ожидания новых байтов
+нет. В обычном обмене остаток обслуживается следующими IRQ; при IDLE действует
+прежнее условие паузы между пакетами, новые поступления не гарантируются до
+следующего Receive.
 SetParity остаётся заглушкой.
 
 ### Совместимость
@@ -337,12 +441,14 @@ USART1 DMA2_Stream5 / CH4 назван RX_DMA2_Stream5: это маршрут RX
 Добавлены DMA_Sx::CanUseRequest() и GetErrorFlags(); прочие потребители DMA не менялись.
 
 Потребители, ожидавшие сброс флага в GetDataReceivedCount(), должны теперь вызывать
-ClearDataReceivedFlag() явно. Modbus оставлен для своего разбора.
+ClearDataReceivedFlag() явно. Конструктор Modbus переведён на описания Req;
+протокол и алгоритм передачи в этом шаге не менялись.
 
 ### Источники для таблиц
 
 - [ST USART F7 — источники тактирования](https://www.st.com/resource/en/product_training/STM32F7_Peripheral_USART.pdf).
 - [ST RM0444 — RCC/USART G0x1](https://www.st.com/resource/en/reference_manual/dm00371828.pdf).
+- [ST G0 workshop — USART FIFO depth](https://www.st.com/content/dam/AME/2019/STM32G0-q1-webinar-workshops/STM32G0_Workshop_Presentation.pdf).
 - [ST AN4031 — таблицы DMA F4/F7](https://www.st.com/resource/en/application_note/dm00046011-using-the-stm32f2-stm32f4-and-stm32f7-series-dma-controller-stmicroelectronics.pdf).
 - [ST G0 LL DMAMUX — идентификаторы запросов](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h).
 - [ST G071 datasheet — AF USART1/4](https://www.st.com/resource/en/datasheet/stm32g071kb.pdf).

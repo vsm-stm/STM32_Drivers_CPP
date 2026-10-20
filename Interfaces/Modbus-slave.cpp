@@ -3,9 +3,7 @@
 SysInitStatus ModbusRTU_Slave::SetUp(){
 	SysInitStatus status = USART::SetUp();
 
-	if(status != SysInitStatus::InitOK
-	|| dma_tx == nullptr
-	|| dma_rx == nullptr){
+	if(status != SysInitStatus::InitOK){
 		status = SysInitStatus::InitError;
 		return status;
 	}
@@ -16,8 +14,6 @@ SysInitStatus ModbusRTU_Slave::SetUp(){
 	if(status != SysInitStatus::InitOK){
 		return status;
 	}
-
-	AttachDMA(dma_tx, dma_rx);
 
 	return status;
 }; // SysInitStatus ModbusRTU_Slave::SetUp(){

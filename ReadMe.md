@@ -7,7 +7,7 @@
 ## English
 
 A universal C++ library on top of CMSIS for the **STM32G0**, **STM32F4**, and **STM32F7** families.
-Core (always built): System, RCC, GPIO, Flash, IRQ_Registry. Optional modules: UART, SPI, DMA, TIM, RTC, ADC, DAC, I2C, MODBUS, CONTAINERS, PID, DSP, CRC.
+Core (always built): System, RCC, GPIO, Flash, IRQ_Registry. Optional modules: UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, PID, DSP, CRC.
 
 The library is not a standalone CMake project: it is cloned and wired in by the [stm32_cmake_base](https://github.com/vsm-stm/stm32_cmake_base) platform (see "Integration and build").
 
@@ -37,6 +37,26 @@ Zero-initialize the controller state or call `zero_PID_I_D()` before use. Set `e
 
 Reset `PID_get_quality` with `get=0` before a measurement and when changing the setpoint or mode. For `get=1`, `e` is a percentage for nonzero `u`, or the absolute error `y-u` for zero `u`; `t_time` sums time outside the ±5% corridor. For `get=2`, `e` is absolute and `t_time` sums every supplied `dt`. This is accumulated time, not settling time. `max_y` tracks the maximum response for `u >= 0` and the minimum for `u < 0`, starting from zero after reset; `sigma=(max_y-u)/u` is a ratio, and is zero at `u=0`.
 
+## Driver API migration — 19.10.2026
+
+USART/SPI/ADC/I2C and TIM channel descriptions accept DMA selections and own
+their DMA objects. F4/F7 use named DMAReq with controller/stream in the name.
+G0 takes only the physical DMA channel; the peripheral derives its request source.
+Peripheral and DMA handlers are registered separately; IRQs do not wait for
+hardware completion. SPI still requires its agreed main-loop Process().
+
+UART_USE_ATOMIC, SPI_USE_ATOMIC, ADC_USE_ATOMIC, TIM_USE_ATOMIC,
+I2C_USE_ATOMIC, DAC_USE_ATOMIC, DMA_USE_ATOMIC and EXTI_USE_ATOMIC are configured in their
+respective headers. All default to 0; 1 selects ST ATOMIC_* control updates.
+Rebuild drivers and application after changing them. Individual atomic RMW
+does not serialize a full transfer or buffer handover. No CMake setting is added.
+
+DMA GetIRQFlags() returns HT/TC/errors in one ISR access; public FLAG_HT,
+FLAG_TC and FLAG_ERRORS decode it. FEIF remains excluded in direct mode.
+I2C has fixed constructor DMA, inherited callbacks, one-time setup and DeInit;
+bus recovery is application code. See [I2C.md](I2C.md).
+These source changes have not been built or hardware-tested.
+
 ## Integration and build
 
 Drivers are enabled with a single line in the `project.json` of a project built on `stm32_cmake_base`:
@@ -61,23 +81,28 @@ Only **compilation** has been checked (release, one module at a time; F446RE, F7
 |---|---|---|---|---|
 | Core: System, RCC, GPIO, Flash, IRQ_Registry | `src/system.*`, `rcc.*`, `gpio.*`, `flash.*`, `irq_registry.*` | ok | ok | ok |
 | UART, SPI | `src/uart.*`, `spi.*` | ok | not tested | ok |
-| TIM | `src/tim.*` | common revised; source compiled; modes pending | common revised; source compiled; modes pending | common revised; source compiled; modes pending |
+| TIM | `src/tim.*` | common TIM API migrated; not rebuilt | common TIM API migrated; not rebuilt | common TIM API migrated; not rebuilt |
 | DMA | `src/dma.*` | revised, not rebuilt | revised, not rebuilt | device-specific channel/IRQ table fixed; not rebuilt |
 | RTC | `src/rtc.*` | **not ported** (`ICSR`) | not ported | ok |
-| ADC | `src/adc.*` | revised; TIM dependency pending, not rebuilt | revised; TIM dependency pending, not rebuilt | revised; TIM dependency pending, not rebuilt |
+| EXTI | `src/exti.*` | GPIO 0..15 added; not built | GPIO 0..15 added; not built | GPIO 0..15 added; not built |
+| ADC | `src/adc.*` | fixed constructor API, separate IRQ; not rebuilt | fixed constructor API, separate IRQ; not rebuilt | fixed constructor API, separate IRQ; not rebuilt |
 | DAC | `src/dac.*` | revised, not rebuilt | revised, not rebuilt | revised, not rebuilt |
-| I2C, MODBUS | `src/i2c.*`, `Interfaces/` | ok | not tested | I2C ok |
+| I2C | `src/i2c.*` | API migrated; not rebuilt | API migrated; not rebuilt | API migrated; not rebuilt |
+| MODBUS | `Interfaces/` | migrated with USART; not rebuilt | not tested | migrated with USART; not rebuilt |
 | CONTAINERS | `Containers/` (headers) | included | — | — |
 | PID | `math/PID.*` | ok | not tested | not tested |
 | DSP | subset of CMSIS-DSP v1.16.2 | ok | not tested | not tested |
 | CRC | `crc/crc32.*` (no tables, no HW peripheral — portable to any family) | ok | ok | ok |
 
-The list of known gaps (RTC/ADC) is tracked as a backlog — they ship into the release "as is". DAC revisions are described in [Review/DAC.md](Review/DAC.md). DMA changes and remaining integration work are tracked in [Review/DMA.md](Review/DMA.md).
+The list of known gaps (RTC/ADC) is tracked as a backlog — they ship into the release "as is". DAC revisions are described in [Review/DAC.md](Review/DAC.md). DMA changes and remaining integration work are tracked in [Review/DMA.md](Review/done/DMA.md).
 
 ADC configuration, status/callback API and cache handover are described in [ADC.md](ADC.md).
-Its remaining TIM_TriggerGenerator and DMA HT/TC dependencies are tracked in [Review/ADC.md](Review/ADC.md).
-ADC has no thread-context/IrqLock configuration layer; DMA and TIM sources were not changed in this ADC pass.
-The IRQ simplification and isolated before/after assembly comparison are described in [Review/ADC_IRQ_Timing.md](Review/ADC_IRQ_Timing.md); a full ADC build remains pending.
+Conversion policy, DMA and TIM/source are fixed by the constructor. One Start()
+uses the bound resources; Start(buffer, count) is required when DMA is present.
+ADC and DMA have separate handlers with no hardware waits. HT is explicitly enabled
+through IRQ_en; finite DMA always uses TC. See [Review/ADC.md](Review/ADC.md).
+The older [assembly comparison](Review/ADC_IRQ_Timing.md) applies to the previous
+combined IRQ. The new ADC API has not been rebuilt or tested on hardware.
 
 Families other than F4 / F7 / G0 (including G4) are not supported by the drivers: set `"drivers": null` and write directly against the registers, or port the library (see "Adding a new MCU").
 
@@ -94,8 +119,10 @@ This file gives an overview and usage examples for each module. The full descrip
 - [DMA.md](DMA.md) — `DMA_Sx`: streams (F4/F7) and channels+DMAMUX (G0), request tables.
 - [UART.md](UART.md) — `USART`: blocking/IRQ/DMA modes, reception on the IDLE line.
 - [SPI.md](SPI.md) — `SPI`: Master/Slave roles, Software/Hardware NSS, DMA.
-- [TIM.md](TIM.md) — `TIM` and all 8 subclasses (PWM, capture, step generators, ITR/TRGO).
+- [I2C.md](I2C.md) — master FSM, blocking/IRQ/DMA, callbacks, STOP and application recovery.
+- [TIM.md](TIM.md) — common TIM, PWM/capture, encoder, pulse measurement, ITR and finite pulse series.
 - [RTC.md](RTC.md) — `RTC_cl`: BCD time, WakeUp Timer, alarms, calibration.
+- [EXTI.md](EXTI.md) — external GPIO IRQs, fixed PIN/edge, inherited callback and shared-vector limits.
 - [DAC.md](DAC.md) — `DAC_Module`: direct 12-bit output, statuses and channel lifetime.
 - [Flash.md](Flash.md) — `flash_base`/`flash_data`: unlocking, erasing, wear-leveling.
 
@@ -398,7 +425,7 @@ bool b = (bool)led;   // GetLevel()
 A pin created via `PIN{}` (the default constructor) returns `IsValid() == false`. Drivers use this as a "channel not connected" marker:
 
 ```cpp
-SPI spi(SPI1, sck, mosi, PIN{}, PIN{});   // MISO and SS are not used
+SPI spi(SPI1, SPI::Direction::TX, sck, mosi, PIN{}, PIN{});   // MISO and SS are not used
 ```
 
 ### PinArray — an array of pins
@@ -547,13 +574,14 @@ NVIC_EnableIRQ(dma.GetIRQn());
 dma.Enable_IRQ(DMA_Sx::IRQ::TC);
 ```
 
-In the handler:
+In the handler, for a non-circular transfer:
 
 ```cpp
 void HandleIRQ() override {
     if (_dma.GetTC_Flag()) {
-        _dma.Stream_EN(DISABLE);
+        _dma.RequestStop(); // TC has already confirmed completion.
         _dma.ClearFlags();
+        __DMB();
         // transfer complete
     }
 }
@@ -605,11 +633,19 @@ F4 retains PCLK. See [UART.md](UART.md) for the clock selection example.
 Zero transfer length is Error; IRQ/DMA lengths are 1..65535 bytes.
 Before SetBaud(), the caller waits for physical TX completion (TC/OnTC); Busy
 checks software operations only. No additional TX tracking field is used.
-AttachDMA() returns SysInitStatus and validates DMAReq routes. IDLE stops RX DMA
-before counting/reading the packet. F7 cache handover uses System helpers, which
+DMA TX/RX requests follow the pins in the constructor; ClockSource follows DMA.
+USART embeds the DMA objects. Its constructor checks request ownership/direction
+through DebugTrap; SetUp() acquires/configures the resources. USART and both
+DMA directions register separate handlers. On F4/F7, IDLE requests a stop and
+DMA RX TC finishes count/cache/ready without waiting in IRQ or a Process() call.
+On G0 IDLE disables DMAR/DMA without waiting and finishes in USART IRQ; the last
+DMA request must already be serviced. Failed packets are discarded without
+reading their DMA length. See UART.md for this limitation. F7 cache helpers
 skip configured non-cacheable DMA regions.
 GetDataReceivedCount() no longer clears ready/count: call ClearDataReceivedFlag()
 after consuming the packet. Errors stop the affected operation and call OnError(mask).
+IRQ FIFO processing is bounded per direction: eight words on G0 with FIFO enabled,
+one byte otherwise. IDLE owns its bounded RX tail. See UART.md for examples.
 Modbus adaptation to the explicit flag reset is deferred to its module review.
 
 ### Basic usage
@@ -635,12 +671,11 @@ log.Send((uint8_t*)"OK\r\n", 4);
 ### DMA transfer
 
 ```cpp
-USART  uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
-DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+           DMA1_Channel4,
+           DMA1_Channel5);
 
-uart.SetUp();
-uart.AttachDMA(&dma_tx, &dma_rx);   // no need to call DMA's SetUp separately
+uart.SetUp(); // Check InitOK; acquires/configures the internally stored DMA.
 
 uart.Send_DMA(tx_buf, sizeof(tx_buf));
 uart.Receive_DMA(rx_buf, sizeof(rx_buf));  // completes on IDLE or when the buffer fills
@@ -683,13 +718,14 @@ uart.SetBaud(9600);
 **Details:** [SPI.md](SPI.md)
 
 SPI1–SPI6 on F4/F7 and SPI1–SPI3 on G0 are included when present in CMSIS.
-Every transfer uses two-line full duplex: Send discards RX, Receive supplies
-0xFF/0xFFFF dummy TX. TYPE is removed from SetUp.
+Direction::TX/RX/TXRX and optional DMA are fixed in the constructor; the settings
+structure stays in SetUp. TX uses transmit-only hardware and one TX DMA. RX master
+uses full duplex: one RX DMA plus TX IRQ for 0xFF/0xFFFF dummy clocks.
 
 ### Basic usage (blocking mode)
 
 ```cpp
-SPI spi(SPI1, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
+SPI spi(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
         SPI::_1::MISO::PA6, PIN(GPIOB, 0)); // Optional automatic software CS
 if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
               SPI::Data_frame_format::Byte, SPI::Frame_Format::MSB,
@@ -715,12 +751,13 @@ SysStatus result = spi.Send_Receive(tx, rx, 2); // len counts frames
 
 ```cpp
 // F4/F7:
-DMA_Sx dma_tx(DMA_Sx::Req::Spi1::TX_DMA2_Stream3);
-DMA_Sx dma_rx(DMA_Sx::Req::Spi1::RX_DMA2_Stream0);
-// G0: DMA_Sx dma_tx(DMA1_Channel2, DMA_Sx::Req::Spi1::TX);
-//     DMA_Sx dma_rx(DMA1_Channel3, DMA_Sx::Req::Spi1::RX);
-// After successful spi.SetUp(...):
-if (spi.AttachDMA(&dma_tx, &dma_rx) == SysInitStatus::InitOK) {
+const SPI::DMAReq dma_tx = DMA_Sx::Req::Spi1::TX_DMA2_Stream3;
+const SPI::DMAReq dma_rx = DMA_Sx::Req::Spi1::RX_DMA2_Stream0;
+// G0: const SPI::DMAReq dma_tx = DMA1_Channel2;
+//     const SPI::DMAReq dma_rx = DMA1_Channel3;
+SPI spi(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+        SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, dma_tx, dma_rx);
+if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus::InitOK) {
     // Start spi.SendReceive_DMA(tx_buffer, rx_buffer, frame_count); check OK.
 }
 // In main while a started IRQ/DMA operation is active:
@@ -731,11 +768,14 @@ SysStatus state = spi.Process(); // Busy until physical SPI completion
 F7 cache handover is performed through System; configured non-cacheable DMA
 regions are skipped. CPU must not access active RX buffers or change TX.
 OnComplete()/OnError(mask) run after cleanup in Process. IRQ_en changes CR2
-sources; setup/attachment own IRQ registration and NVIC.
+sources; SetUp owns IRQ registration and NVIC.
 
 In slave, len is capacity. The application configures NSS rising-edge EXTI and
 calls NssReleased() from its handler. Process completes the packet in main.
 Extra RX is discarded with IsTruncated(); after TX ends, dummy values are sent.
+SPI, DMA TX and DMA RX use separate handlers; no IRQ waits for hardware. On G0,
+the last slave RX DMA request must be serviced before the NSS stop; Process reads
+the stopped length. An error discards the packet; see SPI.md.
 See SPI.md for interrupt priorities, servicing limits and rearm requirements.
 
 ### Frequency divider (BaudRate)
@@ -761,161 +801,106 @@ See SPI.md for interrupt priorities, servicing limits and rearm requirements.
 
 ## 9. TIM
 
-**Files:** `tim.hpp`, `tim.cpp`
+**Files:** `tim.hpp`, `tim.cpp`, `tim_defs.hpp`
 **Details:** [TIM.md](TIM.md)
 
-Common TIM setup/IRQ/frequency tables were revised on 18.10.2026; tim.cpp compiles
-for all 49 local F4/F7/G0 device definitions. Repeated SetUp is InitError until
-DeInit. Callback function pointers are bound by initialization methods;
-IRQ_en changes sources only. Mode/DMA algorithms and TriggerGenerator (Update/CCx)
-remain separate steps in [Review/TIM.md](Review/TIM.md).
+One common TIM owns the base and independently configured channels. Pins and
+optional DMA are fixed by up to four constructor descriptions `{pin, dma}`;
+there are no TIM_PWM/PeriodicIRQ/InputCapture classes, Output objects or AttachDMA.
+Composite modes remain archived comments pending separate review.
 
-Class hierarchy:
-
-```
-TIM : IIRQHandler
-    TIM_PeriodicIRQ      — periodic interrupts
-    TIM_PWM              — PWM outputs (1–4 channels), DMA support
-    TIM_InputCapture     — input signal capture
-    TIM_PulseMeasure     — period and pulse-width measurement (PWM input)
-    TIM_EncoderGenerator — quadrature pulse generator for stepper motors
-```
-
-### TIM_PeriodicIRQ — periodic interrupts
+### Base, PWM and compare
 
 ```cpp
-TIM_PeriodicIRQ timer(TIM3);
-
-// Configuration: 1000 Hz (1 kHz), callback
-timer.SetUp(1000, []{ led.TogglePin(); });
-timer.Start();
+void Tick();
+void HalfTick();
+TIM timer(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+// In main, check every setup result before Start:
+if (timer.SetUp(1000, &Tick, 1000) == SysInitStatus::InitOK
+    && timer.SetUpPWM(TIM::Channel::CH1, 250) == SysInitStatus::InitOK
+    && timer.SetUpPWM(TIM::Channel::CH2, 500) == SysInitStatus::InitOK
+    && timer.SetCompareIRQ(TIM::Channel::CH3, 750, &HalfTick) == SysInitStatus::InitOK) {
+    timer.Start();
+}
+timer.SetDuty(TIM::Channel::CH1, 75); // Check SysStatus.
 ```
 
-`SetUp()` automatically computes PSC and ARR, enables the UE interrupt, and registers the object in `IRQ_Registry`. `Start()` must be called explicitly.
+SetUp keeps `(frequency, callback, period)`; frequency means Update/PWM Hz,
+period means CNT ticks (ARR=period-1), zero selects the period automatically.
+Repeated setup requires DeInit. All channels share PSC/ARR. Counter/capture
+operation requires an explicit period. Read GetCounterClock for actual tick Hz.
 
-### TIM_PWM — PWM
+PWM1 uses CCR preload. Period is limited to 65535 ticks for 16-bit PWM, leaving
+CCR=period available for exact 100%; zero gives 0%. No forced-active mode switch.
+SetDuty clamps percent to 100, SetCCR accepts raw ticks. Neither overwrites an
+active DMA channel. Start remains explicit.
+
+### Capture and hardware trigger
 
 ```cpp
-// Single-channel PWM on PA8 (TIM1 CH1)
-TIM_PWM pwm(TIM1, TIM::_1::CH1::PA8);
-
-pwm.SetUp(10000);          // 10 kHz PWM, ARR=999 (0.1% resolution)
-pwm.SetDuty(TIM::Channel::CH1, 75);   // 75% duty cycle
+void Edge();
+TIM input(TIM3, {TIM::_3::CH1::PA6});
+// In main; target CNT clock: 100 Hz * 10000 ticks = 1 MHz.
+if (input.SetUp(100, nullptr, 10000) == SysInitStatus::InitOK
+    && input.SetUpCapture(TIM::Channel::CH1, &Edge) == SysInitStatus::InitOK) {
+    input.Start();
+}
+// Edge reads input.GetCapture(TIM::Channel::CH1).
 ```
 
-Four-channel PWM:
+Capture is direct rising-edge TIx. GetCapture always reads CCR directly;
+the optional callback only notifies. Wraps and overcapture belong to the app.
+SetCompareIRQ with a null callback configures a pin-free hardware event without
+IRQ. SetUpTrigger(Trigger::Update/ComparePulse/OCxRef) selects TRGO without IRQ;
+ADC receives TIM* and its source in the constructor and starts TIM after arming
+ADC/DMA. The caller configures the timer before ADC SetUp; see [ADC.md](ADC.md).
+
+### Independent DMA and WS2812B
 
 ```cpp
-TIM_PWM pwm(TIM3,
-    PIN{GPIOA, 6},  // CH1
-    PIN{GPIOA, 7},  // CH2
-    PIN{GPIOB, 0},  // CH3
-    PIN{GPIOB, 1}   // CH4
-);
-pwm.SetUp(50);   // 50 Hz (servos)
-pwm.SetDuty(TIM::Channel::CH1, 5);   // 5% = ~1 ms (min angle)
-pwm.SetDuty(TIM::Channel::CH1, 10);  // 10% = ~2 ms (max angle)
+// G0; F4/F7 use Req::Tim1::CH1_DMA2_Stream1 instead.
+const TIM::DMAReq dma = DMA1_Channel3;
+TIM ws(TIM1, {TIM::_1::CH1::PA8, dma});
+WS2812B_Strip<8> strip(52, 26);
+strip.SetAll(RGB::Red());
+// Example: CNT 64 MHz, period 80 ticks => 800 kHz, ARR=79.
+if (ws.SetUp(800000, nullptr, 80) == SysInitStatus::InitOK
+    && ws.SetUpPWM(TIM::Channel::CH1) == SysInitStatus::InitOK
+    && ws.SendDMA(TIM::Channel::CH1, strip.Data(), strip.Len()) == SysStatus::OK) {
+    ws.Start();
+}
+// In main: keep strip unchanged while ws.IsDMABusy(TIM::Channel::CH1).
 ```
 
-Direct CCR writes (for protocols like WS2812B):
+SetUpPWM acquires the constructor DMA. Each channel uses TIMx_CHx with CCDS=1
+and a separate CCxDE gate. DMA has one handler per channel; timer IRQ never scans
+DMA flags. uint16_t/Half_Word serves 16-bit timers, uint32_t/Word serves 32-bit
+TIM2/TIM5. F7 source clean uses System and skips configured non-cacheable areas.
 
-```cpp
-TIM_PWM ws(TIM1, PIN{GPIOA, 8});
-ws.SetUp(800000, 79);    // 800 kHz, ARR=79 (explicit ARR)
-ws.SetCCR(TIM::Channel::CH1, 52);   // ~0.8 us (bit "1")
-ws.SetCCR(TIM::Channel::CH1, 26);   // ~0.4 us (bit "0")
-```
+TC releases the buffer; the final CCR preload/PWM period may still be pending.
+WS2812B data includes its LOW reset trailer. Choose CCR/reset timing for actual
+clocks and LED requirements. Errors stop the affected DMA and invoke its bound
+callback; GetDMAStatus reports OK/Busy/Error. Other channels continue.
 
-### TIM_PWM + DMA — generating WS2812B
+The caller masks this object's affected timer/DMA IRQs around main-side DIER
+updates (including SendDMA and IRQ_en) whenever handlers can run. The object's
+handlers must not preempt one another. No IrqLock/PRIMASK changes or hardware
+waiting occur in IRQ. DeInit is main-only and releases acquired DMA/registrations.
+See TIM.md for hardware route conflicts and limitations.
 
-The most powerful mode: DMA writes CCR values on every Update event, with no CPU involvement.
+Additional modes are functions of TIM: SetUpEncoder reserves the timer for
+CH1/CH2 and Count reads raw CNT. SetUpPulseMeasure reserves CH1/CH2 and SMCR;
+GetCapture reads the selected input's period and its paired channel's HIGH width.
+SetUpSlave selects a normal TRGO/ITR connection; SetUpOnePulse fixes OPM.
+Finite series have separate APIs: SetUpPulseBurst/RunPulses uses hardware RCR+OPM;
+SetUpCounter/StopAfter/StopAt uses a second TIM and stops the source from IRQ.
+The latter can emit extra/partial pulses due to IRQ latency. SetUpQuadrature uses
+the constructor-bound second TIM with PSC=1; GenPulse(N) starts a signed number
+of full A/B cycles. Stop stops both timers, DeInit releases both. Its stop is
+also IRQ-based, without per-cycle software counting. Callbacks are optional;
+initialization and channel roles are fixed until DeInit. ETR is deferred.
 
-```cpp
-constexpr size_t N_LEDS = 8;
-constexpr uint16_t ONE  = 52;
-constexpr uint16_t ZERO = 26;
-
-static uint16_t ws_buf[N_LEDS * 24 + 40];  // +40 zeros = 50 us reset
-// ... fill ws_buf with ONE/ZERO values
-
-DMA_Sx dma_ws(DMA1_Channel3);
-TIM_PWM ws_tim(TIM1, PIN{GPIOA, 8});
-
-ws_tim.SetUp(800000, 79);                         // 800 kHz, ARR=79
-ws_tim.AttachDMA(&dma_ws, TIM::Channel::CH1); // attach DMA to CH1
-ws_tim.SetDMACallback([]{ /* transfer complete */ });
-
-ws_tim.SendDMA(ws_buf, sizeof(ws_buf)/sizeof(ws_buf[0]));
-
-// Readiness check:
-while (ws_tim.IsDMABusy()) {}
-```
-
-`AttachDMA` configures DMAMUX1, the peripheral address (CCR1), the Half_Word width, and registers the DMA TC handler in `IRQ_Registry` automatically.
-
-### TIM_InputCapture — capture
-
-```cpp
-TIM_InputCapture cap(TIM3, PIN{GPIOA, 6}, TIM::Channel::CH1);
-
-cap.SetUp(100000, []{ uint32_t v = cap.GetCapture(); /* ... */ });
-cap.Start();
-```
-
-### TIM_PulseMeasure — measuring a PWM signal
-
-PWM-input mode: one channel measures the period, the other the pulse width.
-
-```cpp
-TIM_PulseMeasure pm(TIM3, TIM::Line{PIN{GPIOA, 6}, TIM::Channel::CH1});
-pm.SetUp(100000);   // maximum expected frequency 100 kHz
-pm.Start();
-
-// After the signal arrives:
-uint32_t period = pm.GetPeriod();   // period in timer ticks
-uint32_t width  = pm.GetWidth();    // pulse width
-pm.Clear();
-```
-
-### TIM_EncoderGenerator — quadrature generator
-
-```cpp
-TIM_EncoderGenerator enc(TIM3,
-    TIM::Line{PIN{GPIOA, 6}, TIM::Channel::CH1},  // A
-    TIM::Line{PIN{GPIOA, 7}, TIM::Channel::CH2}   // B (90° shift)
-);
-
-enc.SetUp(1000, 99, 50, 50);  // 1000 Hz, period ARR=99, CCR=50 for both channels
-enc.SetCompleteCallback([]{ /* complete */ });
-enc.GenPulse(200);   // 200 steps forward
-enc.GenPulse(-50);   // 50 steps backward
-```
-
-### PSC/ARR calculation algorithm
-
-```
-ratio = bus_clk / freq         // full product (PSC+1)*(ARR+1)
-psc   = ratio / 65536          // minimum divider so ARR fits into 16 bits
-arr   = ratio / (psc+1) - 1    // maximum ARR for the best resolution
-```
-
-For `TIM_PWM` with an explicit ARR:
-
-```
-psc = bus_clk / ((arr+1) * freq) - 1
-```
-
-### Supported timers (STM32G0)
-
-| Peripheral | Bus | irq_up | irq_cc | BDTR | AF |
-|---|---|---|---|---|---|
-| TIM1 | APB2 | TIM1_BRK_UP_TRG_COM | TIM1_CC | yes | 2 |
-| TIM3 | APB1 | TIM3 | TIM3 | no | 1 |
-| TIM14 | APB2 | TIM14 | TIM14 | no | 4 |
-| TIM16 | APB2 | TIM16 | TIM16 | yes | 2 |
-| TIM17 | APB2 | TIM17 | TIM17 | yes | 2 |
-
-`has_bdtr = true` means an advanced/semi-advanced timer that requires setting `TIM_BDTR_MOE` to activate the outputs.
+The new API has not been built or hardware-tested in this migration.
 
 ---
 
@@ -1129,10 +1114,9 @@ int main() {
     spi.SetUp(...);
     rtc.SetUp(...);
 
-    // 4. DMA — after SetUp() of the corresponding peripheral
-    uart.AttachDMA(&dma_tx, &dma_rx);
-    spi.AttachDMA(&dma_spi_tx, nullptr);
-    tim_pwm.AttachDMA(&dma_tim, TIM::Channel::CH1);
+    // 4. DMA is constructor-bound: UART/SPI SetUp and TIM SetUpPWM configure it.
+    tim_pwm.SetUp(...);
+    tim_pwm.SetUpPWM(TIM::Channel::CH1);
 
     // 5. Start timers that require an explicit Start()
     periodic_timer.Start();
@@ -1174,8 +1158,28 @@ system.hpp
 
 ## Русский
 
+### Миграция API — 19.10.2026
+
+USART/SPI/ADC/I2C и описания каналов TIM принимают выбор DMA и содержат DMA_Sx
+внутри. F4/F7 получают именованный DMAReq с номером контроллера/потока,
+G0 — только физический DMA-канал; источник запроса выбирает периферия.
+IRQ периферии и DMA разделены, ожиданий аппаратного завершения в IRQ нет.
+Для SPI сохраняется согласованный Process() из main.
+
+UART_USE_ATOMIC, SPI_USE_ATOMIC, ADC_USE_ATOMIC, TIM_USE_ATOMIC,
+I2C_USE_ATOMIC, DAC_USE_ATOMIC, DMA_USE_ATOMIC и EXTI_USE_ATOMIC задаются в своих заголовках:
+0 по умолчанию — обычные RMW, 1 — ATOMIC_* ST. Пересобираются драйверы
+и приложение. Настройки CMake не добавляются. Атомарность отдельного RMW
+не заменяет согласование целой операции и владения буфером.
+
+GetIRQFlags возвращает HT/TC/ошибки одним чтением, публичные FLAG_HT/FLAG_TC/
+FLAG_ERRORS используются потребителями. В I2C добавлены фиксированные DMA,
+callbacks через наследование и DeInit; Recover перенесён в приложение.
+Подробности — [I2C.md](I2C.md). Сборки и аппаратные тесты миграции не запускались.
+
+
 Универсальная C++ библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4**, **STM32F7**.
-Ядро (всегда собирается): System, RCC, GPIO, Flash, IRQ_Registry. Опциональные модули: UART, SPI, DMA, TIM, RTC, ADC, DAC, I2C, MODBUS, CONTAINERS, PID, DSP, CRC.
+Ядро (всегда собирается): System, RCC, GPIO, Flash, IRQ_Registry. Опциональные модули: UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, PID, DSP, CRC.
 
 Библиотека — не самостоятельный CMake-проект: её клонирует и подключает платформа [stm32_cmake_base](https://github.com/vsm-stm/stm32_cmake_base) (см. «Подключение и сборка»).
 
@@ -1229,23 +1233,28 @@ system.hpp
 |---|---|---|---|---|
 | Ядро: System, RCC, GPIO, Flash, IRQ_Registry | `src/system.*`, `rcc.*`, `gpio.*`, `flash.*`, `irq_registry.*` | ок | ок | ок |
 | UART, SPI | `src/uart.*`, `spi.*` | ок | не проверялось | ок |
-| TIM | `src/tim.*` | общая часть исправлена; исходник собирается; режимы в плане | общая часть исправлена; исходник собирается; режимы в плане | общая часть исправлена; исходник собирается; режимы в плане |
+| TIM | `src/tim.*` | общий API TIM перенесён; сборка не запускалась | общий API TIM перенесён; сборка не запускалась | общий API TIM перенесён; сборка не запускалась |
 | DMA | `src/dma.*` | исправлен, сборка не запускалась | исправлен, сборка не запускалась | таблица каналов/IRQ уточнена по МК; сборка не запускалась |
 | RTC | `src/rtc.*` | **не портирован** (`ICSR`) | не портирован | ок |
-| ADC | `src/adc.*` | исправлен; ожидает TIM, сборка не запускалась | исправлен; ожидает TIM, сборка не запускалась | исправлен; ожидает TIM, сборка не запускалась |
+| EXTI | `src/exti.*` | GPIO 0..15 добавлены; без сборки | GPIO 0..15 добавлены; без сборки | GPIO 0..15 добавлены; без сборки |
+| ADC | `src/adc.*` | фиксированный API, отдельные IRQ; не собирался | фиксированный API, отдельные IRQ; не собирался | фиксированный API, отдельные IRQ; не собирался |
 | DAC | `src/dac.*` | исправлен, сборка не запускалась | исправлен, сборка не запускалась | исправлен, сборка не запускалась |
-| I2C, MODBUS | `src/i2c.*`, `Interfaces/` | ок | не проверялось | I2C ок |
+| I2C | `src/i2c.*` | API обновлён, без сборки | API обновлён, без сборки | API обновлён, без сборки |
+| MODBUS | `Interfaces/` | миграция USART, без сборки | не проверялось | миграция USART, без сборки |
 | CONTAINERS | `Containers/` (заголовки) | подключаются | — | — |
 | PID | `math/PID.*` | ок | не проверялось | не проверялось |
 | DSP | подмножество CMSIS-DSP v1.16.2 | ок | не проверялось | не проверялось |
 | CRC | `crc/crc32.*` (без таблиц, без HW-периферии — переносимо на любое семейство) | ок | ок | ок |
 
-Список известных недоработок (RTC/ADC) ведётся как бэклог — в релиз они входят «как есть». Правки DAC описаны в [Review/DAC.md](Review/DAC.md). Правки DMA и оставшаяся интеграция отмечены в [Review/DMA.md](Review/DMA.md).
+Список известных недоработок (RTC/ADC) ведётся как бэклог — в релиз они входят «как есть». Правки DAC описаны в [Review/DAC.md](Review/DAC.md). Правки DMA и оставшаяся интеграция отмечены в [Review/DMA.md](Review/done/DMA.md).
 
 Настройка ADC, статусы/callbacks и обслуживание кеша описаны в [ADC.md](ADC.md).
-Оставшиеся зависимости TIM_TriggerGenerator и DMA HT/TC перечислены в [Review/ADC.md](Review/ADC.md).
-Контекстная модель с IrqLock удалена; исходники DMA и TIM в этом проходе ADC не менялись.
-Упрощение IRQ и сравнение изолированного ассемблера до/после описаны в [Review/ADC_IRQ_Timing.md](Review/ADC_IRQ_Timing.md); полная сборка ADC пока не подтверждена.
+Режим преобразований, DMA и TIM/источник закреплены конструктором. Используется
+один Start(); при наличии DMA — Start(buffer, count). ADC и DMA обслуживаются
+отдельными обработчиками без аппаратных ожиданий. HT включается явно через
+IRQ_en, конечный DMA всегда использует TC. См. [Review/ADC.md](Review/ADC.md).
+Прежнее [сравнение ассемблера](Review/ADC_IRQ_Timing.md) относится к общему IRQ
+старой версии. Сборка и аппаратные тесты нового ADC API не запускались.
 
 Семейства, отличные от F4 / F7 / G0 (в т.ч. G4), драйверами не поддерживаются: ставьте `"drivers": null` и пишите под регистры, либо портируйте (см. «Добавление нового МК»).
 
@@ -1265,8 +1274,9 @@ system.hpp
 - [DMA.md](DMA.md) — `DMA_Sx`: потоки (F4/F7) и каналы+DMAMUX (G0), таблицы запросов.
 - [UART.md](UART.md) — `USART`: блокирующий/IRQ/DMA режимы, приём по IDLE-линии.
 - [SPI.md](SPI.md) — `SPI`: роли Master/Slave, Software/Hardware NSS, DMA.
-- [TIM.md](TIM.md) — `TIM` и все 7 подклассов (ШИМ, захват, генераторы шагов, ITR/TRGO).
+- [TIM.md](TIM.md) — общий TIM: PWM/capture, энкодер, измерение импульса, ITR и конечные серии.
 - [RTC.md](RTC.md) — `RTC_cl`: BCD-время, WakeUp Timer, будильники, калибровка.
+- [EXTI.md](EXTI.md) — внешние GPIO IRQ, фиксированные PIN/фронт, callback через наследование и ограничения общих векторов.
 - [DAC.md](DAC.md) — `DAC_Module`: прямой 12-битный вывод, статусы и время жизни канала.
 - [Flash.md](Flash.md) — `flash_base`/`flash_data`: разблокировка, стирание, wear-leveling.
 
@@ -1571,7 +1581,7 @@ bool b = (bool)led;   // GetLevel()
 Пин, созданный через `PIN{}` (конструктор по умолчанию), возвращает `IsValid() == false`. Используется в драйверах как признак "канал не подключён":
 
 ```cpp
-SPI spi(SPI1, sck, mosi, PIN{}, PIN{});   // MISO и SS не используются
+SPI spi(SPI1, SPI::Direction::TX, sck, mosi, PIN{}, PIN{});   // MISO и SS не используются
 ```
 
 ### PinArray — массив пинов
@@ -1723,13 +1733,14 @@ NVIC_EnableIRQ(dma.GetIRQn());
 dma.Enable_IRQ(DMA_Sx::IRQ::TC);
 ```
 
-В обработчике:
+В обработчике, для некольцевой передачи:
 
 ```cpp
 void HandleIRQ() override {
     if (_dma.GetTC_Flag()) {
-        _dma.Stream_EN(DISABLE);
+        _dma.RequestStop(); // TC уже подтвердил завершение.
         _dma.ClearFlags();
+        __DMB();
         // передача завершена
     }
 }
@@ -1780,8 +1791,16 @@ HSI/LSE запускает вызывающий код; SetUp только пр�
 F4 сохраняет PCLK. Пример выбора источника приведён в [UART.md](UART.md).
 Перед SetBaud() вызывающий код ждёт физического завершения TX (TC/OnTC).
 Busy проверяет только программные операции; дополнительного поля контроля TX нет.
-Нулевая длина — Error, IRQ/DMA — 1..65535 байт. AttachDMA() возвращает SysInitStatus
-и проверяет маршрут DMAReq. IDLE останавливает RX DMA до чтения счётчика и пакета.
+Нулевая длина — Error, IRQ/DMA — 1..65535 байт. Описания DMA TX/RX задаются
+после пинов в конструкторе, затем ClockSource. DMA хранятся внутри USART.
+Принадлежность и направление Req проверяются через DebugTrap в конструкторе;
+SetUp приобретает и настраивает ресурсы. USART и DMA имеют отдельные обработчики.
+За вход обслуживается до глубины FIFO в каждом направлении: 8 слов G0 при
+включённом FIFO, иначе один байт. При IDLE хвост имеет свой единственный предел.
+На F4/F7 IDLE запрашивает остановку, DMA RX TC завершает count/cache/ready:
+без ожидания в IRQ и без Process(). На G0 IDLE отключает DMAR/DMA без ожидания
+и завершает пакет в USART IRQ; последний запрос DMA должен быть уже обслужен.
+Повреждённый пакет отбрасывается без чтения длины из DMA. Ограничение — в UART.md.
 Кеш F7 обслуживается через System; для настроенных некешируемых DMA-областей
 кешевые операции пропускаются.
 GetDataReceivedCount() больше не сбрасывает флаг/счётчик: после обработки нужен
@@ -1811,12 +1830,11 @@ log.Send((uint8_t*)"OK\r\n", 4);
 ### DMA-передача
 
 ```cpp
-USART  uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
-DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+           DMA1_Channel4,
+           DMA1_Channel5);
 
-uart.SetUp();
-uart.AttachDMA(&dma_tx, &dma_rx);   // SetUp DMA вызывать отдельно НЕ нужно
+uart.SetUp(); // Проверить InitOK; приобретает/настраивает внутренние DMA.
 
 uart.Send_DMA(tx_buf, sizeof(tx_buf));
 uart.Receive_DMA(rx_buf, sizeof(rx_buf));  // завершается по IDLE или по заполнению
@@ -1859,13 +1877,14 @@ uart.SetBaud(9600);
 **Подробнее:** [SPI.md](SPI.md)
 
 SPI1–SPI6 у F4/F7 и SPI1–SPI3 у G0 подключаются по наличию в CMSIS.
-Все операции используют две линии: Send отбрасывает RX, Receive передаёт
-dummy 0xFF/0xFFFF. TYPE удалён из SetUp.
+Direction::TX/RX/TXRX и необязательные DMA фиксируются в конструкторе; структура
+настроек остаётся в SetUp. TX использует аппаратную передачу без RX и один TX DMA.
+RX master работает через full duplex: RX DMA и TX IRQ для dummy 0xFF/0xFFFF.
 
 ### Базовое использование (блокирующий режим)
 
 ```cpp
-SPI spi(SPI1, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
+SPI spi(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
         SPI::_1::MISO::PA6, PIN(GPIOB, 0)); // Необязательный программный CS
 if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
               SPI::Data_frame_format::Byte, SPI::Frame_Format::MSB,
@@ -1891,12 +1910,13 @@ SysStatus result = spi.Send_Receive(tx, rx, 2); // len — количество 
 
 ```cpp
 // F4/F7:
-DMA_Sx dma_tx(DMA_Sx::Req::Spi1::TX_DMA2_Stream3);
-DMA_Sx dma_rx(DMA_Sx::Req::Spi1::RX_DMA2_Stream0);
-// G0: DMA_Sx dma_tx(DMA1_Channel2, DMA_Sx::Req::Spi1::TX);
-//     DMA_Sx dma_rx(DMA1_Channel3, DMA_Sx::Req::Spi1::RX);
-// После успешного spi.SetUp(...):
-if (spi.AttachDMA(&dma_tx, &dma_rx) == SysInitStatus::InitOK) {
+const SPI::DMAReq dma_tx = DMA_Sx::Req::Spi1::TX_DMA2_Stream3;
+const SPI::DMAReq dma_rx = DMA_Sx::Req::Spi1::RX_DMA2_Stream0;
+// G0: const SPI::DMAReq dma_tx = DMA1_Channel2;
+//     const SPI::DMAReq dma_rx = DMA1_Channel3;
+SPI spi(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+        SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, dma_tx, dma_rx);
+if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus::InitOK) {
     // Запустить spi.SendReceive_DMA(tx_buffer, rx_buffer, frame_count); проверить OK.
 }
 // В main для запущенного IRQ/DMA обмена:
@@ -1907,12 +1927,15 @@ SysStatus state = spi.Process(); // Busy до физического завер�
 Кеш F7 обслуживается через System; настроенные некешируемые DMA-области
 пропускаются. CPU не обращается к активному RX и не изменяет TX.
 OnComplete()/OnError(mask) вызываются после очистки в Process. IRQ_en меняет
-источники CR2; регистрацией и NVIC управляют настройка и подключение DMA.
+источники CR2; регистрацией и NVIC управляет SetUp.
 
 В slave len — вместимость. Приложение настраивает EXTI снятия NSS и вызывает
 NssReleased() из обработчика. Process завершает пакет в main. Лишние RX-кадры
 отбрасываются с IsTruncated(); после TX-буфера передаётся dummy. Приоритеты IRQ,
-ограничения обслуживания и повторное взведение описаны в SPI.md.
+ограничения обслуживания и повторное взведение описаны в SPI.md. SPI и DMA TX/RX
+имеют отдельные обработчики без ожиданий. На G0 последний запрос DMA должен
+быть обслужен до остановки по NSS; длина читается в Process. Ошибочный пакет
+отбрасывается.
 
 ### Делитель частоты (BaudRate)
 
@@ -1937,160 +1960,107 @@ NssReleased() из обработчика. Process завершает пакет
 
 ## 9. TIM
 
-Общая часть обновлена 18.10.2026: tim.cpp компилируется для 49 локальных моделей
-F4/F7/G0. Повторный SetUp — InitError до DeInit; указатели на callbacks задаются
-при инициализации; IRQ_en меняет только источники. Режимы/DMA и TriggerGenerator
-(Update/CCx) — отдельные этапы: [Review/TIM.md](Review/TIM.md).
-
-**Файлы:** `tim.hpp`, `tim.cpp`
+**Файлы:** `tim.hpp`, `tim.cpp`, `tim_defs.hpp`
 **Подробнее:** [TIM.md](TIM.md)
 
-Иерархия классов:
+Один общий TIM обслуживает базу и независимо настроенные каналы. До четырёх
+описаний `{pin, dma}` закрепляют пины/DMA в конструкторе. TIM_PWM/PeriodicIRQ/
+InputCapture, объектов Output и AttachDMA нет. Составные режимы сохранены
+комментариями и разбираются отдельно.
 
-```
-TIM : IIRQHandler
-    TIM_PeriodicIRQ      — периодические прерывания
-    TIM_PWM              — ШИМ-выходы (1–4 канала), поддержка DMA
-    TIM_InputCapture     — захват входного сигнала
-    TIM_PulseMeasure     — измерение периода и длительности импульса (PWM-input)
-    TIM_EncoderGenerator — генератор квадратурных импульсов для шаговых двигателей
-```
-
-### TIM_PeriodicIRQ — периодические прерывания
+### База, PWM и compare
 
 ```cpp
-TIM_PeriodicIRQ timer(TIM3);
-
-// Настройка: 1000 Гц (1 кГц), колбэк
-timer.SetUp(1000, []{ led.TogglePin(); });
-timer.Start();
+void Tick();
+void HalfTick();
+TIM timer(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+// В main, проверить все результаты до Start:
+if (timer.SetUp(1000, &Tick, 1000) == SysInitStatus::InitOK
+    && timer.SetUpPWM(TIM::Channel::CH1, 250) == SysInitStatus::InitOK
+    && timer.SetUpPWM(TIM::Channel::CH2, 500) == SysInitStatus::InitOK
+    && timer.SetCompareIRQ(TIM::Channel::CH3, 750, &HalfTick) == SysInitStatus::InitOK) {
+    timer.Start();
+}
+timer.SetDuty(TIM::Channel::CH1, 75); // Проверить SysStatus.
 ```
 
-`SetUp()` автоматически вычисляет PSC и ARR, включает UE-прерывание и регистрирует объект в `IRQ_Registry`. `Start()` нужно вызвать явно.
+SetUp сохраняет `(frequency, callback, period)`: частота — Update/PWM в Гц,
+period — число тиков CNT (ARR=period-1), ноль выбирает период автоматически.
+Повторный SetUp требует DeInit. PSC/ARR общие. Для counter/capture период
+обязателен; фактическую частоту CNT показывает GetCounterClock.
 
-### TIM_PWM — ШИМ
+PWM1 использует preload CCR. Предел периода 16-битного PWM — 65535 тиков:
+CCR=period даёт 100%, ноль — 0%, без переключения в forced active. SetDuty
+ограничивает проценты сотней, SetCCR принимает сырые тики. Пока канал занят
+DMA, эти методы его CCR не меняют. Start всегда явный.
+
+### Capture и аппаратный триггер
 
 ```cpp
-// Одноканальный ШИМ на PA8 (TIM1 CH1)
-TIM_PWM pwm(TIM1, TIM::_1::CH1::PA8);
-
-pwm.SetUp(10000);          // 10 кГц ШИМ, ARR=999 (0.1% разрешение)
-pwm.SetDuty(TIM::Channel::CH1, 75);   // 75% скважность
+void Edge();
+TIM input(TIM3, {TIM::_3::CH1::PA6});
+// В main: целевая частота CNT = 100 Гц * 10000 тиков = 1 МГц.
+if (input.SetUp(100, nullptr, 10000) == SysInitStatus::InitOK
+    && input.SetUpCapture(TIM::Channel::CH1, &Edge) == SysInitStatus::InitOK) {
+    input.Start();
+}
+// Edge читает input.GetCapture(TIM::Channel::CH1).
 ```
 
-Четырёхканальный ШИМ:
+Capture — прямой TIx по нарастающему фронту. GetCapture всегда читает CCR напрямую,
+необязательный callback только уведомляет. Переполнение/overcapture обрабатывает
+приложение. SetCompareIRQ с nullptr создаёт аппаратный compare без GPIO и IRQ.
+SetUpTrigger(Trigger::Update/ComparePulse/OCxRef) выбирает TRGO без IRQ. ADC получает
+TIM* и источник конструктором, запускает TIM после вооружения ADC/DMA. Таймер
+настраивает вызывающий код до ADC SetUp; см. [ADC.md](ADC.md).
+
+### Независимые DMA и WS2812B
 
 ```cpp
-TIM_PWM pwm(TIM3,
-    PIN{GPIOA, 6},  // CH1
-    PIN{GPIOA, 7},  // CH2
-    PIN{GPIOB, 0},  // CH3
-    PIN{GPIOB, 1}   // CH4
-);
-pwm.SetUp(50);   // 50 Гц (сервоприводы)
-pwm.SetDuty(TIM::Channel::CH1, 5);   // 5% = ~1 мс (мин угол)
-pwm.SetDuty(TIM::Channel::CH1, 10);  // 10% = ~2 мс (макс угол)
+// G0; для F4/F7 используется Req::Tim1::CH1_DMA2_Stream1.
+const TIM::DMAReq dma = DMA1_Channel3;
+TIM ws(TIM1, {TIM::_1::CH1::PA8, dma});
+WS2812B_Strip<8> strip(52, 26);
+strip.SetAll(RGB::Red());
+// Пример: CNT 64 МГц, period=80 => 800 кГц, ARR=79.
+if (ws.SetUp(800000, nullptr, 80) == SysInitStatus::InitOK
+    && ws.SetUpPWM(TIM::Channel::CH1) == SysInitStatus::InitOK
+    && ws.SendDMA(TIM::Channel::CH1, strip.Data(), strip.Len()) == SysStatus::OK) {
+    ws.Start();
+}
+// Не менять strip, пока ws.IsDMABusy(TIM::Channel::CH1).
 ```
 
-Прямая запись CCR (для протоколов типа WS2812B):
+DMA из конструктора настраивается внутри SetUpPWM. Каждый канал использует
+TIMx_CHx, CCDS=1 и собственный CCxDE. У каждого DMA отдельный обработчик;
+таймерный IRQ DMA-флаги не опрашивает. 16-битные таймеры используют uint16_t/
+Half_Word, 32-битные TIM2/TIM5 — uint32_t/Word. Clean F7 выполняет System,
+некешируемые области проекта пропускаются.
 
-```cpp
-TIM_PWM ws(TIM1, PIN{GPIOA, 8});
-ws.SetUp(800000, 79);    // 800 кГц, ARR=79 (явный ARR)
-ws.SetCCR(TIM::Channel::CH1, 52);   // ~0.8 мкс (бит "1")
-ws.SetCCR(TIM::Channel::CH1, 26);   // ~0.4 мкс (бит "0")
-```
+TC освобождает буфер; последний preload/PWM-период может ещё не завершиться.
+WS2812B содержит нулевой reset trailer; CCR и reset timing выбираются под
+реальные частоты и светодиоды. Ошибка останавливает свой DMA и уведомляет его
+callback; результат показывает GetDMAStatus. Остальные каналы продолжают работу.
 
-### TIM_PWM + DMA — генерация WS2812B
+При записи DIER из main вызывающий код маскирует соответствующие TIM/DMA IRQ,
+если они могут выполняться, в том числе вокруг SendDMA и IRQ_en. Обработчики
+одного объекта не прерывают друг друга. Внутри нет IrqLock/изменений PRIMASK;
+ожиданий аппаратуры в IRQ нет. DeInit из main освобождает занятые DMA/регистрации.
+Ограничения и конфликты маршрутов описаны в TIM.md.
 
-Самый мощный режим: DMA записывает CCR-значения на каждое событие Update, без участия CPU.
+Дополнительные режимы — функции TIM: SetUpEncoder занимает таймер с CH1/CH2,
+Count возвращает CNT напрямую. SetUpPulseMeasure занимает CH1/CH2 и SMCR;
+GetCapture читает период выбранного входа и длительность HIGH парного канала.
+SetUpSlave выбирает обычный маршрут TRGO/ITR, SetUpOnePulse однократно задаёт OPM.
+Для конечных серий два отдельных API: SetUpPulseBurst/RunPulses — аппаратный RCR+OPM;
+SetUpCounter/StopAfter/StopAt — второй TIM и остановка источника из IRQ.
+Во втором случае возможны лишние/неполные импульсы из-за задержки IRQ.
+SetUpQuadrature настраивает второй TIM из конструктора с PSC=1; GenPulse(N)
+запускает полные A/B-циклы, знак задаёт направление. Stop останавливает оба TIM,
+DeInit освобождает оба. Остановка тоже из IRQ, без программного подсчёта циклов.
+Callbacks необязательны, роли/инициализация сохраняются до DeInit. ETR отложен.
 
-```cpp
-constexpr size_t N_LEDS = 8;
-constexpr uint16_t ONE  = 52;
-constexpr uint16_t ZERO = 26;
-
-static uint16_t ws_buf[N_LEDS * 24 + 40];  // +40 нулей = 50 мкс reset
-// ... заполнить ws_buf значениями ONE/ZERO
-
-DMA_Sx dma_ws(DMA1_Channel3);
-TIM_PWM ws_tim(TIM1, PIN{GPIOA, 8});
-
-ws_tim.SetUp(800000, 79);                         // 800 кГц, ARR=79
-ws_tim.AttachDMA(&dma_ws, TIM::Channel::CH1); // привязать DMA к CH1
-ws_tim.SetDMACallback([]{ /* передача завершена */ });
-
-ws_tim.SendDMA(ws_buf, sizeof(ws_buf)/sizeof(ws_buf[0]));
-
-// Проверка готовности:
-while (ws_tim.IsDMABusy()) {}
-```
-
-`AttachDMA` настраивает DMAMUX1, периферийный адрес (CCR1), ширину Half_Word и регистрирует обработчик DMA TC в `IRQ_Registry` автоматически.
-
-### TIM_InputCapture — захват
-
-```cpp
-TIM_InputCapture cap(TIM3, PIN{GPIOA, 6}, TIM::Channel::CH1);
-
-cap.SetUp(100000, []{ uint32_t v = cap.GetCapture(); /* ... */ });
-cap.Start();
-```
-
-### TIM_PulseMeasure — измерение PWM-сигнала
-
-Режим PWM-input: один канал измеряет период, второй — ширину импульса.
-
-```cpp
-TIM_PulseMeasure pm(TIM3, TIM::Line{PIN{GPIOA, 6}, TIM::Channel::CH1});
-pm.SetUp(100000);   // максимальная ожидаемая частота 100 кГц
-pm.Start();
-
-// После прихода сигнала:
-uint32_t period = pm.GetPeriod();   // период в тактах таймера
-uint32_t width  = pm.GetWidth();    // ширина импульса
-pm.Clear();
-```
-
-### TIM_EncoderGenerator — квадратурный генератор
-
-```cpp
-TIM_EncoderGenerator enc(TIM3,
-    TIM::Line{PIN{GPIOA, 6}, TIM::Channel::CH1},  // A
-    TIM::Line{PIN{GPIOA, 7}, TIM::Channel::CH2}   // B (90° сдвиг)
-);
-
-enc.SetUp(1000, 99, 50, 50);  // 1000 Гц, период ARR=99, CCR=50 для обоих каналов
-enc.SetCompleteCallback([]{ /* завершено */ });
-enc.GenPulse(200);   // 200 шагов вперёд
-enc.GenPulse(-50);   // 50 шагов назад
-```
-
-### Алгоритм вычисления PSC/ARR
-
-```
-ratio = bus_clk / freq         // полное произведение (PSC+1)*(ARR+1)
-psc   = ratio / 65536          // минимальный делитель, чтобы ARR влез в 16 бит
-arr   = ratio / (psc+1) - 1    // максимальный ARR для наилучшего разрешения
-```
-
-Для `TIM_PWM` с явным ARR:
-
-```
-psc = bus_clk / ((arr+1) * freq) - 1
-```
-
-### Поддерживаемые таймеры (STM32G0)
-
-| Периферия | Шина | irq_up | irq_cc | BDTR | AF |
-|---|---|---|---|---|---|
-| TIM1 | APB2 | TIM1_BRK_UP_TRG_COM | TIM1_CC | да | 2 |
-| TIM3 | APB1 | TIM3 | TIM3 | нет | 1 |
-| TIM14 | APB2 | TIM14 | TIM14 | нет | 4 |
-| TIM16 | APB2 | TIM16 | TIM16 | да | 2 |
-| TIM17 | APB2 | TIM17 | TIM17 | да | 2 |
-
-`has_bdtr = true` означает расширенный/полурасширенный таймер, требующий установки `TIM_BDTR_MOE` для активации выходов.
+Сборка и аппаратная проверка нового API в этом проходе не выполнялись.
 
 ---
 
@@ -2304,10 +2274,9 @@ int main() {
     spi.SetUp(...);
     rtc.SetUp(...);
 
-    // 4. DMA — после SetUp() соответствующей периферии
-    uart.AttachDMA(&dma_tx, &dma_rx);
-    spi.AttachDMA(&dma_spi_tx, nullptr);
-    tim_pwm.AttachDMA(&dma_tim, TIM::Channel::CH1);
+    // 4. DMA закреплены конструкторами; их настраивают UART/SPI SetUp и TIM SetUpPWM.
+    tim_pwm.SetUp(...);
+    tim_pwm.SetUpPWM(TIM::Channel::CH1);
 
     // 5. Запуск таймеров, которые требуют явного Start()
     periodic_timer.Start();

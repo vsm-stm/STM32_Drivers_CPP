@@ -143,6 +143,9 @@ uint32_t I2C_GetTiming(uint32_t clock_src_freq, uint32_t i2c_freq)
   uint32_t speed;
   uint32_t idx;
 
+  /* Each calculation uses candidates for this clock and speed only. */
+  I2c_valid_timing_nbr = 0U;
+
   if((clock_src_freq != 0U) && (i2c_freq != 0U))
   {
     for ( speed = 0 ; speed <=  (uint32_t)I2C_SPEED_FREQ_FAST_PLUS ; speed++)
@@ -233,16 +236,16 @@ static void I2C_Compute_PRESC_SCLDEL_SDADEL(uint32_t clock_src_freq, uint32_t I2
           {
             if(presc != prev_presc)
             {
+              if(I2c_valid_timing_nbr >= I2C_VALID_TIMING_NBR)
+              {
+                return;
+              }
+
               I2c_valid_timing[I2c_valid_timing_nbr].presc = presc;
               I2c_valid_timing[I2c_valid_timing_nbr].tscldel = scldel;
               I2c_valid_timing[I2c_valid_timing_nbr].tsdadel = sdadel;
               prev_presc = presc;
               I2c_valid_timing_nbr ++;
-
-              if(I2c_valid_timing_nbr >= I2C_VALID_TIMING_NBR)
-              {
-                return;
-              }
             }
           }
         }

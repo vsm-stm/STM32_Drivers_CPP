@@ -176,6 +176,9 @@ public:
 		return reinterpret_cast<GPIO_TypeDef*>(_port_base);
 	}
 
+	/// Read the fixed pin number, e.g. for routing its external EXTI line.
+	constexpr uint8_t GetNumber() const noexcept { return pin; }
+
 	/// Whether a port binding exists; not a pin/package/AF-route capability test.
 	constexpr bool IsValid() const noexcept { return _port_base != 0; }
 

@@ -79,22 +79,20 @@
  * ============================================================================
  *
  * The DMA_Sx object owns the hardware channel after successful SetUp().
- * USART owns embedded DMA objects configured by named constructor requests.
- * Other consumers retain external DMA objects; do not share one configured
- * resource between different peripherals.
+ * USART/SPI/ADC/TIM/I2C own embedded DMA objects selected by construction.
+ * Do not create a second DMA_Sx for their selected resources.
  * USART registers separate TX/RX DMA handlers and calls DMA methods internally.
  *
  *    @code
  *      // 1. Declare driver objects (file or class scope)
  *      USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
- *                 {DMA1_Channel4, DMA_Sx::Req::Usart1::TX},
- *                 {DMA1_Channel5, DMA_Sx::Req::Usart1::RX});
+ *                 DMA1_Channel4, DMA1_Channel5); // G0: source selected by USART
  *
  *      // 2. UART SetUp configures the constructor-bound DMA internally.
  *      auto initialized = uart.SetUp();
  *      // Check initialized == InitOK; UART owns IRQ registration/NVIC.
  *
- *      // 4. Transfer — the driver manages DMA internally
+ *      // 3. Transfer — the driver manages DMA internally
  *      uart.Send_DMA(tx_buf, sizeof(tx_buf));
  *      uart.Receive_DMA(rx_buf, sizeof(rx_buf));
  *      // Check each start result. Consume RX after ready, clear ready explicitly,
@@ -128,6 +126,21 @@
 #include "system.hpp"
 #include "rcc.hpp"
 
+// Change here and rebuild DMA and its consumers. Ordinary register updates by default.
+#ifndef DMA_USE_ATOMIC
+#define DMA_USE_ATOMIC 0
+#endif
+
+#if DMA_USE_ATOMIC
+#define DMA_SET_BIT ATOMIC_SET_BIT
+#define DMA_CLEAR_BIT ATOMIC_CLEAR_BIT
+#define DMA_MODIFY_REG ATOMIC_MODIFY_REG
+#else
+#define DMA_SET_BIT SET_BIT
+#define DMA_CLEAR_BIT CLEAR_BIT
+#define DMA_MODIFY_REG MODIFY_REG
+#endif
+
 /** @brief Read-only stream/channel descriptor; ownership flags are separate in dma.cpp. */
 struct dma_sets_typedef {
 	DMA_TypeDef*        ctrl;      ///< DMA1 or DMA2
@@ -140,6 +153,18 @@ struct dma_sets_typedef {
 // ---------------------------------------------------------------------------
 
 class DMA_Sx {
+public:
+	// Normalized flag masks returned by GetIRQFlags(), independent of stream/channel.
+#if defined(STM32F4) || defined(STM32F7)
+	static constexpr uint32_t FLAG_HT = DMA_LISR_HTIF0;
+	static constexpr uint32_t FLAG_TC = DMA_LISR_TCIF0;
+	static constexpr uint32_t FLAG_ERRORS = DMA_LISR_TEIF0 | DMA_LISR_DMEIF0;
+#elif defined(STM32G0)
+	static constexpr uint32_t FLAG_HT = DMA_ISR_HTIF1;
+	static constexpr uint32_t FLAG_TC = DMA_ISR_TCIF1;
+	static constexpr uint32_t FLAG_ERRORS = DMA_ISR_TEIF1;
+#endif
+
 private:
 	// Register-name abstraction layer.
 	// F4/F7 use DMA_Stream_TypeDef (CR/NDTR/PAR/M0AR).
@@ -158,9 +183,6 @@ private:
 	static constexpr uint32_t CR_MSIZE_Pos = DMA_SxCR_MSIZE_Pos;
 	static constexpr uint32_t CR_PSIZE_Msk = DMA_SxCR_PSIZE_Msk;
 	static constexpr uint32_t CR_PSIZE_Pos = DMA_SxCR_PSIZE_Pos;
-	// HTIF0/TCIF0 use bits 4/5 of each flag group; clear bits have the same positions.
-	static constexpr uint32_t FLAG_HT  = DMA_LISR_HTIF0;
-	static constexpr uint32_t FLAG_TC  = DMA_LISR_TCIF0;
 	static constexpr uint32_t FLAG_ALL = DMA_LIFCR_CTCIF0 | DMA_LIFCR_CHTIF0 |
 	                                     DMA_LIFCR_CTEIF0 | DMA_LIFCR_CDMEIF0 |
 	                                     DMA_LIFCR_CFEIF0;
@@ -178,9 +200,6 @@ private:
 	static constexpr uint32_t CR_MSIZE_Pos = DMA_CCR_MSIZE_Pos;
 	static constexpr uint32_t CR_PSIZE_Msk = DMA_CCR_PSIZE_Msk;
 	static constexpr uint32_t CR_PSIZE_Pos = DMA_CCR_PSIZE_Pos;
-	// HTIF1/TCIF1 use bits 2/1 of each 4-bit group; clear bits have the same positions.
-	static constexpr uint32_t FLAG_HT  = DMA_ISR_HTIF1;
-	static constexpr uint32_t FLAG_TC  = DMA_ISR_TCIF1;
 	static constexpr uint32_t FLAG_ALL = 0xFu; // GIF+TCIF+HTIF+TEIF per channel
 #endif
 
@@ -387,16 +406,22 @@ public:
 	}
 
 	/** @brief Read this stream's error bits, normalized to the first flag group.
-	 * F4/F7: TEIF0, DMEIF0, FEIF0; G0: TEIF1. Zero when not configured.
+	 * F4/F7: TEIF0, DMEIF0 (direct mode); G0: TEIF1. Zero when not configured.
 	 */
 	inline uint32_t GetErrorFlags() const {
 		if (!_info) return 0;
-	#if defined(STM32F4) || defined(STM32F7)
-		constexpr uint32_t errors = DMA_LISR_TEIF0 | DMA_LISR_DMEIF0 | DMA_LISR_FEIF0;
-	#else
-		constexpr uint32_t errors = DMA_ISR_TEIF1;
-	#endif
-		return (*_info->isr >> _info->if_offset) & errors;
+		return (*_info->isr >> _info->if_offset) & FLAG_ERRORS;
+	}
+
+	/** @brief Read HT, TC and supported errors together in one ISR access.
+	 * Decode this snapshot with FLAG_HT, FLAG_TC and FLAG_ERRORS.
+	 * FEIF is excluded: the driver uses direct mode, not FIFO.
+	 * No acknowledgement or stop; zero before SetUp.
+	 * A stop requested after this snapshot may produce TC in the next IRQ.
+	 */
+	inline uint32_t GetIRQFlags() const {
+		if (!_info) return 0;
+		return (*_info->isr >> _info->if_offset) & (FLAG_HT | FLAG_TC | FLAG_ERRORS);
 	}
 
 	/**
@@ -407,27 +432,27 @@ public:
 	 * Does not register a callback/object, clear flags or start a transfer.
 	 */
 	inline void Enable_IRQ(IRQ irq, bool enable_nvic = true) {
-		_CR() |= static_cast<uint32_t>(irq);
+		DMA_SET_BIT(_CR(), static_cast<uint32_t>(irq));
 		if (enable_nvic && !NVIC_GetEnableIRQ(_info->irqn))
 			NVIC_EnableIRQ(_info->irqn);
 	}
 
 	/** @brief Disables a DMA interrupt source (does not touch NVIC). */
 	inline void Disable_IRQ(IRQ irq) {
-		_CR() &= ~static_cast<uint32_t>(irq);
+		DMA_CLEAR_BIT(_CR(), static_cast<uint32_t>(irq));
 	}
 
 	/// Change memory-address increment; configure while stopped and under the owner's control.
 	inline void MINC(FunctionalState en) {
-		if (en) _CR() |=  CR_MINC; else _CR() &= ~CR_MINC;
+		if (en) DMA_SET_BIT(_CR(), CR_MINC); else DMA_CLEAR_BIT(_CR(), CR_MINC);
 	}
 	/// Change peripheral-address increment; ordinary peripheral registers keep it disabled.
 	inline void PINC(FunctionalState en) {
-		if (en) _CR() |=  CR_PINC; else _CR() &= ~CR_PINC;
+		if (en) DMA_SET_BIT(_CR(), CR_PINC); else DMA_CLEAR_BIT(_CR(), CR_PINC);
 	}
 	/// Change circular mode while stopped; the consumer defines completion/buffer ownership.
 	inline void CIRC(FunctionalState en) {
-		if (en) _CR() |=  CR_CIRC; else _CR() &= ~CR_CIRC;
+		if (en) DMA_SET_BIT(_CR(), CR_CIRC); else DMA_CLEAR_BIT(_CR(), CR_CIRC);
 	}
 
 	/**
@@ -437,7 +462,7 @@ public:
 	 * transfer. Do not publish the buffer or reconfigure DMA before that event.
 	 * G0 abort/restart requires no transfer in progress on the DMA master port.
 	 */
-	inline void RequestStop() { _CR() &= ~CR_EN; }
+	inline void RequestStop() { DMA_CLEAR_BIT(_CR(), CR_EN); }
 
 	/** @brief Read EN once; no wait and no flag acknowledgement.
 	 * @pre Successful SetUp. On F4/F7 use TC for RX buffer handover after a stop.
@@ -456,9 +481,9 @@ public:
 	inline void Stream_EN(FunctionalState en) {
 		if (en) {
 			__DMB(); // Publish preceding buffer writes before starting DMA.
-			_CR() |= CR_EN;
+			DMA_SET_BIT(_CR(), CR_EN);
 		} else {
-			_CR() &= ~CR_EN;
+			DMA_CLEAR_BIT(_CR(), CR_EN);
 			while (_CR() & CR_EN) {}
 			__DMB(); // Keep subsequent buffer accesses after the confirmed stop.
 		}

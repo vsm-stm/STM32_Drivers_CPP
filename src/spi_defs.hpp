@@ -13,12 +13,11 @@
  * Scope:  SPI class body — public nested pin types.
  * Result: SPI::_N::SCK / MOSI / MISO / SS for G0 and F4/F7 families.
  *
- * Section B — peripheral-info table + DMA request table + dummy/discard words
+ * Section B — peripheral-info table + dummy/discard words
  * --------------------------------------------------------------------
  * Guard:  SPI_DEFS_CPP  (defined in spi.cpp just before the include)
  * Scope:  file scope inside spi.cpp.
- * Result: SPI::spi_table[], SpiDmaInfo struct, spi_dma_req_table[],
- *         spi_dummy_word.
+ * Result: SPI::spi_table[], spi_dummy_word and spi_discard_word.
  *
  * Usage
  * -----
@@ -294,7 +293,7 @@ struct _6 {
 #endif  // Section A: defined(SPI_HPP_) && !defined(SPI_DEFS_CPP)
 
 // ===========================================================================
-// Section B: Peripheral-info table + DMA request table — spi.cpp file scope
+// Section B: Peripheral-info table — spi.cpp file scope
 // ===========================================================================
 #ifdef SPI_DEFS_CPP
 
@@ -344,61 +343,6 @@ const SPI::PeriphInfo SPI::spi_table[] = {
 };
 #endif
 
-// ---------------------------------------------------------------------------
-// spi_dma_req_table: maps each SPI_TypeDef* to its DMAMUX request IDs (G0)
-// or complete stream/CHSEL routes (F4/F7). Used by AttachDMA() so the user does not have to
-// know peripheral-specific request IDs.
-// ---------------------------------------------------------------------------
-
-#if defined(STM32G0)
-static constexpr unsigned SPI_DMA_ROUTES = 1;
-#else
-static constexpr unsigned SPI_DMA_ROUTES = 2;
-#endif
-
-// Full routes are shared with DMAReq, not reduced to CHSEL. Alternatives are
-// checked by CanUseRequest(); omitted alternatives are value-initialized invalid.
-struct SpiDmaInfo {
-    SPI_TypeDef* periph;
-    DMA_Sx::DMAReq tx[SPI_DMA_ROUTES];
-    DMA_Sx::DMAReq rx[SPI_DMA_ROUTES];
-};
-static const SpiDmaInfo spi_dma_req_table[] = {
-#if defined(STM32G0)
-#ifdef SPI1_BASE
-    { SPI1, { DMA_Sx::Req::Spi1::TX }, { DMA_Sx::Req::Spi1::RX } },
-#endif
-#ifdef SPI2_BASE
-    { SPI2, { DMA_Sx::Req::Spi2::TX }, { DMA_Sx::Req::Spi2::RX } },
-#endif
-#ifdef SPI3_BASE
-    { SPI3, { DMA_Sx::Req::Spi3::TX }, { DMA_Sx::Req::Spi3::RX } },
-#endif
-#else
-#ifdef SPI1_BASE
-    { SPI1, { DMA_Sx::Req::Spi1::TX_DMA2_Stream3, DMA_Sx::Req::Spi1::TX_DMA2_Stream5 },
-            { DMA_Sx::Req::Spi1::RX_DMA2_Stream0, DMA_Sx::Req::Spi1::RX_DMA2_Stream2 } },
-#endif
-#ifdef SPI2_BASE
-    { SPI2, { DMA_Sx::Req::Spi2::TX_DMA1_Stream4 }, { DMA_Sx::Req::Spi2::RX_DMA1_Stream3 } },
-#endif
-#ifdef SPI3_BASE
-    { SPI3, { DMA_Sx::Req::Spi3::TX_DMA1_Stream5, DMA_Sx::Req::Spi3::TX_DMA1_Stream7 },
-            { DMA_Sx::Req::Spi3::RX_DMA1_Stream0, DMA_Sx::Req::Spi3::RX_DMA1_Stream2 } },
-#endif
-#ifdef SPI4_BASE
-    { SPI4, { DMA_Sx::Req::Spi4::TX_DMA2_Stream1, DMA_Sx::Req::Spi4::TX_DMA2_Stream4 },
-            { DMA_Sx::Req::Spi4::RX_DMA2_Stream0, DMA_Sx::Req::Spi4::RX_DMA2_Stream3 } },
-#endif
-#ifdef SPI5_BASE
-    { SPI5, { DMA_Sx::Req::Spi5::TX_DMA2_Stream4, DMA_Sx::Req::Spi5::TX_DMA2_Stream6 },
-            { DMA_Sx::Req::Spi5::RX_DMA2_Stream3, DMA_Sx::Req::Spi5::RX_DMA2_Stream5 } },
-#endif
-#ifdef SPI6_BASE
-    { SPI6, { DMA_Sx::Req::Spi6::TX_DMA2_Stream5 }, { DMA_Sx::Req::Spi6::RX_DMA2_Stream6 } },
-#endif
-#endif
-};
 
 // Immutable all-one dummy source is read directly from Flash. The discard sink
 // is written only by DMA and is never consumed or modified by the CPU.
