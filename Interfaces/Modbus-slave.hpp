@@ -60,11 +60,11 @@ public:
 		rs_DE(pin_de)
 	{
 #if defined(STM32G0)
-		if (!tx_req) System::DebugTrap("Modbus: TX DMA is required");
-		if (!rx_req) System::DebugTrap("Modbus: RX DMA is required");
+		if (!tx_req) STM32_CONFIG_ERROR("Modbus: TX DMA is required");
+		if (!rx_req) STM32_CONFIG_ERROR("Modbus: RX DMA is required");
 #else
-		if (!tx_req.IsValid()) System::DebugTrap("Modbus: TX DMA is required");
-		if (!rx_req.IsValid()) System::DebugTrap("Modbus: RX DMA is required");
+		if (!tx_req.IsValid()) STM32_CONFIG_ERROR("Modbus: TX DMA is required");
+		if (!rx_req.IsValid()) STM32_CONFIG_ERROR("Modbus: RX DMA is required");
 #endif
 	}
 

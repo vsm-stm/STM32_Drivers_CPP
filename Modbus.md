@@ -38,7 +38,7 @@ claimed. No hardware TIM for these intervals is added.
 
 Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use USART::_N::instance, its named TX/RX pins and both DMA routes, plus the application DE GPIO. G0 takes numeric DMAx_Channely_BASE selections; USART fixes request sources.
 
-For peripheral binding checks, each failing condition calls non-constexpr `System::DebugTrap` with its cause. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. At runtime the helper forwards to `System::DebugTrap`. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
 
 ---
 
@@ -185,7 +185,7 @@ ModbusRTU_Slave использует USART с собственными TX/RX DMA
 
 Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте USART::_N::instance, его пины TX/RX и оба DMA-маршрута, а также GPIO DE приложения. На G0 передаются числовые DMAx_Channely_BASE, источник запросов закрепляет USART.
 
-При проверке привязок периферии каждое неверное условие вызывает неконстантный `System::DebugTrap` с причиной. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. При runtime-вызове функция передаёт строку в `System::DebugTrap`. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
 
 ---
 

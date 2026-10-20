@@ -43,7 +43,7 @@ struct TIM_PIN {
 		  channel(static_cast<uint8_t>(ch)), tim_base(timer)
 	{
 		(void)PIN(static_cast<uintptr_t>(gpio), number, alternate, timer);
-		if (ch >= 4) System::DebugTrap("TIM_PIN: channel index must be in 0..3");
+		if (ch >= 4) STM32_CONFIG_ERROR("TIM_PIN: channel index must be in 0..3");
 		switch (timer) {
 #if defined(TIM1_BASE)
 		case TIM1_BASE:
@@ -91,7 +91,7 @@ struct TIM_PIN {
 		case TIM17_BASE:
 #endif
 			break;
-		default: System::DebugTrap("TIM_PIN: timer is not available on this device");
+		default: STM32_CONFIG_ERROR("TIM_PIN: timer is not available on this device");
 		}
 	}
 	constexpr bool IsValid() const { return port != 0; }
@@ -219,28 +219,28 @@ public:
             const bool has_dma = cfg.dma.stream || cfg.dma.ch || cfg.dma.periph_base;
 #endif
             if (!cfg.pin.IsValid()) {
-                if (has_dma) System::DebugTrap("TIM: DMA requires a channel pin");
+                if (has_dma) STM32_CONFIG_ERROR("TIM: DMA requires a channel pin");
                 continue;
             }
             if (cfg.pin.channel >= instance.channel_count)
-                System::DebugTrap("TIM: channel is not available on this timer");
+                STM32_CONFIG_ERROR("TIM: channel is not available on this timer");
             if (cfg.pin.tim_base != instance.periph)
-                System::DebugTrap("TIM: pin belongs to another timer");
+                STM32_CONFIG_ERROR("TIM: pin belongs to another timer");
             if (seen & (1U << cfg.pin.channel))
-                System::DebugTrap("TIM: channel is assigned more than once");
+                STM32_CONFIG_ERROR("TIM: channel is assigned more than once");
             seen |= static_cast<uint8_t>(1U << cfg.pin.channel);
             for (const ChannelConfig& other : {c0, c1, c2, c3})
                 if (other.pin.IsValid() && other.pin.channel != cfg.pin.channel
                     && DMA_Sx::SameResource(cfg.dma, other.dma))
-                    System::DebugTrap("TIM: channels require different DMA resources");
+                    STM32_CONFIG_ERROR("TIM: channels require different DMA resources");
 #if defined(STM32G0)
             if (has_dma && !DMA_Sx::ValidResource(cfg.dma))
-                System::DebugTrap("TIM: invalid physical DMA channel");
+                STM32_CONFIG_ERROR("TIM: invalid physical DMA channel");
             if (has_dma && !DmaRequest(instance.periph, cfg.pin.channel))
 #else
             if (has_dma && !DmaMatches(instance.periph, cfg.pin.channel, cfg.dma))
 #endif
-                System::DebugTrap("TIM: invalid channel DMA route");
+                STM32_CONFIG_ERROR("TIM: invalid channel DMA route");
         }
     }
     TIM() = delete;

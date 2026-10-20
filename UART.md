@@ -32,7 +32,7 @@ USART provides independent byte-oriented TX/RX, blocking/IRQ/DMA operations and 
 
 Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use the provided _N::instance, named pins and optional _N::DMA routes. G0 takes numeric DMAx_Channely_BASE selections; the peripheral fixes the request source.
 
-For peripheral binding checks, each failing condition calls non-constexpr `System::DebugTrap` with its cause. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. At runtime the helper forwards to `System::DebugTrap`. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
 
 ---
 
@@ -185,9 +185,9 @@ after the pins: USART(instance, baud, tx_pin, rx_pin, dma_tx, dma_rx).
 Both default to {}. On G0 pass DMAx_Channely_BASE; USART selects its TX/RX request.
 F4/F7 requests already contain the stream. USART embeds both DMA_Sx objects.
 With constinit, the constexpr constructor checks request validity, ownership,
-direction and distinct TX/RX resources during compilation. Each failed check calls
-DebugTrap with a specific cause: constinit rejects the call at compilation;
-an ordinary runtime construction stops instead of invoking undefined behavior.
+direction and distinct TX/RX resources during compilation. Each failed check uses
+STM32_CONFIG_ERROR with its cause as a template argument, included in GCC's
+constinit diagnostic. Runtime construction forwards a failure to DebugTrap.
 constinit remains mandatory by the API contract. The deprecated CMSIS-pointer
 overload additionally performs runtime instance lookup. No Config object is needed.
 SetUp configures Byte/MINC, direction and DR/TDR/RDR and acquires the resources;
@@ -356,7 +356,7 @@ USART предоставляет независимые TX/RX, блокирую�
 
 Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте готовый _N::instance, именованные пины и необязательные маршруты _N::DMA. На G0 передаются числовые DMAx_Channely_BASE, источник запроса закрепляет периферия.
 
-При проверке привязок периферии каждое неверное условие вызывает неконстантный `System::DebugTrap` с причиной. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. При runtime-вызове функция передаёт строку в `System::DebugTrap`. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
 
 ---
 

@@ -209,27 +209,27 @@ public:
           _instance(instance), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
     {
         if (!sck.IsValid())
-            System::DebugTrap("SPI: SCK pin is required");
+            STM32_CONFIG_ERROR("SPI: SCK pin is required");
         if (sck.periph_base && sck.periph_base != instance.periph)
-            System::DebugTrap("SPI: SCK pin belongs to another peripheral");
+            STM32_CONFIG_ERROR("SPI: SCK pin belongs to another peripheral");
         if (mosi.IsValid() && mosi.periph_base && mosi.periph_base != instance.periph)
-            System::DebugTrap("SPI: MOSI pin belongs to another peripheral");
+            STM32_CONFIG_ERROR("SPI: MOSI pin belongs to another peripheral");
         if (miso.IsValid() && miso.periph_base && miso.periph_base != instance.periph)
-            System::DebugTrap("SPI: MISO pin belongs to another peripheral");
+            STM32_CONFIG_ERROR("SPI: MISO pin belongs to another peripheral");
         if (ss.IsValid() && ss.periph_base && ss.periph_base != instance.periph)
-            System::DebugTrap("SPI: NSS pin belongs to another peripheral");
+            STM32_CONFIG_ERROR("SPI: NSS pin belongs to another peripheral");
         if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
-            System::DebugTrap("SPI: invalid TX DMA route");
+            STM32_CONFIG_ERROR("SPI: invalid TX DMA route");
         if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
-            System::DebugTrap("SPI: invalid RX DMA route");
+            STM32_CONFIG_ERROR("SPI: invalid RX DMA route");
         if (DMA_Sx::SameResource(dma_tx, dma_rx))
-            System::DebugTrap("SPI: TX and RX require different DMA resources");
+            STM32_CONFIG_ERROR("SPI: TX and RX require different DMA resources");
         if (direction != Direction::TX && direction != Direction::RX && direction != Direction::TXRX)
-            System::DebugTrap("SPI: invalid direction");
+            STM32_CONFIG_ERROR("SPI: invalid direction");
         if (direction == Direction::TX && _dma_rx.HasSelection())
-            System::DebugTrap("SPI: TX direction cannot use RX DMA");
+            STM32_CONFIG_ERROR("SPI: TX direction cannot use RX DMA");
         if (direction == Direction::RX && _dma_tx.HasSelection())
-            System::DebugTrap("SPI: RX direction cannot use TX DMA");
+            STM32_CONFIG_ERROR("SPI: RX direction cannot use TX DMA");
     }
     SPI() = delete;
     SPI(const SPI&) = delete;

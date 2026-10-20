@@ -261,8 +261,9 @@ public:
 	 * @endcode
 	 * The constructor checks request validity, USART ownership, direction and
 	 * distinct TX/RX resources during constinit initialization. No Config wrapper
-	 * or template API is required. Each failed check calls DebugTrap with its cause:
-	 * constinit rejects that call at compilation; a runtime call stops execution.
+	 * or template API is required. Each failed check uses STM32_CONFIG_ERROR:
+	 * GCC shows its reason template argument in the constinit error message.
+	 * A runtime call forwards to DebugTrap and stops execution.
 	 * USART embeds two DMA_Sx objects; no external objects or heap allocation.
 	 * SetUp acquires the selected resources, configures Byte/MINC and the UART
 	 * data-register address, and registers separate DMA handlers. A failed setup
@@ -288,20 +289,20 @@ public:
 		, _dma_tx_irq(*this), _dma_rx_irq(*this)
 	{
 		if (tx.IsValid() && tx.periph_base && tx.periph_base != instance.periph)
-			System::DebugTrap("USART: TX pin belongs to another peripheral");
+			STM32_CONFIG_ERROR("USART: TX pin belongs to another peripheral");
 		if (rx.IsValid() && rx.periph_base && rx.periph_base != instance.periph)
-			System::DebugTrap("USART: RX pin belongs to another peripheral");
+			STM32_CONFIG_ERROR("USART: RX pin belongs to another peripheral");
 		if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
-			System::DebugTrap("USART: invalid TX DMA route");
+			STM32_CONFIG_ERROR("USART: invalid TX DMA route");
 		if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
-			System::DebugTrap("USART: invalid RX DMA route");
+			STM32_CONFIG_ERROR("USART: invalid RX DMA route");
 		if (DMA_Sx::SameResource(dma_tx, dma_rx))
-			System::DebugTrap("USART: TX and RX require different DMA resources");
+			STM32_CONFIG_ERROR("USART: TX and RX require different DMA resources");
 #if defined(STM32F7) || defined(STM32G0)
 		if (static_cast<uint32_t>(clock_source) > static_cast<uint32_t>(ClockSource::LSE))
-			System::DebugTrap("USART: invalid clock source");
+			STM32_CONFIG_ERROR("USART: invalid clock source");
 		if (!instance.clock_select && clock_source != ClockSource::PCLK)
-			System::DebugTrap("USART: this peripheral supports only PCLK");
+			STM32_CONFIG_ERROR("USART: this peripheral supports only PCLK");
 #endif
 	}
 
@@ -330,12 +331,12 @@ public:
 		, _dma_tx_irq(*this), _dma_rx_irq(*this)
 	{
 		if (tx.IsValid() && tx.periph_base && tx.periph_base != (uint32_t)usartx)
-			System::DebugTrap("USART: TX pin belongs to wrong peripheral");
+			STM32_CONFIG_ERROR("USART: TX pin belongs to wrong peripheral");
 		if (rx.IsValid() && rx.periph_base && rx.periph_base != (uint32_t)usartx)
-			System::DebugTrap("USART: RX pin belongs to wrong peripheral");
+			STM32_CONFIG_ERROR("USART: RX pin belongs to wrong peripheral");
 #if defined(STM32G0)
 		if (dma_tx && dma_tx == dma_rx)
-			System::DebugTrap("USART: TX and RX require different DMA channels");
+			STM32_CONFIG_ERROR("USART: TX and RX require different DMA channels");
 #else
 		const auto& tx_req = dma_tx;
 		const auto& rx_req = dma_rx;
@@ -345,13 +346,13 @@ public:
 		if (has_tx && (!_dma_tx.HasSelection() || !tx_req.IsValid()
 			|| tx_req.periph_base != reinterpret_cast<uintptr_t>(usartx)
 			|| tx_req.direction != DMA_Sx::DIR::To_Per))
-			System::DebugTrap("USART: invalid TX DMA request");
+			STM32_CONFIG_ERROR("USART: invalid TX DMA request");
 		if (has_rx && (!_dma_rx.HasSelection() || !rx_req.IsValid()
 			|| rx_req.periph_base != reinterpret_cast<uintptr_t>(usartx)
 			|| rx_req.direction != DMA_Sx::DIR::From_Per))
-			System::DebugTrap("USART: invalid RX DMA request");
+			STM32_CONFIG_ERROR("USART: invalid RX DMA request");
 		if (has_tx && has_rx && same_resource)
-			System::DebugTrap("USART: TX and RX require different DMA resources");
+			STM32_CONFIG_ERROR("USART: TX and RX require different DMA resources");
 #endif
 	}
 	USART() = delete;

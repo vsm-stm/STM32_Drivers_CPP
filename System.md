@@ -448,11 +448,12 @@ Behavior depends on the build:
   forever. Optimisation can discard unused diagnostic strings without LTO;
   their removal still depends on the build settings.
 
-DebugTrap is deliberately non-constexpr. Fixed-binding constructor checks call
-it with distinct messages. A failed check under constinit/consteval therefore
-rejects compilation at the relevant call; without constinit, a failed runtime
-construction stops in DebugTrap. constinit remains required by the driver API
-contract. See [Initialization.md](Initialization.md) for examples and diagnostics.
+Fixed-binding constructor checks use STM32_CONFIG_ERROR("reason"). Its
+non-constexpr function template stm32::CONFIGURATION_ERROR<reason>() carries
+the string as a template argument, so GCC includes the reason in the error
+message under constinit/consteval. At runtime it forwards to DebugTrap.
+constinit remains required by the driver API contract. See
+[Initialization.md](Initialization.md) for examples and diagnostics.
 
 The debugger must configure ITM/SWO. Disabled trace or `nullptr` skips the
 output; G0/L0 have no ITM output. An enabled but stalled ITM channel can keep
@@ -1011,11 +1012,12 @@ CMSIS обрабатывает пересекающиеся 32-байтные с
   бесконечный цикл. Оптимизатор может удалить неиспользуемые строки без LTO;
   фактическое удаление зависит от параметров сборки.
 
-DebugTrap намеренно не constexpr. Проверки постоянных привязок вызывают его с
-разными сообщениями. Неверный аргумент при constinit/consteval отклоняется при
-компиляции на строке соответствующего вызова. Без constinit неверное
-runtime-создание останавливается в DebugTrap. По контракту API драйверы требуется
-объявлять с constinit. Примеры и диагностика: [Initialization.md](Initialization.md).
+Проверки постоянных привязок используют STM32_CONFIG_ERROR("причина").
+Неконстантная функция stm32::CONFIGURATION_ERROR<reason>() получает строку как
+параметр шаблона: при constinit/consteval GCC включает её в само сообщение ошибки.
+При runtime-вызове функция передаёт строку в DebugTrap. По контракту API драйверы
+требуется объявлять с constinit. Примеры и диагностика:
+[Initialization.md](Initialization.md).
 
 ITM/SWO настраивает отладчик. При выключенной трассировке или `nullptr` вывод
 пропускается; на G0/L0 ITM-вывода нет. Включённый, но остановившийся канал ITM

@@ -309,6 +309,34 @@ public:
 #endif
 };
 
+namespace stm32 {
+
+/** @brief Structural string value: the reason appears in template diagnostics. */
+template<std::size_t N>
+struct Text {
+	char s[N];
+	consteval Text(const char (&message)[N])
+	{
+		for (std::size_t i = 0; i < N; ++i) s[i] = message[i];
+	}
+};
+
+/**
+ * @brief Reject an invalid constant configuration with the reason in diagnostics.
+ * Deliberately not constexpr: constinit/consteval cannot call this function.
+ * GCC includes the reason template argument in the diagnostic. A runtime
+ * constructor reaches the same DebugTrap behavior as a direct call.
+ */
+template<Text reason>
+[[noreturn]] void CONFIGURATION_ERROR()
+{
+	System::DebugTrap(reason.s);
+}
+
+} // namespace stm32
+
+#define STM32_CONFIG_ERROR(text) ::stm32::CONFIGURATION_ERROR<text>()
+
 // ---------------------------------------------------------------------------
 // Bit-banding helpers (STM32F4 only — Cortex-M4 with bit-band region)
 // ---------------------------------------------------------------------------

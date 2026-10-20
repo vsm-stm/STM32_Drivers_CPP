@@ -25,11 +25,13 @@ The driver, embedded DMA and IRQ adapters have `constexpr` constructors. During
 constant initialization, invalid pin ownership, DMA ownership/direction/resource,
 duplicate TX/RX resources, and fixed mode constraints reject the declaration.
 TIM also checks channel ownership, duplicate channels and channel DMA routes.
-There is no separate Config object or template driver API. Each failed check
-calls non-constexpr `System::DebugTrap` with a specific reason. Under `constinit`,
-that call is rejected during compilation; GCC points to the failing check and its
-message. The existing consteval PIN/ADC_PIN/TIM_PIN descriptor constructors use
-the same diagnostic mechanism.
+There is no separate Config object or template driver API. Each failed check uses
+`STM32_CONFIG_ERROR("reason")`, which calls non-constexpr
+`stm32::CONFIGURATION_ERROR<reason>()`. The reason is a string template argument,
+so GCC includes it in the diagnostic itself, not only in a source-code excerpt.
+Under `constinit`, the call rejects constant initialization. Existing consteval
+PIN/ADC_PIN/TIM_PIN descriptor constructors use the same mechanism. At runtime
+the helper calls `System::DebugTrap(reason.s)`.
 
 `constinit` is required by this usage contract. Omitting it does not require the
 compiler to evaluate the constructor during translation. A constructor cannot
@@ -120,10 +122,12 @@ updating references to the old request API.
 адресу нет. Имеющиеся конструкторы описаний PIN/ADC_PIN/TIM_PIN сохраняются.
 
 `constinit` обязателен по контракту использования нового API. Конструктор не может
-проверить наличие этого слова в объявлении. Каждая проверка вызывает
-неконстантный `System::DebugTrap("модуль: причина")`. При `constinit` компилятор
-отклоняет вызов и показывает строку конкретной проверки. То же действует в
-consteval-конструкторах PIN/ADC_PIN/TIM_PIN.
+проверить наличие этого слова в объявлении. Каждая проверка использует
+`STM32_CONFIG_ERROR("модуль: причина")`. Макрос вызывает неконстантную функцию
+`stm32::CONFIGURATION_ERROR<reason>()`: строка — параметр шаблона, поэтому GCC
+включает причину в само сообщение ошибки, а не только в показанный исходник.
+То же действует в consteval-конструкторах PIN/ADC_PIN/TIM_PIN. При runtime-вызове
+функция передаёт эту строку в `System::DebugTrap`.
 
 Без `constinit` неверная привязка при runtime-создании останавливает программу в
 DebugTrap; неопределённого поведения через unreachable больше нет. Это страховка,
@@ -477,11 +481,27 @@ constinit USART bad_dma(U::instance, 115200, U::TX::PD8, U::RX::PD9,
     {}, U::DMA::TX_DMA1_Stream3);
 ```
 
-GCC выводит цепочку constexpr expansion и строку вызова DebugTrap. В первом случае
-она содержит `USART: TX pin belongs to another peripheral`, во втором —
-`USART: invalid RX DMA route`. Точное оформление зависит от версии GCC: сообщение
-передаётся строковым аргументом, не через static_assert. При исправлении смотрите
-первую ошибку и строку проверки, а не вторичные сообщения разбора класса.
+GCC сообщает, что вызов CONFIGURATION_ERROR не является constexpr, и печатает
+параметр шаблона `reason`. В первом случае он содержит
+`USART: TX pin belongs to another peripheral`, во втором —
+`USART: invalid RX DMA route`. Точное оформление зависит от версии GCC; ниже
+показан существенный фрагмент сообщения, а не результат сборки этой редакции:
+
+```text
+call to non-'constexpr' function 'void stm32::CONFIGURATION_ERROR()
+[with Text<...> reason = ...{"USART: TX pin belongs to another peripheral"}]'
+```
+
+Общий механизм находится в system.hpp. В конструкторе остаётся отдельная
+проверка с её конкретной причиной:
+
+```cpp
+if (tx.IsValid() && tx.periph_base && tx.periph_base != instance.periph)
+    STM32_CONFIG_ERROR("USART: TX pin belongs to another peripheral");
+```
+
+Шаблон используется внутри диагностики, сигнатуры конструкторов не меняются.
+При исправлении смотрите первую ошибку с reason, а не вторичные сообщения.
 
 | Модуль | Различаемые причины в конструкторе |
 |---|---|
