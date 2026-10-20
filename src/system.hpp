@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <cstddef>
+#include <type_traits>
 
 extern "C"
 {
@@ -324,8 +325,9 @@ struct Text {
 /**
  * @brief Reject an invalid constant configuration with the reason in diagnostics.
  * Deliberately not constexpr: constinit/consteval cannot call this function.
- * GCC includes the reason template argument in the diagnostic. A runtime
- * constructor reaches the same DebugTrap behavior as a direct call.
+ * GCC includes the reason template argument in the diagnostic. The macro
+ * selects this function only during constant evaluation; runtime checks
+ * call DebugTrap directly.
  */
 template<Text reason>
 [[noreturn]] void CONFIGURATION_ERROR()
@@ -335,7 +337,9 @@ template<Text reason>
 
 } // namespace stm32
 
-#define STM32_CONFIG_ERROR(text) ::stm32::CONFIGURATION_ERROR<text>()
+// Compile time: include the reason in diagnostics. Runtime: call DebugTrap directly.
+#define STM32_CONFIG_ERROR(text) \
+	(std::is_constant_evaluated() ? ::stm32::CONFIGURATION_ERROR<text>() : ::System::DebugTrap(text))
 
 // ---------------------------------------------------------------------------
 // Bit-banding helpers (STM32F4 only — Cortex-M4 with bit-band region)

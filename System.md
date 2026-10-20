@@ -451,7 +451,8 @@ Behavior depends on the build:
 Fixed-binding constructor checks use STM32_CONFIG_ERROR("reason"). Its
 non-constexpr function template stm32::CONFIGURATION_ERROR<reason>() carries
 the string as a template argument, so GCC includes the reason in the error
-message under constinit/consteval. At runtime it forwards to DebugTrap.
+message under constinit/consteval. std::is_constant_evaluated() selects this path;
+at runtime the macro calls DebugTrap(text) directly, without calling the template.
 constinit remains required by the driver API contract. See
 [Initialization.md](Initialization.md) for examples and diagnostics.
 
@@ -1015,7 +1016,8 @@ CMSIS обрабатывает пересекающиеся 32-байтные с
 Проверки постоянных привязок используют STM32_CONFIG_ERROR("причина").
 Неконстантная функция stm32::CONFIGURATION_ERROR<reason>() получает строку как
 параметр шаблона: при constinit/consteval GCC включает её в само сообщение ошибки.
-При runtime-вызове функция передаёт строку в DebugTrap. По контракту API драйверы
+Путь выбирает std::is_constant_evaluated(); во время выполнения макрос напрямую
+вызывает DebugTrap(text), без вызова шаблонной функции. По контракту API драйверы
 требуется объявлять с constinit. Примеры и диагностика:
 [Initialization.md](Initialization.md).
 

@@ -21,7 +21,8 @@ English/Русский, оглавление для каждого языка, �
 
 `constinit` обязателен по контракту API. Каждая неверная привязка вызывает
 `STM32_CONFIG_ERROR` с причиной как параметром шаблона: при `constinit` GCC включает
-её в сообщение ошибки. При runtime-создании функция вызывает `DebugTrap`.
+её в сообщение ошибки. Через `std::is_constant_evaluated()` макрос выбирает путь;
+при runtime-создании напрямую вызывает `DebugTrap(text)`.
 `__builtin_unreachable` для этих проверок не используется. В Release DebugTrap
 определён inline без вывода сообщения.
 
@@ -208,7 +209,7 @@ constinit USART debug(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1
 Each pin from `USART::_1::TX::PB6` carries its owning peripheral base. A mismatched
 pin rejects constinit construction through STM32_CONFIG_ERROR, whose reason
 template argument appears in GCC's diagnostic. Without constinit, an invalid
-runtime construction forwards to DebugTrap and stops.
+runtime construction calls DebugTrap directly and stops.
 The deprecated CMSIS-pointer constructor also retains runtime instance lookup.
 
 ### IRQ_Registry — a single interrupt dispatcher

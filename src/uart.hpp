@@ -263,7 +263,7 @@ public:
 	 * distinct TX/RX resources during constinit initialization. No Config wrapper
 	 * or template API is required. Each failed check uses STM32_CONFIG_ERROR:
 	 * GCC shows its reason template argument in the constinit error message.
-	 * A runtime call forwards to DebugTrap and stops execution.
+	 * At runtime the macro calls DebugTrap directly and stops execution.
 	 * USART embeds two DMA_Sx objects; no external objects or heap allocation.
 	 * SetUp acquires the selected resources, configures Byte/MINC and the UART
 	 * data-register address, and registers separate DMA handlers. A failed setup

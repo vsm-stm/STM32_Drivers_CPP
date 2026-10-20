@@ -26,12 +26,13 @@ constant initialization, invalid pin ownership, DMA ownership/direction/resource
 duplicate TX/RX resources, and fixed mode constraints reject the declaration.
 TIM also checks channel ownership, duplicate channels and channel DMA routes.
 There is no separate Config object or template driver API. Each failed check uses
-`STM32_CONFIG_ERROR("reason")`, which calls non-constexpr
+`STM32_CONFIG_ERROR("reason")`, which uses `std::is_constant_evaluated()` to select
+the diagnostic path. During constant evaluation it calls non-constexpr
 `stm32::CONFIGURATION_ERROR<reason>()`. The reason is a string template argument,
 so GCC includes it in the diagnostic itself, not only in a source-code excerpt.
 Under `constinit`, the call rejects constant initialization. Existing consteval
 PIN/ADC_PIN/TIM_PIN descriptor constructors use the same mechanism. At runtime
-the helper calls `System::DebugTrap(reason.s)`.
+the macro calls `System::DebugTrap(text)` directly, without a call to the template.
 
 `constinit` is required by this usage contract. Omitting it does not require the
 compiler to evaluate the constructor during translation. A constructor cannot
@@ -123,11 +124,12 @@ updating references to the old request API.
 
 `constinit` обязателен по контракту использования нового API. Конструктор не может
 проверить наличие этого слова в объявлении. Каждая проверка использует
-`STM32_CONFIG_ERROR("модуль: причина")`. Макрос вызывает неконстантную функцию
+`STM32_CONFIG_ERROR("модуль: причина")`. Макрос выбирает путь через
+`std::is_constant_evaluated()`. При постоянном вычислении вызывает неконстантную функцию
 `stm32::CONFIGURATION_ERROR<reason>()`: строка — параметр шаблона, поэтому GCC
 включает причину в само сообщение ошибки, а не только в показанный исходник.
-То же действует в consteval-конструкторах PIN/ADC_PIN/TIM_PIN. При runtime-вызове
-функция передаёт эту строку в `System::DebugTrap`.
+То же действует в consteval-конструкторах PIN/ADC_PIN/TIM_PIN. Во время выполнения
+макрос напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции.
 
 Без `constinit` неверная привязка при runtime-создании останавливает программу в
 DebugTrap; неопределённого поведения через unreachable больше нет. Это страховка,
