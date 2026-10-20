@@ -12,11 +12,11 @@
  * Initialize System/RCC before SetUp(). PCLK is the default; on F7/G0 the
  * constructor can select SYSCLK, HSI or LSE where the instance supports them.
  * SetUp() uses oversampling x16 and a selected 8N1/8E1/8O1/8N2 frame (default
- * 8N1); G0 PRESC is /1. Peripheral tables provide clock
+ * 8N1); G0 PRESC is /1. The selected instance provides clock
  * gates, PCLK variables, vectors and pins for the selected MCU. Named DMAReq
  * entries carry USART ownership/direction; DMA objects are stored inside USART.
  * TX/RX pins come from USART::_N::TX/RX. Their number/AF are defined by PIN;
- * the USART constructor checks the owning peripheral at run time.
+ * constinit construction checks ownership and DMA compatibility at compilation.
  *
  * SetUp() registers the UART IRQ once and separate TX/RX DMA
  * handlers, including two entries when the directions share one hardware vector.
@@ -64,7 +64,7 @@
  *
  * Blocking example (after System/RCC initialization)
  * @code
- *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+ *   constinit USART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
  *   if (uart.SetUp() == SysInitStatus::InitOK) {
  *       uint8_t message[] = "Hello\r\n";
  *       SysStatus sent = uart.Send(message, sizeof(message) - 1, 100);
@@ -132,6 +132,20 @@ public:
 	enum class FrameFormat : uint8_t { N8_1, E8_1, O8_1, N8_2 };
 	// Named pin tables, FIFO enums and family-specific register accessors.
 	// For example USART::_1::TX::PB6 stores port, pin, AF and USART1 ownership.
+    /** Fixed device metadata from uart_defs.hpp; no runtime lookup. */
+    struct Instance {
+        uintptr_t periph;
+        uintptr_t clk_reg;
+        uint32_t clk_bit;
+        const uint32_t* bus_clk;
+        IRQn_Type irq;
+#if defined(STM32F7) || defined(STM32G0)
+        uint32_t clock_select; ///< Two-bit RCC selector mask; zero means fixed PCLK.
+#endif
+#if defined(STM32G0)
+        uint32_t dma_tx_request, dma_rx_request;
+#endif
+    };
 #include "uart_defs.hpp"
 
 #if defined(STM32F7) || defined(STM32G0)
@@ -142,7 +156,7 @@ public:
 	 * The caller enables HSI/LSE before SetUp() and keeps the source running.
 	 * Keep RCC source frequencies and bus dividers unchanged while UART is in use.
 	 */
-	enum class 
+	enum class
 	ClockSource : uint8_t {
 		PCLK = 0,   ///< APB clock for this instance (default).
 		SYSCLK = 1, ///< System clock before the AHB divider.
@@ -179,7 +193,7 @@ public:
 	};
 
 #if defined(STM32G0)
-	using DMAReq = DMA_Channel_TypeDef*; ///< Request source follows USART and TX/RX.
+	using DMAReq = uintptr_t; ///< Request source follows USART and TX/RX.
 #else
 	using DMAReq = DMA_Sx::DMAReq;
 #endif
@@ -204,14 +218,14 @@ public:
 	/**
 	 * @brief Fix peripheral, pins, optional DMA and clock; SetUp configures hardware.
 	 *
-	 * A valid pin carrying a different peripheral base calls System::DebugTrap().
-	 * This ownership check is performed at run time; construction is not SetUp().
+	 * Declare a static/global object with constinit to check pins/DMA at compilation.
+	 * No hardware is accessed. The deprecated pointer overload checks at runtime.
 	 *
-	 * @param usartx Hardware USART/UART pointer, for example USART1.
+	 * @param instance USART::_N::instance; the legacy overload accepts a CMSIS pointer.
 	 * @param baudrate Requested bits per second; validated against the kernel clock.
 	 * @param tx Named USART::_N::TX pin, or PIN{} to leave TX unconfigured.
 	 * @param rx Named USART::_N::RX pin, or PIN{} to leave RX unconfigured.
-	 * @param dma_tx Named TX request; {} means no DMA. On G0: {channel, request}.
+	 * @param dma_tx Named TX request; {} means no DMA. On G0: DMAx_Channely_BASE.
 	 * @param dma_rx Named RX request; {} means no DMA. TX/RX resources must differ.
 	 * @param clock_source F7/G0 only: kernel clock, PCLK by default. Immutable;
 	 *        SetUp() applies the choice but never starts an oscillator. An unavailable
@@ -219,54 +233,91 @@ public:
 	 *
 	 * TX-only example:
 	 * @code
-	 *   USART log(USART2, 115200, USART::_2::TX::PA2, PIN{});
+	 *   constinit USART log(USART::_2::instance, 115200, USART::_2::TX::PA2, PIN{});
 	 *   SysInitStatus status = log.SetUp();
 	 * @endcode
 	 *
 	 * F7/G0 HSI example, after the caller has enabled HSI and waited for HSIRDY:
 	 * @code
-	 *   USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+	 *   constinit USART link(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
 	 *              {}, {}, USART::ClockSource::HSI);
 	 *   SysInitStatus status = link.SetUp();
 	 * @endcode
 	 *
 	 * G0 DMA example (select channels available on the chosen MCU):
 	 * @code
-	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-	 *              DMA1_Channel4,
-	 *              DMA1_Channel5);
+	 *   constinit USART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+	 *              DMA1_Channel4_BASE,
+	 *              DMA1_Channel5_BASE);
 	 *   SysInitStatus status = uart.SetUp(); // Configures UART and both DMA channels.
 	 * @endcode
 	 *
 	 * F4/F7 DMA construction (stream and CHSEL are part of DMAReq):
 	 * @code
-	 *   USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-	 *              DMA_Sx::Req::Usart1::TX_DMA2_Stream7,
-	 *              DMA_Sx::Req::Usart1::RX_DMA2_Stream5);
+	 *   constinit USART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+	 *              USART::_1::DMA::TX_DMA2_Stream7,
+	 *              USART::_1::DMA::RX_DMA2_Stream5);
 	 *   SysInitStatus status = uart.SetUp();
 	 * @endcode
 	 * The constructor checks request validity, USART ownership, direction and
-	 * distinct TX/RX resources through DebugTrap, as for pin ownership. This is
-	 * a runtime construction check, not consteval. No Config wrapper is required.
+	 * distinct TX/RX resources during constinit initialization. No Config wrapper
+	 * or template API is required. Only the deprecated pointer overload uses DebugTrap.
 	 * USART embeds two DMA_Sx objects; no external objects or heap allocation.
 	 * SetUp acquires the selected resources, configures Byte/MINC and the UART
 	 * data-register address, and registers separate DMA handlers. A failed setup
 	 * releases only resources acquired by that call. DeInit releases DMA but
 	 * preserves these bindings. Blocking and IRQ methods remain available.
 	 */
-	explicit USART(USART_TypeDef* usartx, uint32_t baudrate,
-		PIN tx = PIN{}, PIN rx = PIN{},
-		DMAReq dma_tx = {}, DMAReq dma_rx = {}
+	/// Use constinit at static storage duration to require checked constant initialization.
+	constexpr explicit USART(const Instance& instance, uint32_t baudrate,
+		PIN tx = {}, PIN rx = {}, DMAReq dma_tx = {}, DMAReq dma_rx = {}
 #if defined(STM32F7) || defined(STM32G0)
 		, ClockSource clock_source = ClockSource::PCLK
 #endif
 		)
-		: USARTx(usartx), BaudRate(baudrate), _TX(tx), _RX(rx)
+		: _instance(instance), BaudRate(baudrate), _TX(tx), _RX(rx)
 #if defined(STM32F7) || defined(STM32G0)
 		, _clock_source(clock_source)
 #endif
 #if defined(STM32G0)
-		, _dma_tx(dma_tx, DmaRequest(usartx, true)), _dma_rx(dma_rx, DmaRequest(usartx, false))
+		, _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request)
+#else
+		, _dma_tx(dma_tx), _dma_rx(dma_rx)
+#endif
+		, _dma_tx_irq(*this), _dma_rx_irq(*this)
+	{
+		if ((tx.IsValid() && tx.periph_base && tx.periph_base != instance.periph)
+			|| (rx.IsValid() && rx.periph_base && rx.periph_base != instance.periph)
+			|| !DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per)
+			|| !DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per)
+			|| DMA_Sx::SameResource(dma_tx, dma_rx))
+			__builtin_unreachable();
+#if defined(STM32F7) || defined(STM32G0)
+		if (static_cast<uint32_t>(clock_source) > static_cast<uint32_t>(ClockSource::LSE)
+			|| (!instance.clock_select && clock_source != ClockSource::PCLK))
+			__builtin_unreachable();
+#endif
+	}
+
+	/// Compatibility path only: lookup and validation occur at runtime.
+	[[deprecated("Use instance and constinit")]]
+	explicit USART(USART_TypeDef* usartx, uint32_t baudrate,
+		PIN tx = PIN{}, PIN rx = PIN{},
+		#if defined(STM32G0)
+		DMA_Channel_TypeDef* dma_tx = nullptr, DMA_Channel_TypeDef* dma_rx = nullptr
+#else
+		DMAReq dma_tx = {}, DMAReq dma_rx = {}
+#endif
+#if defined(STM32F7) || defined(STM32G0)
+		, ClockSource clock_source = ClockSource::PCLK
+#endif
+		)
+		: _instance(FindInstance(usartx)), USARTx(usartx), BaudRate(baudrate), _TX(tx), _RX(rx)
+#if defined(STM32F7) || defined(STM32G0)
+		, _clock_source(clock_source)
+#endif
+#if defined(STM32G0)
+		, _dma_tx(dma_tx, _instance.dma_tx_request), _dma_rx(dma_rx, _instance.dma_rx_request)
 #else
 		, _dma_tx(dma_tx), _dma_rx(dma_rx)
 #endif
@@ -643,35 +694,24 @@ public:
 	void DeInit();
 
 private:
-	USART_TypeDef* const USARTx; ///< Hardware binding is fixed by the constructor.
+	const Instance& _instance;
+	USART_TypeDef* USARTx = nullptr; ///< Hardware binding is fixed by the constructor.
 	uint32_t BaudRate;     ///< Requested baud retained across DeInit()/SetUp().
 
 	/**
-	 * @brief One row of the static peripheral table defined by uart_defs.hpp.
-	 * SetUp() looks up the hardware pointer once and retains the selected row.
+	 * @brief Active setup metadata; the fixed instance is bound by the constructor.
+	 * _info remains null until successful hardware setup; it is not a lookup result.
 	 * bus_clk points to the System PCLK variable maintained by RCC setup.
 	 */
-	struct PeriphInfo {
-		USART_TypeDef* periph;
-		volatile uint32_t* clk_reg;
-		uint32_t clk_bit;
-		const uint32_t* bus_clk;
-		IRQn_Type irq;
-#if defined(STM32F7) || defined(STM32G0)
-		uint32_t clock_select; ///< Two-bit RCC selector mask; zero means fixed PCLK.
-#endif
-	};
-	static const PeriphInfo usart_table[];
+	using PeriphInfo = Instance;
 	PIN _TX; ///< Optional TX pin and stored AF.
 	PIN _RX; ///< Optional RX pin and stored AF.
 #if defined(STM32F7) || defined(STM32G0)
 	const ClockSource _clock_source; ///< Constructor choice, retained across DeInit().
 #endif
 	/// Selected nominal kernel frequency; zero for an unavailable/not-ready source.
+	static const Instance& FindInstance(USART_TypeDef* usart);
 	uint32_t KernelClock(const PeriphInfo& info) const;
-#if defined(STM32G0)
-	static uint32_t DmaRequest(USART_TypeDef* usart, bool tx);
-#endif
 
 	/**
 	 * @brief Asynchronous transfer descriptor, initialized before enabling a source.
@@ -712,14 +752,14 @@ private:
 	// Each adapter forwards directly to one DMA direction; no source selection.
 	class DmaTxIRQ final : public IIRQHandler {
 	public:
-		explicit DmaTxIRQ(USART& uart) : _uart(uart) {}
+		constexpr explicit DmaTxIRQ(USART& uart) : _uart(uart) {}
 		void HandleIRQ() override { _uart.HandleDmaTxIRQ(); }
 	private:
 		USART& _uart;
 	};
 	class DmaRxIRQ final : public IIRQHandler {
 	public:
-		explicit DmaRxIRQ(USART& uart) : _uart(uart) {}
+		constexpr explicit DmaRxIRQ(USART& uart) : _uart(uart) {}
 		void HandleIRQ() override { _uart.HandleDmaRxIRQ(); }
 	private:
 		USART& _uart;
@@ -765,7 +805,7 @@ protected:
 	 *       }
 	 *   };
 	 *
-	 *   Link link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+	 *   constinit Link link(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 	 *   static uint8_t message[] = "Hello\r\n";
 	 *   if (link.SetUp() == SysInitStatus::InitOK) {
 	 *       link.IRQ_en(USART::IRQ::TC, ENABLE);
@@ -817,5 +857,45 @@ protected:
 	virtual void OnError(uint32_t errors);
 	/** @} */
 };
+
+// Emitted only for callers of the deprecated pointer constructor.
+inline const USART::Instance& USART::FindInstance(USART_TypeDef* usart)
+{
+    switch (reinterpret_cast<uintptr_t>(usart)) {
+#ifdef USART1_BASE
+    case USART1_BASE: return _1::instance;
+#endif
+#ifdef USART2_BASE
+    case USART2_BASE: return _2::instance;
+#endif
+#ifdef USART3_BASE
+    case USART3_BASE: return _3::instance;
+#endif
+#if defined(USART4_BASE)
+    case USART4_BASE: return _4::instance;
+#elif defined(UART4_BASE)
+    case UART4_BASE: return _4::instance;
+#endif
+#if defined(USART5_BASE)
+    case USART5_BASE: return _5::instance;
+#elif defined(UART5_BASE)
+    case UART5_BASE: return _5::instance;
+#endif
+#ifdef USART6_BASE
+    case USART6_BASE: return _6::instance;
+#endif
+#if defined(USART7_BASE)
+    case USART7_BASE: return _7::instance;
+#elif defined(UART7_BASE)
+    case UART7_BASE: return _7::instance;
+#endif
+#if defined(USART8_BASE)
+    case USART8_BASE: return _8::instance;
+#elif defined(UART8_BASE)
+    case UART8_BASE: return _8::instance;
+#endif
+    default: System::DebugTrap("USART: unknown legacy instance");
+    }
+}
 
 #endif

@@ -1,43 +1,77 @@
 /**
- * @file    tim_defs.hpp
- * @brief   All compile-time and run-time tables for the TIM driver.
+ * @file tim_defs.hpp
+ * @brief Selected-device instance, pin and DMA definitions for TIM.
  *
- * Two sections, each activated by a different preprocessor symbol.
+ * The public driver header includes the declaration section inside its class.
+ * Each _N owns an immutable constexpr instance, named pins and DMA routes;
+ * unavailable instances are omitted by the selected CMSIS device guards.
+ * Numeric peripheral/RCC addresses support constant initialization without MMIO.
+ * Bus-clock pointers refer to ordinary System variables, not hardware registers.
  *
- * Section A — channel pin tables
- * -------------------------------------------------
- * Guard:  TIM_HPP_  (include-guard of tim.hpp, already defined when
- *                    "#include "tim_defs.hpp"" is reached inside the class body)
- *         also !TIM_DEFS_CPP to prevent re-emission at file scope.
- * Scope:  TIM class body — public nested types.
- * Result: TIM::_1::CH1::PA8, TIM::_3::CH3::PB0, etc.
- * TIM_PIN is defined before TIM in tim.hpp, with a public TIM::TIM_PIN alias.
- *
- * Section B — peripheral-info table (tim_table)
- * -----------------------------------------------
- * Guard:  TIM_DEFS_CPP  (defined in tim.cpp just before the include)
- * Scope:  file scope inside tim.cpp.
- * Result: TIM::tim_table[], tim_dma_routes[] and TIM::itr_table[] are defined.
- *
- * Usage
- * -----
- * tim.hpp (inside class body — TIM_HPP_ already defined):
+ * Application code includes tim.hpp and can shorten names with:
  * @code
- *   #include "tim_defs.hpp"   // Section A: channel pin tables
+ *   using Hardware = TIM::_1;
+ *   // Hardware::instance is the first argument of the constexpr constructor.
+ *   // Hardware::DMA contains that peripheral's existing request definitions.
+ *   // Declare the static/global driver object with constinit.
  * @endcode
- *
- * tim.cpp (after #include "tim.hpp"):
- * @code
- *   #define TIM_DEFS_CPP
- *   #include "tim_defs.hpp"   // Section B: tim_table
- *   #undef  TIM_DEFS_CPP
- * @endcode
+ * Fixed bindings are checked while evaluating the constructor. Device/package
+ * bonding remains an application responsibility. There is no runtime table
+ * mapping a peripheral address to its instance description.
+ * TIM_DMA_DEFS selects the post-class inline constexpr DMA route helpers.
+ * TIM_DEFS_CPP selects the runtime TRGO/ITR data used for object-to-object
+ * timer bindings. The second TIM is checked during Init, not in the constructor.
  */
-
 // ===========================================================================
 // Section A: channel pin tables — TIM class body
 // ===========================================================================
-#if defined(TIM_HPP_) && !defined(TIM_DEFS_CPP)
+#if defined(TIM_HPP_) && !defined(TIM_DEFS_CPP) && !defined(TIM_DMA_DEFS)
+
+// Constant metadata; no address-to-instance table.
+
+#if defined(STM32G0)
+#define TIM_INFO(dev, bus, up, cc, bdtr, channels, width) \
+	{ dev##_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR##bus)), RCC_APBENR##bus##_##dev##EN, \
+	  (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR##bus)), RCC_APBRSTR##bus##_##dev##RST, \
+	  &System::TIMxAPB1Clock, up, cc, bdtr, channels, width }
+#if defined(TIM4_BASE)
+#define TIM3_VECTOR TIM3_TIM4_IRQn
+#else
+#define TIM3_VECTOR TIM3_IRQn
+#endif
+#if defined(LPTIM1_BASE)
+#define TIM6_VECTOR TIM6_DAC_LPTIM1_IRQn
+#define TIM7_VECTOR TIM7_LPTIM2_IRQn
+#else
+#define TIM6_VECTOR TIM6_IRQn
+#define TIM7_VECTOR TIM7_IRQn
+#endif
+#if defined(FDCAN1_BASE)
+#define TIM16_VECTOR TIM16_FDCAN_IT0_IRQn
+#define TIM17_VECTOR TIM17_FDCAN_IT1_IRQn
+#else
+#define TIM16_VECTOR TIM16_IRQn
+#define TIM17_VECTOR TIM17_IRQn
+#endif
+
+#elif defined(STM32F4) || defined(STM32F7)
+#define TIM_INFO(dev, bus, up, cc, bdtr, channels, width) \
+	{ dev##_BASE, (RCC_BASE + offsetof(RCC_TypeDef, bus##ENR)), RCC_##bus##ENR_##dev##EN, \
+	  (RCC_BASE + offsetof(RCC_TypeDef, bus##RSTR)), RCC_##bus##RSTR_##dev##RST, \
+	  &System::TIMx##bus##Clock, up, cc, bdtr, channels, width }
+#if defined(TIM10_BASE)
+#define TIM1_UP_VECTOR TIM1_UP_TIM10_IRQn
+#else
+#define TIM1_UP_VECTOR TIM1_UP_IRQn
+#endif
+#if defined(DAC_BASE) || defined(DAC1_BASE)
+#define TIM6_VECTOR TIM6_DAC_IRQn
+#else
+#define TIM6_VECTOR TIM6_IRQn
+#endif
+// IRQ/clock/counter capabilities; PWM DMA routes follow this table.
+
+#endif // STM32 family
 
 // ---------------------------------------------------------------------------
 // Per-timer, per-channel pin tables (STM32G0)
@@ -52,6 +86,16 @@
 
 #if defined(TIM1_BASE)
 struct _1 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1  = { 20U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2  = { 21U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3  = { 22U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4  = { 23U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TRIG = { 24U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq UP   = { 25U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM1, 2, TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn, true, 4, 0xFFFFu);
+
 	// TIM1 — advanced timer, APBENR2, AF=2 for all G0 pins
 	struct CH1 {
 		static constexpr TIM_PIN PA8  = { GPIOA_BASE,  8, 2, 0, TIM1_BASE };
@@ -71,6 +115,16 @@ struct _1 {
 
 #if defined(TIM3_BASE)
 struct _3 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1  = { 32U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2  = { 33U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3  = { 34U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4  = { 35U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TRIG = { 36U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq UP   = { 37U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM3, 1, TIM3_VECTOR, TIM3_VECTOR, false, 4, 0xFFFFu);
+
 	// TIM3 — general-purpose, APBENR1, AF=1 for all G0 pins
 	struct CH1 {
 		static constexpr TIM_PIN PA6  = { GPIOA_BASE,  6, 1, 0, TIM3_BASE };
@@ -95,6 +149,10 @@ struct _3 {
 
 #if defined(TIM14_BASE)
 struct _14 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM14, 2, TIM14_IRQn, TIM14_IRQn, false, 1, 0xFFFFu);
+
 	// TIM14 — basic, APBENR2, single CH1
 	struct CH1 {
 		static constexpr TIM_PIN PA4  = { GPIOA_BASE,  4, 4, 0, TIM14_BASE };
@@ -106,6 +164,13 @@ struct _14 {
 
 #if defined(TIM16_BASE)
 struct _16 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1 = { 44U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq COM = { 45U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq UP  = { 46U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM16, 2, TIM16_VECTOR, TIM16_VECTOR, true, 1, 0xFFFFu);
+
 	// TIM16 — semi-advanced, APBENR2, single CH1 with BDTR
 	struct CH1 {
 		static constexpr TIM_PIN PA6  = { GPIOA_BASE,  6, 5, 0, TIM16_BASE };
@@ -116,6 +181,13 @@ struct _16 {
 
 #if defined(TIM17_BASE)
 struct _17 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1 = { 47U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq COM = { 48U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq UP  = { 49U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM17, 2, TIM17_VECTOR, TIM17_VECTOR, true, 1, 0xFFFFu);
+
 	// TIM17 — semi-advanced, APBENR2, single CH1 with BDTR
 	struct CH1 {
 		static constexpr TIM_PIN PA7  = { GPIOA_BASE,  7, 5, 0, TIM17_BASE };
@@ -131,6 +203,15 @@ struct _17 {
 
 #if defined(TIM1_BASE)
 struct _1 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1_DMA2_Stream1 = { DMA2_Stream1_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH1_DMA2_Stream3 = { DMA2_Stream3_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2_DMA2_Stream2 = { DMA2_Stream2_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3_DMA2_Stream6 = { DMA2_Stream6_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4_DMA2_Stream4 = { DMA2_Stream4_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM1, APB2, TIM1_UP_VECTOR, TIM1_CC_IRQn, true, 4, 0xFFFFu);
+
 	struct CH1 {
 		static constexpr TIM_PIN PA8  = { GPIOA_BASE,  8, 1, 0, TIM1_BASE };
 #if defined(GPIOE_BASE)
@@ -160,6 +241,14 @@ struct _1 {
 
 #if defined(TIM2_BASE)
 struct _2 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1_DMA1_Stream5 = { DMA1_Stream5_BASE, 3U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2_DMA1_Stream6 = { DMA1_Stream6_BASE, 3U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3_DMA1_Stream1 = { DMA1_Stream1_BASE, 3U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4_DMA1_Stream7 = { DMA1_Stream7_BASE, 3U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM2, APB1, TIM2_IRQn, TIM2_IRQn, false, 4, UINT32_MAX);
+
 	struct CH1 {
 		static constexpr TIM_PIN PA0  = { GPIOA_BASE,  0, 1, 0, TIM2_BASE };
 		static constexpr TIM_PIN PA5  = { GPIOA_BASE,  5, 1, 0, TIM2_BASE };
@@ -182,6 +271,14 @@ struct _2 {
 
 #if defined(TIM3_BASE)
 struct _3 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1_DMA1_Stream4 = { DMA1_Stream4_BASE, 5U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2_DMA1_Stream5 = { DMA1_Stream5_BASE, 5U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3_DMA1_Stream7 = { DMA1_Stream7_BASE, 5U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4_DMA1_Stream2 = { DMA1_Stream2_BASE, 5U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM3, APB1, TIM3_IRQn, TIM3_IRQn, false, 4, 0xFFFFu);
+
 	struct CH1 {
 		static constexpr TIM_PIN PA6  = { GPIOA_BASE,  6, 2, 0, TIM3_BASE };
 		static constexpr TIM_PIN PB4  = { GPIOB_BASE,  4, 2, 0, TIM3_BASE };
@@ -205,6 +302,13 @@ struct _3 {
 
 #if defined(TIM4_BASE)
 struct _4 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1_DMA1_Stream0 = { DMA1_Stream0_BASE, 2U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2_DMA1_Stream3 = { DMA1_Stream3_BASE, 2U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3_DMA1_Stream7 = { DMA1_Stream7_BASE, 2U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM4, APB1, TIM4_IRQn, TIM4_IRQn, false, 4, 0xFFFFu);
+
 	struct CH1 {
 		static constexpr TIM_PIN PB6  = { GPIOB_BASE,  6, 2, 0, TIM4_BASE };
 #if defined(GPIOD_BASE)
@@ -235,6 +339,15 @@ struct _4 {
 // Existing AF routes are retained. Select a pin bonded out in the chosen package.
 #if defined(TIM5_BASE)
 struct _5 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1_DMA1_Stream2 = { DMA1_Stream2_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2_DMA1_Stream4 = { DMA1_Stream4_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3_DMA1_Stream0 = { DMA1_Stream0_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4_DMA1_Stream1 = { DMA1_Stream1_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4_DMA1_Stream3 = { DMA1_Stream3_BASE, 6U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM5, APB1, TIM5_IRQn, TIM5_IRQn, false, 4, UINT32_MAX);
+
 	// TIM5 — general-purpose, 32-bit ARR, AF2. PA0-PA3 are shared with TIM2
 	// (AF1) on the same pins. Also available on PH10-12/PI0-3 on 176-pin
 	// packages; omitted here since those ports aren't fully bonded out on
@@ -256,6 +369,10 @@ struct _5 {
 
 #if defined(TIM9_BASE)
 struct _9 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM9, APB2, TIM1_BRK_TIM9_IRQn, TIM1_BRK_TIM9_IRQn, false, 2, 0xFFFFu);
+
 	// TIM9 — general-purpose, 2 channels, AF3.
 	struct CH1 {
 		static constexpr TIM_PIN PA2  = { GPIOA_BASE,  2, 3, 0, TIM9_BASE };
@@ -274,6 +391,10 @@ struct _9 {
 
 #if defined(TIM10_BASE)
 struct _10 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM10, APB2, TIM1_UP_TIM10_IRQn, TIM1_UP_TIM10_IRQn, false, 1, 0xFFFFu);
+
 	// TIM10 — general-purpose, single channel, AF3.
 	struct CH1 {
 		static constexpr TIM_PIN PB8  = { GPIOB_BASE,  8, 3, 0, TIM10_BASE };
@@ -286,6 +407,10 @@ struct _10 {
 
 #if defined(TIM11_BASE)
 struct _11 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM11, APB2, TIM1_TRG_COM_TIM11_IRQn, TIM1_TRG_COM_TIM11_IRQn, false, 1, 0xFFFFu);
+
 	// TIM11 — general-purpose, single channel, AF3.
 	struct CH1 {
 		static constexpr TIM_PIN PB9  = { GPIOB_BASE,  9, 3, 0, TIM11_BASE };
@@ -298,6 +423,10 @@ struct _11 {
 
 #if defined(TIM12_BASE)
 struct _12 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM12, APB1, TIM8_BRK_TIM12_IRQn, TIM8_BRK_TIM12_IRQn, false, 2, 0xFFFFu);
+
 	// TIM12 — general-purpose, 2 channels, AF9.
 	struct CH1 {
 		static constexpr TIM_PIN PB14 = { GPIOB_BASE, 14, 9, 0, TIM12_BASE };
@@ -316,6 +445,10 @@ struct _12 {
 
 #if defined(TIM13_BASE)
 struct _13 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM13, APB1, TIM8_UP_TIM13_IRQn, TIM8_UP_TIM13_IRQn, false, 1, 0xFFFFu);
+
 	// TIM13 — general-purpose, single channel, AF9.
 	struct CH1 {
 		static constexpr TIM_PIN PA6  = { GPIOA_BASE,  6, 9, 0, TIM13_BASE };
@@ -328,6 +461,14 @@ struct _13 {
 
 #if defined(TIM8_BASE)
 struct _8 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1_DMA2_Stream2 = { DMA2_Stream2_BASE, 7U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2_DMA2_Stream3 = { DMA2_Stream3_BASE, 7U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3_DMA2_Stream4 = { DMA2_Stream4_BASE, 7U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4_DMA2_Stream7 = { DMA2_Stream7_BASE, 7U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM8, APB2, TIM8_UP_TIM13_IRQn, TIM8_CC_IRQn, true, 4, 0xFFFFu);
+
 	struct CH1 {
 		static constexpr TIM_PIN PC6  = { GPIOC_BASE,  6, 3, 0, TIM8_BASE };
 	};
@@ -345,225 +486,185 @@ struct _8 {
 
 #endif  // STM32 family
 
-#endif  // Section A: defined(TIM_HPP_) && !defined(TIM_DEFS_CPP)
-
-// ===========================================================================
-// Section B: Peripheral-info table — tim.cpp file scope
-// ===========================================================================
-#ifdef TIM_DEFS_CPP
-
+// Instances without pin tables on the selected family.
 #if defined(STM32G0)
-#define TIM_INFO(dev, bus, up, cc, bdtr, channels, width) \
-	{ dev, &RCC->APBENR##bus, RCC_APBENR##bus##_##dev##EN, \
-	  &RCC->APBRSTR##bus, RCC_APBRSTR##bus##_##dev##RST, \
-	  &System::TIMxAPB1Clock, up, cc, bdtr, channels, width }
-#if defined(TIM4_BASE)
-#define TIM3_VECTOR TIM3_TIM4_IRQn
-#else
-#define TIM3_VECTOR TIM3_IRQn
-#endif
-#if defined(LPTIM1_BASE)
-#define TIM6_VECTOR TIM6_DAC_LPTIM1_IRQn
-#define TIM7_VECTOR TIM7_LPTIM2_IRQn
-#else
-#define TIM6_VECTOR TIM6_IRQn
-#define TIM7_VECTOR TIM7_IRQn
-#endif
-#if defined(FDCAN1_BASE)
-#define TIM16_VECTOR TIM16_FDCAN_IT0_IRQn
-#define TIM17_VECTOR TIM17_FDCAN_IT1_IRQn
-#else
-#define TIM16_VECTOR TIM16_IRQn
-#define TIM17_VECTOR TIM17_IRQn
-#endif
-const TIM::PeriphInfo TIM::tim_table[] = {
-#if defined(TIM1_BASE)
-	TIM_INFO(TIM1, 2, TIM1_BRK_UP_TRG_COM_IRQn, TIM1_CC_IRQn, true, 4, 0xFFFFu),
-#endif
-#if defined(TIM2_BASE)
-	TIM_INFO(TIM2, 1, TIM2_IRQn, TIM2_IRQn, false, 4, UINT32_MAX),
-#endif
-#if defined(TIM3_BASE)
-	TIM_INFO(TIM3, 1, TIM3_VECTOR, TIM3_VECTOR, false, 4, 0xFFFFu),
-#endif
-#if defined(TIM4_BASE)
-	TIM_INFO(TIM4, 1, TIM3_VECTOR, TIM3_VECTOR, false, 4, 0xFFFFu),
-#endif
-#if defined(TIM6_BASE)
-	TIM_INFO(TIM6, 1, TIM6_VECTOR, TIM6_VECTOR, false, 0, 0xFFFFu),
-#endif
-#if defined(TIM7_BASE)
-	TIM_INFO(TIM7, 1, TIM7_VECTOR, TIM7_VECTOR, false, 0, 0xFFFFu),
-#endif
-#if defined(TIM14_BASE)
-	TIM_INFO(TIM14, 2, TIM14_IRQn, TIM14_IRQn, false, 1, 0xFFFFu),
-#endif
-#if defined(TIM15_BASE)
-	TIM_INFO(TIM15, 2, TIM15_IRQn, TIM15_IRQn, true, 2, 0xFFFFu),
-#endif
-#if defined(TIM16_BASE)
-	TIM_INFO(TIM16, 2, TIM16_VECTOR, TIM16_VECTOR, true, 1, 0xFFFFu),
-#endif
-#if defined(TIM17_BASE)
-	TIM_INFO(TIM17, 2, TIM17_VECTOR, TIM17_VECTOR, true, 1, 0xFFFFu),
-#endif
+#ifdef TIM2_BASE
+struct _2 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1 = { 26U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2 = { 27U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3 = { 28U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4 = { 29U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM2, 1, TIM2_IRQn, TIM2_IRQn, false, 4, UINT32_MAX);
+
 };
+#endif
+#ifdef TIM4_BASE
+struct _4 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1 = { 68U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2 = { 69U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH3 = { 70U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH4 = { 71U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM4, 1, TIM3_VECTOR, TIM3_VECTOR, false, 4, 0xFFFFu);
+
+};
+#endif
+#ifdef TIM6_BASE
+struct _6 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM6, 1, TIM6_VECTOR, TIM6_VECTOR, false, 0, 0xFFFFu);
+
+};
+#endif
+#ifdef TIM7_BASE
+struct _7 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM7, 1, TIM7_VECTOR, TIM7_VECTOR, false, 0, 0xFFFFu);
+
+};
+#endif
+#ifdef TIM15_BASE
+struct _15 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq CH1 = { 40U, 0U, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq CH2 = { 41U, 0U, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = TIM_INFO(TIM15, 2, TIM15_IRQn, TIM15_IRQn, true, 2, 0xFFFFu);
+
+};
+#endif
+#else
+#ifdef TIM6_BASE
+struct _6 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM6, APB1, TIM6_VECTOR, TIM6_VECTOR, false, 0, 0xFFFFu);
+
+};
+#endif
+#ifdef TIM7_BASE
+struct _7 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM7, APB1, TIM7_IRQn, TIM7_IRQn, false, 0, 0xFFFFu);
+
+};
+#endif
+#endif
+#endif  // Section A: defined(TIM_HPP_) && !defined(TIM_DEFS_CPP) && !defined(TIM_DMA_DEFS)
+
 #undef TIM3_VECTOR
 #undef TIM6_VECTOR
 #undef TIM7_VECTOR
 #undef TIM16_VECTOR
 #undef TIM17_VECTOR
 #undef TIM_INFO
-
-#elif defined(STM32F4) || defined(STM32F7)
-#define TIM_INFO(dev, bus, up, cc, bdtr, channels, width) \
-	{ dev, &RCC->bus##ENR, RCC_##bus##ENR_##dev##EN, \
-	  &RCC->bus##RSTR, RCC_##bus##RSTR_##dev##RST, \
-	  &System::TIMx##bus##Clock, up, cc, bdtr, channels, width }
-#if defined(TIM10_BASE)
-#define TIM1_UP_VECTOR TIM1_UP_TIM10_IRQn
-#else
-#define TIM1_UP_VECTOR TIM1_UP_IRQn
-#endif
-#if defined(DAC_BASE) || defined(DAC1_BASE)
-#define TIM6_VECTOR TIM6_DAC_IRQn
-#else
-#define TIM6_VECTOR TIM6_IRQn
-#endif
-// IRQ/clock/counter capabilities; PWM DMA routes follow this table.
-const TIM::PeriphInfo TIM::tim_table[] = {
-#if defined(TIM1_BASE)
-	TIM_INFO(TIM1, APB2, TIM1_UP_VECTOR, TIM1_CC_IRQn, true, 4, 0xFFFFu),
-#endif
-#if defined(TIM2_BASE)
-	TIM_INFO(TIM2, APB1, TIM2_IRQn, TIM2_IRQn, false, 4, UINT32_MAX),
-#endif
-#if defined(TIM3_BASE)
-	TIM_INFO(TIM3, APB1, TIM3_IRQn, TIM3_IRQn, false, 4, 0xFFFFu),
-#endif
-#if defined(TIM4_BASE)
-	TIM_INFO(TIM4, APB1, TIM4_IRQn, TIM4_IRQn, false, 4, 0xFFFFu),
-#endif
-#if defined(TIM5_BASE)
-	TIM_INFO(TIM5, APB1, TIM5_IRQn, TIM5_IRQn, false, 4, UINT32_MAX),
-#endif
-#if defined(TIM6_BASE)
-	TIM_INFO(TIM6, APB1, TIM6_VECTOR, TIM6_VECTOR, false, 0, 0xFFFFu),
-#endif
-#if defined(TIM7_BASE)
-	TIM_INFO(TIM7, APB1, TIM7_IRQn, TIM7_IRQn, false, 0, 0xFFFFu),
-#endif
-#if defined(TIM8_BASE)
-	TIM_INFO(TIM8, APB2, TIM8_UP_TIM13_IRQn, TIM8_CC_IRQn, true, 4, 0xFFFFu),
-#endif
-#if defined(TIM9_BASE)
-	TIM_INFO(TIM9, APB2, TIM1_BRK_TIM9_IRQn, TIM1_BRK_TIM9_IRQn, false, 2, 0xFFFFu),
-#endif
-#if defined(TIM10_BASE)
-	TIM_INFO(TIM10, APB2, TIM1_UP_TIM10_IRQn, TIM1_UP_TIM10_IRQn, false, 1, 0xFFFFu),
-#endif
-#if defined(TIM11_BASE)
-	TIM_INFO(TIM11, APB2, TIM1_TRG_COM_TIM11_IRQn, TIM1_TRG_COM_TIM11_IRQn, false, 1, 0xFFFFu),
-#endif
-#if defined(TIM12_BASE)
-	TIM_INFO(TIM12, APB1, TIM8_BRK_TIM12_IRQn, TIM8_BRK_TIM12_IRQn, false, 2, 0xFFFFu),
-#endif
-#if defined(TIM13_BASE)
-	TIM_INFO(TIM13, APB1, TIM8_UP_TIM13_IRQn, TIM8_UP_TIM13_IRQn, false, 1, 0xFFFFu),
-#endif
-#if defined(TIM14_BASE)
-	TIM_INFO(TIM14, APB1, TIM8_TRG_COM_TIM14_IRQn, TIM8_TRG_COM_TIM14_IRQn, false, 1, 0xFFFFu),
-#endif
-};
 #undef TIM1_UP_VECTOR
 #undef TIM6_VECTOR
 #undef TIM_INFO
 
-
-#endif // STM32 family
-
-#endif // TIM_DEFS_CPP (Section B)
-
-#ifdef TIM_DEFS_CPP
-// Separate CC request per channel, selected through DMA_Sx::Req.
-struct TimDmaRoute { TIM_TypeDef* periph; uint8_t channel; DMA_Sx::DMAReq request; };
-static const TimDmaRoute tim_dma_routes[] = {
+#ifdef TIM_DMA_DEFS
+struct TimDmaRoute { uintptr_t periph; uint8_t channel; DMA_Sx::DMAReq request; };
+inline constexpr TimDmaRoute tim_dma_routes[] = {
 #if defined(STM32G0)
 #ifdef TIM1_BASE
-    { TIM1, 0, DMA_Sx::Req::Tim1::CH1 },
-    { TIM1, 1, DMA_Sx::Req::Tim1::CH2 },
-    { TIM1, 2, DMA_Sx::Req::Tim1::CH3 },
-    { TIM1, 3, DMA_Sx::Req::Tim1::CH4 },
+    { TIM1_BASE, 0, TIM::_1::DMA::CH1 },
+    { TIM1_BASE, 1, TIM::_1::DMA::CH2 },
+    { TIM1_BASE, 2, TIM::_1::DMA::CH3 },
+    { TIM1_BASE, 3, TIM::_1::DMA::CH4 },
 #endif
 #ifdef TIM2_BASE
-    { TIM2, 0, DMA_Sx::Req::Tim2::CH1 },
-    { TIM2, 1, DMA_Sx::Req::Tim2::CH2 },
-    { TIM2, 2, DMA_Sx::Req::Tim2::CH3 },
-    { TIM2, 3, DMA_Sx::Req::Tim2::CH4 },
+    { TIM2_BASE, 0, TIM::_2::DMA::CH1 },
+    { TIM2_BASE, 1, TIM::_2::DMA::CH2 },
+    { TIM2_BASE, 2, TIM::_2::DMA::CH3 },
+    { TIM2_BASE, 3, TIM::_2::DMA::CH4 },
 #endif
 #ifdef TIM3_BASE
-    { TIM3, 0, DMA_Sx::Req::Tim3::CH1 },
-    { TIM3, 1, DMA_Sx::Req::Tim3::CH2 },
-    { TIM3, 2, DMA_Sx::Req::Tim3::CH3 },
-    { TIM3, 3, DMA_Sx::Req::Tim3::CH4 },
+    { TIM3_BASE, 0, TIM::_3::DMA::CH1 },
+    { TIM3_BASE, 1, TIM::_3::DMA::CH2 },
+    { TIM3_BASE, 2, TIM::_3::DMA::CH3 },
+    { TIM3_BASE, 3, TIM::_3::DMA::CH4 },
 #endif
 #ifdef TIM4_BASE
-    { TIM4, 0, DMA_Sx::Req::Tim4::CH1 },
-    { TIM4, 1, DMA_Sx::Req::Tim4::CH2 },
-    { TIM4, 2, DMA_Sx::Req::Tim4::CH3 },
-    { TIM4, 3, DMA_Sx::Req::Tim4::CH4 },
+    { TIM4_BASE, 0, TIM::_4::DMA::CH1 },
+    { TIM4_BASE, 1, TIM::_4::DMA::CH2 },
+    { TIM4_BASE, 2, TIM::_4::DMA::CH3 },
+    { TIM4_BASE, 3, TIM::_4::DMA::CH4 },
 #endif
 #ifdef TIM15_BASE
-    { TIM15, 0, DMA_Sx::Req::Tim15::CH1 },
-    { TIM15, 1, DMA_Sx::Req::Tim15::CH2 },
+    { TIM15_BASE, 0, TIM::_15::DMA::CH1 },
+    { TIM15_BASE, 1, TIM::_15::DMA::CH2 },
 #endif
 #ifdef TIM16_BASE
-    { TIM16, 0, DMA_Sx::Req::Tim16::CH1 },
+    { TIM16_BASE, 0, TIM::_16::DMA::CH1 },
 #endif
 #ifdef TIM17_BASE
-    { TIM17, 0, DMA_Sx::Req::Tim17::CH1 },
+    { TIM17_BASE, 0, TIM::_17::DMA::CH1 },
 #endif
 #else
 #ifdef TIM1_BASE
-    { TIM1, 0, DMA_Sx::Req::Tim1::CH1_DMA2_Stream1 },
-    { TIM1, 0, DMA_Sx::Req::Tim1::CH1_DMA2_Stream3 },
-    { TIM1, 1, DMA_Sx::Req::Tim1::CH2_DMA2_Stream2 },
-    { TIM1, 2, DMA_Sx::Req::Tim1::CH3_DMA2_Stream6 },
-    { TIM1, 3, DMA_Sx::Req::Tim1::CH4_DMA2_Stream4 },
+    { TIM1_BASE, 0, TIM::_1::DMA::CH1_DMA2_Stream1 },
+    { TIM1_BASE, 0, TIM::_1::DMA::CH1_DMA2_Stream3 },
+    { TIM1_BASE, 1, TIM::_1::DMA::CH2_DMA2_Stream2 },
+    { TIM1_BASE, 2, TIM::_1::DMA::CH3_DMA2_Stream6 },
+    { TIM1_BASE, 3, TIM::_1::DMA::CH4_DMA2_Stream4 },
 #endif
 #ifdef TIM2_BASE
-    { TIM2, 0, DMA_Sx::Req::Tim2::CH1_DMA1_Stream5 },
-    { TIM2, 1, DMA_Sx::Req::Tim2::CH2_DMA1_Stream6 },
-    { TIM2, 2, DMA_Sx::Req::Tim2::CH3_DMA1_Stream1 },
-    { TIM2, 3, DMA_Sx::Req::Tim2::CH4_DMA1_Stream7 },
+    { TIM2_BASE, 0, TIM::_2::DMA::CH1_DMA1_Stream5 },
+    { TIM2_BASE, 1, TIM::_2::DMA::CH2_DMA1_Stream6 },
+    { TIM2_BASE, 2, TIM::_2::DMA::CH3_DMA1_Stream1 },
+    { TIM2_BASE, 3, TIM::_2::DMA::CH4_DMA1_Stream7 },
 #endif
 #ifdef TIM3_BASE
-    { TIM3, 0, DMA_Sx::Req::Tim3::CH1_DMA1_Stream4 },
-    { TIM3, 1, DMA_Sx::Req::Tim3::CH2_DMA1_Stream5 },
-    { TIM3, 2, DMA_Sx::Req::Tim3::CH3_DMA1_Stream7 },
-    { TIM3, 3, DMA_Sx::Req::Tim3::CH4_DMA1_Stream2 },
+    { TIM3_BASE, 0, TIM::_3::DMA::CH1_DMA1_Stream4 },
+    { TIM3_BASE, 1, TIM::_3::DMA::CH2_DMA1_Stream5 },
+    { TIM3_BASE, 2, TIM::_3::DMA::CH3_DMA1_Stream7 },
+    { TIM3_BASE, 3, TIM::_3::DMA::CH4_DMA1_Stream2 },
 #endif
 #ifdef TIM4_BASE
-    { TIM4, 0, DMA_Sx::Req::Tim4::CH1_DMA1_Stream0 },
-    { TIM4, 1, DMA_Sx::Req::Tim4::CH2_DMA1_Stream3 },
-    { TIM4, 2, DMA_Sx::Req::Tim4::CH3_DMA1_Stream7 },
+    { TIM4_BASE, 0, TIM::_4::DMA::CH1_DMA1_Stream0 },
+    { TIM4_BASE, 1, TIM::_4::DMA::CH2_DMA1_Stream3 },
+    { TIM4_BASE, 2, TIM::_4::DMA::CH3_DMA1_Stream7 },
 #endif
 #ifdef TIM5_BASE
-    { TIM5, 0, DMA_Sx::Req::Tim5::CH1_DMA1_Stream2 },
-    { TIM5, 1, DMA_Sx::Req::Tim5::CH2_DMA1_Stream4 },
-    { TIM5, 2, DMA_Sx::Req::Tim5::CH3_DMA1_Stream0 },
-    { TIM5, 3, DMA_Sx::Req::Tim5::CH4_DMA1_Stream1 },
-    { TIM5, 3, DMA_Sx::Req::Tim5::CH4_DMA1_Stream3 },
+    { TIM5_BASE, 0, TIM::_5::DMA::CH1_DMA1_Stream2 },
+    { TIM5_BASE, 1, TIM::_5::DMA::CH2_DMA1_Stream4 },
+    { TIM5_BASE, 2, TIM::_5::DMA::CH3_DMA1_Stream0 },
+    { TIM5_BASE, 3, TIM::_5::DMA::CH4_DMA1_Stream1 },
+    { TIM5_BASE, 3, TIM::_5::DMA::CH4_DMA1_Stream3 },
 #endif
 #ifdef TIM8_BASE
-    { TIM8, 0, DMA_Sx::Req::Tim8::CH1_DMA2_Stream2 },
-    { TIM8, 1, DMA_Sx::Req::Tim8::CH2_DMA2_Stream3 },
-    { TIM8, 2, DMA_Sx::Req::Tim8::CH3_DMA2_Stream4 },
-    { TIM8, 3, DMA_Sx::Req::Tim8::CH4_DMA2_Stream7 },
+    { TIM8_BASE, 0, TIM::_8::DMA::CH1_DMA2_Stream2 },
+    { TIM8_BASE, 1, TIM::_8::DMA::CH2_DMA2_Stream3 },
+    { TIM8_BASE, 2, TIM::_8::DMA::CH3_DMA2_Stream4 },
+    { TIM8_BASE, 3, TIM::_8::DMA::CH4_DMA2_Stream7 },
 #endif
 #endif
 };
-#endif // TIM_DEFS_CPP
+
+#if defined(STM32G0)
+constexpr uint32_t TIM::DmaRequest(uintptr_t timer, uint32_t ch)
+{
+    for (const auto& route : tim_dma_routes)
+        if (route.periph == timer && route.channel == ch) return route.request.ch;
+    return 0;
+}
+#else
+constexpr bool TIM::DmaMatches(uintptr_t timer, uint32_t ch, DMAReq req)
+{
+    if (!req.IsValid() || !DMA_Sx::ValidResource(req.stream)) return false;
+    for (const auto& route : tim_dma_routes)
+        if (route.periph == timer && route.channel == ch
+            && route.request.stream == req.stream && route.request.ch == req.ch) return true;
+    return false;
+}
+#endif
+#endif // TIM_DMA_DEFS
 
 #ifdef TIM_DEFS_CPP
 // Normal TRGO connections, ITR0..ITR3. OC-only slots and peripheral remaps are

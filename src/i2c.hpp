@@ -31,7 +31,7 @@
  * @code
  *   constexpr ClockSystem::Config clocks{}; // Default HSI, bus dividers /1.
  *   // In main, after successful System::Init() and ClockSystem::Init<clocks>():
- *   I2C i2c(I2C1, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9);
+ *   constinit I2C i2c(I2C::_1::instance, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9);
  *   i2c.SetUp<clocks, I2C::SPEED::FAST>();                // Bus=400 kHz.
  *
  *   uint8_t id;
@@ -57,10 +57,10 @@
  *   };
  *   // G0: the driver chooses the I2C1 TX/RX request sources itself.
  *   SensorBus bus(I2C1, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9,
- *                 DMA1_Channel1, DMA1_Channel2);
+ *                 DMA1_Channel1_BASE, DMA1_Channel2_BASE);
  *   // F4/F7: pass named routes instead of the physical G0 channels:
- *   // DMA_Sx::Req::I2c1::TX_DMA1_Stream6,
- *   // DMA_Sx::Req::I2c1::RX_DMA1_Stream0.
+ *   // I2C::_1::DMA::TX_DMA1_Stream6,
+ *   // I2C::_1::DMA::RX_DMA1_Stream0.
  *   if (bus.SetUp<clocks, I2C::SPEED::FAST>() == SysInitStatus::InitOK)
  *       bus.ReadReg_DMA(0x68, 0x3B, buf, 14);
  *   // Check the start status; keep buf alive through completion.
@@ -124,11 +124,26 @@ public:
 	// -----------------------------------------------------------------------
 	// Pin tables: I2C::_N::SCL::<PXn>, I2C::_N::SDA::<PXn>
 	// -----------------------------------------------------------------------
+    /** Fixed device metadata from i2c_defs.hpp; no runtime lookup. */
+    struct Instance {
+        uintptr_t periph;
+        uintptr_t clk_reg;
+        uint32_t            clk_bit;
+        uintptr_t rst_reg;
+        uint32_t            rst_bit;
+        uintptr_t ksel_reg;   ///< Kernel clock selector (0: none)
+        uint32_t            ksel_mask;  ///< Cleared -> PCLK
+        IRQn_Type           irq_ev;
+        IRQn_Type           irq_er;     ///< Same as irq_ev on G0
+        uint32_t            fmp_bit;    ///< SYSCFG Fm+ enable (0: none)
+#if defined(STM32G0)
+        uint32_t dma_tx_request, dma_rx_request;
+#endif
+    };
 #include "i2c_defs.hpp"
 
-
 #if defined(STM32G0)
-	using DMAReq = DMA_Channel_TypeDef*;
+	using DMAReq = uintptr_t;
 #else
 	using DMAReq = DMA_Sx::DMAReq;
 #endif
@@ -137,38 +152,25 @@ public:
 	 * @brief Fix peripheral, pins and optional TX/RX DMA at construction.
 	 * F4/F7: named DMAReq includes stream, channel selection, owner and direction.
 	 * G0: pass physical DMA channels; request sources follow I2Cx and direction.
-	 * Wrong pin/route ownership or a shared TX/RX resource causes DebugTrap.
+	 * Use constinit: wrong pin/route ownership or shared DMA is a compilation error.
 	 * Empty DMA selections keep blocking and IRQ methods available.
 	 */
-	I2C(I2C_TypeDef* i2cx, PIN scl, PIN sda, DMAReq dma_tx = {}, DMAReq dma_rx = {})
-		: I2Cx(i2cx), _scl(scl), _sda(sda),
+	constexpr explicit I2C(const Instance& instance, PIN scl, PIN sda, DMAReq dma_tx = {}, DMAReq dma_rx = {})
+		: _instance(instance), _scl(scl), _sda(sda),
 #if defined(STM32G0)
-		  _dma_tx(dma_tx, DmaRequest(i2cx, true)), _dma_rx(dma_rx, DmaRequest(i2cx, false)),
+		  _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request),
 #else
 		  _dma_tx(dma_tx), _dma_rx(dma_rx),
 #endif
 		  _dma_tx_irq(*this), _dma_rx_irq(*this)
-	{
-		if (!scl.IsValid() || scl.periph_base != reinterpret_cast<uintptr_t>(i2cx))
-			System::DebugTrap("I2C: SCL pin belongs to wrong peripheral");
-		if (!sda.IsValid() || sda.periph_base != reinterpret_cast<uintptr_t>(i2cx))
-			System::DebugTrap("I2C: SDA pin belongs to wrong peripheral");
-#if defined(STM32G0)
-		if (dma_tx && dma_tx == dma_rx)
-			System::DebugTrap("I2C: TX and RX require different DMA channels");
-#else
-		if ((dma_tx.stream || dma_tx.ch || dma_tx.periph_base)
-			&& (!dma_tx.IsValid() || dma_tx.periph_base != reinterpret_cast<uintptr_t>(i2cx)
-				|| dma_tx.direction != DMA_Sx::DIR::To_Per))
-			System::DebugTrap("I2C: invalid TX DMA request");
-		if ((dma_rx.stream || dma_rx.ch || dma_rx.periph_base)
-			&& (!dma_rx.IsValid() || dma_rx.periph_base != reinterpret_cast<uintptr_t>(i2cx)
-				|| dma_rx.direction != DMA_Sx::DIR::From_Per))
-			System::DebugTrap("I2C: invalid RX DMA request");
-		if (dma_tx.stream && dma_tx.stream == dma_rx.stream)
-			System::DebugTrap("I2C: TX and RX require different DMA streams");
-#endif
-	}
+    {
+        if (!scl.IsValid() || scl.periph_base != instance.periph
+            || !sda.IsValid() || sda.periph_base != instance.periph
+            || !DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per)
+            || !DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per)
+            || DMA_Sx::SameResource(dma_tx, dma_rx))
+            __builtin_unreachable();
+    }
 
 	I2C() = delete;
 	I2C(I2C const&) = delete;
@@ -186,7 +188,7 @@ public:
 	 * @tparam speed Nominal bus speed. Timing calculation and validation are
 	 *         compile-time, including F4 CCR/TRISE. Invalid timing is a compile error.
 	 *         F7/G0 retain the ST calculator's rise/fall/filter assumptions.
-	 * @return InitError on repeated setup, APB1 mismatch, unsupported peripheral,
+	 * @return InitError on repeated setup, APB1 mismatch,
 	 *         a busy DMA resource or failed IRQ registration; acquisition is rolled back.
 	 * @pre System and ClockSystem::Init<clocks>() succeeded; main only.
 	 *         Apply compares derived APB1 with System::APB1BusClock before acquiring
@@ -317,19 +319,7 @@ private:
 	}
 	/// Main-only application of compiler-produced timing, ownership and IRQ setup.
 	SysInitStatus Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk);
-	struct PeriphInfo {
-		I2C_TypeDef*        periph;
-		volatile uint32_t*  clk_reg;
-		uint32_t            clk_bit;
-		volatile uint32_t*  rst_reg;
-		uint32_t            rst_bit;
-		volatile uint32_t*  ksel_reg;   ///< Kernel clock selector (nullptr: none)
-		uint32_t            ksel_mask;  ///< Cleared -> PCLK
-		IRQn_Type           irq_ev;
-		IRQn_Type           irq_er;     ///< Same as irq_ev on G0
-		uint32_t            fmp_bit;    ///< SYSCFG Fm+ enable (0: none)
-	};
-	static const PeriphInfo i2c_table[];
+	using PeriphInfo = Instance;
 
 	enum class Mode : uint8_t { Poll, Irq, Dma };
 
@@ -379,26 +369,24 @@ private:
 	void HandleIRQ() override final;
 	void HandleDmaTxIRQ();
 	void HandleDmaRxIRQ();
-#if defined(STM32G0)
-	static uint32_t DmaRequest(I2C_TypeDef* i2c, bool tx);
-#endif
 
 	class DmaTxIRQ final : public IIRQHandler {
 	public:
-		explicit DmaTxIRQ(I2C& i2c) : _i2c(i2c) {}
+		constexpr explicit DmaTxIRQ(I2C& i2c) : _i2c(i2c) {}
 		void HandleIRQ() override { _i2c.HandleDmaTxIRQ(); }
 	private:
 		I2C& _i2c;
 	};
 	class DmaRxIRQ final : public IIRQHandler {
 	public:
-		explicit DmaRxIRQ(I2C& i2c) : _i2c(i2c) {}
+		constexpr explicit DmaRxIRQ(I2C& i2c) : _i2c(i2c) {}
 		void HandleIRQ() override { _i2c.HandleDmaRxIRQ(); }
 	private:
 		I2C& _i2c;
 	};
 
-	I2C_TypeDef* const I2Cx;
+	const Instance& _instance;
+	I2C_TypeDef* I2Cx = nullptr;
 	PIN               _scl;
 	PIN               _sda;
 	const PeriphInfo* _info = nullptr;

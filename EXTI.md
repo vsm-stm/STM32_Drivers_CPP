@@ -1,5 +1,20 @@
 # External GPIO EXTI / Внешние GPIO EXTI
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 ## English
 
 Enable the optional module in project.json:
@@ -18,13 +33,13 @@ this module needs no DMA or timer. It supports external lines 0..15 on F4/F7/G0.
 
 class Button final : public EXTI_Line {
 public:
-    Button() : EXTI_Line(PIN(GPIOC, 13), Edge::Falling) {}
+    constexpr Button() : EXTI_Line(PIN(GPIOC_BASE, 13), Edge::Falling) {}
     volatile bool pressed = false;
 protected:
     void OnInterrupt() override { pressed = true; }
 };
 
-Button button;
+constinit Button button;
 // In main, after System/RCC initialization:
 // if (button.SetUp(PIN::TYPE::INPUT_PullUp) != SysInitStatus::InitOK) {
 //     ... handle setup failure ...
@@ -32,9 +47,8 @@ Button button;
 ```
 
 The constructor fixes PIN and Edge::Rising/Falling/Both without register access.
-An absent pin, a number outside 0..15 or an invalid edge traps. CMSIS pointer
-construction follows PIN's valid-port contract; PIN(GPIOx_BASE, number) also
-checks port/number during compilation. Check package pin availability yourself.
+With constinit, an absent pin, a number outside 0..15 or an invalid edge rejects
+compilation. Use PIN(GPIOx_BASE, number), not the runtime CMSIS-pointer overload. Check package pin availability yourself.
 GPIO's new GetNumber() only reads the fixed number; it does not allow rebinding.
 
 SetUp accepts only INPUT_NO_Pull (default), INPUT_PullUp or INPUT_PullDown.
@@ -108,9 +122,8 @@ DMA и таймер не требуются. Поддерживаются вне
 
 В примере Button выше PIN и фронт закреплены конструктором. Доступны
 Edge::Rising/Falling/Both. Отсутствующий пин, номер вне 0–15 и неверный enum
-дают DebugTrap без доступа к регистрам. Для PIN(GPIOx, number) действует контракт
-GPIO о корректном порте; PIN(GPIOx_BASE, number) также проверяет порт/номер при
-сборке. Наличие вывода в корпусе проверяет приложение. Новый PIN::GetNumber()
+при constinit дают ошибку компиляции без доступа к регистрам. Используйте
+PIN(GPIOx_BASE, number), а не runtime-перегрузку с CMSIS-указателем. Наличие вывода в корпусе проверяет приложение. Новый PIN::GetNumber()
 только читает номер, изменять привязку через него нельзя.
 
 SetUp принимает INPUT_NO_Pull (по умолчанию), INPUT_PullUp или INPUT_PullDown.

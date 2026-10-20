@@ -84,43 +84,6 @@ static bool dma_used[kStreamCount] = {};
 
 // Accept exact hardware object addresses only: range plus stride divisibility.
 // A pointer inside a stream/channel register block must not acquire that resource.
-int32_t DMA_Sx::GetStreamIndex(void* s)
-{
-	uintptr_t base = reinterpret_cast<uintptr_t>(s);
-
-#if defined(STM32F4) || defined(STM32F7)
-	static constexpr uintptr_t stride = DMA1_Stream1_BASE - DMA1_Stream0_BASE;
-	uintptr_t dma1_base = reinterpret_cast<uintptr_t>(DMA1_Stream0);
-	uintptr_t dma1_end  = reinterpret_cast<uintptr_t>(DMA1_Stream7);
-	uintptr_t dma2_base = reinterpret_cast<uintptr_t>(DMA2_Stream0);
-	uintptr_t dma2_end  = reinterpret_cast<uintptr_t>(DMA2_Stream7);
-
-	if (base >= dma1_base && base <= dma1_end && (base - dma1_base) % stride == 0U)
-		return (base - dma1_base) / stride;
-	if (base >= dma2_base && base <= dma2_end && (base - dma2_base) % stride == 0U)
-		return 8 + (base - dma2_base) / stride;
-
-#elif defined(STM32G0)
-	static constexpr uintptr_t stride = DMA1_Channel2_BASE - DMA1_Channel1_BASE;
-	uintptr_t ch1_base = reinterpret_cast<uintptr_t>(DMA1_Channel1);
-#if defined(DMA1_Channel7)
-	uintptr_t ch1_end = reinterpret_cast<uintptr_t>(DMA1_Channel7);
-#else
-	uintptr_t ch1_end = reinterpret_cast<uintptr_t>(DMA1_Channel5);
-#endif
-
-	if (base >= ch1_base && base <= ch1_end && (base - ch1_base) % stride == 0U)
-		return (base - ch1_base) / stride;
-#if defined(DMA2_Channel1)
-	uintptr_t ch2_base = reinterpret_cast<uintptr_t>(DMA2_Channel1);
-	uintptr_t ch2_end = reinterpret_cast<uintptr_t>(DMA2_Channel5);
-	if (base >= ch2_base && base <= ch2_end && (base - ch2_base) % stride == 0U)
-		return 7 + (base - ch2_base) / stride;
-#endif
-#endif
-
-	return -1;
-}
 
 // ---------------------------------------------------------------------------
 
@@ -224,8 +187,8 @@ SysStatus DMA_Sx::Release()
 	_PAR() = 0U;
 	_MAR() = 0U;
 #if defined(STM32F4) || defined(STM32F7)
-	_stream->M1AR = 0U;
-	_stream->FCR = DMA_SxFCR_FTH_0; // Reset writable FIFO fields; status bits are read-only.
+	Stream()->M1AR = 0U;
+	Stream()->FCR = DMA_SxFCR_FTH_0; // Reset writable FIFO fields; status bits are read-only.
 #elif defined(STM32G0)
 	(DMAMUX1_Channel0 + idx)->CCR = 0U;
 	DMAMUX1_ChannelStatus->CFR = 1U << idx;

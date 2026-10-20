@@ -8,20 +8,10 @@
 
 SysInitStatus DAC_Module::SetUp()
 {
-	if (data_out || DACx != DAC1 || (ch != CHANNEL::CH1 && ch != CHANNEL::CH2))
-		return SysInitStatus::InitError;
-#if defined(STM32F4) && !defined(DAC_CHANNEL2_SUPPORT)
-	// F410 headers describe both register slots, but the device has only CH1.
-	if (ch == CHANNEL::CH2) return SysInitStatus::InitError;
-#endif
-
-#if defined(STM32G0)
-	DAC_SET_BIT(RCC->APBENR1, RCC_APBENR1_DAC1EN);
-	(void)RCC->APBENR1;
-#else
-	DAC_SET_BIT(RCC->APB1ENR, RCC_APB1ENR_DACEN);
-	(void)RCC->APB1ENR;
-#endif
+	if (data_out) return SysInitStatus::InitError;
+	DACx = reinterpret_cast<DAC_TypeDef*>(_instance.periph);
+	DAC_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+	(void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
 
 	out_pin.SetUp(PIN::TYPE::ANALOG);
 	const uint32_t shift = ch == CHANNEL::CH1 ? DAC_CR_EN1_Pos : DAC_CR_EN2_Pos;

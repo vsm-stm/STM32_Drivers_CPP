@@ -10,7 +10,7 @@
  * (_CR, _NDTR, _PAR, _MAR) and per-family flag constants (FLAG_HT, FLAG_TC, FLAG_ALL).
  * Public API is identical on both families.
  *
- * Nested types (DIR, SIZE, IRQ, StreamSettings, DMAReq, Req) live inside
+ * Nested types (DIR, SIZE, IRQ, StreamSettings, DMAReq) live inside
  * the DMA_Sx class — access them as DMA_Sx::DIR::To_Per, DMA_Sx::DMAReq, etc.
  *
  * ============================================================================
@@ -21,31 +21,31 @@
  *
  *    STM32G0 — three overloads (DMAMUX1 allows any channel for any peripheral):
  *
- *    a) Channel + DMAReq from Req:: table  [recommended]
+ *    a) Channel + DMAReq from peripheral DMA definitions  [recommended]
  *       Request ID is taken from the table and written to DMAMUX1 automatically.
  *       @code
- *         DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
- *         DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+ *         DMA_Sx dma_tx(DMA1_Channel4_BASE, USART::_1::DMA::TX);
+ *         DMA_Sx dma_rx(DMA1_Channel5_BASE, USART::_1::DMA::RX);
  *       @endcode
  *
- *    b) Channel + raw DMAMUX1 request ID  [when Req:: table has no entry]
+ *    b) Channel + raw DMAMUX1 request ID  [when peripheral DMA definitions has no entry]
  *       @code
- *         DMA_Sx dma(DMA1_Channel3, 51u);  // USART1_TX request
+ *         DMA_Sx dma(DMA1_Channel3_BASE, 51u);  // USART1_TX request
  *       @endcode
  *
  *    c) Channel only  [request ID supplied later via StreamSettings::channel]
  *       @code
- *         DMA_Sx dma(DMA1_Channel3);
+ *         DMA_Sx dma(DMA1_Channel3_BASE);
  *         // StreamSettings::channel must contain the DMAMUX1 request ID
  *       @endcode
  *
  *    STM32F4/F7 — two overloads (stream + CHSEL are hardware-fixed per peripheral):
  *
- *    a) DMAReq from Req:: table  [recommended — encodes stream + CHSEL]
+ *    a) DMAReq from peripheral DMA definitions  [recommended — encodes stream + CHSEL]
  *       @code
- *         DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7); // CHSEL=4
- *         DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CHSEL=4
- *         DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream2); // CHSEL=4
+ *         DMA_Sx dma_tx(USART::_1::DMA::TX_DMA2_Stream7); // CHSEL=4
+ *         DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream5); // CHSEL=4
+ *         DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream2); // CHSEL=4
  *       @endcode
  *
  *    b) Raw stream pointer  [CHSEL supplied via StreamSettings::channel]
@@ -85,8 +85,8 @@
  *
  *    @code
  *      // 1. Declare driver objects (file or class scope)
- *      USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
- *                 DMA1_Channel4, DMA1_Channel5); // G0: source selected by USART
+ *      constinit USART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+ *                 DMA1_Channel4_BASE, DMA1_Channel5_BASE); // G0: source selected by USART
  *
  *      // 2. UART SetUp configures the constructor-bound DMA internally.
  *      auto initialized = uart.SetUp();
@@ -110,9 +110,9 @@
  *    through Stream_EN(DISABLE), which waits for EN=0 without a timeout.
  *  - On G0, DMA1 has 5 or 7 channels; some models also have DMA2 with 5 channels.
  *    Shared IRQ lines require enough IRQ_Registry slots for their consumers.
- *  - On F4/F7, stream + CHSEL are hardware-fixed; use the Req:: table to pick
+ *  - On F4/F7, stream + CHSEL are hardware-fixed; use the peripheral DMA definitions to pick
  *    the correct combination. Names include controller and stream, for example
- *    Req::Usart3::TX_DMA1_Stream3 and Req::Usart3::TX_DMA1_Stream4.
+ *    USART::_3::DMA::TX_DMA1_Stream3 and USART::_3::DMA::TX_DMA1_Stream4.
  *  - The peripheral driver checks the route; DMA validates register fields.
  *  - DMA does not perform cache maintenance. The consumer calls System's cache
  *    operations at buffer handover; direct DMA callers do this themselves.
@@ -170,11 +170,12 @@ private:
 	// F4/F7 use DMA_Stream_TypeDef (CR/NDTR/PAR/M0AR).
 	// G0    uses DMA_Channel_TypeDef (CCR/CNDTR/CPAR/CMAR).
 #if defined(STM32F4) || defined(STM32F7)
-	DMA_Stream_TypeDef* _stream;
-	volatile uint32_t& _CR()   const { return _stream->CR;   }
-	volatile uint32_t& _NDTR() const { return _stream->NDTR; }
-	volatile uint32_t& _PAR()  const { return _stream->PAR;  }
-	volatile uint32_t& _MAR()  const { return _stream->M0AR; }
+	uintptr_t _stream;
+	DMA_Stream_TypeDef* Stream() const { return reinterpret_cast<DMA_Stream_TypeDef*>(_stream); }
+	volatile uint32_t& _CR()   const { return Stream()->CR;   }
+	volatile uint32_t& _NDTR() const { return Stream()->NDTR; }
+	volatile uint32_t& _PAR()  const { return Stream()->PAR;  }
+	volatile uint32_t& _MAR()  const { return Stream()->M0AR; }
 	static constexpr uint32_t CR_EN   = DMA_SxCR_EN;
 	static constexpr uint32_t CR_MINC = DMA_SxCR_MINC;
 	static constexpr uint32_t CR_PINC = DMA_SxCR_PINC;
@@ -187,11 +188,12 @@ private:
 	                                     DMA_LIFCR_CTEIF0 | DMA_LIFCR_CDMEIF0 |
 	                                     DMA_LIFCR_CFEIF0;
 #elif defined(STM32G0)
-	DMA_Channel_TypeDef* _stream;
-	volatile uint32_t& _CR()   const { return _stream->CCR;   }
-	volatile uint32_t& _NDTR() const { return _stream->CNDTR; }
-	volatile uint32_t& _PAR()  const { return _stream->CPAR;  }
-	volatile uint32_t& _MAR()  const { return _stream->CMAR;  }
+	uintptr_t _stream;
+	DMA_Channel_TypeDef* Stream() const { return reinterpret_cast<DMA_Channel_TypeDef*>(_stream); }
+	volatile uint32_t& _CR()   const { return Stream()->CCR;   }
+	volatile uint32_t& _NDTR() const { return Stream()->CNDTR; }
+	volatile uint32_t& _PAR()  const { return Stream()->CPAR;  }
+	volatile uint32_t& _MAR()  const { return Stream()->CMAR;  }
 	static constexpr uint32_t CR_EN   = DMA_CCR_EN;
 	static constexpr uint32_t CR_MINC = DMA_CCR_MINC;
 	static constexpr uint32_t CR_PINC = DMA_CCR_PINC;
@@ -207,7 +209,42 @@ private:
 	static constexpr uint32_t MAX_COUNT = 0xFFFFU;
 	uint32_t          _preset_ch  = 0;
 	bool              _has_preset = false;
-	static int32_t GetStreamIndex(void* s);
+	static constexpr int32_t GetStreamIndex(uintptr_t base)
+	{
+
+#if defined(STM32F4) || defined(STM32F7)
+		constexpr uintptr_t stride = DMA1_Stream1_BASE - DMA1_Stream0_BASE;
+		constexpr uintptr_t dma1_base = DMA1_Stream0_BASE;
+		constexpr uintptr_t dma1_end = DMA1_Stream7_BASE;
+		constexpr uintptr_t dma2_base = DMA2_Stream0_BASE;
+		constexpr uintptr_t dma2_end = DMA2_Stream7_BASE;
+
+		if (base >= dma1_base && base <= dma1_end && (base - dma1_base) % stride == 0U)
+			return (base - dma1_base) / stride;
+		if (base >= dma2_base && base <= dma2_end && (base - dma2_base) % stride == 0U)
+			return 8 + (base - dma2_base) / stride;
+
+#elif defined(STM32G0)
+		constexpr uintptr_t stride = DMA1_Channel2_BASE - DMA1_Channel1_BASE;
+		constexpr uintptr_t ch1_base = DMA1_Channel1_BASE;
+#if defined(DMA1_Channel7)
+		constexpr uintptr_t ch1_end = DMA1_Channel7_BASE;
+#else
+		constexpr uintptr_t ch1_end = DMA1_Channel5_BASE;
+#endif
+
+		if (base >= ch1_base && base <= ch1_end && (base - ch1_base) % stride == 0U)
+			return (base - ch1_base) / stride;
+#if defined(DMA2_Channel1)
+		constexpr uintptr_t ch2_base = DMA2_Channel1_BASE;
+		constexpr uintptr_t ch2_end = DMA2_Channel5_BASE;
+		if (base >= ch2_base && base <= ch2_end && (base - ch2_base) % stride == 0U)
+			return 7 + (base - ch2_base) / stride;
+#endif
+#endif
+
+		return -1;
+	}
 
 public:
 	/** @brief Data transfer direction. */
@@ -266,21 +303,48 @@ public:
 		uint32_t count{0}; // Zero means preparation without a start.
 	};
 
-	// DMAReq and Req are defined in dma_requests.hpp and become nested types here.
-	// F4/F7: Req::Usart1::TX_DMA2_Stream7; G0: Req::Usart1::TX.
+	// Only the common value type is defined here; named routes belong to peripheral defs.
 #include "dma_requests.hpp"
 
 #if defined(STM32F4) || defined(STM32F7)
 	// Stream + CHSEL come from DMAReq; no separate channel choice needed.
-	explicit DMA_Sx(DMA_Stream_TypeDef* stream) : _stream(stream) {}
-	explicit DMA_Sx(DMAReq req)
-		: _stream(reinterpret_cast<DMA_Stream_TypeDef*>(req.stream)),
+	explicit DMA_Sx(DMA_Stream_TypeDef* stream) : _stream(reinterpret_cast<uintptr_t>(stream)) {}
+	constexpr explicit DMA_Sx(DMAReq req)
+		: _stream(req.stream),
 		  _preset_ch(req.ch), _has_preset(true) {}
 #elif defined(STM32G0)
 	// Channel chosen by the user; request ID comes from DMAReq (DMAMUX1).
-	explicit DMA_Sx(DMA_Channel_TypeDef* ch) : _stream(ch) {}
-	explicit DMA_Sx(DMA_Channel_TypeDef* ch, DMAReq req) : _stream(ch), _preset_ch(req.ch), _has_preset(true) {}
-	explicit DMA_Sx(DMA_Channel_TypeDef* ch, uint32_t req) : _stream(ch), _preset_ch(req),   _has_preset(true) {}
+	explicit DMA_Sx(DMA_Channel_TypeDef* ch) : _stream(reinterpret_cast<uintptr_t>(ch)) {}
+	explicit DMA_Sx(DMA_Channel_TypeDef* ch, DMAReq req) : _stream(reinterpret_cast<uintptr_t>(ch)), _preset_ch(req.ch), _has_preset(true) {}
+	explicit DMA_Sx(DMA_Channel_TypeDef* ch, uint32_t req) : _stream(reinterpret_cast<uintptr_t>(ch)), _preset_ch(req),   _has_preset(true) {}
+#endif
+
+	/// Numeric selection supports constinit; an empty selection is optional DMA.
+	constexpr explicit DMA_Sx(uintptr_t base) : _stream(base) {}
+	constexpr DMA_Sx(uintptr_t base, uint32_t request)
+		: _stream(base), _preset_ch(request), _has_preset(true) {}
+#if defined(STM32G0)
+	constexpr DMA_Sx(uintptr_t base, DMAReq request)
+		: _stream(base), _preset_ch(request.ch), _has_preset(true) {}
+#endif
+
+	static constexpr bool ValidResource(uintptr_t base) { return GetStreamIndex(base) >= 0; }
+#if defined(STM32F4) || defined(STM32F7)
+	static constexpr bool RouteMatches(DMAReq req, uintptr_t owner, DIR dir) {
+		return !(req.stream || req.ch || req.periph_base)
+			|| (req.IsValid() && ValidResource(req.stream)
+				&& req.periph_base == owner && req.direction == dir);
+	}
+	static constexpr bool SameResource(DMAReq a, DMAReq b) {
+		return a.stream && a.stream == b.stream;
+	}
+#else
+	static constexpr bool RouteMatches(uintptr_t channel, uintptr_t, DIR) {
+		return !channel || ValidResource(channel);
+	}
+	static constexpr bool SameResource(uintptr_t a, uintptr_t b) {
+		return a && a == b;
+	}
 #endif
 
 	/** @brief Check a peripheral's DMAReq against this object's constructor selection.
@@ -292,14 +356,14 @@ public:
 	inline bool CanUseRequest(DMAReq req) const {
 		if (!req.IsValid() || (_has_preset && _preset_ch != req.ch)) return false;
 	#if defined(STM32F4) || defined(STM32F7)
-		return reinterpret_cast<uintptr_t>(_stream) == req.stream;
+		return _stream == req.stream;
 	#else
 		return true; // DMAMUX permits the request on any existing channel.
 	#endif
 	}
 
 	/// Whether a hardware stream/channel was selected; does not acquire it.
-	bool HasSelection() const { return _stream != nullptr; }
+	constexpr bool HasSelection() const { return _stream != 0; }
 
 	DMA_Sx() = delete;
 	DMA_Sx(const DMA_Sx&) = delete;

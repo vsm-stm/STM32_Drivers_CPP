@@ -116,7 +116,7 @@ struct TIM_PIN {
  * Timer/DMA handlers for the same object must not preempt one another.
  *
  * @code
- *   TIM timer(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+ *   constinit TIM timer(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
  *   if (timer.SetUp(1000, &Tick, 1000) == SysInitStatus::InitOK) {
  *       timer.SetUpPWM(TIM::Channel::CH1, 250); // Check InitOK.
  *       timer.SetCompareIRQ(TIM::Channel::CH3, 500, &HalfTick); // No GPIO needed.
@@ -155,10 +155,23 @@ public:
         OC3Ref = 6U << TIM_CR2_MMS_Pos, OC4Ref = 7U << TIM_CR2_MMS_Pos
     };
     using TIM_PIN = ::TIM_PIN;
+    /** Fixed device metadata from tim_defs.hpp; no runtime lookup. */
+    struct Instance {
+        uintptr_t periph;
+        uintptr_t clk_reg;
+        uint32_t clk_bit;
+        uintptr_t rst_reg;
+        uint32_t rst_bit;
+        const uint32_t* bus_clk;
+        IRQn_Type irq_up, irq_cc;
+        bool has_bdtr;
+        uint8_t channel_count;
+        uint32_t arr_max;
+    };
 #include "tim_defs.hpp"
 
 #if defined(STM32G0)
-    using DMAReq = DMA_Channel_TypeDef*;
+    using DMAReq = uintptr_t;
 #else
     using DMAReq = DMA_Sx::DMAReq;
 #endif
@@ -171,58 +184,60 @@ public:
     /**
      * @brief Bind hardware, up to four {pin, dma} descriptions and an optional counter TIM.
      * No MMIO access or DMA acquisition. Bindings have no reassignment API.
-     * A pin must belong to timx; duplicate channels and DMA without a pin trap.
+     * Use constinit: wrong/duplicate channels and DMA without a pin are compile errors.
      * Named pins are consteval-checked; package bonding remains a caller check.
      * F4/F7 take a named Req; G0 takes a physical channel and derives its request.
      * Route validation is done in the constructor; the existing channel map is shared.
      * counter is the second TIM for finite quadrature generation. It is fixed
      * here, not attached later. Construct it first and keep it alive throughout
-     * the generator's use. Constructor checks the normal TRGO/ITR connection;
+     * the generator's use. Init checks the normal TRGO/ITR connection;
      * no hardware or registry resources of either TIM are acquired here.
      * SetUpQuadrature initializes/reserves that counter; generator DeInit
      * releases it. Do not configure/use it independently during this interval.
      * TIM_USE_ATOMIC selects ordinary (0, default) or ST atomic (1) control updates.
      *
      * @code
-     *   const TIM::DMAReq dma = DMA_Sx::Req::Tim1::CH1_DMA2_Stream1; // F4/F7 example
-     *   TIM pwm(TIM1, {TIM::_1::CH1::PA8, dma});
-     *   // G0: const TIM::DMAReq dma = DMA1_Channel3;
+     *   constexpr TIM::DMAReq dma = TIM::_1::DMA::CH1_DMA2_Stream1; // F4/F7 example
+     *   constinit TIM pwm(TIM::_1::instance, {TIM::_1::CH1::PA8, dma});
+     *   // G0: constexpr TIM::DMAReq dma = DMA1_Channel3_BASE;
      * @endcode
      */
-    explicit TIM(TIM_TypeDef* timx, ChannelConfig c0 = {}, ChannelConfig c1 = {},
+    constexpr explicit TIM(const Instance& instance, ChannelConfig c0 = {}, ChannelConfig c1 = {},
                  ChannelConfig c2 = {}, ChannelConfig c3 = {}, TIM* counter = nullptr)
-        : TIMx(timx), _counter(counter),
-          _channels{{timx, ChannelBinding(0, c0, c1, c2, c3)},
-                    {timx, ChannelBinding(1, c0, c1, c2, c3)},
-                    {timx, ChannelBinding(2, c0, c1, c2, c3)},
-                    {timx, ChannelBinding(3, c0, c1, c2, c3)}},
+        : _instance(instance), _counter(counter),
+          _channels{{instance.periph, ChannelBinding(0, c0, c1, c2, c3)},
+                    {instance.periph, ChannelBinding(1, c0, c1, c2, c3)},
+                    {instance.periph, ChannelBinding(2, c0, c1, c2, c3)},
+                    {instance.periph, ChannelBinding(3, c0, c1, c2, c3)}},
           _dma_irq0(*this), _dma_irq1(*this), _dma_irq2(*this), _dma_irq3(*this)
     {
-        if (counter && (counter == this || counter->TIMx == timx
-            || FindITR(timx, counter->TIMx) < 0))
-            System::DebugTrap("TIM: invalid counter timer/ITR route");
         uint8_t seen = 0;
         for (const ChannelConfig& cfg : {c0, c1, c2, c3}) {
 #if defined(STM32G0)
-            const bool has_dma = cfg.dma != nullptr;
+            const bool has_dma = cfg.dma != 0;
 #else
             const bool has_dma = cfg.dma.stream || cfg.dma.ch || cfg.dma.periph_base;
 #endif
             if (!cfg.pin.IsValid()) {
-                if (has_dma) System::DebugTrap("TIM: DMA requires a channel pin");
+                if (has_dma) __builtin_unreachable();
                 continue;
             }
-            if (cfg.pin.channel >= 4 || cfg.pin.tim_base != reinterpret_cast<uint32_t>(timx))
-                System::DebugTrap("TIM: pin belongs to wrong timer/channel");
+            if (cfg.pin.channel >= instance.channel_count || cfg.pin.tim_base != instance.periph)
+                __builtin_unreachable();
             if (seen & (1U << cfg.pin.channel))
-                System::DebugTrap("TIM: duplicate channel");
+                __builtin_unreachable();
             seen |= static_cast<uint8_t>(1U << cfg.pin.channel);
+            for (const ChannelConfig& other : {c0, c1, c2, c3})
+                if (other.pin.IsValid() && other.pin.channel != cfg.pin.channel
+                    && DMA_Sx::SameResource(cfg.dma, other.dma))
+                    __builtin_unreachable();
 #if defined(STM32G0)
-            if (has_dma && !DmaRequest(timx, cfg.pin.channel))
+            if (has_dma && (!DMA_Sx::ValidResource(cfg.dma)
+                || !DmaRequest(instance.periph, cfg.pin.channel)))
 #else
-            if (has_dma && !DmaMatches(timx, cfg.pin.channel, cfg.dma))
+            if (has_dma && !DmaMatches(instance.periph, cfg.pin.channel, cfg.dma))
 #endif
-                System::DebugTrap("TIM: invalid channel DMA request");
+                __builtin_unreachable();
         }
     }
     TIM() = delete;
@@ -239,7 +254,7 @@ public:
      * Capture/counter use requires an explicit period. The actual CNT clock is
      * GetCounterClock(); freq is not the CNT clock. Integer division is retained:
      * actual Update frequency can differ from freq when divisors are not exact.
-     * Repeated setup, unsupported TIM, invalid period/dividers or IRQ registration
+     * Repeated setup, invalid period/dividers, a bad counter TIM/ITR route or IRQ registration
      * failure return InitError. Failed initial setup releases its acquisitions.
      */
     SysInitStatus SetUp(uint32_t freq, void (*cb)(void) = nullptr, uint32_t arr = 0);
@@ -251,7 +266,7 @@ public:
      * X2_CH1/X2_CH2 count both edges of that input; X4 counts both inputs.
      * The other channel roles and SMCR are unavailable until DeInit.
      * @code
-     * TIM encoder(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+     * constinit TIM encoder(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
      * if (encoder.SetUpEncoder(65536) == SysInitStatus::InitOK) encoder.Start();
      * const uint32_t position = encoder.Count();
      * @endcode
@@ -271,8 +286,8 @@ public:
      * after stopping both timers. Source TIM IRQ stays disabled.
      * Repeated setup is an error. DeInit releases both acquired timers.
      * @code
-     * TIM counter(TIM2);
-     * TIM generator(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
+     * constinit TIM counter(TIM::_2::instance);
+     * constinit TIM generator(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
      * if (generator.SetUpQuadrature(TIM::Channel::CH1, TIM::Channel::CH2, 1000, 1000)
      *     == SysInitStatus::InitOK)
      *     generator.GenPulse(100); // Check SysStatus. Count via counter.Count().
@@ -372,7 +387,7 @@ public:
      * handles counter wraps, overcapture and interpretation of successive edges.
      *
      * @code
-     *   TIM input(TIM3, {TIM::_3::CH1::PA6});
+     *   constinit TIM input(TIM::_3::instance, {TIM::_3::CH1::PA6});
      *   input.SetUp(100, nullptr, 10000); // Check status. Target CNT clock: 1 MHz.
      *   input.SetUpCapture(TIM::Channel::CH1, &Edge); // Check status.
      *   input.Start();
@@ -409,7 +424,7 @@ public:
         if (_mode == Mode::Quadrature) _counter->Stop();
     }
     void SetEnable(bool on) { if (on) Start(); else Stop(); }
-    TIM_TypeDef* GetTIMx() const { return TIMx; }
+    TIM_TypeDef* GetTIMx() const { return reinterpret_cast<TIM_TypeDef*>(_instance.periph); }
     uint32_t GetPeriod() const { return _info ? TIMx->ARR + 1U : 0U; }
     uint32_t GetCounterClock() const { return _info ? *_info->bus_clk / (TIMx->PSC + 1U) : 0U; }
     uint32_t Count() const { return _info ? TIMx->CNT : 0U; }
@@ -460,40 +475,29 @@ public:
     void DeInit();
 
 private:
-    struct PeriphInfo {
-        TIM_TypeDef* periph;
-        volatile uint32_t* clk_reg;
-        uint32_t clk_bit;
-        volatile uint32_t* rst_reg;
-        uint32_t rst_bit;
-        const uint32_t* bus_clk;
-        IRQn_Type irq_up, irq_cc;
-        bool has_bdtr;
-        uint8_t channel_count;
-        uint32_t arr_max;
-    };
-    static const PeriphInfo tim_table[];
-    TIM_TypeDef* const TIMx;
+    using PeriphInfo = Instance;
+    const Instance& _instance;
+	TIM_TypeDef* TIMx = nullptr;
     TIM* const _counter;
     const PeriphInfo* _info = nullptr;
-    static ChannelConfig ChannelBinding(uint32_t ch, ChannelConfig c0, ChannelConfig c1,
+    static constexpr ChannelConfig ChannelBinding(uint32_t ch, ChannelConfig c0, ChannelConfig c1,
                                         ChannelConfig c2, ChannelConfig c3) {
         for (const ChannelConfig& cfg : {c0, c1, c2, c3})
             if (cfg.pin.IsValid() && cfg.pin.channel == ch) return cfg;
         return {};
     }
 #if defined(STM32G0)
-    static uint32_t DmaRequest(TIM_TypeDef* timer, uint32_t ch);
+    static constexpr uint32_t DmaRequest(uintptr_t timer, uint32_t ch);
 #else
-    static bool DmaMatches(TIM_TypeDef* timer, uint32_t ch, DMAReq req);
+    static constexpr bool DmaMatches(uintptr_t timer, uint32_t ch, DMAReq req);
 #endif
     struct ChannelState {
         TIM_PIN pin;
         DMA_Sx dma;
-        ChannelState(TIM_TypeDef* timer, ChannelConfig cfg)
+        constexpr ChannelState(uintptr_t timer, ChannelConfig cfg)
             : pin(cfg.pin),
 #if defined(STM32G0)
-              dma(cfg.dma, DmaRequest(timer, cfg.pin.channel))
+              dma(cfg.dma, cfg.dma ? DmaRequest(timer, cfg.pin.channel) : 0U)
 #else
               dma(cfg.dma)
 #endif
@@ -523,7 +527,7 @@ private:
     // Four fixed adapters: no DMA scan and no run-time channel index in the adapter.
     template<unsigned N> class DmaIRQ final : public IIRQHandler {
     public:
-        explicit DmaIRQ(TIM& tim) : _tim(tim) {}
+        constexpr explicit DmaIRQ(TIM& tim) : _tim(tim) {}
         void HandleIRQ() override { _tim.HandleDmaIRQ(N); }
     private:
         TIM& _tim;
@@ -555,6 +559,10 @@ private:
     void HandleIRQ() override final;
     void HandleDmaIRQ(uint32_t ch);
 };
+
+#define TIM_DMA_DEFS
+#include "tim_defs.hpp"
+#undef TIM_DMA_DEFS
 
 // Previous mode API, retained only for reference; not compiled.
 // // ---------------------------------------------------------------------------

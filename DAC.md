@@ -1,5 +1,20 @@
 # DAC
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 [English](#english) · [Русский](#русский)
 
 ## English
@@ -34,7 +49,7 @@ constructor. Copy and move are disabled.
 ~~~cpp
 #include "dac.hpp"
 
-DAC_Module output(DAC1, DAC_Module::CHANNEL::CH1); // PA4
+constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1); // PA4
 
 // After System/RCC initialization:
 if (output.SetUp() == SysInitStatus::InitOK) {
@@ -126,7 +141,7 @@ System/GPIO входят в ядро библиотеки; этому API не �
 ~~~cpp
 #include "dac.hpp"
 
-DAC_Module output(DAC1, DAC_Module::CHANNEL::CH1); // PA4
+constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1); // PA4
 
 // После настройки System/RCC:
 if (output.SetUp() == SysInitStatus::InitOK) {

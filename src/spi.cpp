@@ -9,27 +9,9 @@
  */
 #include "spi.hpp"
 
-#define SPI_DEFS_CPP
-#include "spi_defs.hpp"
-#undef SPI_DEFS_CPP
-
-#if defined(STM32G0)
-uint32_t SPI::DmaRequest(SPI_TypeDef* spi, bool tx)
-{
-    switch (reinterpret_cast<uintptr_t>(spi)) {
-#ifdef SPI1_BASE
-    case SPI1_BASE: return (tx ? DMA_Sx::Req::Spi1::TX : DMA_Sx::Req::Spi1::RX).ch;
-#endif
-#ifdef SPI2_BASE
-    case SPI2_BASE: return (tx ? DMA_Sx::Req::Spi2::TX : DMA_Sx::Req::Spi2::RX).ch;
-#endif
-#ifdef SPI3_BASE
-    case SPI3_BASE: return (tx ? DMA_Sx::Req::Spi3::TX : DMA_Sx::Req::Spi3::RX).ch;
-#endif
-    default: return 0;
-    }
-}
-#endif
+// DMA-only immutable dummy and discard storage.
+static const uint16_t spi_dummy_word = 0xFFFFU;
+static uint16_t spi_discard_word;
 
 uint16_t SPI::ReadFrame() const
 {
@@ -46,10 +28,7 @@ void SPI::WriteFrame(uint16_t frame)
 SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
                         Frame_Format ff, cPolPha cpolpha, BaudRate br)
 {
-    if (_info || !_clk.IsValid()
-        || (_direction != Direction::TX && _direction != Direction::RX && _direction != Direction::TXRX)
-        || (_direction == Direction::TX && _dma_rx.HasSelection())
-        || (_direction == Direction::RX && _dma_tx.HasSelection())
+    if (_info
         || (mstr != Master_sel::Master && mstr != Master_sel::Slave)
         || (nss != NSS_ctrl::Hard && nss != NSS_ctrl::Software)
         || (dff != Data_frame_format::Byte && dff != Data_frame_format::Half_Word)
@@ -59,15 +38,13 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
         || (nss == NSS_ctrl::Hard && !_ss.IsValid())
         || (mstr == Master_sel::Slave && nss != NSS_ctrl::Hard))
         return SysInitStatus::InitError;
-    const PeriphInfo* info = nullptr;
-    for (const auto& entry : spi_table)
-        if (entry.periph == SPIx) { info = &entry; break; }
-    if (!info) return SysInitStatus::InitError;
+    const PeriphInfo* info = &_instance;
+    SPIx = reinterpret_cast<SPI_TypeDef*>(info->periph);
 
-    SPI_SET_BIT(*info->clk_reg, info->clk_bit);
-    (void)*info->clk_reg;
-    SPI_SET_BIT(*info->rst_reg, info->rst_bit);
-    SPI_CLEAR_BIT(*info->rst_reg, info->rst_bit);
+    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
+    (void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
+    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
+    SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
 
     // AF selects the peripheral's input/output direction. Open-drain is not a
     // bus-conflict protection mechanism for an SPI input; use push-pull AF.
@@ -381,8 +358,8 @@ void SPI::Finish(SysStatus result, uint32_t errors)
         uint32_t cr1 = SPIx->CR1 & ~SPI_CR1_SPE;
         if (Master_slave == Master_sel::Master) cr1 |= SPI_CR1_MSTR;
         const uint32_t cr2 = SPIx->CR2 & ~(IRQ_MASK | DMA_MASK);
-        SPI_SET_BIT(*_info->rst_reg, _info->rst_bit);
-        SPI_CLEAR_BIT(*_info->rst_reg, _info->rst_bit);
+        SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
+        SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
         SPIx->CR1 = cr1;
         SPIx->CR2 = cr2;
     }
@@ -577,8 +554,8 @@ void SPI::DeInit()
     if (_dma_tx.HasSelection()) _dma_tx.Release();
     if (_dma_rx.HasSelection()) _dma_rx.Release();
     _dma_pending = 0;
-    SPI_SET_BIT(*_info->rst_reg, _info->rst_bit);
-    SPI_CLEAR_BIT(*_info->rst_reg, _info->rst_bit);
+    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
+    SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
     _info = nullptr;
     _tx_data = nullptr;
     _rx_data = nullptr;

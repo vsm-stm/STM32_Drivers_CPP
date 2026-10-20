@@ -1,31 +1,50 @@
 /**
- * @file    i2c_defs.hpp
- * @brief   All compile-time and run-time tables for the I2C driver.
+ * @file i2c_defs.hpp
+ * @brief Selected-device instance, pin and DMA definitions for I2C.
  *
- * Same two-section layout as spi_defs.hpp / adc_defs.hpp:
+ * The public driver header includes the declaration section inside its class.
+ * Each _N owns an immutable constexpr instance, named pins and DMA routes;
+ * unavailable instances are omitted by the selected CMSIS device guards.
+ * Numeric peripheral/RCC addresses support constant initialization without MMIO.
+ * Bus-clock pointers refer to ordinary System variables, not hardware registers.
  *
- * Section A — compile-time pin tables
- * -------------------------------------
- * Guard:  I2C_HPP_ && !I2C_DEFS_CPP
- * Scope:  I2C class body — public nested pin types.
- * Result: I2C::_N::SCL::<PXn> / I2C::_N::SDA::<PXn>.
- *         Each entry packs: GPIO port base, pin number, alternate function,
- *         owning I2C base address.  Generated from the STM32CubeMX GPIO
- *         database; pins that exist only on some lines of a family are
- *         guarded by I2C_LINE_* (defined below from the device macro).
- *
- * Section B — peripheral-info table
- * -----------------------------------
- * Guard:  I2C_DEFS_CPP  (defined in i2c.cpp just before the include)
- * Scope:  file scope inside i2c.cpp.
- * Result: I2C::i2c_table[] — clock/reset bits, kernel clock selector,
- *         NVIC lines and Fast-mode Plus bit.
+ * Application code includes i2c.hpp and can shorten names with:
+ * @code
+ *   using Hardware = I2C::_1;
+ *   // Hardware::instance is the first argument of the constexpr constructor.
+ *   // Hardware::DMA contains that peripheral's existing request definitions.
+ *   // Declare the static/global driver object with constinit.
+ * @endcode
+ * Fixed bindings are checked while evaluating the constructor. Device/package
+ * bonding remains an application responsibility. There is no runtime table
+ * mapping a peripheral address to its instance description.
  */
-
 // ===========================================================================
 // Section A: Compile-time pin tables — I2C class body
 // ===========================================================================
 #if defined(I2C_HPP_) && !defined(I2C_DEFS_CPP)
+
+// Constant metadata; no address-to-instance table.
+
+// Columns: periph, clk_reg, clk_bit, rst_reg, rst_bit,
+//          kernel-clock selector (cleared -> PCLK), irq_ev, irq_er,
+//          Fm+ bit in SYSCFG; DMA selection is defined in each _N::DMA.
+#if defined(STM32G0)
+
+#if defined(I2C3_BASE)
+#  define I2C2_IRQ_LINE I2C2_3_IRQn     // G0B0/G0B1/G0C1: I2C2 and I2C3 share one line
+#else
+#  define I2C2_IRQ_LINE I2C2_IRQn
+#endif
+#if defined(RCC_CCIPR_I2C2SEL)
+#  define I2C2_KSEL RCC_CCIPR_I2C2SEL
+#else
+#  define I2C2_KSEL 0u                  // I2C2 always clocked from PCLK
+#endif
+
+#endif
+
+// F4 v1 I2C has neither a kernel selector nor Fm+; FMPI2C1 is a separate IP.
 
 // ---------------------------------------------------------------------------
 // STM32G0
@@ -38,6 +57,16 @@
 
 #if defined(I2C1_BASE)
 struct _1 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX = { 10U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX = { 11U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+    };
+    static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C1RST,
+	  (RCC_BASE + offsetof(RCC_TypeDef, CCIPR)), RCC_CCIPR_I2C1SEL, I2C1_IRQn, I2C1_IRQn,
+	  SYSCFG_CFGR1_I2C1_FMP,
+        DMA::TX.ch, DMA::RX.ch
+    };
+
 	struct SCL {
 		static constexpr PIN PA9  = { GPIOA_BASE,  9,  6, I2C1_BASE };
 		static constexpr PIN PB6  = { GPIOB_BASE,  6,  6, I2C1_BASE };
@@ -53,6 +82,16 @@ struct _1 {
 
 #if defined(I2C2_BASE)
 struct _2 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX = { 12U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX = { 13U, I2C2_BASE, DMA_Sx::DIR::To_Per };
+    };
+    static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C2RST,
+	  (RCC_BASE + offsetof(RCC_TypeDef, CCIPR)), I2C2_KSEL, I2C2_IRQ_LINE, I2C2_IRQ_LINE,
+	  SYSCFG_CFGR1_I2C2_FMP,
+        DMA::TX.ch, DMA::RX.ch
+    };
+
 	struct SCL {
 #if defined(I2C_LINE_G0Bx)
 		static constexpr PIN PA7  = { GPIOA_BASE,  7,  8, I2C2_BASE };
@@ -86,6 +125,16 @@ struct _2 {
 
 #if defined(I2C3_BASE)
 struct _3 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX = { 62U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX = { 63U, I2C3_BASE, DMA_Sx::DIR::To_Per };
+    };
+    static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C3RST,
+	  (RCC_BASE + offsetof(RCC_TypeDef, CCIPR)), 0u, I2C2_3_IRQn, I2C2_3_IRQn,
+	  SYSCFG_CFGR1_I2C3_FMP,
+        DMA::TX.ch, DMA::RX.ch
+    };
+
 	struct SCL {
 		static constexpr PIN PA7  = { GPIOA_BASE,  7,  9, I2C3_BASE };
 		static constexpr PIN PB3  = { GPIOB_BASE,  3,  6, I2C3_BASE };
@@ -135,6 +184,18 @@ struct _3 {
 
 #if defined(I2C1_BASE)
 struct _1 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+    };
+    static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C1RST,
+	  0, 0u, I2C1_EV_IRQn, I2C1_ER_IRQn,
+	  0u
+
+ };
+
 	struct SCL {
 		static constexpr PIN PB6  = { GPIOB_BASE,  6,  4, I2C1_BASE };
 		static constexpr PIN PB8  = { GPIOB_BASE,  8,  4, I2C1_BASE };
@@ -148,6 +209,17 @@ struct _1 {
 
 #if defined(I2C2_BASE)
 struct _2 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::To_Per };
+    };
+    static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C2RST,
+	  0, 0u, I2C2_EV_IRQn, I2C2_ER_IRQn,
+	  0u
+
+ };
+
 	struct SCL {
 		static constexpr PIN PB10 = { GPIOB_BASE, 10,  4, I2C2_BASE };
 #if defined(GPIOF_BASE)
@@ -183,6 +255,19 @@ struct _2 {
 
 #if defined(I2C3_BASE)
 struct _3 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::To_Per };
+#if defined(STM32F7)
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 1U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+#endif
+    };
+    static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C3RST,
+	  0, 0u, I2C3_EV_IRQn, I2C3_ER_IRQn,
+	  0u
+
+ };
+
 	struct SCL {
 		static constexpr PIN PA8  = { GPIOA_BASE,  8,  4, I2C3_BASE };
 #if (defined(I2C_LINE_F417) || defined(I2C_LINE_F427) || defined(I2C_LINE_F469)) && defined(GPIOH_BASE)
@@ -220,6 +305,18 @@ struct _3 {
 
 #if defined(I2C1_BASE)
 struct _1 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+    };
+    static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C1RST,
+	  (RCC_BASE + offsetof(RCC_TypeDef, DCKCFGR2)), RCC_DCKCFGR2_I2C1SEL, I2C1_EV_IRQn, I2C1_ER_IRQn,
+	  SYSCFG_PMC_I2C1_FMP
+
+ };
+
 	struct SCL {
 		static constexpr PIN PB6  = { GPIOB_BASE,  6,  4, I2C1_BASE };
 		static constexpr PIN PB8  = { GPIOB_BASE,  8,  4, I2C1_BASE };
@@ -233,6 +330,17 @@ struct _1 {
 
 #if defined(I2C2_BASE)
 struct _2 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::To_Per };
+    };
+    static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C2RST,
+	  (RCC_BASE + offsetof(RCC_TypeDef, DCKCFGR2)), RCC_DCKCFGR2_I2C2SEL, I2C2_EV_IRQn, I2C2_ER_IRQn,
+	  SYSCFG_PMC_I2C2_FMP
+
+ };
+
 	struct SCL {
 		static constexpr PIN PB10 = { GPIOB_BASE, 10,  4, I2C2_BASE };
 #if defined(GPIOF_BASE)
@@ -256,6 +364,19 @@ struct _2 {
 
 #if defined(I2C3_BASE)
 struct _3 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::To_Per };
+#if defined(STM32F7)
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 1U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+#endif
+    };
+    static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C3RST,
+	  (RCC_BASE + offsetof(RCC_TypeDef, DCKCFGR2)), RCC_DCKCFGR2_I2C3SEL, I2C3_EV_IRQn, I2C3_ER_IRQn,
+	  SYSCFG_PMC_I2C3_FMP
+
+ };
+
 	struct SCL {
 		static constexpr PIN PA8  = { GPIOA_BASE,  8,  4, I2C3_BASE };
 #if defined(GPIOH_BASE)
@@ -275,6 +396,16 @@ struct _3 {
 
 #if defined(I2C4_BASE)
 struct _4 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 2U, I2C4_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream5 = { DMA1_Stream5_BASE, 2U, I2C4_BASE, DMA_Sx::DIR::To_Per };
+    };
+    static constexpr Instance instance = { I2C4_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C4EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C4RST,
+	  (RCC_BASE + offsetof(RCC_TypeDef, DCKCFGR2)), RCC_DCKCFGR2_I2C4SEL, I2C4_EV_IRQn, I2C4_ER_IRQn,
+	  SYSCFG_PMC_I2C4_FMP
+
+ };
+
 	struct SCL {
 #if !defined(I2C_LINE_F746)
 		static constexpr PIN PB6  = { GPIOB_BASE,  6, 11, I2C4_BASE };
@@ -316,95 +447,5 @@ struct _4 {
 
 #endif  // Section A
 
-// ===========================================================================
-// Section B: Peripheral-info table — i2c.cpp file scope
-// ===========================================================================
-#ifdef I2C_DEFS_CPP
-
-// Columns: periph, clk_reg, clk_bit, rst_reg, rst_bit,
-//          kernel-clock selector (cleared -> PCLK), irq_ev, irq_er,
-//          Fm+ bit in SYSCFG. DMA selection lives only in dma_requests.hpp.
-#if defined(STM32G0)
-
-#if defined(I2C3_BASE)
-#  define I2C2_IRQ_LINE I2C2_3_IRQn     // G0B0/G0B1/G0C1: I2C2 and I2C3 share one line
-#else
-#  define I2C2_IRQ_LINE I2C2_IRQn
-#endif
-#if defined(RCC_CCIPR_I2C2SEL)
-#  define I2C2_KSEL RCC_CCIPR_I2C2SEL
-#else
-#  define I2C2_KSEL 0u                  // I2C2 always clocked from PCLK
-#endif
-
-const I2C::PeriphInfo I2C::i2c_table[] = {
-#if defined(I2C1_BASE)
-	{ I2C1, &RCC->APBENR1, RCC_APBENR1_I2C1EN, &RCC->APBRSTR1, RCC_APBRSTR1_I2C1RST,
-	  &RCC->CCIPR, RCC_CCIPR_I2C1SEL, I2C1_IRQn, I2C1_IRQn,
-	  SYSCFG_CFGR1_I2C1_FMP },
-#endif
-#if defined(I2C2_BASE)
-	{ I2C2, &RCC->APBENR1, RCC_APBENR1_I2C2EN, &RCC->APBRSTR1, RCC_APBRSTR1_I2C2RST,
-	  &RCC->CCIPR, I2C2_KSEL, I2C2_IRQ_LINE, I2C2_IRQ_LINE,
-	  SYSCFG_CFGR1_I2C2_FMP },
-#endif
-#if defined(I2C3_BASE)
-	{ I2C3, &RCC->APBENR1, RCC_APBENR1_I2C3EN, &RCC->APBRSTR1, RCC_APBRSTR1_I2C3RST,
-	  &RCC->CCIPR, 0u, I2C2_3_IRQn, I2C2_3_IRQn,
-	  SYSCFG_CFGR1_I2C3_FMP },
-#endif
-};
-
 #undef I2C2_IRQ_LINE
 #undef I2C2_KSEL
-
-#elif defined(STM32F7)
-
-const I2C::PeriphInfo I2C::i2c_table[] = {
-#if defined(I2C1_BASE)
-	{ I2C1, &RCC->APB1ENR, RCC_APB1ENR_I2C1EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C1RST,
-	  &RCC->DCKCFGR2, RCC_DCKCFGR2_I2C1SEL, I2C1_EV_IRQn, I2C1_ER_IRQn,
-	  SYSCFG_PMC_I2C1_FMP },
-#endif
-#if defined(I2C2_BASE)
-	{ I2C2, &RCC->APB1ENR, RCC_APB1ENR_I2C2EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C2RST,
-	  &RCC->DCKCFGR2, RCC_DCKCFGR2_I2C2SEL, I2C2_EV_IRQn, I2C2_ER_IRQn,
-	  SYSCFG_PMC_I2C2_FMP },
-#endif
-#if defined(I2C3_BASE)
-	{ I2C3, &RCC->APB1ENR, RCC_APB1ENR_I2C3EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C3RST,
-	  &RCC->DCKCFGR2, RCC_DCKCFGR2_I2C3SEL, I2C3_EV_IRQn, I2C3_ER_IRQn,
-	  SYSCFG_PMC_I2C3_FMP },
-#endif
-#if defined(I2C4_BASE)
-	{ I2C4, &RCC->APB1ENR, RCC_APB1ENR_I2C4EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C4RST,
-	  &RCC->DCKCFGR2, RCC_DCKCFGR2_I2C4SEL, I2C4_EV_IRQn, I2C4_ER_IRQn,
-	  SYSCFG_PMC_I2C4_FMP },
-#endif
-};
-
-#elif defined(STM32F4)
-
-// F4 I2C (v1 IP) has no kernel clock selector and no Fm+ (FMPI2C1 is a separate IP).
-const I2C::PeriphInfo I2C::i2c_table[] = {
-#if defined(I2C1_BASE)
-	{ I2C1, &RCC->APB1ENR, RCC_APB1ENR_I2C1EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C1RST,
-	  nullptr, 0u, I2C1_EV_IRQn, I2C1_ER_IRQn,
-	  0u },
-#endif
-#if defined(I2C2_BASE)
-	{ I2C2, &RCC->APB1ENR, RCC_APB1ENR_I2C2EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C2RST,
-	  nullptr, 0u, I2C2_EV_IRQn, I2C2_ER_IRQn,
-	  0u },
-#endif
-#if defined(I2C3_BASE)
-	{ I2C3, &RCC->APB1ENR, RCC_APB1ENR_I2C3EN, &RCC->APB1RSTR, RCC_APB1RSTR_I2C3RST,
-	  nullptr, 0u, I2C3_EV_IRQn, I2C3_ER_IRQn,
-	  0u },
-#endif
-};
-
-#endif
-
-
-#endif  // I2C_DEFS_CPP (Section B)

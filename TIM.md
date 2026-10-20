@@ -1,5 +1,20 @@
 # TIM
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 [English](#english) · [Русский](#русский)
 
 ## English
@@ -15,23 +30,23 @@ One `TIM` object owns one hardware timer. Initialize System/RCC first. The
 constructor fixes up to four `{pin, dma}` descriptions, in any order. Named
 `TIM::_N::CHx::Pyz` pins carry the channel number, GPIO/AF and timer identity.
 Their numeric fields are checked by the `TIM_PIN` consteval constructor;
-peripheral ownership and duplicate bindings are checked at object construction.
+peripheral ownership and duplicate bindings are checked during constinit initialization.
 Package bonding and exact device AF routing remain the application's checks.
 
 ```cpp
-TIM timer(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+constinit TIM timer(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
 ```
 
 The last optional constructor argument is a second TIM for finite quadrature:
 
 ```cpp
-TIM counter(TIM2);
-TIM generator(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
+constinit TIM counter(TIM::_2::instance);
+constinit TIM generator(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
 ```
 
 This pointer is fixed at construction. Construct counter first and keep it
-alive while generator uses it. Constructor checks the normal TRGO/ITR route,
-without acquiring hardware or registering IRQs. SetUpQuadrature initializes
+alive while generator uses it. Init checks the normal TRGO/ITR route before
+acquiring hardware or registering IRQs, returning InitError on a bad binding. SetUpQuadrature initializes
 the pair; the counter uses PSC=1 and CNT counts full A/B cycles. Generator
 DeInit releases both timers. Do not configure/use the counter independently
 while the generator owns it; see the quadrature example below.
@@ -85,14 +100,14 @@ UG. `Start()` is explicit; setup never starts the timer automatically.
 
 ```cpp
 void Tick();
-TIM tick(TIM3);
+constinit TIM tick(TIM::_3::instance);
 if (tick.SetUp(1000, &Tick) == SysInitStatus::InitOK) tick.Start();
 ```
 
 ### 3. PWM and exact 0/100%
 
 ```cpp
-TIM pwm(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+constinit TIM pwm(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
 if (pwm.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK) {
     // Check both InitOK results before Start.
     pwm.SetUpPWM(TIM::Channel::CH1, 250);
@@ -125,7 +140,7 @@ have independent counter frequencies.
 
 ```cpp
 void Edge();
-TIM input(TIM3, {TIM::_3::CH1::PA6});
+constinit TIM input(TIM::_3::instance, {TIM::_3::CH1::PA6});
 if (input.SetUp(100, nullptr, 10000) == SysInitStatus::InitOK) {
     // Target CNT clock is 1 MHz; read GetCounterClock() for the actual value.
     if (input.SetUpCapture(TIM::Channel::CH1, &Edge) == SysInitStatus::InitOK)
@@ -142,7 +157,7 @@ before the application reads it. The application handles wraps, overcapture and 
 Capture DMA is not added in this step; do not bind DMA to a capture channel.
 
 ```cpp
-TIM tick(TIM3);
+constinit TIM tick(TIM::_3::instance);
 if (tick.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK) {
     tick.SetCompareIRQ(TIM::Channel::CH1, 500, &HalfTick); // Check InitOK.
     tick.Start();
@@ -162,7 +177,7 @@ MMS selections are Update, ComparePulse (CH1 event), OC1Ref..OC4Ref. ComparePuls
 requires CH1 configured; OCxRef requires that channel configured as PWM.
 
 ```cpp
-TIM sampling(TIM3);
+constinit TIM sampling(TIM::_3::instance);
 if (sampling.SetUp(1000) == SysInitStatus::InitOK) {
     sampling.SetUpTrigger(TIM::Trigger::Update); // Check InitOK.
     // Arm the ADC first, then start the timer.
@@ -190,17 +205,17 @@ so per-channel DMA selection between Update and Compare is not independent.
 F4/F7 names expose the selected controller/stream:
 
 ```cpp
-const TIM::DMAReq dma1 = DMA_Sx::Req::Tim1::CH1_DMA2_Stream1;
-const TIM::DMAReq dma2 = DMA_Sx::Req::Tim1::CH2_DMA2_Stream2;
-TIM waveform(TIM1, {TIM::_1::CH1::PA8, dma1}, {TIM::_1::CH2::PA9, dma2});
+constexpr TIM::DMAReq dma1 = TIM::_1::DMA::CH1_DMA2_Stream1;
+constexpr TIM::DMAReq dma2 = TIM::_1::DMA::CH2_DMA2_Stream2;
+constinit TIM waveform(TIM::_1::instance, {TIM::_1::CH1::PA8, dma1}, {TIM::_1::CH2::PA9, dma2});
 ```
 
 G0 selects channels explicitly:
 
 ```cpp
-const TIM::DMAReq dma1 = DMA1_Channel2;
-const TIM::DMAReq dma2 = DMA1_Channel3;
-TIM waveform(TIM1, {TIM::_1::CH1::PA8, dma1}, {TIM::_1::CH2::PA9, dma2});
+constexpr TIM::DMAReq dma1 = DMA1_Channel2_BASE;
+constexpr TIM::DMAReq dma2 = DMA1_Channel3_BASE;
+constinit TIM waveform(TIM::_1::instance, {TIM::_1::CH1::PA8, dma1}, {TIM::_1::CH2::PA9, dma2});
 ```
 
 Call SetUp once, SetUpPWM for each channel, then SendDMA for each buffer while
@@ -234,8 +249,8 @@ TE/DME through Enable_IRQ(..., false), preserving the caller's NVIC mask.
 
 ```cpp
 constexpr uint32_t period = 80; // Example: 64 MHz CNT clock / 800 kHz.
-const TIM::DMAReq dma = DMA1_Channel3; // G0
-TIM ws(TIM1, {TIM::_1::CH1::PA8, dma});
+constexpr TIM::DMAReq dma = DMA1_Channel3_BASE; // G0
+constinit TIM ws(TIM::_1::instance, {TIM::_1::CH1::PA8, dma});
 WS2812B_Strip<8> strip(52, 26);
 strip.SetAll(RGB::Red());
 if (ws.SetUp(800000, nullptr, period) == SysInitStatus::InitOK
@@ -287,19 +302,19 @@ DMA_USE_ATOMIC настраивается отдельно. Внешнее со�
 и повторы. Корпус МК и точный AF-маршрут проверяет пользователь.
 
 ```cpp
-TIM timer(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+constinit TIM timer(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
 ```
 
 Последний необязательный аргумент конструктора — второй TIM для конечной квадратуры:
 
 ```cpp
-TIM counter(TIM2);
-TIM generator(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
+constinit TIM counter(TIM::_2::instance);
+constinit TIM generator(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
 ```
 
 Указатель закреплён конструктором. Счётчик создают первым и сохраняют всё время
-работы генератора. Конструктор проверяет обычный маршрут TRGO/ITR, не занимает
-аппаратуру и не регистрирует IRQ. SetUpQuadrature настраивает пару; счётчик
+работы генератора. Init проверяет обычный маршрут TRGO/ITR до изменения
+аппаратуры и регистрации IRQ; при несовместимости возвращает InitError. SetUpQuadrature настраивает пару; счётчик
 использует PSC=1 и его CNT считает полные циклы A/B. DeInit генератора освобождает
 оба таймера. Пока счётчик занят генератором, независимо его не настраивают
 и не запускают; пример квадратуры приведён ниже.
@@ -339,14 +354,14 @@ SysInitStatus SetUp(uint32_t freq, void (*callback)() = nullptr, uint32_t period
 
 ```cpp
 void Tick();
-TIM tick(TIM3);
+constinit TIM tick(TIM::_3::instance);
 if (tick.SetUp(1000, &Tick) == SysInitStatus::InitOK) tick.Start();
 ```
 
 ### 3. PWM без forced active
 
 ```cpp
-TIM pwm(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+constinit TIM pwm(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
 if (pwm.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK) {
     pwm.SetUpPWM(TIM::Channel::CH1, 250); // Проверить InitOK.
     pwm.SetUpPWM(TIM::Channel::CH2, 500); // Проверить InitOK.
@@ -375,7 +390,7 @@ PSC/ARR общие для всех каналов. Роли каналов мо�
 
 ```cpp
 void Edge();
-TIM input(TIM3, {TIM::_3::CH1::PA6});
+constinit TIM input(TIM::_3::instance, {TIM::_3::CH1::PA6});
 if (input.SetUp(100, nullptr, 10000) == SysInitStatus::InitOK) {
     // Целевая частота CNT 1 МГц; фактическую показывает GetCounterClock().
     if (input.SetUpCapture(TIM::Channel::CH1, &Edge) == SysInitStatus::InitOK)
@@ -393,7 +408,7 @@ callback, без чтения/копирования CCR. Следующий з�
 Capture DMA в этом шаге не добавляется; этому каналу DMA не передают.
 
 ```cpp
-TIM tick(TIM3);
+constinit TIM tick(TIM::_3::instance);
 if (tick.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK) {
     tick.SetCompareIRQ(TIM::Channel::CH1, 500, &HalfTick); // Проверить InitOK.
     tick.Start();
@@ -412,7 +427,7 @@ ComparePulse (событие CH1) и OC1Ref..OC4Ref. ComparePulse требует
 CH1; OCxRef — канал PWM. Прямые ADC CCx-события не требуют перенастройки TRGO.
 
 ```cpp
-TIM sampling(TIM3);
+constinit TIM sampling(TIM::_3::instance);
 if (sampling.SetUp(1000) == SysInitStatus::InitOK) {
     sampling.SetUpTrigger(TIM::Trigger::Update); // Проверить InitOK.
     // Сначала взвести ADC, затем запустить TIM.
@@ -436,12 +451,12 @@ DMA. CCDS общий: независимо выбрать Update/Compare DMA к�
 
 ```cpp
 // F4/F7:
-const TIM::DMAReq dma1 = DMA_Sx::Req::Tim1::CH1_DMA2_Stream1;
-const TIM::DMAReq dma2 = DMA_Sx::Req::Tim1::CH2_DMA2_Stream2;
+constexpr TIM::DMAReq dma1 = TIM::_1::DMA::CH1_DMA2_Stream1;
+constexpr TIM::DMAReq dma2 = TIM::_1::DMA::CH2_DMA2_Stream2;
 // G0 вместо них:
-// const TIM::DMAReq dma1 = DMA1_Channel2;
-// const TIM::DMAReq dma2 = DMA1_Channel3;
-TIM waveform(TIM1, {TIM::_1::CH1::PA8, dma1}, {TIM::_1::CH2::PA9, dma2});
+// constexpr TIM::DMAReq dma1 = DMA1_Channel2_BASE;
+// constexpr TIM::DMAReq dma2 = DMA1_Channel3_BASE;
+constinit TIM waveform(TIM::_1::instance, {TIM::_1::CH1::PA8, dma1}, {TIM::_1::CH2::PA9, dma2});
 ```
 
 После SetUp настраиваются PWM-каналы. Для синхронного запуска сначала
@@ -477,8 +492,8 @@ TE/DME через Enable_IRQ(..., false), сохраняя маску NVIC вы�
 
 ```cpp
 constexpr uint32_t period = 80; // Пример: CNT 64 МГц / 800 кГц.
-const TIM::DMAReq dma = DMA1_Channel3; // G0
-TIM ws(TIM1, {TIM::_1::CH1::PA8, dma});
+constexpr TIM::DMAReq dma = DMA1_Channel3_BASE; // G0
+constinit TIM ws(TIM::_1::instance, {TIM::_1::CH1::PA8, dma});
 WS2812B_Strip<8> strip(52, 26);
 strip.SetAll(RGB::Red());
 if (ws.SetUp(800000, nullptr, period) == SysInitStatus::InitOK
@@ -528,7 +543,7 @@ Callbacks необязательны и задаются только при и�
 ### Encoder / Энкодер
 
 ```cpp
-TIM encoder(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+constinit TIM encoder(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
 if (encoder.SetUpEncoder(65536, TIM::EncoderMode::X4) == SysInitStatus::InitOK)
     encoder.Start();
 const uint32_t position = encoder.Count();
@@ -550,8 +565,8 @@ Count возвращает CNT напрямую, без программного
 
 ```cpp
 void Done(); // Optional; called from the second TIM's IRQ after both timers stop.
-TIM counter(TIM2);
-TIM generator(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
+constinit TIM counter(TIM::_2::instance);
+constinit TIM generator(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
 if (generator.SetUpQuadrature(TIM::Channel::CH1, TIM::Channel::CH2,
         1000, 1000, &Done) == SysInitStatus::InitOK) {
     generator.GenPulse(100); // Check SysStatus; starts both timers.
@@ -626,7 +641,7 @@ compare и запускает сначала счётчик, затем гене
 ### PWM input / Измерение импульса
 
 ```cpp
-TIM measure(TIM3, {TIM::_3::CH1::PA6});
+constinit TIM measure(TIM::_3::instance, {TIM::_3::CH1::PA6});
 if (measure.SetUp(100, nullptr, 10000) == SysInitStatus::InitOK
     && measure.SetUpPulseMeasure(TIM::Channel::CH1) == SysInitStatus::InitOK)
     measure.Start();
@@ -687,7 +702,7 @@ ITR0..ITR3 используют обычное отображение TRGO с у
 **1. RCR + OPM on one timer / RCR + OPM одного таймера**
 
 ```cpp
-TIM burst(TIM1, {TIM::_1::CH1::PA8});
+constinit TIM burst(TIM::_1::instance, {TIM::_1::CH1::PA8});
 if (burst.SetUpPulseBurst(TIM::Channel::CH1, 1000, 1000) == SysInitStatus::InitOK)
     burst.RunPulses(100); // Check SysStatus; starts the burst.
 ```
@@ -712,8 +727,8 @@ RCR/неверного диапазона возвращается ошибка.
 **2. Second hardware counter / Второй аппаратный счётчик**
 
 ```cpp
-TIM pulses(TIM3, {TIM::_3::CH1::PA6});
-TIM counter(TIM2);
+constinit TIM pulses(TIM::_3::instance, {TIM::_3::CH1::PA6});
+constinit TIM counter(TIM::_2::instance);
 if (pulses.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
     && pulses.SetUpPWM(TIM::Channel::CH1, 500) == SysInitStatus::InitOK
     && pulses.SetUpTrigger() == SysInitStatus::InitOK

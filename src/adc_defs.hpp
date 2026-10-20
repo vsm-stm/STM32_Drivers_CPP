@@ -1,43 +1,44 @@
 /**
- * @file    adc_defs.hpp
- * @brief   Compile-time and run-time tables for the ADC_N driver.
+ * @file adc_defs.hpp
+ * @brief Selected-device instance, pin and DMA definitions for ADC_N.
  *
- * Two sections, each activated by a different preprocessor symbol.
+ * The public driver header includes the declaration section inside its class.
+ * Each _N owns an immutable constexpr instance, named pins and DMA routes;
+ * unavailable instances are omitted by the selected CMSIS device guards.
+ * Numeric peripheral/RCC addresses support constant initialization without MMIO.
+ * Bus-clock pointers refer to ordinary System variables, not hardware registers.
  *
- * Section A — channel tables + enums
- * ----------------------------------------------------
- * Guard:  ADC_HPP_  (include-guard of adc.hpp, already defined when
- *                    "#include "adc_defs.hpp"" is reached inside the class body)
- *         also !ADC_DEFS_CPP to prevent re-emission at file scope.
- * Scope:  ADC_N class body — public nested types.
- * Result: ADC_N::IN::PA0_IN0 / ADC_N::_1::PA0_IN0 tables, INTERNAL, SMPL / CH_SMPL and Trigger enums.
- * ADC_PIN is defined before ADC_N in adc.hpp and exposed as ADC_N::ADC_PIN.
- *
- * Section B — peripheral-info table (adc_table)
- * -----------------------------------------------
- * Guard:  ADC_DEFS_CPP  (defined in adc.cpp just before the include)
- * Scope:  file scope inside adc.cpp.
- * Result: ADC_N::adc_table[] is defined.
- *
- * Usage
- * -----
- * adc.hpp (inside class body — ADC_HPP_ already defined):
+ * Application code includes adc.hpp and can shorten names with:
  * @code
- *   #include "adc_defs.hpp"
+ *   using Hardware = ADC_N::_1;
+ *   // Hardware::instance is the first argument of the constexpr constructor.
+ *   // Hardware::DMA contains that peripheral's existing request definitions.
+ *   // Declare the static/global driver object with constinit.
  * @endcode
- *
- * adc.cpp (after #include "adc.hpp"):
- * @code
- *   #define ADC_DEFS_CPP
- *   #include "adc_defs.hpp"
- *   #undef  ADC_DEFS_CPP
- * @endcode
+ * Fixed bindings are checked while evaluating the constructor. Device/package
+ * bonding remains an application responsibility. There is no runtime table
+ * mapping a peripheral address to its instance description.
  */
-
 // ===========================================================================
 // Section A: channel tables + enums — ADC_N class body
 // ===========================================================================
 #if defined(ADC_HPP_) && !defined(ADC_DEFS_CPP)
+
+// Constant metadata; no address-to-instance table.
+
+#if defined(STM32G0)
+// G051/G061/G071/G081/G0B1/G0C1 (devices with COMP) share the line with COMP.
+#if defined(COMP1_BASE)
+#  define ADC_N_G0_IRQN  ADC1_COMP_IRQn
+#else
+#  define ADC_N_G0_IRQN  ADC1_IRQn
+#endif
+
+	#undef ADC_N_G0_IRQN
+#elif defined(STM32F4) || defined(STM32F7)
+// DMA routes are constructor parameters; this table contains hardware clocks/IRQs only.
+
+#endif
 
 // ---------------------------------------------------------------------------
 // Internal inputs — added with AddChannel(INTERNAL, ...). Channel numbers
@@ -231,6 +232,14 @@ struct IN {
 
 /// ADC1 channels (shared pin mapping with ADC2 — different adc_base).
 struct _1 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 0U, ADC1_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream4 = { DMA2_Stream4_BASE, 0U, ADC1_BASE, DMA_Sx::DIR::From_Per };  // Stream4 Ch0
+    };
+    static constexpr Instance instance = { ADC1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC1EN, ADC_IRQn
+
+ };
+
 	static constexpr ADC_PIN PA0_IN0   = { GPIOA_BASE,  0,  0, ADC1_BASE };
 	static constexpr ADC_PIN PA1_IN1   = { GPIOA_BASE,  1,  1, ADC1_BASE };
 	static constexpr ADC_PIN PA2_IN2   = { GPIOA_BASE,  2,  2, ADC1_BASE };
@@ -253,6 +262,14 @@ struct _1 {
 /// ADC2 — same GPIO pins as ADC1, different adc_base.
 /// Absent on F401/F410/F411/F412/F413/F423.
 struct _2 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 1U, ADC2_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 1U, ADC2_BASE, DMA_Sx::DIR::From_Per };  // Stream3 Ch1
+    };
+    static constexpr Instance instance = { ADC2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC2EN, ADC_IRQn
+
+ };
+
 	static constexpr ADC_PIN PA0_IN0   = { GPIOA_BASE,  0,  0, ADC2_BASE };
 	static constexpr ADC_PIN PA1_IN1   = { GPIOA_BASE,  1,  1, ADC2_BASE };
 	static constexpr ADC_PIN PA2_IN2   = { GPIOA_BASE,  2,  2, ADC2_BASE };
@@ -275,6 +292,14 @@ struct _2 {
 #if defined(ADC3_BASE)
 /// ADC3 — PA0-PA3, PC0-PC3 shared with ADC1/2, the rest on PORTF.
 struct _3 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 2U, ADC3_BASE, DMA_Sx::DIR::From_Per };
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream1 = { DMA2_Stream1_BASE, 2U, ADC3_BASE, DMA_Sx::DIR::From_Per };  // Stream1 Ch2
+    };
+    static constexpr Instance instance = { ADC3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC3EN, ADC_IRQn
+
+ };
+
 	static constexpr ADC_PIN PA0_IN0   = { GPIOA_BASE,  0,  0, ADC3_BASE };
 	static constexpr ADC_PIN PA1_IN1   = { GPIOA_BASE,  1,  1, ADC3_BASE };
 	static constexpr ADC_PIN PA2_IN2   = { GPIOA_BASE,  2,  2, ADC3_BASE };
@@ -296,36 +321,16 @@ struct _3 {
 
 #endif  // STM32 family
 
-#endif  // Section A: defined(ADC_HPP_) && !defined(ADC_DEFS_CPP)
-
-
-// ===========================================================================
-// Section B: Peripheral-info table — adc.cpp file scope
-// ===========================================================================
-#ifdef ADC_DEFS_CPP
-
 #if defined(STM32G0)
-// G051/G061/G071/G081/G0B1/G0C1 (devices with COMP) share the line with COMP.
-#if defined(COMP1_BASE)
-#  define ADC_N_G0_IRQN  ADC1_COMP_IRQn
-#else
-#  define ADC_N_G0_IRQN  ADC1_IRQn
-#endif
-const ADC_N::PeriphInfo ADC_N::adc_table[] = {
-	{ ADC1, &RCC->APBENR2, RCC_APBENR2_ADCEN, ADC_N_G0_IRQN }
-};
-#undef ADC_N_G0_IRQN
-#elif defined(STM32F4) || defined(STM32F7)
-// DMA routes are constructor parameters; this table contains hardware clocks/IRQs only.
-const ADC_N::PeriphInfo ADC_N::adc_table[] = {
-	{ ADC1, &RCC->APB2ENR, RCC_APB2ENR_ADC1EN, ADC_IRQn },
-#if defined(ADC2_BASE)
-	{ ADC2, &RCC->APB2ENR, RCC_APB2ENR_ADC2EN, ADC_IRQn },
-#endif
-#if defined(ADC3_BASE)
-	{ ADC3, &RCC->APB2ENR, RCC_APB2ENR_ADC3EN, ADC_IRQn },
-#endif
+struct _1 {
+    struct DMA {
+        static constexpr DMA_Sx::DMAReq RX = {  5U, ADC1_BASE, DMA_Sx::DIR::From_Per };
+    };
+    static constexpr Instance instance = { ADC1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR2)), RCC_APBENR2_ADCEN, ADC_N_G0_IRQN,
+        DMA::RX.ch
+    };
+
 };
 #endif
 
-#endif  // ADC_DEFS_CPP (Section B)
+#endif  // Section A: defined(ADC_HPP_) && !defined(ADC_DEFS_CPP)

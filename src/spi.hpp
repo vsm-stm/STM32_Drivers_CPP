@@ -70,7 +70,7 @@
  *
  * Blocking master, application-owned CS
  * @code
- *   SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+ *   constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
  *           SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
  *   if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) ==
  *       SysInitStatus::InitOK) {
@@ -87,10 +87,10 @@
  *
  * Async master with automatic software CS
  * @code
- *   const SPI::DMAReq tx = DMA_Sx::Req::Spi1::TX_DMA2_Stream3; // F4/F7
- *   const SPI::DMAReq rx = DMA_Sx::Req::Spi1::RX_DMA2_Stream0;
- *   SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
- *           SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN(GPIOB, 0), tx, rx);
+ *   constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA2_Stream3; // F4/F7
+ *   constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
+ *   constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+ *           SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN(GPIOB_BASE, 0), tx, rx);
  *   // After successful bus.SetUp(Master, Software):
  *   // Start SendReceive_DMA(tx_buffer, rx_buffer, frame_count); check the result.
  *   // In main, call bus.Process() until it returns OK/Error; only then use RX.
@@ -98,8 +98,8 @@
  *
  * Receive-only master with one DMA (G0 example)
  * @code
- *   const SPI::DMAReq rx = DMA1_Channel3;
- *   SPI bus(SPI1, SPI::Direction::RX, SPI::_1::SCK::PA5,
+ *   constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
+ *   constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
  *           PIN{}, SPI::_1::MISO::PA6, PIN{}, {}, rx);
  *   // Check bus.SetUp(Master, Software), then Receive_DMA(buffer, frame_count).
  *   // TX IRQ provides dummy clocks; no MOSI pin or TX DMA is required.
@@ -163,16 +163,29 @@ public:
     };
 
 #if defined(STM32G0)
-    using DMAReq = DMA_Channel_TypeDef*; ///< Source is implied by SPI and direction.
+    using DMAReq = uintptr_t; ///< Source is implied by SPI and direction.
 #else
     using DMAReq = DMA_Sx::DMAReq;
 #endif
 
+    /** Fixed device metadata from spi_defs.hpp; no runtime lookup. */
+    struct Instance {
+        uintptr_t periph;
+        uintptr_t clk_reg;
+        uint32_t clk_bit;
+        uintptr_t rst_reg;
+        uint32_t rst_bit;
+        const uint32_t* bus_clk;
+        IRQn_Type irq;
+#if defined(STM32G0)
+        uint32_t dma_tx_request, dma_rx_request;
+#endif
+    };
 #include "spi_defs.hpp"
 
     /**
      * @brief Store pins and hardware; no register access until SetUp().
-     * @param spix Hardware pointer, for example SPI1.
+     * @param instance SPI::_N::instance for the selected hardware block.
      * @param direction Fixed TX, RX or TXRX; incompatible transfer methods return Error.
      * @param sck Named SPI::_N::SCK pin.
      * @param mosi Optional named MOSI; defaults to PIN{} if externally unused.
@@ -180,43 +193,33 @@ public:
      * @param ss Optional software CS GPIO for master; hardware NSS pin for Hard.
      * @param dma_tx Optional TX DMA, unused/forbidden for Direction::RX.
      * @param dma_rx Optional RX DMA, unused/forbidden for Direction::TX.
-     * A named AF pin from another peripheral calls System::DebugTrap().
+     * Use constinit: incompatible named pins or DMA routes are compilation errors.
      * Objects may not be copied/moved; call DeInit() before destruction.
      */
-    explicit SPI(SPI_TypeDef* spix, Direction direction, PIN sck, PIN mosi = PIN{},
+    constexpr explicit SPI(const Instance& instance, Direction direction, PIN sck, PIN mosi = PIN{},
                  PIN miso = PIN{}, PIN ss = PIN{},
                  DMAReq dma_tx = {}, DMAReq dma_rx = {})
         : _direction(direction),
 #if defined(STM32G0)
-          _dma_tx(dma_tx, DmaRequest(spix, true)), _dma_rx(dma_rx, DmaRequest(spix, false)),
+          _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request),
 #else
           _dma_tx(dma_tx), _dma_rx(dma_rx),
 #endif
           _dma_tx_irq(*this), _dma_rx_irq(*this),
-          SPIx(spix), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
+          _instance(instance), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
     {
-        if (sck.IsValid() && sck.periph_base && sck.periph_base != (uint32_t)spix)
-            System::DebugTrap("SPI: SCK pin belongs to wrong peripheral");
-        if (mosi.IsValid() && mosi.periph_base && mosi.periph_base != (uint32_t)spix)
-            System::DebugTrap("SPI: MOSI pin belongs to wrong peripheral");
-        if (miso.IsValid() && miso.periph_base && miso.periph_base != (uint32_t)spix)
-            System::DebugTrap("SPI: MISO pin belongs to wrong peripheral");
-        if (ss.IsValid() && ss.periph_base && ss.periph_base != (uint32_t)spix)
-            System::DebugTrap("SPI: SS pin belongs to wrong peripheral");
-#if defined(STM32G0)
-        if (dma_tx && dma_tx == dma_rx)
-            System::DebugTrap("SPI: TX and RX require different DMA channels");
-#else
-        const uintptr_t base = reinterpret_cast<uintptr_t>(spix);
-        if ((dma_tx.stream || dma_tx.ch || dma_tx.periph_base)
-            && (!dma_tx.IsValid() || dma_tx.periph_base != base || dma_tx.direction != DMA_Sx::DIR::To_Per))
-            System::DebugTrap("SPI: invalid TX DMA request");
-        if ((dma_rx.stream || dma_rx.ch || dma_rx.periph_base)
-            && (!dma_rx.IsValid() || dma_rx.periph_base != base || dma_rx.direction != DMA_Sx::DIR::From_Per))
-            System::DebugTrap("SPI: invalid RX DMA request");
-        if (dma_tx.stream && dma_tx.stream == dma_rx.stream)
-            System::DebugTrap("SPI: TX and RX require different DMA streams");
-#endif
+        if (!sck.IsValid()
+            || (sck.periph_base && sck.periph_base != instance.periph)
+            || (mosi.IsValid() && mosi.periph_base && mosi.periph_base != instance.periph)
+            || (miso.IsValid() && miso.periph_base && miso.periph_base != instance.periph)
+            || (ss.IsValid() && ss.periph_base && ss.periph_base != instance.periph)
+            || !DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per)
+            || !DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per)
+            || DMA_Sx::SameResource(dma_tx, dma_rx)
+            || (direction != Direction::TX && direction != Direction::RX && direction != Direction::TXRX)
+            || (direction == Direction::TX && _dma_rx.HasSelection())
+            || (direction == Direction::RX && _dma_tx.HasSelection()))
+            __builtin_unreachable();
     }
     SPI() = delete;
     SPI(const SPI&) = delete;
@@ -409,16 +412,7 @@ public:
 
 private:
     enum class Mode : uint8_t { Polling, Irq, Dma };
-    struct PeriphInfo {
-        SPI_TypeDef* periph;
-        volatile uint32_t* clk_reg;
-        uint32_t clk_bit;
-        volatile uint32_t* rst_reg;
-        uint32_t rst_bit;
-        const uint32_t* bus_clk;
-        IRQn_Type irq;
-    };
-    static const PeriphInfo spi_table[];
+    using PeriphInfo = Instance;
     static constexpr uint32_t IRQ_MASK = SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE;
     static constexpr uint32_t DMA_MASK = SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN;
     // Motorola SPI without hardware CRC; TI frame errors are not applicable.
@@ -438,22 +432,19 @@ private:
     const Direction _direction;
     DMA_Sx _dma_tx;
     DMA_Sx _dma_rx;
-#if defined(STM32G0)
-    static uint32_t DmaRequest(SPI_TypeDef* spi, bool tx);
-#endif
     // Active directions awaiting a DMA completion/stop event; SPI CR2 bit values.
     volatile uint8_t _dma_pending = 0;
 
     class DmaTxIRQ final : public IIRQHandler {
     public:
-        explicit DmaTxIRQ(SPI& spi) : _spi(spi) {}
+        constexpr explicit DmaTxIRQ(SPI& spi) : _spi(spi) {}
         void HandleIRQ() override { _spi.HandleDmaTxIRQ(); }
     private:
         SPI& _spi;
     };
     class DmaRxIRQ final : public IIRQHandler {
     public:
-        explicit DmaRxIRQ(SPI& spi) : _spi(spi) {}
+        constexpr explicit DmaRxIRQ(SPI& spi) : _spi(spi) {}
         void HandleIRQ() override { _spi.HandleDmaRxIRQ(); }
     private:
         SPI& _spi;
@@ -486,7 +477,8 @@ private:
     void HandleIRQ() override final;
 
 protected:
-    SPI_TypeDef* const SPIx;
+    const Instance& _instance;
+	SPI_TypeDef* SPIx = nullptr;
     PIN _clk, _mosi, _miso, _ss;
     NSS_ctrl nss_ctrl{};
     Master_sel Master_slave{};

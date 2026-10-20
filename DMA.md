@@ -1,5 +1,20 @@
 # DMA / DMA_Sx — Detailed Description
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 *[English](#english) · [Русский](#русский)*
 
 ---
@@ -12,7 +27,7 @@
 2. [Stream (F4/F7) vs Channel+DMAMUX (G0)](#2-stream-f4f7-vs-channeldmamux-g0)
 3. [Register Abstraction](#3-register-abstraction)
 4. [Static Descriptor Table and Protection from Double Initialization](#4-static-descriptor-table-and-protection-from-double-initialization)
-5. [Req:: — Named Request Tables](#5-req--named-request-tables)
+5. [_N::DMA — Named Request Tables](#5-req--named-request-tables)
 6. [SetUp() — Step by Step](#6-setup--step-by-step)
 7. [Flags: One Register for Multiple Channels](#7-flags-one-register-for-multiple-channels)
 8. [Integration with Peripheral Drivers](#8-integration-with-peripheral-drivers)
@@ -29,9 +44,9 @@ register updates are protected; acquisition, buffer ownership and multi-step
 configuration still require external serialization.
 
 `DMA_Sx` is one class per one DMA stream (F4/F7) or DMA channel (G0), hiding the fact that this is
-physically **different hardware** across different families (see §2) behind one and the same API. Like
-`USART`/`TIM`/`SPI`, it uses the pattern "a static table of peripheral facts + lookup by
-pointer". `GetStreamIndex()` (§4) calculates the index from the controller's address
+physically **different hardware** across different families (see §2) behind one and the same API.
+DMA keeps its own hardware flag-register/IRQ descriptors. Peripheral drivers instead
+receive their selected `_N::instance` directly. `GetStreamIndex()` (§4) calculates the index from the controller's address
 range and register stride, rejecting addresses between channel/stream bases.
 
 `DMA_Sx` is usually not used by itself, but as the "engine" taken by [`USART`](UART.md),
@@ -61,7 +76,7 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
 └─────────────────────────────┘                    └─────────────┬───────────────┘
                                                                   │ DMAMUX1_ChannelN->CCR = req_id
      "Which stream serves USART1_TX?"                            ▼
-     — fixed in silicon, look it up in Req::                ┌─────────────────────┐
+     — fixed in silicon, look it up in _N::DMA                ┌─────────────────────┐
        (see §5) or in RM0090 Table 42                        │ DMAMUX1 — a software │
                                                               │ router: ANY channel  │
                                                               │ → ANY peripheral     │
@@ -69,7 +84,7 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
 ```
 
 On F4/F7 the "stream ↔ peripheral" pairing is part of the silicon. For example,
-`Req::Usart3::TX_DMA1_Stream3` and `Req::Usart3::TX_DMA1_Stream4` name two fixed
+`USART::_3::DMA::TX_DMA1_Stream3` and `USART::_3::DMA::TX_DMA1_Stream4` name two fixed
 USART3 TX routes and show the occupied resource directly. On G0, `DMAMUX1` is a separate hardware
 block between the available DMA controllers and request sources. The device has
 5 or 7 DMA1 channels and may also have five DMA2 channels. The caller selects
@@ -116,7 +131,7 @@ to one consumer. SetUp/Release run in the main loop; access is serialized extern
 
 ---
 
-## 5. Req:: — Named Request Tables
+## 5. _N::DMA — Named Request Tables
 
 ```cpp
 struct DMAReq {
@@ -141,12 +156,12 @@ struct Req {
 };
 ```
 
-`Req::` is not about selecting registers (that's what `_CR()`/`_NDTR()`/... do), but about
+`_N::DMA` is not about selecting registers (that's what `_CR()`/`_NDTR()`/... do), but about
 **which number to write into CHSEL (F4/F7) or into DMAMUX1 (G0)** so the stream/channel listens to
 exactly the right peripheral. The struct names are deliberately `CamelCase` (`Usart1`, not `USART1`) so
 as not to conflict with the CMSIS macros `USART1`/`SPI1`/... (those are `#define`d as pointers to the
 peripheral's registers, not identifiers). F4/F7 route names identify each stream:
-`Req::Usart1::RX_DMA2_Stream2` and `Req::Usart1::RX_DMA2_Stream5`, for example.
+`USART::_1::DMA::RX_DMA2_Stream2` and `USART::_1::DMA::RX_DMA2_Stream5`, for example.
 G0 keeps TX/RX because the channel is chosen separately in the constructor.
 
 ---
@@ -265,16 +280,16 @@ peripheral driver on top of `GetTC_Flag()`/`ClearFlags()`.
 ### G0 — Standalone DMA_Sx with explicit channel and request
 
 ```cpp
-DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+DMA_Sx dma_tx(DMA1_Channel4_BASE, USART::_1::DMA::TX);
+DMA_Sx dma_rx(DMA1_Channel5_BASE, USART::_1::DMA::RX);
 // ch2/ch3 or ch4/ch5 share a vector — different pairs were chosen so as not to overlap with another peripheral
 ```
 
-### F4/F7 — via the Req:: Table (the Stream Is Already Baked into DMAReq)
+### F4/F7 — via the peripheral DMA definitions (the Stream Is Already Baked into DMAReq)
 
 ```cpp
-DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream2);     // CHSEL=4
-DMA_Sx dma_rx_alt(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CHSEL=4
+DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream2);     // CHSEL=4
+DMA_Sx dma_rx_alt(USART::_1::DMA::RX_DMA2_Stream5); // CHSEL=4
 ```
 
 ### G0 — Standalone Memory-to-Memory Transfer, No Peripheral
@@ -288,7 +303,7 @@ cfg.direction   = DMA_Sx::DIR::Mem_To_Mem;
 cfg.data_size   = DMA_Sx::SIZE::Word;
 cfg.minc        = true;
 cfg.pinc        = true;
-DMA_Sx copier(DMA1_Channel3, /*raw request, ignored in mem2mem*/ 0u);
+DMA_Sx copier(DMA1_Channel3_BASE, /*raw request, ignored in mem2mem*/ 0u);
 copier.SetUp(cfg);
 copier.SetPerAddr(reinterpret_cast<uint32_t>(src));
 copier.SetMemAddr(reinterpret_cast<uint32_t>(dst));
@@ -300,8 +315,8 @@ while (!copier.GetTC_Flag()) {}
 ### Through a Peripheral Driver (the Typical Case — See UART.md/SPI.md)
 
 ```cpp
-USART a(USART3, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9,
-        DMA_Sx::Req::Usart3::TX_DMA1_Stream3);
+constinit USART a(USART::_3::instance, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9,
+        USART::_3::DMA::TX_DMA1_Stream3);
 a.SetUp(); // Check InitOK; configures DMA and registers its handler.
 a.Send_DMA(buf, len);
 ```
@@ -376,7 +391,7 @@ DMA_USE_ATOMIC в dma.hpp: 0 по умолчанию — обычные изме
 2. [Stream (F4/F7) vs Channel+DMAMUX (G0)](#2-stream-f4f7-vs-channeldmamux-g0)
 3. [Регистровая абстракция](#3-регистровая-абстракция)
 4. [Статическая таблица дескрипторов и защита от двойной инициализации](#4-статическая-таблица-дескрипторов-и-защита-от-двойной-инициализации)
-5. [Req:: — именованные таблицы запросов](#5-req--именованные-таблицы-запросов)
+5. [_N::DMA — именованные таблицы запросов](#5-req--именованные-таблицы-запросов)
 6. [SetUp() — пошагово](#6-setup--пошагово)
 7. [Флаги: один регистр на несколько каналов](#7-флаги-один-регистр-на-несколько-каналов)
 8. [Интеграция с периферийными драйверами](#8-интеграция-с-периферийными-драйверами)
@@ -420,7 +435,7 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
 └─────────────────────────────┘                    └─────────────┬───────────────┘
                                                                   │ DMAMUX1_ChannelN->CCR = req_id
      "Какой стрим обслуживает USART1_TX?"                        ▼
-     — фиксировано в кремнии, смотреть в Req::             ┌─────────────────────┐
+     — фиксировано в кремнии, смотреть в _N::DMA             ┌─────────────────────┐
        (см. §5) или в RM0090 Table 42                       │ DMAMUX1 — программный │
                                                              │ маршрутизатор: ЛЮБОЙ  │
                                                              │ канал → ЛЮБАЯ периферия│
@@ -428,7 +443,7 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
 ```
 
 На F4/F7 связка "стрим ↔ периферия" задана аппаратно. Например,
-`Req::Usart3::TX_DMA1_Stream3` и `Req::Usart3::TX_DMA1_Stream4` обозначают два
+`USART::_3::DMA::TX_DMA1_Stream3` и `USART::_3::DMA::TX_DMA1_Stream4` обозначают два
 маршрута USART3 TX и сразу показывают занятый ресурс. На G0 `DMAMUX1` — отдельный аппаратный
 блок между доступными контроллерами DMA и источниками запросов. В зависимости
 от МК есть 5 или 7 каналов DMA1 и ещё пять каналов DMA2. Пользователь выбирает
@@ -476,7 +491,7 @@ DMA2 на G0 использует индексы дескрипторов/DMAMUX
 
 ---
 
-## 5. Req:: — именованные таблицы запросов
+## 5. _N::DMA — именованные таблицы запросов
 
 ```cpp
 struct DMAReq {
@@ -501,12 +516,12 @@ struct Req {
 };
 ```
 
-`Req::` — не про выбор регистров (это делает `_CR()`/`_NDTR()`/...), а про то, **какое число
+`_N::DMA` — не про выбор регистров (это делает `_CR()`/`_NDTR()`/...), а про то, **какое число
 записать в CHSEL (F4/F7) или в DMAMUX1 (G0)**, чтобы стрим/канал слушал именно нужную периферию.
 Имена структур — `CamelCase` (`Usart1`, не `USART1`) специально, чтобы не конфликтовать с
 CMSIS-макросами `USART1`/`SPI1`/... (те `#define`'ятся как указатели на регистры периферии, а не
 идентификаторы). Имена маршрутов F4/F7 показывают поток:
-например, `Req::Usart1::RX_DMA2_Stream2` и `Req::Usart1::RX_DMA2_Stream5`.
+например, `USART::_1::DMA::RX_DMA2_Stream2` и `USART::_1::DMA::RX_DMA2_Stream5`.
 На G0 сохраняются TX/RX: канал отдельно задаётся в конструкторе.
 
 ---
@@ -604,16 +619,16 @@ Channel1..5 в зависимости от МК, а также переполн�
 ### G0 — отдельный DMA_Sx с явным каналом и запросом
 
 ```cpp
-DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+DMA_Sx dma_tx(DMA1_Channel4_BASE, USART::_1::DMA::TX);
+DMA_Sx dma_rx(DMA1_Channel5_BASE, USART::_1::DMA::RX);
 // ch2/ch3 или ch4/ch5 делят вектор — выбраны разные пары, чтобы не пересекаться с другой периферией
 ```
 
-### F4/F7 — через таблицу Req:: (стрим уже зашит в DMAReq)
+### F4/F7 — через определения _N::DMA (стрим уже зашит в DMAReq)
 
 ```cpp
-DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream2);     // CHSEL=4
-DMA_Sx dma_rx_alt(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CHSEL=4
+DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream2);     // CHSEL=4
+DMA_Sx dma_rx_alt(USART::_1::DMA::RX_DMA2_Stream5); // CHSEL=4
 ```
 
 ### G0 — автономный перенос память→память, без периферии
@@ -627,7 +642,7 @@ cfg.direction   = DMA_Sx::DIR::Mem_To_Mem;
 cfg.data_size   = DMA_Sx::SIZE::Word;
 cfg.minc        = true;
 cfg.pinc        = true;
-DMA_Sx copier(DMA1_Channel3, /*raw request, игнорируется в mem2mem*/ 0u);
+DMA_Sx copier(DMA1_Channel3_BASE, /*raw request, игнорируется в mem2mem*/ 0u);
 copier.SetUp(cfg);
 copier.SetPerAddr(reinterpret_cast<uint32_t>(src));
 copier.SetMemAddr(reinterpret_cast<uint32_t>(dst));
@@ -639,8 +654,8 @@ while (!copier.GetTC_Flag()) {}
 ### Через периферийный драйвер (типичный случай — см. UART.md/SPI.md)
 
 ```cpp
-USART a(USART3, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9,
-        DMA_Sx::Req::Usart3::TX_DMA1_Stream3);
+constinit USART a(USART::_3::instance, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9,
+        USART::_3::DMA::TX_DMA1_Stream3);
 a.SetUp(); // Проверить InitOK; настраивает DMA и регистрирует его обработчик.
 a.Send_DMA(buf, len);
 ```

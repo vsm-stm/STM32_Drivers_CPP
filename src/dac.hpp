@@ -20,7 +20,7 @@
  * @code
  *   #include "dac.hpp"
  *
- *   DAC_Module output(DAC1, DAC_Module::CHANNEL::CH1); // PA4
+ *   constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1); // PA4
  *   // After System/RCC initialization:
  *   if (output.SetUp() == SysInitStatus::InitOK) {
  *       SysStatus written = output.SetValue(2048);
@@ -60,23 +60,52 @@
 class DAC_Module
 {
 public:
-	/// CH2 is rejected by SetUp() on devices exposing only CH1.
+	/// CH2 is rejected during constinit initialization on CH1-only devices.
 	enum class CHANNEL
 	{
 		CH1 = 0,
 		CH2
 	};
 
+	struct Instance {
+		uintptr_t periph, clk_reg;
+		uint32_t clk_bit;
+		bool has_ch2;
+	};
+	struct _1 {
+		static constexpr Instance instance {
+#ifdef DAC1_BASE
+			DAC1_BASE,
+#else
+			DAC_BASE,
+#endif
+#if defined(STM32G0)
+			RCC_BASE + offsetof(RCC_TypeDef, APBENR1), RCC_APBENR1_DAC1EN,
+#else
+			RCC_BASE + offsetof(RCC_TypeDef, APB1ENR), RCC_APB1ENR_DACEN,
+#endif
+#if defined(STM32F4) && !defined(DAC_CHANNEL2_SUPPORT)
+			false
+#else
+			true
+#endif
+		};
+	};
+
 	/**
 	 * @brief Bind an instance/channel without accessing hardware.
-	 * @param dacx DAC1 (the legacy CMSIS DAC alias is the same instance).
+	 * @param instance DAC_Module::_1::instance.
 	 * @param channel CH1 on PA4, or CH2 on PA5 when supported.
-	 * Instance and channel validity are checked by SetUp().
+	 * Use constinit: the channel is checked during constant initialization.
 	 */
-	explicit DAC_Module(DAC_TypeDef* dacx, CHANNEL channel)
-		: DACx(dacx), ch(channel),
+	constexpr explicit DAC_Module(const Instance& instance, CHANNEL channel)
+		: _instance(instance), ch(channel),
 		  out_pin(channel == CHANNEL::CH1 ? PIN(GPIOA_BASE, 4) : PIN(GPIOA_BASE, 5))
-	{}
+	{
+		if ((channel != CHANNEL::CH1 && channel != CHANNEL::CH2)
+			|| (channel == CHANNEL::CH2 && !instance.has_ch2))
+			__builtin_unreachable();
+	}
 	DAC_Module() = delete;
 	DAC_Module(const DAC_Module&) = delete;
 	DAC_Module(DAC_Module&&) = delete;
@@ -86,7 +115,7 @@ public:
 
 	/**
 	 * @brief Configure buffered, direct 12-bit output, initially zero.
-	 * @return InitError for an invalid instance/channel or repeated setup;
+	 * @return InitError for repeated setup;
 	 *         InitOK after GPIO/DAC configuration.
 	 * Preserves the other channel. No trigger, waveform, DMA or IRQ is enabled.
 	 * Reconfiguration requires DeInit(); analog startup is not waited for.
@@ -118,7 +147,8 @@ private:
 	volatile uint32_t* data_out = nullptr; ///< Non-null only after successful setup.
 
 protected:
-	DAC_TypeDef* const DACx;
+	const Instance& _instance;
+	DAC_TypeDef* DACx = nullptr;
 	const CHANNEL ch;
 	PIN out_pin;
 };

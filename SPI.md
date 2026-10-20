@@ -1,5 +1,20 @@
 # SPI
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 [English](#english) · [Русский](#русский)
 
 ## English
@@ -18,13 +33,13 @@ its DMA objects; keep the SPI object and active buffers alive.
 The constructor retains its optional SS pin:
 
 ~~~cpp
-SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
-        SPI::_1::MISO::PA6, PIN(GPIOB, 0)); // Optional software master CS
+constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
+        SPI::_1::MISO::PA6, PIN(GPIOB_BASE, 0)); // Optional software master CS
 ~~~
 
 SCK is required. A direction's data pin may be omitted when it is not used
 externally. Named AF pins are checked for peripheral ownership at construction
-time; this check is a runtime DebugTrap, not a compile-time assertion.
+time for constinit objects; incompatible bindings fail compilation.
 
 The constructor fixes Direction::TX, RX or TXRX and optional DMAReq after SS.
 F4/F7 receive named stream requests; G0 receives only physical channels.
@@ -62,7 +77,7 @@ On a shared bus use one SPI object and application-owned CS pins. This keeps CS
 active across multiple operations. Always release it on an error as well.
 
 ~~~cpp
-SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
+constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
 PIN flash_cs(GPIOB, 0), adc_cs(GPIOB, 1);
 flash_cs.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
 adc_cs.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
@@ -110,8 +125,8 @@ DMA binding does not remove blocking or IRQ methods. Direction::RX master with
 one DMA and no MOSI (G0 example):
 
 ~~~cpp
-const SPI::DMAReq rx = DMA1_Channel3;
-SPI bus(SPI1, SPI::Direction::RX, SPI::_1::SCK::PA5,
+constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
+constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
         PIN{}, SPI::_1::MISO::PA6, PIN{}, {}, rx);
 // Check SetUp(Master, Software), then Receive_DMA(buffer, capacity).
 // Call Process() from main; only use the buffer after OK.
@@ -172,7 +187,7 @@ Prepare TX/RX before the master selects NSS. The application configures and
 acknowledges rising-edge EXTI on the hardware NSS pin, then calls NssReleased():
 
 ~~~cpp
-SPI slave(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
+constinit SPI slave(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
           SPI::_1::MISO::PA6, SPI::_1::SS::PA4);
 static uint8_t packet[64];
 // Check SetUp(Slave, Hard), then Receive_IRQ(packet, sizeof(packet)).
@@ -212,13 +227,13 @@ data were lost and results in Error. OVR after capacity is exhausted is truncati
 
 ~~~cpp
 // F4/F7: the chosen resource is visible in its name.
-const SPI::DMAReq tx = DMA_Sx::Req::Spi1::TX_DMA2_Stream3;
-const SPI::DMAReq rx = DMA_Sx::Req::Spi1::RX_DMA2_Stream0;
+constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA2_Stream3;
+constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
 // G0 alternatives:
-// const SPI::DMAReq tx = DMA1_Channel2;
-// const SPI::DMAReq rx = DMA1_Channel3;
+// constexpr SPI::DMAReq tx = DMA1_Channel2_BASE;
+// constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
 
-SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
         SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, tx, rx);
 if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus::InitOK) {
     // Send_DMA/Receive_DMA/SendReceive_DMA can now be started.
@@ -226,9 +241,9 @@ if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus
 ~~~
 
 SetUp configures ownership, width, direction and DR address for constructor-bound
-DMA. The constructor traps on a wrong F4/F7 request or a repeated TX/RX resource.
-A DMA incompatible with Direction, owned resources, setup or
-registry failure give InitError. Only newly acquired resources are released on
+DMA. With constinit, a wrong request, shared TX/RX resource or DMA incompatible
+with Direction rejects compilation. Busy resources, hardware setup or registry
+failure give InitError. Only newly acquired resources are released on
 failure. SPI, DMA TX and DMA RX have separate registered handlers. Even when TX/RX
 share an NVIC vector, they need two registry slots; each checks only its own DMA.
 
@@ -339,7 +354,7 @@ TX использует BIDIMODE/BIDIOE без RX и второго DMA. RX ра
 AF5. У G0 с SPI3 блоки SPI2/SPI3 используют общий SPI2_3_IRQn.
 
 ~~~cpp
-SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
+constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
 SysInitStatus initialized = bus.SetUp(
     SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
     SPI::Data_frame_format::Half_Word, SPI::Frame_Format::MSB,
@@ -399,8 +414,8 @@ Dummy равен 0xFF для 8 бит и 0xFFFF для 16 бит.
 G0 без MOSI и второго DMA:
 
 ~~~cpp
-const SPI::DMAReq rx = DMA1_Channel3;
-SPI bus(SPI1, SPI::Direction::RX, SPI::_1::SCK::PA5,
+constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
+constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
         PIN{}, SPI::_1::MISO::PA6, PIN{}, {}, rx);
 // Проверить SetUp(Master, Software), затем Receive_DMA(buffer, capacity).
 // Вызывать Process из main; использовать буфер только после OK.
@@ -446,7 +461,7 @@ Process. Дополнительные кадры отбрасываются с I
 само проверяет/сбрасывает флаг и вызывает NssReleased:
 
 ~~~cpp
-SPI slave(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
+constinit SPI slave(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
           SPI::_1::MISO::PA6, SPI::_1::SS::PA4);
 static uint8_t packet[64];
 // Проверить SetUp(Slave, Hard), затем Receive_IRQ(packet, sizeof(packet)).
@@ -493,12 +508,12 @@ DMA RX регистрируются отдельно. Даже при общем
 
 ~~~cpp
 // F4/F7:
-const SPI::DMAReq tx = DMA_Sx::Req::Spi1::TX_DMA2_Stream3;
-const SPI::DMAReq rx = DMA_Sx::Req::Spi1::RX_DMA2_Stream0;
+constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA2_Stream3;
+constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
 // G0:
-// const SPI::DMAReq tx = DMA1_Channel2;
-// const SPI::DMAReq rx = DMA1_Channel3;
-SPI bus(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+// constexpr SPI::DMAReq tx = DMA1_Channel2_BASE;
+// constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
+constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
         SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, tx, rx);
 // Проверить bus.SetUp(Master, Software), затем запускать обмен.
 ~~~

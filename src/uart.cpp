@@ -10,37 +10,6 @@
  */
 #include "uart.hpp"
 
-#define UART_DEFS_CPP
-#include "uart_defs.hpp"
-#undef UART_DEFS_CPP
-
-#if defined(STM32G0)
-uint32_t USART::DmaRequest(USART_TypeDef* usart, bool tx)
-{
-	switch (reinterpret_cast<uintptr_t>(usart)) {
-#ifdef USART1_BASE
-	case USART1_BASE: return (tx ? DMA_Sx::Req::Usart1::TX : DMA_Sx::Req::Usart1::RX).ch;
-#endif
-#ifdef USART2_BASE
-	case USART2_BASE: return (tx ? DMA_Sx::Req::Usart2::TX : DMA_Sx::Req::Usart2::RX).ch;
-#endif
-#ifdef USART3_BASE
-	case USART3_BASE: return (tx ? DMA_Sx::Req::Usart3::TX : DMA_Sx::Req::Usart3::RX).ch;
-#endif
-#ifdef USART4_BASE
-	case USART4_BASE: return (tx ? DMA_Sx::Req::Usart4::TX : DMA_Sx::Req::Usart4::RX).ch;
-#endif
-#ifdef USART5_BASE
-	case USART5_BASE: return (tx ? DMA_Sx::Req::Usart5::TX : DMA_Sx::Req::Usart5::RX).ch;
-#endif
-#ifdef USART6_BASE
-	case USART6_BASE: return (tx ? DMA_Sx::Req::Usart6::TX : DMA_Sx::Req::Usart6::RX).ch;
-#endif
-	default: return 0;
-	}
-}
-#endif
-
 // OVER8=0: 16-bit BRR, USARTDIV >= 16. G0 PRESC is /1.
 static uint32_t BaudRegister(uint32_t clock, uint32_t baud)
 {
@@ -89,10 +58,8 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx, Fr
 	if (format != FrameFormat::N8_1 && format != FrameFormat::E8_1
 		&& format != FrameFormat::O8_1 && format != FrameFormat::N8_2)
 		return SysInitStatus::InitError;
-	const PeriphInfo* info = nullptr;
-	for (const auto& e : usart_table)
-		if (e.periph == USARTx) { info = &e; break; }
-	if (!info) return SysInitStatus::InitError;
+	const PeriphInfo* info = &_instance;
+	USARTx = reinterpret_cast<USART_TypeDef*>(info->periph);
 	const uint32_t brr = BaudRegister(KernelClock(*info), BaudRate);
 	if (!brr) return SysInitStatus::InitError;
 #if defined(STM32G0)
@@ -104,8 +71,8 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx, Fr
 		return SysInitStatus::InitError;
 #endif
 
-	UART_SET_BIT(*info->clk_reg, info->clk_bit);
-	(void)*info->clk_reg;
+	UART_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
+	(void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
 	USARTx->CR1 = 0; // BRR and FIFO configuration require UE=0.
 #if defined(STM32F7) || defined(STM32G0)
 	if (info->clock_select) {

@@ -1,5 +1,20 @@
 # Drivers — STM32 Peripheral Driver Library
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 *[English](#english) · [Русский](#русский)*
 
 ---
@@ -175,10 +190,10 @@ This is the only place that needs updating when adding a new MCU.
 Pins for USART and SPI are selected from nested structures:
 
 ```cpp
-USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+constinit USART debug(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
-Each pin from `USART::_1::TX::PB6` carries the peripheral's base address. The constructor checks the match — if you pass a pin belonging to a different USART, a `BKPT` and an infinite loop fire, which is caught instantly while debugging.
+Each pin from `USART::_1::TX::PB6` carries its owning peripheral base. A mismatched pin rejects constinit construction at compilation. The deprecated CMSIS-pointer USART constructor retains runtime DebugTrap checks.
 
 ### IRQ_Registry — a single interrupt dispatcher
 
@@ -348,7 +363,7 @@ RCC.md for limits, ordering and migration from Init(...)/InitCalcPLL(...).
 **Files:** `gpio.hpp`, `gpio.cpp`
 **Details:** [GPIO.md](GPIO.md)
 
-Use PIN(GPIOA, 5) for ordinary GPIO. The pointer constructor binds the supplied
+Use PIN(GPIOA_BASE, 5) for ordinary GPIO. The pointer constructor binds the supplied
 port/pin/AF without runtime validation. Compile-time tables use GPIOx_BASE with
 the consteval constructor, which checks port, pin number and stored AF.
 Port/number/stored AF are private const; periph_base is read-only. Copy construction
@@ -426,14 +441,14 @@ bool b = (bool)led;   // GetLevel()
 A pin created via `PIN{}` (the default constructor) returns `IsValid() == false`. Drivers use this as a "channel not connected" marker:
 
 ```cpp
-SPI spi(SPI1, SPI::Direction::TX, sck, mosi, PIN{}, PIN{});   // MISO and SS are not used
+constinit SPI spi(SPI::_1::instance, SPI::Direction::TX, sck, mosi, PIN{}, PIN{});   // MISO and SS are not used
 ```
 
 ### PinArray — an array of pins
 
 ```cpp
 PIN segments[] = {
-    PIN(GPIOA, 0), PIN(GPIOA, 1), PIN(GPIOA, 2), PIN(GPIOA, 3)
+    PIN(GPIOA_BASE, 0), PIN(GPIOA_BASE, 1), PIN(GPIOA_BASE, 2), PIN(GPIOA_BASE, 3)
 };
 PinArray<4> seg_pins(segments);
 
@@ -521,18 +536,18 @@ their timing and range. Integration into the remaining consumers is pending.
 
 ### Constructor (STM32G0)
 
-On G0, DMAMUX1 lets you connect any channel to any peripheral. The user picks the channel; the request comes from the `Req::` table:
+On G0, DMAMUX1 lets you connect any channel to any peripheral. The user picks the channel; the request comes from the peripheral’s `_N::DMA` definitions:
 
 ```cpp
 // Option 1: channel + request from the table (recommended)
-DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+DMA_Sx dma_tx(DMA1_Channel4_BASE, USART::_1::DMA::TX);
+DMA_Sx dma_rx(DMA1_Channel5_BASE, USART::_1::DMA::RX);
 
 // Option 2: channel + raw DMAMUX1 request ID
-DMA_Sx dma(DMA1_Channel3, 51u); // USART1_TX
+DMA_Sx dma(DMA1_Channel3_BASE, 51u); // USART1_TX
 
 // Option 3: channel without a request (ID supplied later via StreamSettings)
-DMA_Sx dma(DMA1_Channel3);
+DMA_Sx dma(DMA1_Channel3_BASE);
 ```
 
 ### Constructor (STM32F4/F7)
@@ -540,8 +555,8 @@ DMA_Sx dma(DMA1_Channel3);
 On F4, the stream and CHSEL are hard-wired to the peripheral:
 
 ```cpp
-DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7); // CH4
-DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CH4
+DMA_Sx dma_tx(USART::_1::DMA::TX_DMA2_Stream7); // CH4
+DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream5); // CH4
 ```
 
 ### Configuration via StreamSettings
@@ -635,8 +650,8 @@ Zero transfer length is Error; IRQ/DMA lengths are 1..65535 bytes.
 Before SetBaud(), the caller waits for physical TX completion (TC/OnTC); Busy
 checks software operations only. No additional TX tracking field is used.
 DMA TX/RX requests follow the pins in the constructor; ClockSource follows DMA.
-USART embeds the DMA objects. Its constructor checks request ownership/direction
-through DebugTrap; SetUp() acquires/configures the resources. USART and both
+USART embeds the DMA objects. With constinit, its constructor checks request
+ownership/direction during compilation; SetUp() acquires/configures the resources. USART and both
 DMA directions register separate handlers. On F4/F7, IDLE requests a stop and
 DMA RX TC finishes count/cache/ready without waiting in IRQ or a Process() call.
 On G0 IDLE disables DMAR/DMA without waiting and finishes in USART IRQ; the last
@@ -652,7 +667,7 @@ Modbus adaptation to the explicit flag reset is deferred to its module review.
 ### Basic usage
 
 ```cpp
-USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+constinit USART debug(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 
 debug.SetUp();
 debug.Send((uint8_t*)"Hello\r\n", 7);
@@ -664,7 +679,7 @@ debug.Receive(buf, sizeof(buf), 500);  // 500 ms timeout
 ### TX only (no RX)
 
 ```cpp
-USART log(USART2, 115200, USART::_2::TX::PA2, PIN{});
+constinit USART log(USART::_2::instance, 115200, USART::_2::TX::PA2, PIN{});
 log.SetUp();
 log.Send((uint8_t*)"OK\r\n", 4);
 ```
@@ -672,9 +687,9 @@ log.Send((uint8_t*)"OK\r\n", 4);
 ### DMA transfer
 
 ```cpp
-USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-           DMA1_Channel4,
-           DMA1_Channel5);
+constinit USART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+           DMA1_Channel4_BASE,
+           DMA1_Channel5_BASE);
 
 uart.SetUp(); // Check InitOK; acquires/configures the internally stored DMA.
 
@@ -702,7 +717,7 @@ class MyUART : public USART {
     void OnIdle() override { USART::OnIdle(); process_packet(); }
 };
 
-MyUART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+constinit MyUART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
 ### Changing baud between transfers
@@ -726,8 +741,8 @@ uses full duplex: one RX DMA plus TX IRQ for 0xFF/0xFFFF dummy clocks.
 ### Basic usage (blocking mode)
 
 ```cpp
-SPI spi(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
-        SPI::_1::MISO::PA6, PIN(GPIOB, 0)); // Optional automatic software CS
+constinit SPI spi(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
+        SPI::_1::MISO::PA6, PIN(GPIOB_BASE, 0)); // Optional automatic software CS
 if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
               SPI::Data_frame_format::Byte, SPI::Frame_Format::MSB,
               SPI::cPolPha::None, SPI::BaudRate::DIV4) == SysInitStatus::InitOK) {
@@ -752,11 +767,11 @@ SysStatus result = spi.Send_Receive(tx, rx, 2); // len counts frames
 
 ```cpp
 // F4/F7:
-const SPI::DMAReq dma_tx = DMA_Sx::Req::Spi1::TX_DMA2_Stream3;
-const SPI::DMAReq dma_rx = DMA_Sx::Req::Spi1::RX_DMA2_Stream0;
-// G0: const SPI::DMAReq dma_tx = DMA1_Channel2;
-//     const SPI::DMAReq dma_rx = DMA1_Channel3;
-SPI spi(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+constexpr SPI::DMAReq dma_tx = SPI::_1::DMA::TX_DMA2_Stream3;
+constexpr SPI::DMAReq dma_rx = SPI::_1::DMA::RX_DMA2_Stream0;
+// G0: constexpr SPI::DMAReq dma_tx = DMA1_Channel2_BASE;
+//     constexpr SPI::DMAReq dma_rx = DMA1_Channel3_BASE;
+constinit SPI spi(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
         SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, dma_tx, dma_rx);
 if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus::InitOK) {
     // Start spi.SendReceive_DMA(tx_buffer, rx_buffer, frame_count); check OK.
@@ -815,7 +830,7 @@ Composite modes remain archived comments pending separate review.
 ```cpp
 void Tick();
 void HalfTick();
-TIM timer(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+constinit TIM timer(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
 // In main, check every setup result before Start:
 if (timer.SetUp(1000, &Tick, 1000) == SysInitStatus::InitOK
     && timer.SetUpPWM(TIM::Channel::CH1, 250) == SysInitStatus::InitOK
@@ -840,7 +855,7 @@ active DMA channel. Start remains explicit.
 
 ```cpp
 void Edge();
-TIM input(TIM3, {TIM::_3::CH1::PA6});
+constinit TIM input(TIM::_3::instance, {TIM::_3::CH1::PA6});
 // In main; target CNT clock: 100 Hz * 10000 ticks = 1 MHz.
 if (input.SetUp(100, nullptr, 10000) == SysInitStatus::InitOK
     && input.SetUpCapture(TIM::Channel::CH1, &Edge) == SysInitStatus::InitOK) {
@@ -859,9 +874,9 @@ ADC/DMA. The caller configures the timer before ADC SetUp; see [ADC.md](ADC.md).
 ### Independent DMA and WS2812B
 
 ```cpp
-// G0; F4/F7 use Req::Tim1::CH1_DMA2_Stream1 instead.
-const TIM::DMAReq dma = DMA1_Channel3;
-TIM ws(TIM1, {TIM::_1::CH1::PA8, dma});
+// G0; F4/F7 use TIM::_1::DMA::CH1_DMA2_Stream1 instead.
+constexpr TIM::DMAReq dma = DMA1_Channel3_BASE;
+constinit TIM ws(TIM::_1::instance, {TIM::_1::CH1::PA8, dma});
 WS2812B_Strip<8> strip(52, 26);
 strip.SetAll(RGB::Red());
 // Example: CNT 64 MHz, period 80 ticks => 800 kHz, ARR=79.
@@ -1036,7 +1051,7 @@ See [Flash.md](Flash.md) for the format, timeout and ECC/NMI limitations.
 Enable `"drivers": ["DAC"]` in project.json. CH1 is PA4; CH2 is PA5 where supported.
 
 ```cpp
-DAC_Module output(DAC1, DAC_Module::CHANNEL::CH1);
+constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1);
 // After System/RCC initialization:
 if (output.SetUp() == SysInitStatus::InitOK) {
     SysStatus written = output.SetValue(2048); // Check written == SysStatus::OK.
@@ -1286,7 +1301,7 @@ static const PeriphInfo usart_table[];
 Пины для USART, SPI выбираются из вложенных структур:
 
 ```cpp
-USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+constinit USART debug(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
 Каждый пин из `USART::_1::TX::PB6` содержит базовый адрес периферии. В конструкторе проверяется соответствие — если передать пин от другого USART, сработает `BKPT` и бесконечный цикл, что мгновенно обнаруживается при отладке.
@@ -1460,7 +1475,7 @@ SysTick использует целое число тактов HCLK. При LSE
 **Файлы:** `gpio.hpp`, `gpio.cpp`
 **Подробнее:** [GPIO.md](GPIO.md)
 
-Для обычного GPIO используйте PIN(GPIOA, 5): конструктор с указателем закрепляет
+Для обычного GPIO используйте PIN(GPIOA_BASE, 5): конструктор с указателем закрепляет
 порт/номер/AF без runtime-проверок. Для compile-time таблиц используется GPIOx_BASE
 и consteval-конструктор с проверкой порта, номера и сохранённого AF.
 Порт/номер/сохранённый AF закрыты и неизменны, periph_base доступен только для чтения.
@@ -1539,14 +1554,14 @@ bool b = (bool)led;   // GetLevel()
 Пин, созданный через `PIN{}` (конструктор по умолчанию), возвращает `IsValid() == false`. Используется в драйверах как признак "канал не подключён":
 
 ```cpp
-SPI spi(SPI1, SPI::Direction::TX, sck, mosi, PIN{}, PIN{});   // MISO и SS не используются
+constinit SPI spi(SPI::_1::instance, SPI::Direction::TX, sck, mosi, PIN{}, PIN{});   // MISO и SS не используются
 ```
 
 ### PinArray — массив пинов
 
 ```cpp
 PIN segments[] = {
-    PIN(GPIOA, 0), PIN(GPIOA, 1), PIN(GPIOA, 2), PIN(GPIOA, 3)
+    PIN(GPIOA_BASE, 0), PIN(GPIOA_BASE, 1), PIN(GPIOA_BASE, 2), PIN(GPIOA_BASE, 3)
 };
 PinArray<4> seg_pins(segments);
 
@@ -1637,18 +1652,18 @@ Register/Unregister запрещены из HandleIRQ и его callback. Изм
 
 ### Конструктор (STM32G0)
 
-На G0 DMAMUX1 позволяет подключить любой канал к любой периферии. Канал выбирает пользователь, запрос — из таблицы `Req::`:
+На G0 DMAMUX1 позволяет подключить любой канал к любой периферии. Канал выбирает пользователь, запрос — из определений `_N::DMA` периферии:
 
 ```cpp
 // Вариант 1: канал + запрос из таблицы (рекомендуется)
-DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
+DMA_Sx dma_tx(DMA1_Channel4_BASE, USART::_1::DMA::TX);
+DMA_Sx dma_rx(DMA1_Channel5_BASE, USART::_1::DMA::RX);
 
 // Вариант 2: канал + сырой ID запроса DMAMUX1
-DMA_Sx dma(DMA1_Channel3, 51u); // USART1_TX
+DMA_Sx dma(DMA1_Channel3_BASE, 51u); // USART1_TX
 
 // Вариант 3: канал без запроса (ID передаётся позже через StreamSettings)
-DMA_Sx dma(DMA1_Channel3);
+DMA_Sx dma(DMA1_Channel3_BASE);
 ```
 
 ### Конструктор (STM32F4/F7)
@@ -1656,8 +1671,8 @@ DMA_Sx dma(DMA1_Channel3);
 На F4 поток и CHSEL жёстко привязаны к периферии:
 
 ```cpp
-DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX_DMA2_Stream7); // CH4
-DMA_Sx dma_rx(DMA_Sx::Req::Usart1::RX_DMA2_Stream5); // CH4
+DMA_Sx dma_tx(USART::_1::DMA::TX_DMA2_Stream7); // CH4
+DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream5); // CH4
 ```
 
 ### Настройка через StreamSettings
@@ -1751,7 +1766,7 @@ F4 сохраняет PCLK. Пример выбора источника при�
 Busy проверяет только программные операции; дополнительного поля контроля TX нет.
 Нулевая длина — Error, IRQ/DMA — 1..65535 байт. Описания DMA TX/RX задаются
 после пинов в конструкторе, затем ClockSource. DMA хранятся внутри USART.
-Принадлежность и направление Req проверяются через DebugTrap в конструкторе;
+При constinit принадлежность и направление DMA проверяются при компиляции;
 SetUp приобретает и настраивает ресурсы. USART и DMA имеют отдельные обработчики.
 За вход обслуживается до глубины FIFO в каждом направлении: 8 слов G0 при
 включённом FIFO, иначе один байт. При IDLE хвост имеет свой единственный предел.
@@ -1768,7 +1783,7 @@ Modbus явно сбрасывает признак после обработк�
 ### Базовое использование
 
 ```cpp
-USART debug(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+constinit USART debug(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 
 debug.SetUp();
 debug.Send((uint8_t*)"Hello\r\n", 7);
@@ -1780,7 +1795,7 @@ debug.Receive(buf, sizeof(buf), 500);  // таймаут 500 мс
 ### Только TX (без RX)
 
 ```cpp
-USART log(USART2, 115200, USART::_2::TX::PA2, PIN{});
+constinit USART log(USART::_2::instance, 115200, USART::_2::TX::PA2, PIN{});
 log.SetUp();
 log.Send((uint8_t*)"OK\r\n", 4);
 ```
@@ -1788,9 +1803,9 @@ log.Send((uint8_t*)"OK\r\n", 4);
 ### DMA-передача
 
 ```cpp
-USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-           DMA1_Channel4,
-           DMA1_Channel5);
+constinit USART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+           DMA1_Channel4_BASE,
+           DMA1_Channel5_BASE);
 
 uart.SetUp(); // Проверить InitOK; приобретает/настраивает внутренние DMA.
 
@@ -1818,7 +1833,7 @@ class MyUART : public USART {
     void OnIdle() override { USART::OnIdle(); process_packet(); }
 };
 
-MyUART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+constinit MyUART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
 ### Изменение baudrate между обменами
@@ -1842,8 +1857,8 @@ RX master работает через full duplex: RX DMA и TX IRQ для dummy
 ### Базовое использование (блокирующий режим)
 
 ```cpp
-SPI spi(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
-        SPI::_1::MISO::PA6, PIN(GPIOB, 0)); // Необязательный программный CS
+constinit SPI spi(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
+        SPI::_1::MISO::PA6, PIN(GPIOB_BASE, 0)); // Необязательный программный CS
 if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
               SPI::Data_frame_format::Byte, SPI::Frame_Format::MSB,
               SPI::cPolPha::None, SPI::BaudRate::DIV4) == SysInitStatus::InitOK) {
@@ -1868,11 +1883,11 @@ SysStatus result = spi.Send_Receive(tx, rx, 2); // len — количество 
 
 ```cpp
 // F4/F7:
-const SPI::DMAReq dma_tx = DMA_Sx::Req::Spi1::TX_DMA2_Stream3;
-const SPI::DMAReq dma_rx = DMA_Sx::Req::Spi1::RX_DMA2_Stream0;
-// G0: const SPI::DMAReq dma_tx = DMA1_Channel2;
-//     const SPI::DMAReq dma_rx = DMA1_Channel3;
-SPI spi(SPI1, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
+constexpr SPI::DMAReq dma_tx = SPI::_1::DMA::TX_DMA2_Stream3;
+constexpr SPI::DMAReq dma_rx = SPI::_1::DMA::RX_DMA2_Stream0;
+// G0: constexpr SPI::DMAReq dma_tx = DMA1_Channel2_BASE;
+//     constexpr SPI::DMAReq dma_rx = DMA1_Channel3_BASE;
+constinit SPI spi(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
         SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, dma_tx, dma_rx);
 if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus::InitOK) {
     // Запустить spi.SendReceive_DMA(tx_buffer, rx_buffer, frame_count); проверить OK.
@@ -1931,7 +1946,7 @@ InputCapture, объектов Output и AttachDMA нет. Составные р
 ```cpp
 void Tick();
 void HalfTick();
-TIM timer(TIM3, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+constinit TIM timer(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
 // В main, проверить все результаты до Start:
 if (timer.SetUp(1000, &Tick, 1000) == SysInitStatus::InitOK
     && timer.SetUpPWM(TIM::Channel::CH1, 250) == SysInitStatus::InitOK
@@ -1956,7 +1971,7 @@ DMA, эти методы его CCR не меняют. Start всегда явн
 
 ```cpp
 void Edge();
-TIM input(TIM3, {TIM::_3::CH1::PA6});
+constinit TIM input(TIM::_3::instance, {TIM::_3::CH1::PA6});
 // В main: целевая частота CNT = 100 Гц * 10000 тиков = 1 МГц.
 if (input.SetUp(100, nullptr, 10000) == SysInitStatus::InitOK
     && input.SetUpCapture(TIM::Channel::CH1, &Edge) == SysInitStatus::InitOK) {
@@ -1975,9 +1990,9 @@ TIM* и источник конструктором, запускает TIM по
 ### Независимые DMA и WS2812B
 
 ```cpp
-// G0; для F4/F7 используется Req::Tim1::CH1_DMA2_Stream1.
-const TIM::DMAReq dma = DMA1_Channel3;
-TIM ws(TIM1, {TIM::_1::CH1::PA8, dma});
+// G0; для F4/F7 используется TIM::_1::DMA::CH1_DMA2_Stream1.
+constexpr TIM::DMAReq dma = DMA1_Channel3_BASE;
+constinit TIM ws(TIM::_1::instance, {TIM::_1::CH1::PA8, dma});
 WS2812B_Strip<8> strip(52, 26);
 strip.SetAll(RGB::Red());
 // Пример: CNT 64 МГц, period=80 => 800 кГц, ARR=79.
@@ -2152,7 +2167,7 @@ G0 использует **16-байтный заголовок**: первый �
 Подключение: `"drivers": ["DAC"]` в project.json. CH1 — PA4, CH2 — PA5 при наличии.
 
 ```cpp
-DAC_Module output(DAC1, DAC_Module::CHANNEL::CH1);
+constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1);
 // После настройки System/RCC:
 if (output.SetUp() == SysInitStatus::InitOK) {
     SysStatus written = output.SetValue(2048); // Проверить written == SysStatus::OK.

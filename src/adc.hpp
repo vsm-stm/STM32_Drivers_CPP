@@ -94,11 +94,11 @@ struct ADC_PIN : public PIN {
  *
  *   alignas(32) static uint16_t values[16]; // Full cache line, two samples used.
  * #if defined(STM32G0)
- *   const ADC_N::DMAReq dma = DMA1_Channel1;
+ *   constexpr ADC_N::DMAReq dma = DMA1_Channel1_BASE;
  * #else
- *   const ADC_N::DMAReq dma = DMA_Sx::Req::Adc1::RX_DMA2_Stream0;
+ *   constexpr ADC_N::DMAReq dma = ADC_N::_1::DMA::RX_DMA2_Stream0;
  * #endif
- *   Samples adc(ADC1, ADC_N::Conversion::Single, dma);
+ *   constinit Samples adc(ADC_N::_1::instance, ADC_N::Conversion::Single, dma);
  *   if (adc.SetUp() == SysInitStatus::InitOK) {
  * #if defined(STM32G0)
  *       adc.AddChannel(ADC_N::IN::PA0_IN0);
@@ -119,10 +119,20 @@ public:
 	/// Immutable conversion policy; scan order follows AddChannel calls.
 	enum class Conversion : uint8_t { Single, Continuous };
 	using ADC_PIN = ::ADC_PIN;
+    /** Fixed device metadata from adc_defs.hpp; no runtime lookup. */
+    struct Instance {
+        uintptr_t periph;
+        uintptr_t clk_reg;
+        uint32_t clk_bit;
+        IRQn_Type irqn;
+#if defined(STM32G0)
+        uint32_t dma_request;
+#endif
+    };
 #include "adc_defs.hpp"
 
 #if defined(STM32G0)
-	using DMAReq = DMA_Channel_TypeDef*;
+	using DMAReq = uintptr_t;
 #else
 	using DMAReq = DMA_Sx::DMAReq;
 #endif
@@ -133,27 +143,26 @@ public:
 	 * A timer source requires the matching, externally configured TIM; EXTI11
 	 * uses no TIM pointer. ADC does not configure timer frequency, TRGO or CCx.
 	 * Start arms ADC/DMA before starting this TIM; Stop stops it. Bindings survive
-	 * DeInit. Continuous plus any trigger is rejected by SetUp.
+	 * DeInit. Continuous plus any trigger is rejected during constant initialization.
 	 * DMA is owned internally: F4/F7 named Req; G0 physical channel, fixed ADC request.
 	 * ADC_USE_ATOMIC: ordinary (0, default) or ST atomic (1) control updates.
 	 */
-	explicit ADC_N(ADC_TypeDef* adcx, Conversion conversion,
+	constexpr explicit ADC_N(const Instance& instance, Conversion conversion,
 		DMAReq dma = {}, TIM* timer = nullptr, Trigger source = Trigger::None)
-		: ADCx(adcx), _conversion(conversion),
+		: _instance(instance), _conversion(conversion),
 #if defined(STM32G0)
-		  _dma(dma, DMA_Sx::Req::Adc1::RX),
+		  _dma(dma, instance.dma_request),
 #else
 		  _dma(dma),
 #endif
 		  _timer(timer), _trigger(source), _dma_irq(*this)
-	{
-#if defined(STM32F4) || defined(STM32F7)
-		if ((dma.stream || dma.ch || dma.periph_base)
-			&& (!dma.IsValid() || dma.periph_base != reinterpret_cast<uintptr_t>(adcx)
-				|| dma.direction != DMA_Sx::DIR::From_Per))
-			System::DebugTrap("ADC: invalid DMA request");
-#endif
-	}
+    {
+        if (!DMA_Sx::RouteMatches(dma, instance.periph, DMA_Sx::DIR::From_Per)
+            || (conversion != Conversion::Single && conversion != Conversion::Continuous)
+            || (conversion == Conversion::Continuous && source != Trigger::None)
+            || ((source != Trigger::None && source != Trigger::EXTI11) != (timer != nullptr)))
+            __builtin_unreachable();
+    }
 	ADC_N() = delete;
 	ADC_N(const ADC_N&) = delete;
 	ADC_N& operator=(const ADC_N&) = delete;
@@ -171,7 +180,7 @@ public:
 	 * before starting conversion; no common/multimode manager is introduced.
 	 * Initializes constructor-bound DMA as half-word Per->Mem with MINC and ADC DR.
 	 * Do not initialize or release that DMA independently before DeInit.
-	 * @return InitOK or InitError for an unknown ADC, invalid fixed configuration,
+	 * @return InitOK or InitError for an unconfigured trigger timer,
 	 *         repeated setup, failed handshake, DMA acquisition or registration.
 	 * Failed setup releases only its own acquisitions. Repeated setup needs DeInit.
 	 */
@@ -307,19 +316,14 @@ protected:
 	virtual void OnError(uint32_t errors) { (void)errors; }
 
 private:
-	ADC_TypeDef* const ADCx;
+	const Instance& _instance;
+	ADC_TypeDef* ADCx = nullptr;
 	const Conversion _conversion;
 	DMA_Sx _dma; ///< Empty constructor selection means capture without DMA.
 	TIM* const _timer;
 	const Trigger _trigger;
 
-	struct PeriphInfo {
-		ADC_TypeDef* periph;
-		volatile uint32_t* clk_reg;
-		uint32_t clk_bit;
-		IRQn_Type irqn;
-	};
-	static const PeriphInfo adc_table[];
+	using PeriphInfo = Instance;
 	const PeriphInfo* _info = nullptr;
 	uint16_t* _buf = nullptr;
 	uint32_t _buf_bytes = 0;
@@ -332,7 +336,7 @@ private:
 	volatile uint32_t _errors = 0; // Retained until DMA confirms an error stop.
 	class DmaIRQ final : public IIRQHandler {
 	public:
-		explicit DmaIRQ(ADC_N& adc) : _adc(adc) {}
+		constexpr explicit DmaIRQ(ADC_N& adc) : _adc(adc) {}
 		void HandleIRQ() override { _adc.HandleDmaIRQ(); }
 	private:
 		ADC_N& _adc;

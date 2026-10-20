@@ -111,7 +111,7 @@ public:
 	};
 
 	// An absent pin, for optional peripheral signals. Do not access or configure it.
-	PIN() = default;
+	constexpr PIN() = default;
 	PIN(PIN const&)            = default;
 	PIN(PIN&&)                 = default;
 	PIN& operator=(PIN const&) = delete;

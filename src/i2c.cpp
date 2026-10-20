@@ -1,9 +1,5 @@
 #include "i2c.hpp"
 
-#define I2C_DEFS_CPP
-#include "i2c_defs.hpp"
-#undef I2C_DEFS_CPP
-
 #if defined(STM32G0) || defined(STM32F7)
 static constexpr uint32_t CR1_IE_ALL = I2C_CR1_TXIE | I2C_CR1_RXIE | I2C_CR1_TCIE
     | I2C_CR1_STOPIE | I2C_CR1_NACKIE | I2C_CR1_ERRIE;
@@ -15,45 +11,25 @@ static constexpr uint32_t CR2_CTRL = I2C_CR2_ITEVTEN | I2C_CR2_ITBUFEN | I2C_CR2
 static constexpr uint32_t SR1_ERR = I2C_SR1_BERR | I2C_SR1_ARLO | I2C_SR1_AF;
 #endif
 
-#if defined(STM32G0)
-uint32_t I2C::DmaRequest(I2C_TypeDef* i2c, bool tx)
-{
-    switch (reinterpret_cast<uintptr_t>(i2c)) {
-#ifdef I2C1_BASE
-    case I2C1_BASE: return (tx ? DMA_Sx::Req::I2c1::TX : DMA_Sx::Req::I2c1::RX).ch;
-#endif
-#ifdef I2C2_BASE
-    case I2C2_BASE: return (tx ? DMA_Sx::Req::I2c2::TX : DMA_Sx::Req::I2c2::RX).ch;
-#endif
-#ifdef I2C3_BASE
-    case I2C3_BASE: return (tx ? DMA_Sx::Req::I2c3::TX : DMA_Sx::Req::I2c3::RX).ch;
-#endif
-    default: return 0;
-    }
-}
-#endif
-
 // Initialization/ownership changes are main-only. The application serializes
 // starts/Abort/DeInit with this object's I2C and DMA IRQs; its handlers do not nest.
 SysInitStatus I2C::Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk)
 {
     // Check RCC's published APB1 before changing registers or acquiring resources.
     if (_info || System::APB1BusClock != expected_pclk) return SysInitStatus::InitError;
-    const PeriphInfo* info = nullptr;
-    for (const auto& e : i2c_table)
-        if (e.periph == I2Cx) { info = &e; break; }
-    if (!info) return SysInitStatus::InitError;
+    const PeriphInfo* info = &_instance;
+    I2Cx = reinterpret_cast<I2C_TypeDef*>(info->periph);
 
     _timing = timing;
 #if defined(STM32F4)
     (void)speed; // F4 register configuration is entirely encoded in timing.
 #endif
 
-    I2C_SET_BIT(*info->clk_reg, info->clk_bit);
-    (void)*info->clk_reg;
-    I2C_SET_BIT(*info->rst_reg, info->rst_bit);
-    I2C_CLEAR_BIT(*info->rst_reg, info->rst_bit);
-    if (info->ksel_mask) I2C_CLEAR_BIT(*info->ksel_reg, info->ksel_mask);
+    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
+    (void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
+    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
+    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
+    if (info->ksel_mask) I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->ksel_reg), info->ksel_mask);
     _scl.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High);
     _sda.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High);
 #if defined(STM32G0) || defined(STM32F7)
@@ -542,7 +518,6 @@ void I2C::Process(uint32_t status)
 #endif
 }
 
-
 // Peripheral completion and DMA completion are separate events. When DMA still
 // owns a buffer, keep DmaStop until its own IRQ confirms TC/TE; never spin here.
 void I2C::Finish()
@@ -735,9 +710,9 @@ void I2C::DeInit()
 #elif defined(STM32F7)
     I2C_CLEAR_BIT(SYSCFG->PMC, _info->fmp_bit);
 #endif
-    I2C_SET_BIT(*_info->rst_reg, _info->rst_bit);
-    I2C_CLEAR_BIT(*_info->rst_reg, _info->rst_bit);
-    I2C_CLEAR_BIT(*_info->clk_reg, _info->clk_bit);
+    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
+    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
+    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->clk_reg), _info->clk_bit);
     _scl.SetUp(PIN::TYPE::INPUT_NO_Pull);
     _sda.SetUp(PIN::TYPE::INPUT_NO_Pull);
     _buf = nullptr;

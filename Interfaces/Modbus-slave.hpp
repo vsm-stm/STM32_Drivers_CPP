@@ -16,10 +16,10 @@
  * Do not retain RX/TX pointers beyond their ownership interval.
  *
  * F4 example:
- *   ModbusRTU_Slave bus(USART3, 19200, USART::_3::TX::PD8,
- *       USART::_3::RX::PD9, PIN(GPIOD, 2),
- *       DMA_Sx::Req::Usart3::TX_DMA1_Stream3,
- *       DMA_Sx::Req::Usart3::RX_DMA1_Stream1);
+ *   constinit ModbusRTU_Slave bus(USART::_3::instance, 19200, USART::_3::TX::PD8,
+ *       USART::_3::RX::PD9, PIN(GPIOD_BASE, 2),
+ *       USART::_3::DMA::TX_DMA1_Stream3,
+ *       USART::_3::DMA::RX_DMA1_Stream1);
  *   bus.SetRxParse(parse_request); // void(uint8_t*, uint32_t), main context
  *   bus.SetUp(ModbusRTU_Slave::FrameFormat::E8_1);
  *   // In main loop: bus.Rx_Process();
@@ -50,12 +50,13 @@ private:
 
 public:
 	using FrameFormat = USART::FrameFormat;
+	using Instance = USART::Instance;
 	// USART owns DMA. F4/F7: named Req; G0: physical channel, request selected by USART.
-	// Both directions are mandatory; constructor checks use DebugTrap.
-	ModbusRTU_Slave(USART_TypeDef *usartx, uint32_t baudrate,
+	// Both directions are mandatory; constinit rejects missing/invalid DMA.
+	constexpr ModbusRTU_Slave(const USART::Instance& instance, uint32_t baudrate,
 					PIN pin_tx, PIN pin_rx, PIN pin_de,
 					USART::DMAReq tx_req, USART::DMAReq rx_req) :
-		USART(usartx, baudrate, pin_tx, pin_rx, tx_req, rx_req),
+		USART(instance, baudrate, pin_tx, pin_rx, tx_req, rx_req),
 		rs_DE(pin_de)
 	{
 #if defined(STM32G0)
@@ -63,7 +64,7 @@ public:
 #else
 		if (!tx_req.IsValid() || !rx_req.IsValid())
 #endif
-			System::DebugTrap("Modbus: TX and RX DMA requests are required");
+			__builtin_unreachable();
 	}
 
 	/// Main only; select 8E1/8O1/8N2, or legacy 8N1 (default).
@@ -88,10 +89,6 @@ public:
 	/// DE/buffer stay owned until TC or TX error. Bad len/state: Error, active TX:
 	/// Busy, before setup: NotInit. Failed start retains prepared data for retry/cancel.
 	SysStatus SendData(uint32_t len);
-
-
-
-
 
 private:
 	uint16_t CalculateCRC16(uint8_t* data, uint32_t len);

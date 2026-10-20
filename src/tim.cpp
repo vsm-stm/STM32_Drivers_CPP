@@ -4,35 +4,20 @@
 #include "tim_defs.hpp"
 #undef TIM_DEFS_CPP
 
-#if defined(STM32G0)
-uint32_t TIM::DmaRequest(TIM_TypeDef* timer, uint32_t ch)
-{
-    for (const auto& route : tim_dma_routes)
-        if (route.periph == timer && route.channel == ch) return route.request.ch;
-    return 0;
-}
-#else
-bool TIM::DmaMatches(TIM_TypeDef* timer, uint32_t ch, DMAReq req)
-{
-    if (!req.IsValid()) return false;
-    for (const auto& route : tim_dma_routes)
-        if (route.periph == timer && route.channel == ch
-            && route.request.stream == req.stream && route.request.ch == req.ch) return true;
-    return false;
-}
-#endif
-
 SysInitStatus TIM::Init()
 {
 	if (_info) return SysInitStatus::InitError;
-	const PeriphInfo* info = nullptr;
-	for (const auto& e : tim_table)
-		if (e.periph == TIMx) { info = &e; break; }
-	if (!info) return SysInitStatus::InitError;
-	TIM_SET_BIT(*info->clk_reg, info->clk_bit);
-	(void)*info->clk_reg;
-	TIM_SET_BIT(*info->rst_reg, info->rst_bit);
-	TIM_CLEAR_BIT(*info->rst_reg, info->rst_bit);
+    // Object-to-object binding cannot be read through TIM* during constinit.
+    if (_counter && (_counter == this || _counter->_instance.periph == _instance.periph
+        || FindITR(GetTIMx(), _counter->GetTIMx()) < 0))
+        return SysInitStatus::InitError;
+
+	const PeriphInfo* info = &_instance;
+	TIMx = reinterpret_cast<TIM_TypeDef*>(info->periph);
+	TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
+	(void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
+	TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
+	TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
 
 	const bool up_enabled = NVIC_GetEnableIRQ(info->irq_up) != 0;
 	const bool separate_cc = info->irq_cc != info->irq_up;
@@ -46,7 +31,7 @@ SysInitStatus TIM::Init()
 		registered = false;
 	}
 	if (!registered) {
-		TIM_CLEAR_BIT(*info->clk_reg, info->clk_bit);
+		TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
 		if (up_enabled) NVIC_EnableIRQ(info->irq_up);
 		if (cc_enabled) NVIC_EnableIRQ(info->irq_cc);
 		return SysInitStatus::InitError;
@@ -172,7 +157,7 @@ SysInitStatus TIM::SetUpQuadrature(Channel a, Channel b, uint32_t freq,
         return SysInitStatus::InitError;
     }
     // Use the counter's hardware range; no software extension or per-cycle IRQ.
-    const uint32_t counter_period = IS_TIM_32B_COUNTER_INSTANCE(_counter->TIMx)
+    const uint32_t counter_period = IS_TIM_32B_COUNTER_INSTANCE(_counter->GetTIMx())
         ? UINT32_MAX : 0x10000U;
     if (_counter->SetUpCounter(this, counter_period, cb) != SysInitStatus::InitOK) {
         DeInit(); // Counter setup rolls back only its own failed acquisition.
@@ -645,9 +630,9 @@ void TIM::DeInit()
             if (enabled) NVIC_EnableIRQ(irqs[i]);
         } else NVIC_ClearPendingIRQ(irqs[i]);
     }
-    TIM_SET_BIT(*_info->rst_reg, _info->rst_bit);
-    TIM_CLEAR_BIT(*_info->rst_reg, _info->rst_bit);
-    TIM_CLEAR_BIT(*_info->clk_reg, _info->clk_bit);
+    TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
+    TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
+    TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->clk_reg), _info->clk_bit);
     _channels_used = _pwm_channels = _capture_channels = _dma_owned = 0;
     _update_cb = nullptr;
     for (unsigned i = 0; i < 4; ++i) {

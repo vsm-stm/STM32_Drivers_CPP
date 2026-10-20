@@ -1,9 +1,5 @@
 #include "adc.hpp"
 
-#define ADC_DEFS_CPP
-#include "adc_defs.hpp"
-#undef ADC_DEFS_CPP
-
 #if defined(STM32G0)
 // With a 1 ms tick, two ticks allow roughly 1..2 ms despite the starting phase.
 static constexpr uint32_t ADC_TIMEOUT_MS = 2u;
@@ -87,18 +83,12 @@ static void ClearRunFlags(ADC_TypeDef* adc)
 SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 {
 	if (_info) return SysInitStatus::InitError;
-	if ((_conversion != Conversion::Single && _conversion != Conversion::Continuous)
-		|| (_conversion == Conversion::Continuous && _trigger != Trigger::None))
+	if (_timer && !_timer->GetPeriod())
 		return SysInitStatus::InitError;
-	const bool timer_source = _trigger != Trigger::None && _trigger != Trigger::EXTI11;
-	if (timer_source != (_timer != nullptr) || (_timer && !_timer->GetPeriod()))
-		return SysInitStatus::InitError;
-	const PeriphInfo* info = nullptr;
-	for (const auto& e : adc_table)
-		if (e.periph == ADCx) { info = &e; break; }
-	if (!info) return SysInitStatus::InitError;
-	ADC_SET_BIT(*info->clk_reg, info->clk_bit);
-	(void)*info->clk_reg;
+	const PeriphInfo* info = &_instance;
+	ADCx = reinterpret_cast<ADC_TypeDef*>(info->periph);
+	ADC_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
+	(void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
 
 	if (ADCx == ADC1) ADC_CLEAR_BIT(ADC->CCR, (EN_VREFINT | EN_TEMP | EN_VBAT));
 	bool ready = true;
@@ -141,7 +131,7 @@ SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 #endif
 	ClearRunFlags(ADCx);
 	if (!ready) {
-		ADC_CLEAR_BIT(*info->clk_reg, info->clk_bit);
+		ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
 		return SysInitStatus::InitError;
 	}
 
@@ -153,7 +143,7 @@ SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 #else
 		ADCx->CR2 = 0;
 #endif
-		ADC_CLEAR_BIT(*info->clk_reg, info->clk_bit);
+		ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
 		if (enabled) NVIC_EnableIRQ(info->irqn);
 		return SysInitStatus::InitError;
 	}
@@ -674,7 +664,7 @@ void ADC_N::DeInit()
 	_last_data = 0;
 	if (ADCx == ADC1) ADC_CLEAR_BIT(ADC->CCR, (EN_VREFINT | EN_TEMP | EN_VBAT));
 #endif
-	ADC_CLEAR_BIT(*_info->clk_reg, _info->clk_bit);
+	ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->clk_reg), _info->clk_bit);
 	_info = nullptr;
 	_dma_owned = false;
 	_dma_ht_irq = false;

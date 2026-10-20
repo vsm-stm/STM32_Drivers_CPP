@@ -1,5 +1,20 @@
 # UART / USART
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 [English](#english) · [Русский](#русский)
 
 ## English
@@ -56,7 +71,7 @@ The optional last constructor argument is `USART::ClockSource`:
 
 ```cpp
 // F7/G0; the caller must enable HSI and wait for HSIRDY before SetUp().
-USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+constinit USART link(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
            {}, {}, USART::ClockSource::HSI);
 SysInitStatus status = link.SetUp();
 ```
@@ -142,11 +157,11 @@ rearming, not continuous reception without gaps.
 
 Pass named DMA_Sx::DMAReq constants directly
 after the pins: USART(instance, baud, tx_pin, rx_pin, dma_tx, dma_rx).
-Both default to {}. On G0 pass only DMAx_Channely; USART selects its TX/RX request.
+Both default to {}. On G0 pass DMAx_Channely_BASE; USART selects its TX/RX request.
 F4/F7 requests already contain the stream. USART embeds both DMA_Sx objects.
-The constructor checks request validity, peripheral/direction and distinct TX/RX
-resources through DebugTrap, like its pin ownership checks. This is a runtime
-construction check; there is no Config wrapper or consteval USART constructor.
+With constinit, the constexpr constructor checks request validity, ownership,
+direction and distinct TX/RX resources during compilation. Only the deprecated
+CMSIS-pointer overload retains runtime DebugTrap checks. No Config object is needed.
 SetUp configures Byte/MINC, direction and DR/TDR/RDR and acquires the resources;
 there is no external DMA object, manual DMA SetUp or AttachDMA method.
 SetUp returns SysInitStatus and rejects repeated setup, invalid/busy hardware
@@ -227,9 +242,9 @@ Select the frame once using SetUp(fifo, tx_threshold, rx_threshold, FrameFormat:
 
 ~~~cpp
 // G0: physical channels are selected explicitly, DMA objects belong to UART.
-USART uart(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
-           DMA1_Channel4,
-           DMA1_Channel5);
+constinit USART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+           DMA1_Channel4_BASE,
+           DMA1_Channel5_BASE);
 alignas(32) static uint8_t packet[128];
 
 if (uart.SetUp() == SysInitStatus::InitOK)
@@ -244,8 +259,8 @@ if (uart.GetDataReceivedFlag()) {
 }
 ~~~
 
-For F4/F7 pass DMA_Sx::Req::Usart1::TX_DMA2_Stream7 and
-DMA_Sx::Req::Usart1::RX_DMA2_Stream5 directly in the last two DMA positions.
+For F4/F7 pass USART::_1::DMA::TX_DMA2_Stream7 and
+USART::_1::DMA::RX_DMA2_Stream5 directly in the last two DMA positions.
 
 Existing consumers that relied on GetDataReceivedCount() clearing the flag must
 now call ClearDataReceivedFlag() explicitly. Modbus constructor arguments have been
@@ -303,7 +318,7 @@ UART_USE_ATOMIC в uart.hpp выбирает изменение управляю
 
 ```cpp
 // F7/G0: вызывающий код заранее включает HSI и ждёт HSIRDY.
-USART link(USART1, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
+constinit USART link(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
            {}, {}, USART::ClockSource::HSI);
 SysInitStatus status = link.SetUp();
 ```
@@ -376,11 +391,11 @@ DMAR отключает запросы DMA, но не приёмник UART. Д�
 
 Конструктор принимает описания dma_tx и dma_rx после пинов, по умолчанию {}.
 На F4/F7 передаётся именованный DMAReq с потоком; на G0 —
-только DMAx_Channely; запрос TX/RX выбирает USART. USART содержит два объекта DMA_Sx внутри;
+только DMAx_Channely_BASE; запрос TX/RX выбирает USART. USART содержит два объекта DMA_Sx внутри;
 отдельные DMA-объекты в приложении не создаются. Совместимость периферии,
-направления и выбор разных TX/RX ресурсов проверяются через DebugTrap в
-конструкторе, как принадлежность PIN. Это runtime-проверка при создании;
-Config и consteval-конструктор USART не вводились. Дублирующая таблица UART DMA удалена.
+направления и выбор разных TX/RX ресурсов проверяются при компиляции
+объекта с constinit, как принадлежность PIN. Runtime-проверки с DebugTrap
+сохранены только у deprecated-конструктора с CMSIS-указателем. Config не нужен. Дублирующая таблица UART DMA удалена.
 На F7/G0 ClockSource следует после обоих DMA. Привязки неизменяемые;
 блокирующие и IRQ-методы доступны и при наличии DMA. AttachDMA удалён.
 SetUp возвращает SysInitStatus, приобретает выбранные ресурсы и проверяет

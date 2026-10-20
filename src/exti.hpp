@@ -24,12 +24,12 @@
  * #include "exti.hpp"
  * class Button final : public EXTI_Line {
  * public:
- *     Button() : EXTI_Line(PIN(GPIOC, 13), Edge::Falling) {}
+ *     constexpr Button() : EXTI_Line(PIN(GPIOC_BASE, 13), Edge::Falling) {}
  *     volatile bool pressed = false;
  * protected:
  *     void OnInterrupt() override { pressed = true; }
  * };
- * Button button;
+ * constinit Button button;
  * // After System/RCC initialization, in main:
  * // if (button.SetUp(PIN::TYPE::INPUT_PullUp) != SysInitStatus::InitOK) ...;
  * // button.IRQ_en(DISABLE); // Mask this line only; NVIC/other lines stay enabled.
@@ -68,15 +68,14 @@ public:
 
     /**
      * @brief Bind an external GPIO pin and edge selection, without MMIO access.
-     * Absent pins, numbers outside 0..15 and invalid edges cause DebugTrap.
-     * Use a valid CMSIS port pointer, or the compile-time checked PIN(GPIOx_BASE,
-     * number) form. The selected device/package must expose that physical pin.
+     * Use constinit: absent pins, numbers outside 0..15 and invalid edges are compile errors.
+     * Use PIN(GPIOx_BASE, number) or a named constexpr pin. The selected device/package must expose that physical pin.
      */
-    EXTI_Line(PIN pin, Edge edge) : _pin(pin), _edge(edge)
+    constexpr EXTI_Line(PIN pin, Edge edge) : _pin(pin), _edge(edge)
     {
         if (!pin.IsValid() || pin.GetNumber() >= 16U
             || static_cast<uint32_t>(edge) < 1U || static_cast<uint32_t>(edge) > 3U)
-            System::DebugTrap("EXTI: invalid pin/edge");
+            __builtin_unreachable();
     }
     EXTI_Line(const EXTI_Line&) = delete;
     EXTI_Line(EXTI_Line&&) = delete;

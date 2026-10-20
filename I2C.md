@@ -1,5 +1,20 @@
 # I2C
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 ## Модель работы
 
 Один объект управляет одним I2C master. Поддерживаются F4 (I2C v1) и F7/G0
@@ -10,14 +25,14 @@
 ```cpp
 constexpr ClockSystem::Config clocks{}; // HSI, делители шин /1.
 #if defined(STM32G0)
-const I2C::DMAReq tx = DMA1_Channel1;
-const I2C::DMAReq rx = DMA1_Channel2;
+constexpr I2C::DMAReq tx = DMA1_Channel1_BASE;
+constexpr I2C::DMAReq rx = DMA1_Channel2_BASE;
 #else
-const I2C::DMAReq tx = DMA_Sx::Req::I2c1::TX_DMA1_Stream6;
-const I2C::DMAReq rx = DMA_Sx::Req::I2c1::RX_DMA1_Stream0;
+constexpr I2C::DMAReq tx = I2C::_1::DMA::TX_DMA1_Stream6;
+constexpr I2C::DMAReq rx = I2C::_1::DMA::RX_DMA1_Stream0;
 #endif
 
-I2C bus(I2C1, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9, tx, rx);
+constinit I2C bus(I2C::_1::instance, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9, tx, rx);
 // В main: одна и та же конфигурация для RCC и I2C.
 if (System::Init() != SysInitStatus::InitOK) return;
 if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
@@ -25,8 +40,7 @@ auto init = bus.SetUp<clocks, I2C::SPEED::FAST>();
 ```
 
 Без DMA последние два аргумента опускаются. На F4/F7 именованный DMAReq содержит
-поток/CHSEL, периферию и направление. Несовместимая привязка вызывает DebugTrap
-в конструкторе. На G0 приложение выбирает физический канал; источник DMAMUX
+поток/CHSEL, периферию и направление. Несовместимая привязка при constinit вызывает ошибку компиляции. На G0 приложение выбирает физический канал; источник DMAMUX
 драйвер берёт из I2Cx и направления. Один ресурс нельзя одновременно закреплять
 за TX/RX этого объекта либо другим потребителем.
 

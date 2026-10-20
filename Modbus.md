@@ -1,5 +1,20 @@
 # Modbus RTU slave: транспорт RS-485
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 ## Область ответственности
 
 ModbusRTU_Slave использует USART с собственными TX/RX DMA, два фиксированных
@@ -18,10 +33,10 @@ ModbusRTU_Slave использует USART с собственными TX/RX DMA
 
 ~~~cpp
 // F4: запрос однозначно содержит направление, контроллер и stream.
-ModbusRTU_Slave bus(USART3, 19200, USART::_3::TX::PD8,
-    USART::_3::RX::PD9, PIN(GPIOD, 2),
-    DMA_Sx::Req::Usart3::TX_DMA1_Stream3,
-    DMA_Sx::Req::Usart3::RX_DMA1_Stream1);
+constinit ModbusRTU_Slave bus(USART::_3::instance, 19200, USART::_3::TX::PD8,
+    USART::_3::RX::PD9, PIN(GPIOD_BASE, 2),
+    USART::_3::DMA::TX_DMA1_Stream3,
+    USART::_3::DMA::RX_DMA1_Stream1);
 
 void parse_request(uint8_t* data, uint32_t len) {
     // Main context, len уже без CRC. Проверить адрес/функцию/broadcast.

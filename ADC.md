@@ -1,5 +1,20 @@
 # ADC
 
+## Constant initialization / Постоянная инициализация
+
+Fixed peripheral bindings now use `constexpr` constructors and static/global
+objects declared with `constinit`. The first argument is `_N::instance` from the
+driver's defs header. Use named constexpr pins and DMA routes from `_N::DMA`;
+G0 physical DMA channels are numeric `DMAx_Channely_BASE` values. There is no
+separate Config object or template driver API. See [Initialization.md](Initialization.md).
+
+Постоянные привязки проверяются при объявлении статического/глобального объекта
+через `constinit`. Первый аргумент — `_N::instance`; пины и DMA должны быть
+константами. Маршруты находятся в `_N::DMA`, на G0 физический канал задаётся через
+`DMAx_Channely_BASE`. Отдельного Config и шаблонного API нет.
+Подробнее: [Initialization.md](Initialization.md).
+
+
 ## Текущий API
 
 Обновлено 19.10.2026: режим преобразований, DMA и триггер закреплены конструктором.
@@ -127,7 +142,7 @@ Continuous без DMA допускает перезапись непрочита
 ### Чтение без DMA
 
 ```cpp
-ADC_N input(ADC1, ADC_N::Conversion::Single);
+constinit ADC_N input(ADC_N::_1::instance, ADC_N::Conversion::Single);
 if (input.SetUp() == SysInitStatus::InitOK) {
 #if defined(STM32G0)
     auto channel = input.AddChannel(ADC_N::IN::PA0_IN0);
@@ -145,11 +160,11 @@ if (input.SetUp() == SysInitStatus::InitOK) {
 
 ```cpp
 #if defined(STM32G0)
-const ADC_N::DMAReq dma = DMA1_Channel1;
+constexpr ADC_N::DMAReq dma = DMA1_Channel1_BASE;
 #else
-const ADC_N::DMAReq dma = DMA_Sx::Req::Adc1::RX_DMA2_Stream0;
+constexpr ADC_N::DMAReq dma = ADC_N::_1::DMA::RX_DMA2_Stream0;
 #endif
-MyADC adc(ADC1, ADC_N::Conversion::Single, dma);
+constinit MyADC adc(ADC_N::_1::instance, ADC_N::Conversion::Single, dma);
 alignas(32) static uint16_t samples[16]; // Целая кеш-линия; используем 2 отсчёта.
 
 if (adc.SetUp() == SysInitStatus::InitOK) {
@@ -188,17 +203,17 @@ SetCompareIRQ(channel, compare, nullptr) для прямого CCx. ADC не з�
 ```cpp
 // Отдельный пример: не используйте один DMA одновременно с предыдущим adc.
 #if defined(STM32G0)
-const ADC_N::DMAReq timed_dma = DMA1_Channel1;
+constexpr ADC_N::DMAReq timed_dma = DMA1_Channel1_BASE;
 #else
-const ADC_N::DMAReq timed_dma = DMA_Sx::Req::Adc1::RX_DMA2_Stream0;
+constexpr ADC_N::DMAReq timed_dma = ADC_N::_1::DMA::RX_DMA2_Stream0;
 #endif
 #if defined(STM32F7)
-TIM sampling(TIM2);
-MyADC timed(ADC1, ADC_N::Conversion::Single, timed_dma, &sampling,
+constinit TIM sampling(TIM::_2::instance);
+constinit MyADC timed(ADC_N::_1::instance, ADC_N::Conversion::Single, timed_dma, &sampling,
             ADC_N::Trigger::TIM2_TRGO);
 #else
-TIM sampling(TIM3);
-MyADC timed(ADC1, ADC_N::Conversion::Single, timed_dma, &sampling,
+constinit TIM sampling(TIM::_3::instance);
+constinit MyADC timed(ADC_N::_1::instance, ADC_N::Conversion::Single, timed_dma, &sampling,
             ADC_N::Trigger::TIM3_TRGO);
 #endif
 alignas(32) static uint16_t circular[32]; // Две половины по 32 байта.
