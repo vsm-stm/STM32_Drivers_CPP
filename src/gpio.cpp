@@ -21,34 +21,25 @@ SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override
 
 	GPIO_TypeDef* port = PORT();
 
-	port->MODER   &= ~(0x3u << (pin * 2));
-	port->PUPDR   &= ~(0x3u << (pin * 2));
-	port->OTYPER  &= ~(0x1u <<  pin);
-	port->OSPEEDR &= ~(0x3u << (pin * 2));
-	// Two AFR registers cover eight pins each, four bits per AF field.
-	port->AFR[pin >> 3] &= ~(0xFu << ((pin & 0x7u) * 4u));
-
 	const PIN::MODE modeEnum = static_cast<PIN::MODE>(mode);
+	const bool output = modeEnum == PIN::MODE::OUTPUT || modeEnum == PIN::MODE::AF;
+	const uint32_t shift = pin * 2u;
+	const uint32_t mode_mask = 0x3u << shift;
+	// Two AFR registers cover eight pins each, four bits per AF field.
+	const uint32_t af_shift = (pin & 0x7u) * 4u;
+	const uint32_t new_pull = modeEnum == PIN::MODE::ANALOG ? 0u : uint32_t(pull) << shift;
+	const uint32_t new_type = output ? uint32_t(otype) << pin : 0u;
+	const uint32_t new_speed = output ? uint32_t(speed) << shift : 0u;
+	const uint32_t new_af = modeEnum == PIN::MODE::AF ? uint32_t(af_override) << af_shift : 0u;
 
-	if (modeEnum != PIN::MODE::ANALOG)
-	{
-		if (modeEnum == PIN::MODE::OUTPUT || modeEnum == PIN::MODE::AF)
-		{
-			port->OTYPER  |= (static_cast<uint32_t>(otype) << pin);
-			port->OSPEEDR |= (static_cast<uint32_t>(speed) << (pin * 2));
-		}
-
-		port->PUPDR |= (static_cast<uint32_t>(pull) << (pin * 2));
-
-		if (modeEnum == PIN::MODE::AF)
-		{
-			port->AFR[pin >> 3] |= (static_cast<uint32_t>(af_override) << ((pin & 0x7u) * 4u));
-		}
-	}
-
-	// Preload BSRR before switching MODER into output, avoiding the old latch level.
+	// One write per configuration register; MODER is changed last, without
+	// temporarily selecting INPUT and releasing an already driven line.
 	if (modeEnum == PIN::MODE::OUTPUT) SetLevel(initial_level);
-	port->MODER |= (static_cast<uint32_t>(mode) << (pin * 2));
+	port->OTYPER = (port->OTYPER & ~(0x1u << pin)) | new_type;
+	port->OSPEEDR = (port->OSPEEDR & ~mode_mask) | new_speed;
+	port->PUPDR = (port->PUPDR & ~mode_mask) | new_pull;
+	port->AFR[pin >> 3] = (port->AFR[pin >> 3] & ~(0xFu << af_shift)) | new_af;
+	port->MODER = (port->MODER & ~mode_mask) | (uint32_t(mode) << shift);
 
 	return SysInitStatus::InitOK;
 }

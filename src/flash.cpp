@@ -156,7 +156,7 @@ void invalidate_flash(uint32_t addr, uint32_t bytes)
     __ISB();
 }
 
-// Derive each selected bank's address span from the generated sector rows.
+// Derive each selected bank's address span from the generated geometry.
 // Never assume equal contiguous bank sizes in this helper.
 void invalidate_banks(uint8_t banks)
 {
@@ -164,7 +164,8 @@ void invalidate_banks(uint8_t banks)
         if (!(banks & (1U << (bank - 1U)))) continue;
         uint32_t first = UINT32_MAX;
         uint32_t last = 0;
-        for (const auto& sector : flash_sectors) {
+        for (uint32_t index = 0; index < FLASH_SECTOR_COUNT; ++index) {
+            const FlashSector sector = GetFlashSector(index);
             if (sector.bank != bank) continue;
             if (sector.address < first) first = sector.address;
             const uint32_t end = sector.address + sector.size;
@@ -244,15 +245,16 @@ SysStatus flash_base::erase_sector(uint32_t sector)
         return SysStatus::Timeout;
     if (FLASH->CR & FLASH_CR_LOCK) return SysStatus::Error;
     clear_errors();
-    invalidate_flash(flash_sectors[sector].address, flash_sectors[sector].size);
+    const FlashSector geometry = GetFlashSector(sector);
+    invalidate_flash(geometry.address, geometry.size);
 
-    uint32_t erase = erase_bit | ((flash_sectors[sector].number << sector_pos) & sector_mask);
+    uint32_t erase = erase_bit | ((geometry.number << sector_pos) & sector_mask);
 #if defined(STM32F4) || defined(STM32F7)
     // VDD = 3-3.3 V, no external VPP: use x32 parallelism for erase.
     erase |= 2U << FLASH_CR_PSIZE_Pos;
 #endif
 #if defined(STM32G0) && defined(FLASH_CR_BKER)
-    if (flash_sectors[sector].bank == 2U) erase |= FLASH_CR_BKER;
+    if (geometry.bank == 2U) erase |= FLASH_CR_BKER;
 #endif
     FLASH->CR = (FLASH->CR & ~operation_mask) | erase;
     FLASH->CR |= FLASH_CR_STRT;
@@ -260,7 +262,7 @@ SysStatus flash_base::erase_sector(uint32_t sector)
     // Timeout does not cancel erase: touch CR and Flash caches only when ready.
     if (ready()) {
         FLASH->CR &= ~operation_mask;
-        invalidate_flash(flash_sectors[sector].address, flash_sectors[sector].size);
+        invalidate_flash(geometry.address, geometry.size);
     }
     return completed;
 }
@@ -377,11 +379,12 @@ SysInitStatus flash_data::SetUp(bank_type tb)
     const uint32_t rounded = (size + unit - 1U) & ~(unit - 1U);
     if (rounded > UINT32_MAX - record_header_size) return SysInitStatus::InitError;
     const uint32_t record_size = record_header_size + rounded;
-    if (record_size > flash_sectors[sector].size || (flash_sectors[sector].address & (unit - 1U)))
+    const FlashSector geometry = GetFlashSector(sector);
+    if (record_size > geometry.size || (geometry.address & (unit - 1U)))
         return SysInitStatus::InitError;
     if (init(tb) != SysInitStatus::InitOK || enable_access() != SysStatus::OK)
         return SysInitStatus::InitError;
-    invalidate_flash(flash_sectors[sector].address, flash_sectors[sector].size);
+    invalidate_flash(geometry.address, geometry.size);
     stride = record_size;
     find_offset();
     return SysInitStatus::InitOK;
@@ -391,7 +394,7 @@ flash_data::Data_Status flash_data::read_data()
 {
     if (!stride) return Data_Status::DATA_NOT_VALID;
     if (status == Data_Status::DATA_OK) {
-        const uint32_t addr = flash_sectors[sector].address + offset + record_header_size;
+        const uint32_t addr = GetFlashSector(sector).address + offset + record_header_size;
         memcpy(data, reinterpret_cast<const uint8_t*>(addr), size);
     }
     return status;
@@ -402,7 +405,8 @@ SysStatus flash_data::write_data()
     if (!stride) return SysStatus::NotInit;
     if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
         return SysStatus::Timeout;
-    if (next_offset > flash_sectors[sector].size - stride) {
+    const FlashSector geometry = GetFlashSector(sector);
+    if (next_offset > geometry.size - stride) {
         // One-sector storage cannot preserve the previous version during erase.
         const SysStatus erased = erase_sector(sector);
         if (erased != SysStatus::OK) {
@@ -418,7 +422,7 @@ SysStatus flash_data::write_data()
     // Reserve the whole attempted slot; failures must not retry its data blocks.
     const uint32_t candidate = next_offset;
     next_offset += stride;
-    const uint32_t addr = flash_sectors[sector].address + candidate;
+    const uint32_t addr = geometry.address + candidate;
     if (status != Data_Status::DATA_OK) status = Data_Status::DATA_NOT_VALID;
     Data_Status marker = Data_Status::DATA_WRITING;
     SysStatus result = write(addr, &marker);
@@ -434,7 +438,7 @@ SysStatus flash_data::write_data()
     if (status == Data_Status::DATA_OK) {
         // Last header unit: the second word on G0, the status byte on F4/F7.
         marker = Data_Status::DATA_NOT_VALID;
-        result = write(flash_sectors[sector].address + offset + record_header_size - sizeof(status_t),
+        result = write(geometry.address + offset + record_header_size - sizeof(status_t),
                        &marker);
     }
     // The new record remains selected even if invalidating the old one failed.
@@ -451,9 +455,10 @@ void flash_data::find_offset()
     offset = 0;
     next_offset = 0;
     status = Data_Status::NO_DATA;
-    const uint32_t last_offset = flash_sectors[sector].size - stride;
+    const FlashSector geometry = GetFlashSector(sector);
+    const uint32_t last_offset = geometry.size - stride;
     for (uint32_t pos = 0; pos <= last_offset; pos += stride) {
-        const uint32_t addr = flash_sectors[sector].address + pos;
+        const uint32_t addr = geometry.address + pos;
 #if defined(STM32G0)
         // The invalidation word takes priority over the commit word.
         if (read<Data_Status>(addr + sizeof(status_t)) != Data_Status::NO_DATA) {

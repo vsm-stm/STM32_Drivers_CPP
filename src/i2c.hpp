@@ -30,7 +30,7 @@
  * ============================================================================
  * @code
  *   I2C i2c(I2C1, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9);
- *   i2c.SetUp(I2C::SPEED::FAST);                          // 400 kHz
+ *   i2c.SetUp<16000000, I2C::SPEED::FAST>();              // PCLK=16 MHz, bus=400 kHz
  *
  *   uint8_t id;
  *   i2c.ReadReg(0x68, 0x75, &id, 1);                      // blocking
@@ -59,7 +59,7 @@
  *   // F4/F7: pass named routes instead of the physical G0 channels:
  *   // DMA_Sx::Req::I2c1::TX_DMA1_Stream6,
  *   // DMA_Sx::Req::I2c1::RX_DMA1_Stream0.
- *   if (bus.SetUp(I2C::SPEED::FAST) == SysInitStatus::InitOK)
+ *   if (bus.SetUp<16000000, I2C::SPEED::FAST>() == SysInitStatus::InitOK)
  *       bus.ReadReg_DMA(0x68, 0x3B, buf, 14);
  *   // Check the start status; keep buf alive through completion.
  *   // On F7 the application owns all cache lines touched by this buffer.
@@ -74,6 +74,9 @@
 #include "gpio.hpp"
 #include "dma.hpp"
 #include "irq_registry.hpp"
+#if defined(STM32G0) || defined(STM32F7)
+#include "tools/i2c_timing_utility.hpp"
+#endif
 
 // Change here and rebuild I2C and its users. Ordinary control RMW by default.
 #ifndef I2C_USE_ATOMIC
@@ -176,12 +179,33 @@ public:
 	/**
 	 * @brief Configure clock, pins, timing, owned DMA and IRQ registrations once.
 	 * Kernel clock is PCLK (APB1). No source generator is started by this driver.
-	 * @return InitError on repeated setup, unsupported speed/peripheral/timing,
-	 *         a busy DMA resource or failed IRQ registration. Partial acquisition
-	 *         is rolled back. F4 supports STANDARD/FAST, not FMPI2C1.
-	 * @pre System/RCC initialized; main only. Call DeInit before another SetUp.
+	 * @tparam pclk_hz Actual APB1/kernel clock configured by the application RCC.
+	 * @tparam speed Nominal bus speed. Timing calculation and validation are
+	 *         compile-time, including F4 CCR/TRISE. Invalid timing is a compile error.
+	 *         F7/G0 retain the ST calculator's rise/fall/filter assumptions.
+	 * @return InitError on repeated setup, unsupported peripheral, a busy DMA
+	 *         resource or failed IRQ registration; partial acquisition is rolled back.
+	 * @pre System/RCC initialized, actual PCLK equals pclk_hz; main only.
+	 *         No runtime clock check or timing search. DeInit before another SetUp.
+	 *         Example: bus.SetUp<16000000, SPEED::FAST>() with PCLK=16 MHz.
 	 */
-	SysInitStatus SetUp(SPEED speed = SPEED::STANDARD);
+	template<uint32_t pclk_hz, SPEED speed = SPEED::STANDARD>
+	SysInitStatus SetUp()
+	{
+		static_assert(pclk_hz > 0, "I2C: PCLK must be nonzero");
+		static_assert(speed == SPEED::STANDARD || speed == SPEED::FAST || speed == SPEED::FAST_PLUS,
+			"I2C: unsupported bus speed");
+#if defined(STM32F4)
+		static_assert(speed != SPEED::FAST_PLUS, "I2C F4: Fast-mode Plus requires a different IP");
+		static_assert(pclk_hz >= 2000000u && pclk_hz <= 50000000u,
+			"I2C F4: PCLK outside supported range");
+		static_assert(speed != SPEED::FAST || pclk_hz >= 4000000u,
+			"I2C F4: Fast mode requires PCLK >= 4 MHz");
+#endif
+		static constexpr uint32_t timing = CalculateTiming(pclk_hz, speed);
+		static_assert(timing != 0, "I2C: no valid timing for this PCLK and speed");
+		return Apply(timing, speed);
+	}
 
 	// -----------------------------------------------------------------------
 	// Blocking transfers. Return OK, Busy, Error (see GetError()) or Timeout.
@@ -261,6 +285,33 @@ protected:
 	// Callbacks may publish flags; no blocking calls, Abort/DeInit or registry changes.
 
 private:
+	/// Compiler-only register calculation; no access to mutable System clocks.
+	static consteval uint32_t CalculateTiming(uint32_t pclk, SPEED speed)
+	{
+#if defined(STM32F4)
+		if (pclk < 2000000u || pclk > 50000000u
+			|| (speed != SPEED::STANDARD && speed != SPEED::FAST)
+			|| (speed == SPEED::FAST && pclk < 4000000u)) return 0;
+		const uint32_t freq = pclk / 1000000u;
+		const uint32_t hz = static_cast<uint32_t>(speed);
+		uint32_t ccr, trise;
+		if (speed == SPEED::STANDARD) {
+			ccr = (pclk + 2u * hz - 1u) / (2u * hz);
+			if (ccr < 4u) ccr = 4u;
+			trise = freq + 1u;
+		} else {
+			ccr = (pclk + 3u * hz - 1u) / (3u * hz);
+			trise = freq * 300u / 1000u + 1u;
+		}
+		if (ccr > (I2C_CCR_CCR >> I2C_CCR_CCR_Pos)) return 0;
+		if (speed == SPEED::FAST) ccr |= I2C_CCR_FS;
+		return ccr | (trise << 16) | (freq << 24);
+#else
+		return I2C_Timing::Calculate(pclk, static_cast<uint32_t>(speed));
+#endif
+	}
+	/// Main-only application of compiler-produced timing, ownership and IRQ setup.
+	SysInitStatus Apply(uint32_t timing, SPEED speed);
 	struct PeriphInfo {
 		I2C_TypeDef*        periph;
 		volatile uint32_t*  clk_reg;
@@ -343,8 +394,8 @@ private:
 	};
 
 	I2C_TypeDef* const I2Cx;
-	const PIN         _scl;
-	const PIN         _sda;
+	PIN               _scl;
+	PIN               _sda;
 	const PeriphInfo* _info = nullptr;
 	uint32_t _timing = 0;   ///< G0/F7: TIMINGR; F4: CCR | TRISE << 16 | FREQ << 24
 

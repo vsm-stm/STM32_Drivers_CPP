@@ -7,7 +7,7 @@
 
 | Путь | Автор | Лицензия |
 |---|---|---|
-| `src/tools/i2c_timing_utility.c`, `.h` | STMicroelectronics, © 2020 | BSD-3-Clause (текст в заголовке файлов) |
+| `src/tools/i2c_timing_utility.hpp` — compile-time адаптация прежних `.c/.h` | STMicroelectronics, © 2020 | BSD-3-Clause (уведомление ST сохранено в заголовке) |
 
 Заголовки этих файлов должны сохраняться при любом копировании.
 

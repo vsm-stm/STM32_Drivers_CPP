@@ -54,7 +54,7 @@ does not serialize a full transfer or buffer handover. No CMake setting is added
 DMA GetIRQFlags() returns HT/TC/errors in one ISR access; public FLAG_HT,
 FLAG_TC and FLAG_ERRORS decode it. FEIF remains excluded in direct mode.
 I2C has fixed constructor DMA, inherited callbacks, one-time setup and DeInit;
-bus recovery is application code. See [I2C.md](I2C.md).
+bus recovery is application code. Timing is calculated at compile time: SetUp<pclk_hz, I2C::SPEED::FAST>(); pclk_hz must match the configured APB1 clock. See [I2C.md](I2C.md).
 These source changes have not been built or hardware-tested.
 
 ## Integration and build
@@ -83,7 +83,7 @@ Only **compilation** has been checked (release, one module at a time; F446RE, F7
 | UART, SPI | `src/uart.*`, `spi.*` | ok | not tested | ok |
 | TIM | `src/tim.*` | common TIM API migrated; not rebuilt | common TIM API migrated; not rebuilt | common TIM API migrated; not rebuilt |
 | DMA | `src/dma.*` | revised, not rebuilt | revised, not rebuilt | device-specific channel/IRQ table fixed; not rebuilt |
-| RTC | `src/rtc.*` | **not ported** (`ICSR`) | not ported | ok |
+| RTC | `src/rtc.*` | implemented, not built | implemented, not built | updated, not built |
 | EXTI | `src/exti.*` | GPIO 0..15 added; not built | GPIO 0..15 added; not built | GPIO 0..15 added; not built |
 | ADC | `src/adc.*` | fixed constructor API, separate IRQ; not rebuilt | fixed constructor API, separate IRQ; not rebuilt | fixed constructor API, separate IRQ; not rebuilt |
 | DAC | `src/dac.*` | revised, not rebuilt | revised, not rebuilt | revised, not rebuilt |
@@ -94,7 +94,7 @@ Only **compilation** has been checked (release, one module at a time; F446RE, F7
 | DSP | subset of CMSIS-DSP v1.16.2 | ok | not tested | not tested |
 | CRC | `crc/crc32.*` (no tables, no HW peripheral — portable to any family) | ok | ok | ok |
 
-The list of known gaps (RTC/ADC) is tracked as a backlog — they ship into the release "as is". DAC revisions are described in [Review/DAC.md](Review/DAC.md). DMA changes and remaining integration work are tracked in [Review/DMA.md](Review/done/DMA.md).
+Current RTC/ADC status is tracked in their Review files; implementation without a build does not establish hardware correctness. DAC revisions are described in [Review/DAC.md](Review/DAC.md). DMA changes and remaining integration work are tracked in [Review/DMA.md](Review/done/DMA.md).
 
 ADC configuration, status/callback API and cache handover are described in [ADC.md](ADC.md).
 Conversion policy, DMA and TIM/source are fixed by the constructor. One Start()
@@ -121,6 +121,7 @@ This file gives an overview and usage examples for each module. The full descrip
 - [SPI.md](SPI.md) — `SPI`: Master/Slave roles, Software/Hardware NSS, DMA.
 - [I2C.md](I2C.md) — master FSM, blocking/IRQ/DMA, callbacks, STOP and application recovery.
 - [TIM.md](TIM.md) — common TIM, PWM/capture, encoder, pulse measurement, ITR and finite pulse series.
+- [Modbus.md](Modbus.md) — RS-485 transport, CRC, frame formats and IDLE limits.
 - [RTC.md](RTC.md) — `RTC_cl`: BCD time, WakeUp Timer, alarms, calibration.
 - [EXTI.md](EXTI.md) — external GPIO IRQs, fixed PIN/edge, inherited callback and shared-vector limits.
 - [DAC.md](DAC.md) — `DAC_Module`: direct 12-bit output, statuses and channel lifetime.
@@ -906,94 +907,49 @@ The new API has not been built or hardware-tested in this migration.
 
 ## 10. RTC
 
-**Files:** `rtc.hpp`, `rtc.cpp`
-**Details:** [RTC.md](RTC.md)
+**Files:** src/rtc.hpp, src/rtc.cpp. **Details:** [RTC.md](RTC.md).
 
-A fully static class — no objects are created. All methods are called as `RTC_cl::SetUp(...)`.
+RTC_cl is an object for F4/F7/G0. Override OnWakeup, OnAlarmA, OnAlarmB and
+OnTimestamp(const Timestamp&) in a subclass. Configure in main after System/RCC;
+IRQ callbacks do not wait or change registrations.
 
-### Initialization
-
-```cpp
-// LSE — a 32.768 kHz crystal (recommended for accuracy)
-RTC_cl::SetUp(RTC_cl::CLK_Source::LSE);
-
-// LSI — internal RC ~32 kHz (no external components, less accurate)
-RTC_cl::SetUp(RTC_cl::CLK_Source::LSI);
-```
-
-By default: `prediv_a = 127`, `prediv_s = 255` → 32768 / (128 × 256) = 1 Hz.
-
-If `ICSR::RSF == 0` (the RTC is already synchronized, e.g. after exiting Stop), initialization is skipped — the time is not reset.
-
-### Setting the time and date
-
-```cpp
-RTC_cl::SetTime({14, 25, 00});                           // 14:25:00
-RTC_cl::SetDate({22, 05, 26}, RTC_cl::WeekDay::Friday);  // 22.05.2026, Fri
-```
-
-### WakeUp Timer — periodic interrupts
-
-```cpp
-// Every second (counter=0, clock_div=0b100 = ck_spre=1Hz → period = counter+1 sec)
-RTC_cl::EnableWakeUpTimer(0, 0b100, []{ read_sensors(); });
-
-// Every 5 seconds
-RTC_cl::EnableWakeUpTimer(4, 0b100, []{ ... });
-```
-
-### Alarm A / Alarm B
-
-Triggering at a specific time:
-
-```cpp
-RTC_cl::AlarmConfig cfg {
-    .hour = {14, RTC_cl::Alarm_Masks::Care},  // match hour 14
-    .min  = {25, RTC_cl::Alarm_Masks::Care},  // match minute 25
-    .sec  = { 0, RTC_cl::Alarm_Masks::Care},  // match second 0
-    // day — not specified → mask = Ignore → any day
+~~~cpp
+class Clock : public RTC_cl {
+protected:
+    void OnWakeup() override { /* notify main */ }
 };
-RTC_cl::EnableAlarm_A(ENABLE, cfg, []{ buzz(); });
-```
+static Clock clock;
+if (clock.SetUp(RTC_cl::CLK_Source::LSE, 127, 255) == SysInitStatus::InitOK) {
+    // Set these only when the application intends to change the calendar:
+    // clock.SetTime({14, 25, 0});
+    // clock.SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);
+    clock.EnableWakeUpTimer(1); // Two seconds with 1 Hz calendar.
+}
+RTC_cl::RtcTime time;
+RTC_cl::RtcDate date;
+clock.GetDateTime(time, date); // TR then DR: coherent pair, shadow lock released.
+~~~
 
-Fields with `mask = Alarm_Masks::Ignore` (the default) are not compared.
+Same retained source preserves the calendar and dividers, then synchronizes RSF.
+A different selected source **resets the backup domain and loses time/backup
+registers** before applying the new source. Repeat setup is an error until DeInit.
+LSE timeout is 5000 ms; other flag waits are 1000 ms using System::WaitBits.
+Calibration returns Busy immediately while RECALPF is set.
 
-Disabling the alarm:
+Default 127/255 divides 32768 Hz to 1 Hz. For nominal LSI 32000 Hz pass 127/249;
+old default arguments remain LSI,127,255 and need explicit adjustment for LSI.
+HSE and its divider are caller prepared (G0 uses HSE/32).
 
-```cpp
-RTC_cl::EnableAlarm_A(DISABLE);
-```
+Time/date setters validate decimal or BCD fields and return SysStatus. Alarm A/B
+use AlarmConfig with Care/Ignore fields; day means day-of-month. MASKSS=0 ignores
+subseconds. WUT clock codes are /16,/8,/4,/2,ck_spre and 17-bit ck_spre (110).
+EnableTimestamp configures the edge and reads captured data before clearing
+TSF; hardware timestamp has no year. Application prepares RTC_TS/CALIB pins.
 
-### Reading the current time
-
-```cpp
-// Direct register reads (inside the WUT callback):
-uint8_t hours   = ((RTC->TR & RTC_TR_HT)  >> RTC_TR_HT_Pos)  * 10
-                 + (RTC->TR & RTC_TR_HU);
-uint8_t minutes = ((RTC->TR & RTC_TR_MNT) >> RTC_TR_MNT_Pos) * 10
-                 + ((RTC->TR & RTC_TR_MNU) >> RTC_TR_MNU_Pos);
-uint8_t seconds = ((RTC->TR & RTC_TR_ST)  >> RTC_TR_ST_Pos)  * 10
-                 + (RTC->TR & RTC_TR_SU);
-```
-
-### Subseconds
-
-`RTC->SSR` counts down from `prediv_s` (255) to 0 over one second. Resolution:
-```
-t_ss = 1 / (prediv_s + 1) = 1/256 ≈ 3.9 ms
-```
-
-### Calibration output (512 Hz / 1 Hz)
-
-```cpp
-RTC_cl::EnableCOE(true);   // outputs the signal on the RTC_CALIB pin
-```
-
-Useful for measuring crystal accuracy with an oscilloscope. Expected frequency at prediv_a=127, prediv_s=255: **512 Hz** (RTCCLK / 64).
-
-### Write protection
-
-The methods manage the protection automatically. The unlock sequence: write `0xCA`, then `0x53` into `RTC->WPR`. Locking: write any invalid key (e.g. `0xFF`).
+DeInit stops owned events and releases only this object's IRQ registrations,
+preserving shared TAMP handlers and the running calendar. Configuration, examples,
+calibration and migration are described in RTC.md. These changes have not been
+built or tested on hardware in this pass.
 
 ---
 
@@ -1008,6 +964,7 @@ The methods manage the protection automatically. The unlock sequence: write `0xC
 F4/F7/G0 are supported. `init()` checks the generated bank map against the
 hardware mode and rejects bank swap; it does not change option bytes.
 `erase_sector()` uses a map index. `mass_erase()` takes 1/2/3 for bank 1/2/both.
+GetFlashSector(index) provides geometry: uniform pages use bank constants and arithmetic, irregular sectors use a table. Config format 4 requires the matching flash_config.h.in template; see [Review/FlashGeometry.md](Review/FlashGeometry.md).
 
 ```cpp
 if (flash_base::init() != SysInitStatus::InitOK) return;
@@ -1015,7 +972,7 @@ if (flash_base::enable_access() != SysStatus::OK) return;
 
 // Use a sector reserved by the project, not one containing code.
 if (flash_base::erase_sector(settings_sector) != SysStatus::OK) return;
-const uint32_t address = flash_sectors[settings_sector].address;
+const uint32_t address = GetFlashSector(settings_sector).address;
 const uint32_t values[] = {0x12345678, 0xDEADBEEF};
 const SysStatus written = flash_base::write(address, values, 2);
 if (written != SysStatus::OK) return;
@@ -1175,7 +1132,7 @@ I2C_USE_ATOMIC, DAC_USE_ATOMIC, DMA_USE_ATOMIC и EXTI_USE_ATOMIC задаютс
 GetIRQFlags возвращает HT/TC/ошибки одним чтением, публичные FLAG_HT/FLAG_TC/
 FLAG_ERRORS используются потребителями. В I2C добавлены фиксированные DMA,
 callbacks через наследование и DeInit; Recover перенесён в приложение.
-Подробности — [I2C.md](I2C.md). Сборки и аппаратные тесты миграции не запускались.
+Тайминги рассчитываются при компиляции: SetUp<pclk_hz, I2C::SPEED::FAST>(); частота должна совпадать с настроенной APB1. Runtime-поиск и массив 2560 байт удалены. Подробности — [I2C.md](I2C.md). Сборки и аппаратные тесты миграции не запускались.
 
 
 Универсальная C++ библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4**, **STM32F7**.
@@ -1235,7 +1192,7 @@ callbacks через наследование и DeInit; Recover перенес�
 | UART, SPI | `src/uart.*`, `spi.*` | ок | не проверялось | ок |
 | TIM | `src/tim.*` | общий API TIM перенесён; сборка не запускалась | общий API TIM перенесён; сборка не запускалась | общий API TIM перенесён; сборка не запускалась |
 | DMA | `src/dma.*` | исправлен, сборка не запускалась | исправлен, сборка не запускалась | таблица каналов/IRQ уточнена по МК; сборка не запускалась |
-| RTC | `src/rtc.*` | **не портирован** (`ICSR`) | не портирован | ок |
+| RTC | `src/rtc.*` | реализовано, без сборки | реализовано, без сборки | обновлено, без сборки |
 | EXTI | `src/exti.*` | GPIO 0..15 добавлены; без сборки | GPIO 0..15 добавлены; без сборки | GPIO 0..15 добавлены; без сборки |
 | ADC | `src/adc.*` | фиксированный API, отдельные IRQ; не собирался | фиксированный API, отдельные IRQ; не собирался | фиксированный API, отдельные IRQ; не собирался |
 | DAC | `src/dac.*` | исправлен, сборка не запускалась | исправлен, сборка не запускалась | исправлен, сборка не запускалась |
@@ -1246,7 +1203,7 @@ callbacks через наследование и DeInit; Recover перенес�
 | DSP | подмножество CMSIS-DSP v1.16.2 | ок | не проверялось | не проверялось |
 | CRC | `crc/crc32.*` (без таблиц, без HW-периферии — переносимо на любое семейство) | ок | ок | ок |
 
-Список известных недоработок (RTC/ADC) ведётся как бэклог — в релиз они входят «как есть». Правки DAC описаны в [Review/DAC.md](Review/DAC.md). Правки DMA и оставшаяся интеграция отмечены в [Review/DMA.md](Review/done/DMA.md).
+Текущий статус RTC и ADC указан в соответствующих Review-файлах; реализация без сборки не считается проверенной на плате. Правки DAC описаны в [Review/DAC.md](Review/DAC.md). Правки DMA и оставшаяся интеграция отмечены в [Review/DMA.md](Review/done/DMA.md).
 
 Настройка ADC, статусы/callbacks и обслуживание кеша описаны в [ADC.md](ADC.md).
 Режим преобразований, DMA и TIM/источник закреплены конструктором. Используется
@@ -1275,6 +1232,7 @@ IRQ_en, конечный DMA всегда использует TC. См. [Review
 - [UART.md](UART.md) — `USART`: блокирующий/IRQ/DMA режимы, приём по IDLE-линии.
 - [SPI.md](SPI.md) — `SPI`: роли Master/Slave, Software/Hardware NSS, DMA.
 - [TIM.md](TIM.md) — общий TIM: PWM/capture, энкодер, измерение импульса, ITR и конечные серии.
+- [Modbus.md](Modbus.md) — RS-485 transport, CRC, frame formats and IDLE limits.
 - [RTC.md](RTC.md) — `RTC_cl`: BCD-время, WakeUp Timer, будильники, калибровка.
 - [EXTI.md](EXTI.md) — внешние GPIO IRQ, фиксированные PIN/фронт, callback через наследование и ограничения общих векторов.
 - [DAC.md](DAC.md) — `DAC_Module`: прямой 12-битный вывод, статусы и время жизни канала.
@@ -1805,7 +1763,7 @@ SetUp приобретает и настраивает ресурсы. USART и 
 кешевые операции пропускаются.
 GetDataReceivedCount() больше не сбрасывает флаг/счётчик: после обработки нужен
 ClearDataReceivedFlag(). Ошибка останавливает свою операцию и вызывает OnError(mask).
-Адаптация Modbus к явному сбросу флага оставлена для разбора этого модуля.
+Modbus явно сбрасывает признак после обработки пакета; обновлённый контракт — [Modbus.md](Modbus.md).
 
 ### Базовое использование
 
@@ -2066,94 +2024,48 @@ Callbacks необязательны, роли/инициализация сох
 
 ## 10. RTC
 
-**Файлы:** `rtc.hpp`, `rtc.cpp`
-**Подробнее:** [RTC.md](RTC.md)
+**Файлы:** src/rtc.hpp, src/rtc.cpp. **Подробнее:** [RTC.md](RTC.md).
 
-Полностью статический класс — объектов не создаётся. Все методы вызываются как `RTC_cl::SetUp(...)`.
+RTC_cl — объект для F4/F7/G0. События OnWakeup, OnAlarmA, OnAlarmB и
+OnTimestamp(const Timestamp&) переопределяются в наследнике. Настройка — из main
+после System/RCC; callbacks не ждут и не меняют реестр IRQ.
 
-### Инициализация
-
-```cpp
-// LSE — кварц 32.768 кГц (рекомендуется для точности)
-RTC_cl::SetUp(RTC_cl::CLK_Source::LSE);
-
-// LSI — внутренний RC ~32 кГц (без внешних компонентов, менее точный)
-RTC_cl::SetUp(RTC_cl::CLK_Source::LSI);
-```
-
-По умолчанию: `prediv_a = 127`, `prediv_s = 255` → 32768 / (128 × 256) = 1 Гц.
-
-Если `ICSR::RSF == 0` (RTC уже синхронизирован, например после выхода из Stop), инициализация пропускается — время не сбрасывается.
-
-### Установка времени и даты
-
-```cpp
-RTC_cl::SetTime({14, 25, 00});                           // 14:25:00
-RTC_cl::SetDate({22, 05, 26}, RTC_cl::WeekDay::Friday);  // 22.05.2026, Пт
-```
-
-### WakeUp Timer — периодические прерывания
-
-```cpp
-// Каждую секунду (counter=0, clock_div=0b100 = ck_spre=1Гц → период = counter+1 сек)
-RTC_cl::EnableWakeUpTimer(0, 0b100, []{ read_sensors(); });
-
-// Каждые 5 секунд
-RTC_cl::EnableWakeUpTimer(4, 0b100, []{ ... });
-```
-
-### Alarm A / Alarm B
-
-Срабатывание в конкретное время:
-
-```cpp
-RTC_cl::AlarmConfig cfg {
-    .hour = {14, RTC_cl::Alarm_Masks::Care},  // матчить час 14
-    .min  = {25, RTC_cl::Alarm_Masks::Care},  // матчить минуту 25
-    .sec  = { 0, RTC_cl::Alarm_Masks::Care},  // матчить секунду 0
-    // day — не указан → mask = Ignore → любой день
+~~~cpp
+class Clock : public RTC_cl {
+protected:
+    void OnWakeup() override { /* уведомить main */ }
 };
-RTC_cl::EnableAlarm_A(ENABLE, cfg, []{ buzz(); });
-```
+static Clock clock;
+if (clock.SetUp(RTC_cl::CLK_Source::LSE, 127, 255) == SysInitStatus::InitOK) {
+    // Устанавливать календарь только когда приложение действительно меняет время:
+    // clock.SetTime({14, 25, 0});
+    // clock.SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);
+    clock.EnableWakeUpTimer(1); // Две секунды при календаре 1 Гц.
+}
+RTC_cl::RtcTime time;
+RTC_cl::RtcDate date;
+clock.GetDateTime(time, date); // Согласованная пара TR/DR, shadow lock освобождён.
+~~~
 
-Поля с `mask = Alarm_Masks::Ignore` (умолчание) не сравниваются.
+При сохранённом источнике календарь и делители не меняются, RSF синхронизируется.
+При другом выбранном источнике **сбрасывается backup domain с потерей времени
+и backup-регистров**, затем применяется новый источник. Повторный SetUp до DeInit
+возвращает ошибку. LSE ждём до 5000 мс, остальные флаги — до 1000 мс через
+System::WaitBits; RECALPF сразу возвращает Busy без ожидания.
 
-Отключение будильника:
+127/255 делит 32768 Гц до 1 Гц. Для номинального LSI 32000 Гц задавайте 127/249;
+старые defaults LSI,127,255 сохранены, для LSI требуется явный выбор делителей.
+HSE и его RTC-делитель готовит приложение; на G0 используется HSE/32.
 
-```cpp
-RTC_cl::EnableAlarm_A(DISABLE);
-```
+SetTime/SetDate и BCD-варианты проверяют диапазоны и возвращают SysStatus.
+Alarm A/B настраиваются AlarmConfig с полями Care/Ignore; day — число месяца,
+MASKSS=0 игнорирует подсекунды. WUT: /16,/8,/4,/2,ck_spre и 17-битный ck_spre
+(код 110). Timestamp читает захват до очистки TSF, года в аппаратном захвате нет.
+Пины RTC_TS/CALIB готовит приложение.
 
-### Чтение текущего времени
-
-```cpp
-// Прямое чтение регистров (внутри WUT-колбэка):
-uint8_t hours   = ((RTC->TR & RTC_TR_HT)  >> RTC_TR_HT_Pos)  * 10
-                 + (RTC->TR & RTC_TR_HU);
-uint8_t minutes = ((RTC->TR & RTC_TR_MNT) >> RTC_TR_MNT_Pos) * 10
-                 + ((RTC->TR & RTC_TR_MNU) >> RTC_TR_MNU_Pos);
-uint8_t seconds = ((RTC->TR & RTC_TR_ST)  >> RTC_TR_ST_Pos)  * 10
-                 + (RTC->TR & RTC_TR_SU);
-```
-
-### Субсекунды
-
-`RTC->SSR` убывает от `prediv_s` (255) до 0 за одну секунду. Разрешение:
-```
-t_ss = 1 / (prediv_s + 1) = 1/256 ≈ 3.9 мс
-```
-
-### Калибровочный выход (512 Гц / 1 Гц)
-
-```cpp
-RTC_cl::EnableCOE(true);   // выводит сигнал на вывод RTC_CALIB
-```
-
-Полезно для измерения точности кристалла осциллографом. Ожидаемая частота при prediv_a=127, prediv_s=255: **512 Гц** (RTCCLK / 64).
-
-### Защита от записи
-
-Методы управляют защитой автоматически. Последовательность снятия: запись `0xCA`, затем `0x53` в `RTC->WPR`. Установка: запись любого неверного ключа (например `0xFF`).
+DeInit выключает собственные события и удаляет только свои регистрации, сохраняя
+общие обработчики TAMP и ход календаря. Полный контракт, калибровка, примеры и
+миграция — в RTC.md. Сборки и аппаратные тесты этих правок не запускались.
 
 ---
 
@@ -2168,6 +2080,7 @@ RTC_cl::EnableCOE(true);   // выводит сигнал на вывод RTC_CA
 Поддерживаются F4/F7/G0. `init()` сверяет карту банков с аппаратным режимом и
 отклоняет bank swap; option bytes не меняет. `erase_sector()` принимает индекс
 карты. `mass_erase()` принимает 1/2/3 для первого/второго/обоих банков.
+Геометрия доступна через GetFlashSector(index): равномерные страницы вычисляются по константам банков, неравномерные используют таблицу. Формат конфигурации 4 требует согласованного flash_config.h.in; миграция — [Review/FlashGeometry.md](Review/FlashGeometry.md).
 
 ```cpp
 if (flash_base::init() != SysInitStatus::InitOK) return;
@@ -2175,7 +2088,7 @@ if (flash_base::enable_access() != SysStatus::OK) return;
 
 // Сектор должен быть зарезервирован проектом, без кода.
 if (flash_base::erase_sector(settings_sector) != SysStatus::OK) return;
-const uint32_t address = flash_sectors[settings_sector].address;
+const uint32_t address = GetFlashSector(settings_sector).address;
 const uint32_t values[] = {0x12345678, 0xDEADBEEF};
 const SysStatus written = flash_base::write(address, values, 2);
 if (written != SysStatus::OK) return;

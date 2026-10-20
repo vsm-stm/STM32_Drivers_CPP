@@ -11,7 +11,8 @@
  * -------------------------------
  * Initialize System/RCC before SetUp(). PCLK is the default; on F7/G0 the
  * constructor can select SYSCLK, HSI or LSE where the instance supports them.
- * SetUp() uses oversampling x16 and 8N1; G0 PRESC is /1. Peripheral tables provide clock
+ * SetUp() uses oversampling x16 and a selected 8N1/8E1/8O1/8N2 frame (default
+ * 8N1); G0 PRESC is /1. Peripheral tables provide clock
  * gates, PCLK variables, vectors and pins for the selected MCU. Named DMAReq
  * entries carry USART ownership/direction; DMA objects are stored inside USART.
  * TX/RX pins come from USART::_N::TX/RX. Their number/AF are defined by PIN;
@@ -127,6 +128,8 @@
 class USART : public IIRQHandler
 {
 public:
+	/// Eight payload bits. Parity occupies the ninth hardware word bit.
+	enum class FrameFormat : uint8_t { N8_1, E8_1, O8_1, N8_2 };
 	// Named pin tables, FIFO enums and family-specific register accessors.
 	// For example USART::_1::TX::PB6 stores port, pin, AF and USART1 ownership.
 #include "uart_defs.hpp"
@@ -332,8 +335,9 @@ public:
 	 *                              USART::FIFO_TH::TH_1_2);
 	 * @endcode
 	 */
+	/// format is selected once during setup; all formats keep eight payload bits.
 	SysInitStatus SetUp(FIFO fifo = FIFO::NO, FIFO_TH fifo_th_tx = FIFO_TH::NO,
-		FIFO_TH fifo_th_rx = FIFO_TH::NO);
+		FIFO_TH fifo_th_rx = FIFO_TH::NO, FrameFormat format = FrameFormat::N8_1);
 
 	/**
 	 * @brief Enable/disable one UART interrupt source without changing the registry.
@@ -614,7 +618,7 @@ public:
 	SysStatus SetBaud(uint32_t baud);
 	/**
 	 * @brief Reserved API; currently has no effect.
-	 * @param parity Ignored. SetUp() configures no parity.
+	 * @param parity Ignored. Select FrameFormat in SetUp() instead.
 	 */
 	inline void SetParity(uint32_t parity) { (void)parity; }
 

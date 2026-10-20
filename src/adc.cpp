@@ -5,7 +5,8 @@
 #undef ADC_DEFS_CPP
 
 #if defined(STM32G0)
-static constexpr uint32_t ADC_TIMEOUT_MS = 1u;
+// With a 1 ms tick, two ticks allow roughly 1..2 ms despite the starting phase.
+static constexpr uint32_t ADC_TIMEOUT_MS = 2u;
 static constexpr uint32_t CHSELR_EMPTY = 0xFFFFFFFFu;
 static constexpr uint32_t SMPSEL_ALL = 0x7FFFFu << ADC_SMPR_SMPSEL0_Pos;
 static constexpr uint32_t RUN_FIELDS = ADC_CFGR1_EXTEN | ADC_CFGR1_EXTSEL

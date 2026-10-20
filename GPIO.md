@@ -90,25 +90,23 @@ The order of operations in `gpio.cpp` — **first unpack `TYPE` into three field
    same instructions as an explicit shift for F429/F767/G031 with -O0/-Og/-Os;
    no software division helper is called. No additional port index is stored.
 
-2. **Clearing before writing** — each of `MODER`/`PUPDR`/`OTYPER`/`OSPEEDR`/`AFR[]` is first
-   cleared with a mask for this pin, and only then is the new value written. This matters when
-   `SetUp()` is called again on an already-configured pin (changing mode) — without clearing, the old
-   mode/pull bits could "mix" with the new ones via `|=`.
+2. **One read/modify/write per register** — the new field replaces the old one
+   in a single write. There is no separate clear followed by OR.
 
-3. **ANALOG — a special case**: if `mode == ANALOG`, the steps for
-   `OTYPER`/`OSPEEDR`/`PUPDR`/`AFR` are skipped entirely (there's no point configuring pull resistors
-   or the edge speed on a pin disconnected from digital logic) — only `MODER` gets `0b11`.
+3. **ANALOG** clears the pin fields in OTYPER/OSPEEDR/PUPDR/AFR and selects
+   MODER=0b11. No pull is enabled for the analog pin.
 
-4. **`OTYPER`/`OSPEEDR` are written only for OUTPUT and AF** — INPUT needs neither the
-   output type nor the edge speed.
+4. **OUTPUT and AF** use the requested output type and speed. For INPUT/ANALOG
+   these fields are cleared, matching the previous configuration contract.
 
-5. **`AFR[]` is written only for AF** — `pin >> 3` selects `AFR[0]` (pins 0-7) or `AFR[1]`
-   (pins 8-15), `(pin & 0x7) * 4` is the shift of the 4-bit field within the register.
+5. **AFR** uses the requested AF in AF mode, otherwise zero. pin >> 3 selects
+   AFR[0]/AFR[1]; (pin & 7) * 4 selects the field inside that register.
 
-6. **Initial OUTPUT level** is written through BSRR before the final MODER write.
-   It defaults to LOW, including repeated OUTPUT setup. INPUT, AF and ANALOG do
-   not change the output latch. The initial MODER clear temporarily selects INPUT;
-   the final write enables the requested mode after configuring its attributes.
+6. **Initial OUTPUT level** is written through BSRR before configuration.
+   It defaults to LOW, including repeated OUTPUT setup. Other modes do not
+   change the output latch. MODER is written last, once: no temporary INPUT
+   transition releases an already driven line. Register writes are sequential,
+   not one atomic transaction; the caller still serializes configuration.
 
 ```cpp
 led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
@@ -416,25 +414,23 @@ SysInitStatus SetUp(TYPE type, OUTPUT_SPEED speed, uint8_t af_override,
    машинный код, что и явный сдвиг, для F429/F767/G031 с -O0/-Og/-Os;
    вызова программного деления нет. Дополнительный индекс порта не хранится.
 
-2. **Очистка перед записью** — каждое из `MODER`/`PUPDR`/`OTYPER`/`OSPEEDR`/`AFR[]` сначала
-   обнуляется маской для этого пина, только потом записывается новое значение. Это важно при
-   повторном вызове `SetUp()` на уже настроенном пине (смена режима) — без очистки старые биты
-   мода/pull могли бы "смешаться" с новыми через `|=`.
+2. **Одна операция чтение/изменение/запись на регистр** — новое поле заменяет
+   старое одной записью. Раздельных очистки и последующего OR больше нет.
 
-3. **ANALOG — особый случай**: если `mode == ANALOG`, шаги для `OTYPER`/`OSPEEDR`/`PUPDR`/`AFR`
-   пропускаются целиком (незачем настраивать pull-резисторы или скорость на выводе, отключённом от
-   цифровой логики) — только `MODER` получает `0b11`.
+3. **ANALOG** обнуляет поля пина в OTYPER/OSPEEDR/PUPDR/AFR и выбирает
+   MODER=0b11. Подтяжки для аналогового входа не включаются.
 
-4. **`OTYPER`/`OSPEEDR` пишутся только для OUTPUT и AF** — INPUT не нуждается ни в типе выхода, ни
-   в скорости фронта.
+4. **OUTPUT и AF** получают заданные тип выхода и скорость. Для INPUT/ANALOG
+   эти поля обнуляются, сохраняя прежний контракт настройки.
 
-5. **`AFR[]` пишется только для AF** — `pin >> 3` выбирает `AFR[0]` (пины 0-7) или `AFR[1]`
-   (пины 8-15), `(pin & 0x7) * 4` — сдвиг 4-битного поля внутри регистра.
+5. **AFR** получает заданный AF только в режиме AF, иначе ноль. pin >> 3
+   выбирает AFR[0]/AFR[1], (pin & 7) * 4 — поле внутри регистра.
 
-6. **Начальный уровень OUTPUT** записывается через BSRR перед итоговой записью
-   MODER. По умолчанию LOW, в том числе при повторной настройке OUTPUT.
-   INPUT, AF и ANALOG не меняют выходную защёлку. Начальная очистка MODER временно
-   выбирает INPUT; итоговая запись включает заданный режим после настройки атрибутов.
+6. **Начальный уровень OUTPUT** записывается через BSRR до настройки.
+   По умолчанию LOW, в том числе при повторном SetUp. Другие режимы не меняют
+   выходную защёлку. MODER записывается последним и один раз: временного перехода
+   во INPUT с отпусканием линии нет. Последовательные записи регистров не являются
+   одной атомарной операцией; конфигурацию по-прежнему сериализует вызывающий код.
 
 ```cpp
 led.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);

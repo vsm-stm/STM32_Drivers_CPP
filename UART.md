@@ -8,7 +8,7 @@
 
 One USART object controls one UART. Call System/RCC initialization first.
 The constructor fixes optional DMA TX/RX and the kernel clock; PCLK is the default. SetUp() applies
-that source, oversampling x16 and 8N1; G0 PRESC is /1.
+that source, oversampling x16 and a selected 8N1/8E1/8O1/8N2 frame (8N1 by default); G0 PRESC is /1.
 Baud is rounded to the nearest representable divider:
 BRR = (kernel_clock + baud/2) / baud, with 16 <= BRR <= 65535
 and baud <= kernel_clock/16.
@@ -221,7 +221,7 @@ own bounded RX tail; normal RX draining is skipped in that entry. Processing doe
 not wait for future bytes. RX/TX sources service remaining data in later IRQs;
 arrivals after IDLE belong to the next packet and retain the documented gap contract.
 Oversampling is performed by hardware and does not multiply CPU interrupts.
-SetParity remains an unimplemented reserved API.
+Select the frame once using SetUp(fifo, tx_threshold, rx_threshold, FrameFormat::E8_1/O8_1/N8_2/N8_1). All formats retain eight payload bits; parity uses the ninth hardware word bit. The legacy SetParity method still ignores its argument; use FrameFormat instead.
 
 ### Example
 
@@ -249,7 +249,7 @@ DMA_Sx::Req::Usart1::RX_DMA2_Stream5 directly in the last two DMA positions.
 
 Existing consumers that relied on GetDataReceivedCount() clearing the flag must
 now call ClearDataReceivedFlag() explicitly. Modbus constructor arguments have been
-migrated to these request descriptions; its protocol/transfer logic is unchanged.
+migrated to these request descriptions; its current transfer/framing contract is described in [Modbus.md](Modbus.md).
 
 ## Русский
 
@@ -257,7 +257,7 @@ migrated to these request descriptions; its protocol/transfer logic is unchanged
 
 Один объект обслуживает один UART. Сначала настраиваются System и RCC.
 Источник фиксируется в конструкторе, по умолчанию PCLK. SetUp() применяет
-выбранный источник, oversampling x16 и 8N1; PRESC на G0 — /1.
+выбранный источник, oversampling x16 и выбранный 8N1/8E1/8O1/8N2 (по умолчанию 8N1); PRESC на G0 — /1.
 BRR округляется до ближайшего целого: (kernel_clock + baud/2) / baud.
 Допустимы 16..65535 и baud <= kernel_clock/16. Нулевой или непредставимый baud —
 InitError. Условного нижнего предела 9600 больше нет.
@@ -432,7 +432,7 @@ RX — полный FIFO, TX — пустой. Oversampling остаётся x16
 нет. В обычном обмене остаток обслуживается следующими IRQ; при IDLE действует
 прежнее условие паузы между пакетами, новые поступления не гарантируются до
 следующего Receive.
-SetParity остаётся заглушкой.
+Формат выбирается один раз: SetUp(fifo, tx_threshold, rx_threshold, FrameFormat::E8_1/O8_1/N8_2/N8_1). Во всех вариантах восемь полезных бит; parity занимает девятый аппаратный бит слова. Старый SetParity по-прежнему игнорирует аргумент: используйте FrameFormat.
 
 ### Совместимость
 
@@ -442,7 +442,7 @@ USART1 DMA2_Stream5 / CH4 назван RX_DMA2_Stream5: это маршрут RX
 
 Потребители, ожидавшие сброс флага в GetDataReceivedCount(), должны теперь вызывать
 ClearDataReceivedFlag() явно. Конструктор Modbus переведён на описания Req;
-протокол и алгоритм передачи в этом шаге не менялись.
+актуальный контракт передачи/IDLE описан в [Modbus.md](Modbus.md).
 
 ### Источники для таблиц
 

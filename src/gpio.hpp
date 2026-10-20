@@ -193,6 +193,8 @@ public:
 	 * @return InitOK after register programming; arguments are a caller contract.
 	 * Enables the shared GPIO clock. Other modes do not change the output latch;
 	 * ANALOG clears pull/output/AF fields rather than enabling a digital output.
+	 * Configuration registers are each written once; MODER is written last,
+	 * without temporarily selecting INPUT. This is not an atomic multi-register update.
 	 * @pre Valid bound pin and enum arguments; serialize GPIO configuration.
 	 */
 	SysInitStatus SetUp(TYPE type = TYPE::INPUT_NO_Pull, OUTPUT_SPEED speed = OUTPUT_SPEED::Low,

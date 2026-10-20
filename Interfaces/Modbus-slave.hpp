@@ -1,15 +1,36 @@
-#ifndef MODNUS_SLAVE_HPP
-#define MODNUS_SLAVE_HPP
+#ifndef MODBUS_SLAVE_HPP
+#define MODBUS_SLAVE_HPP
 
 #include "system.hpp"
 #include "gpio.hpp"
 #include "uart.hpp"
 #include "dma.hpp"
 
+/**
+ * @brief RS-485 transport with RTU CRC; address/function parsing belongs to main.
+ *
+ * UART owns its TX/RX DMA. IRQ callbacks only complete UART/DE handling;
+ * Rx_Process validates CRC and invokes the parser in main. IDLE is the packet
+ * boundary: strict RTU t1.5/t3.5 timing is NOT implemented (see Modbus.md).
+ * Call Rx_Process frequently; one RX packet is held until consumed/rearmed.
+ * Do not retain RX/TX pointers beyond their ownership interval.
+ *
+ * F4 example:
+ *   ModbusRTU_Slave bus(USART3, 19200, USART::_3::TX::PD8,
+ *       USART::_3::RX::PD9, PIN(GPIOD, 2),
+ *       DMA_Sx::Req::Usart3::TX_DMA1_Stream3,
+ *       DMA_Sx::Req::Usart3::RX_DMA1_Stream1);
+ *   bus.SetRxParse(parse_request); // void(uint8_t*, uint32_t), main context
+ *   bus.SetUp(ModbusRTU_Slave::FrameFormat::E8_1);
+ *   // In main loop: bus.Rx_Process();
+ */
 class ModbusRTU_Slave : protected USART{
 private:
 	PIN rs_DE{};
 
+#if defined(STM32F7)
+	alignas(32)
+#endif
 	uint8_t rx_buffer[256]{};
 	void (*Rx_Parse)(uint8_t* data, uint32_t len) = nullptr;
 
@@ -19,11 +40,16 @@ private:
 		OnSend
 	};
 
+#if defined(STM32F7)
+	alignas(32)
+#endif
 	uint8_t tx_buffer[256]{};
-	TxBuffStatus tx_buffer_status = TxBuffStatus::Free;
+	volatile TxBuffStatus tx_buffer_status = TxBuffStatus::Free;
 	void OnTC() override;
+	void OnError(uint32_t errors) override;
 
 public:
+	using FrameFormat = USART::FrameFormat;
 	// USART owns DMA. F4/F7: named Req; G0: physical channel, request selected by USART.
 	// Both directions are mandatory; constructor checks use DebugTrap.
 	ModbusRTU_Slave(USART_TypeDef *usartx, uint32_t baudrate,
@@ -40,14 +66,27 @@ public:
 			System::DebugTrap("Modbus: TX and RX DMA requests are required");
 	}
 
-	SysInitStatus SetUp();
+	/// Main only; select 8E1/8O1/8N2, or legacy 8N1 (default).
+	SysInitStatus SetUp(FrameFormat format = FrameFormat::N8_1);
+	/// Main only. Stop UART/DMA, release registrations, drive DE low, release buffers.
+	void DeInit();
 
+	/// Set parser before starting reception. len excludes the two CRC bytes.
+	/// Parser checks slave address/function/broadcast policy and prepares responses.
 	void SetRxParse(void (*callback)(uint8_t*, uint32_t)){
 		Rx_Parse = callback;
 	};
+	/// Main only: rearm when idle/error, consume ready packet once, validate CRC.
 	void Rx_Process();
 
+	/// Reserve 256-byte buffer; at most 254 payload bytes, last two reserved for CRC.
+	/// nullptr while reserved/sending or before successful setup.
 	uint8_t* GetTxBufferPtr();
+	/// Main only: release a prepared response; Busy while DMA/wire TX is active.
+	SysStatus CancelTxBuffer();
+	/// Main only: append CRC and start DMA. OK means started, not sent on wire.
+	/// DE/buffer stay owned until TC or TX error. Bad len/state: Error, active TX:
+	/// Busy, before setup: NotInit. Failed start retains prepared data for retry/cancel.
 	SysStatus SendData(uint32_t len);
 
 

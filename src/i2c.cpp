@@ -1,11 +1,5 @@
 #include "i2c.hpp"
 
-#if defined(STM32G0) || defined(STM32F7)
-extern "C" {
-#include "i2c_timing_utility.h"
-}
-#endif
-
 #define I2C_DEFS_CPP
 #include "i2c_defs.hpp"
 #undef I2C_DEFS_CPP
@@ -41,34 +35,17 @@ uint32_t I2C::DmaRequest(I2C_TypeDef* i2c, bool tx)
 
 // Initialization/ownership changes are main-only. The application serializes
 // starts/Abort/DeInit with this object's I2C and DMA IRQs; its handlers do not nest.
-SysInitStatus I2C::SetUp(SPEED speed)
+SysInitStatus I2C::Apply(uint32_t timing, SPEED speed)
 {
-    if (_info || (speed != SPEED::STANDARD && speed != SPEED::FAST && speed != SPEED::FAST_PLUS))
-        return SysInitStatus::InitError;
+    if (_info) return SysInitStatus::InitError;
     const PeriphInfo* info = nullptr;
     for (const auto& e : i2c_table)
         if (e.periph == I2Cx) { info = &e; break; }
     if (!info) return SysInitStatus::InitError;
 
-#if defined(STM32G0) || defined(STM32F7)
-    _timing = I2C_GetTiming(System::APB1BusClock, static_cast<uint32_t>(speed));
-    if (!_timing) return SysInitStatus::InitError;
-#else
-    const uint32_t pclk = System::APB1BusClock;
-    const uint32_t freq = pclk / 1000000u;
-    const uint32_t hz = static_cast<uint32_t>(speed);
-    if (speed == SPEED::FAST_PLUS || freq < 2u || freq > 50u
-        || (speed == SPEED::FAST && freq < 4u)) return SysInitStatus::InitError;
-    uint32_t ccr, trise;
-    if (speed == SPEED::STANDARD) {
-        ccr = (pclk + 2u * hz - 1u) / (2u * hz);
-        if (ccr < 4u) ccr = 4u;
-        trise = freq + 1u;
-    } else {
-        ccr = ((pclk + 3u * hz - 1u) / (3u * hz)) | I2C_CCR_FS;
-        trise = freq * 300u / 1000u + 1u;
-    }
-    _timing = ccr | (trise << 16) | (freq << 24);
+    _timing = timing;
+#if defined(STM32F4)
+    (void)speed; // F4 register configuration is entirely encoded in timing.
 #endif
 
     I2C_SET_BIT(*info->clk_reg, info->clk_bit);

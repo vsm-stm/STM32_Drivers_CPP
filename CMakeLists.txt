@@ -84,31 +84,71 @@ set(_gen "${CMAKE_SOURCE_DIR}/cmsis-core/drivers_gen")
 download_one("flash_config.h.in"        "${_dl}" "cmake/flash_config.h.in")
 download_one("irq_registry_config.h.in" "${_dl}" "cmake/irq_registry_config.h.in")
 
-# flash_config.h - the erase-sector list for this specific device is already
-# resolved by the base from its per-model bank mode map. Use that exact list
-# for flash_config.h so the driver and firmware linker cannot select different
-# layouts. Each record is address, size, bank, hardware erase selector.
+# The base resolves the exact erase map: address, size, bank, hardware selector.
+# Compact uniform pages into bank constants; retain rows for irregular sectors.
+# Both representations come from that same selected map, independently of family.
 if(NOT STM32_FLASH_ERASE_UNITS OR NOT STM32_FLASH_LAYOUT_VERSION EQUAL 3)
 	message(FATAL_ERROR
 		"stm32_drivers: update stm32_cmake_base and STM32-base_files (Flash layout format 3 required)")
 endif()
 file(READ "${_dl}/flash_config.h.in" _flash_template)
 string(FIND "${_flash_template}" "@FLASH_CFG_FORMAT@" _flash_format_hook)
-if(_flash_format_hook LESS 0)
-	message(FATAL_ERROR "Refresh flash_config.h.in from STM32-base_files (Flash format 3 required)")
+string(FIND "${_flash_template}" "@FLASH_CFG_UNIFORM@" _flash_geometry_hook)
+if(_flash_format_hook LESS 0 OR _flash_geometry_hook LESS 0)
+	message(FATAL_ERROR "Refresh flash_config.h.in from STM32-base_files (Flash config format 4 required)")
 endif()
 
 set(FLASH_CFG_SECTORS_LIST "")
+set(FLASH_CFG_UNIFORM 1)
+set(FLASH_CFG_PAGE_SIZE 0)
+foreach(_bank RANGE 1 2)
+	set(FLASH_CFG_BANK${_bank}_COUNT 0)
+	set(FLASH_CFG_BANK${_bank}_ORIGIN 0)
+	set(FLASH_CFG_BANK${_bank}_NUMBER 0)
+endforeach()
 set(_rest ${STM32_FLASH_ERASE_UNITS})
 set(_i 0)
+set(_previous_bank 0)
 while(_rest)
 	list(POP_FRONT _rest _addr _size _bank _number)
 	string(APPEND FLASH_CFG_SECTORS_LIST "    { ${_addr}UL, ${_size}UL, ${_bank}U, ${_number}U }, // Erase unit ${_i}\n")
+	if(_i EQUAL 0)
+		set(FLASH_CFG_PAGE_SIZE "${_size}")
+	endif()
+	if(NOT _size EQUAL FLASH_CFG_PAGE_SIZE OR _size LESS_EQUAL 0
+		OR _bank LESS _previous_bank OR _bank LESS 1 OR _bank GREATER 2)
+		set(FLASH_CFG_UNIFORM 0)
+	endif()
+	if(_bank EQUAL 1 OR _bank EQUAL 2)
+		if(FLASH_CFG_BANK${_bank}_COUNT EQUAL 0)
+			set(FLASH_CFG_BANK${_bank}_ORIGIN "${_addr}")
+			set(FLASH_CFG_BANK${_bank}_NUMBER "${_number}")
+		else()
+			math(EXPR _expected_addr
+				"${FLASH_CFG_BANK${_bank}_ORIGIN} + ${FLASH_CFG_BANK${_bank}_COUNT} * ${FLASH_CFG_PAGE_SIZE}")
+			math(EXPR _expected_number
+				"${FLASH_CFG_BANK${_bank}_NUMBER} + ${FLASH_CFG_BANK${_bank}_COUNT}")
+			if(NOT _addr EQUAL _expected_addr OR NOT _number EQUAL _expected_number)
+				set(FLASH_CFG_UNIFORM 0)
+			endif()
+		endif()
+		math(EXPR FLASH_CFG_BANK${_bank}_COUNT "${FLASH_CFG_BANK${_bank}_COUNT} + 1")
+	endif()
+	set(_previous_bank "${_bank}")
 	math(EXPR _i "${_i} + 1")
 endwhile()
+if(FLASH_CFG_BANK1_COUNT EQUAL 0
+	OR (STM32_DUAL_BANK AND FLASH_CFG_BANK2_COUNT EQUAL 0)
+	OR (NOT STM32_DUAL_BANK AND FLASH_CFG_BANK2_COUNT GREATER 0))
+	set(FLASH_CFG_UNIFORM 0)
+endif()
+if(FLASH_CFG_UNIFORM)
+	# Do not even emit the unused per-page rows into the generated header.
+	set(FLASH_CFG_SECTORS_LIST "")
+endif()
 
 set(FLASH_CFG_COUNT     "${_i}")
-set(FLASH_CFG_FORMAT    3)
+set(FLASH_CFG_FORMAT    4)
 set(FLASH_CFG_BANK_SWITCHABLE false)
 if(STM32_FLASH_BANK_SWITCHABLE)
 	set(FLASH_CFG_BANK_SWITCHABLE true)
@@ -122,7 +162,7 @@ else()
 endif()
 
 configure_file("${_dl}/flash_config.h.in" "${_gen}/flash_config.h" @ONLY)
-message(STATUS "flash_config.h: ${FLASH_CFG_COUNT} sectors, dual_bank=${FLASH_CFG_DUAL_BANK}")
+message(STATUS "flash_config.h: ${FLASH_CFG_COUNT} sectors, dual_bank=${FLASH_CFG_DUAL_BANK}, uniform_pages=${FLASH_CFG_UNIFORM}")
 
 stm32_gen_irq_handlers("${STM32_VECTOR_FILE}"
 	"${_dl}/irq_registry_config.h.in" "${_gen}/irq_registry_config.h")
@@ -173,9 +213,8 @@ stm32_drivers_module(RTC    SOURCES src/rtc.cpp)
 stm32_drivers_module(EXTI   SOURCES src/exti.cpp)
 stm32_drivers_module(ADC    SOURCES src/adc.cpp DEPENDS DMA TIM)
 stm32_drivers_module(DAC    SOURCES src/dac.cpp)
-# i2c.hpp does `#include <i2c_timing_utility.h>` (angle brackets) - src/tools
-# must be a real include directory, not just an include from the same folder.
-stm32_drivers_module(I2C    SOURCES src/i2c.cpp src/tools/i2c_timing_utility.c  INCLUDE src/tools DEPENDS DMA)
+# Timing calculation is C++20 compile-time code included by i2c.hpp.
+stm32_drivers_module(I2C    SOURCES src/i2c.cpp DEPENDS DMA)
 stm32_drivers_module(MODBUS SOURCES Interfaces/Modbus-slave.cpp                 INCLUDE Interfaces DEPENDS UART DMA)
 stm32_drivers_module(CONTAINERS INCLUDE Containers)          # headers only
 # PID - the author's own controller (math/PID.*): variable dT, dead zone,

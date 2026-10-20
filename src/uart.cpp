@@ -83,9 +83,12 @@ uint32_t USART::KernelClock(const PeriphInfo& info) const
 
 // Select the kernel clock and program BRR with UE=0. Register the object once even if another
 // peripheral already enabled the shared NVIC line. FIFO support is per instance.
-SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
+SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx, FrameFormat format)
 {
 	if (_info) return SysInitStatus::InitError;
+	if (format != FrameFormat::N8_1 && format != FrameFormat::E8_1
+		&& format != FrameFormat::O8_1 && format != FrameFormat::N8_2)
+		return SysInitStatus::InitError;
 	const PeriphInfo* info = nullptr;
 	for (const auto& e : usart_table)
 		if (e.periph == USARTx) { info = &e; break; }
@@ -119,8 +122,17 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx)
 	USARTx->PRESC = 0;
 #endif
 	USARTx->BRR = brr;
-	USARTx->CR2 = 0;
-	USARTx->CR1 = static_cast<uint32_t>(fifo);
+	USARTx->CR2 = format == FrameFormat::N8_2 ? USART_CR2_STOP_1 : 0u;
+	uint32_t cr1 = static_cast<uint32_t>(fifo);
+	if (format == FrameFormat::E8_1 || format == FrameFormat::O8_1) {
+#if defined(USART_CR1_M0)
+		cr1 |= USART_CR1_M0 | USART_CR1_PCE;
+#else
+		cr1 |= USART_CR1_M | USART_CR1_PCE;
+#endif
+		if (format == FrameFormat::O8_1) cr1 |= USART_CR1_PS;
+	}
+	USARTx->CR1 = cr1;
 	USARTx->CR3 = (static_cast<uint32_t>(fifo_th_tx) << FIFO_TH_TX_Pos)
 		| (static_cast<uint32_t>(fifo_th_rx) << FIFO_TH_RX_Pos);
 	if (_TX.IsValid()) {
