@@ -257,7 +257,7 @@ The guard does not change internal SRAM cacheability. `MPU_Init()` is optional a
 
 ### Optional non-cacheable DMA areas (F7 + base)
 
-Non-cacheable buffers let DMA and CPU share memory **without any cache maintenance**. Declare them in the base's `project.json`:
+Non-cacheable buffers let DMA and CPU share memory **without any cache maintenance**. A step-by-step guide with driver examples is in the base: [DMA_REGIONS.md](https://github.com/vsm-stm/stm32_cmake_base/blob/main/DMA_REGIONS.md). Declare the areas in the base's `project.json`:
 
 ```json
 "dma_regions": [
@@ -697,7 +697,7 @@ System::Init();                // кеши F7 включаются после н
 
 ### Необязательные некешируемые DMA-области (F7 + base)
 
-Некешируемые буферы позволяют DMA и процессору делить память **без обслуживания кеша**. Объявите их в `project.json` базы:
+Некешируемые буферы позволяют DMA и процессору делить память **без обслуживания кеша**. Пошаговое руководство с примерами для драйверов — в базе: [DMA_REGIONS.md](https://github.com/vsm-stm/stm32_cmake_base/blob/main/DMA_REGIONS.md#русский). Объявите области в `project.json` базы:
 
 ```json
 "dma_regions": [
