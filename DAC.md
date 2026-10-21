@@ -21,128 +21,151 @@
 
 ## 1. Why This Is Needed
 
-One DAC_Module binds one available DAC channel. It configures its analog output and accepts 12-bit right-aligned values; the second channel can be used independently.
+`DAC_Module` drives one DAC output channel: you write a number 0…4095, the pin outputs the matching voltage.
+
+- One object = one channel (CH1 on PA4 or CH2 on PA5).
+- Values are 12-bit, right-aligned.
+- The second channel can be driven by another object, independently.
 
 ---
 
 ## 2. Constant Initialization and Constructor Diagnostics
 
-Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. DAC takes DAC_Module::_1::instance and a channel; it has no DMA binding.
+Declare fixed peripheral objects at file scope with `constinit` (or as `static constinit` inside a function). `DAC_Module` takes `DAC_Module::_1::instance` and a channel; there is no DMA binding.
 
-For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. The macro uses `std::is_constant_evaluated()` to select that path; at runtime it calls `System::DebugTrap(text)` directly, without calling the template. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+What happens with a wrong argument (for example CH2 on F410, which has only CH1):
+
+| Declaration | Result |
+| --- | --- |
+| `constinit` object | **Compilation error** with the reason text in the message. |
+| Object without `constinit` | Compiles; at start-up the constructor stops in `System::DebugTrap(reason)`. |
+
+How it works: every check calls `STM32_CONFIG_ERROR("reason")`. During compile-time evaluation it calls a deliberately non-`constexpr` function whose template argument is the reason text, so GCC prints that text. At run time it calls `System::DebugTrap(text)` directly.
+
+`constinit` is required by the usage contract but not enforced by the constructor. `SetUp()` still checks hardware state and repeated initialization. Constructor variants and migration: [Initialization.md](Initialization.md).
 
 ---
 
 ## 3. Configuration and API
 
-DAC_USE_ATOMIC in dac.hpp defaults to 0 (ordinary control-register RMW).
-Set 1 for ST ATOMIC_* updates to CR/MCR and clock-enable fields; rebuild DAC
-and its users. Data-register writes and W1C flag clearing remain direct.
-Individual atomic operations do not serialize the whole channel configuration.
+Enable the module in `project.json`:
 
-Enable the module in project.json:
-
-~~~json
+```json
 "drivers": ["DAC"]
-~~~
+```
 
-DAC_Module writes 12-bit right-aligned codes directly to one output channel.
-System/GPIO are core dependencies; this API does not require DMA or IRQ registration.
+Dependencies: only the core (System, GPIO). No DMA and no IRQ registration.
 
 | Method | Result |
-|---|---|
-| SetUp() | SysInitStatus::InitOK, or InitError |
-| SetValue(uint32_t) | SysStatus::OK, Error, or NotInit |
-| DeInit() | Disables this channel; returns void |
+| --- | --- |
+| `SetUp()` | `SysInitStatus::InitOK` or `InitError` |
+| `SetValue(uint32_t)` | `SysStatus::OK`, `Error` or `NotInit` |
+| `DeInit()` | Disables this channel; returns `void` |
 
-The constructor binds DAC1 and CHANNEL::CH1 (PA4) or CH2 (PA5). The CMSIS DAC
-alias refers to the same instance. The Instance reference/channel are fixed in protected members;
-the volatile data-register pointer is private. No hardware is accessed by the
-constructor. Copy and move are disabled.
+**Constructor:**
 
-~~~cpp
+- Binds DAC1 and `CHANNEL::CH1` (PA4) or `CHANNEL::CH2` (PA5). The CMSIS name `DAC` is an alias of the same block.
+- Does not touch hardware.
+- The instance and channel are fixed; copy and move are disabled.
+
+```cpp
 #include "dac.hpp"
 
 constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1); // PA4
 
 // After System/RCC initialization:
 if (output.SetUp() == SysInitStatus::InitOK) {
-    SysStatus result = output.SetValue(2048);
+    SysStatus result = output.SetValue(2048);   // about half of Vref
     // Check result == SysStatus::OK.
 }
 // When finished:
 output.DeInit();
-~~~
+```
+
+**`DAC_USE_ATOMIC`** (in `dac.hpp`, default `0`):
+
+- `0` — ordinary read-modify-write of control registers.
+- `1` — ST `ATOMIC_*` macros for CR/MCR and the clock-enable bit.
+
+Data writes and write-1-to-clear flag clearing are always direct. Atomic single operations do not make the whole channel setup atomic. Rebuild DAC and its users after changing the setting.
 
 ---
 
 ## 4. Setup and writes
 
-SetUp rejects an invalid instance/channel and repeated initialization before
-touching hardware. After DeInit the same object can be initialized again.
+**`SetUp()`** first checks the instance, the channel and that the object is not already set up — before touching any register. A repeated `SetUp()` returns `InitError`; after `DeInit()` the object can be set up again.
 
-Setup enables the DAC clock, configures only the selected output pin as analog,
-disables the selected channel's old trigger/waveform/DMA/IRQ settings, selects
-buffered direct output, writes zero and enables that channel. On G0 the selected
-MCR mode is set to normal external buffered output. The other channel is preserved.
-The family-specific control fields are described in the
-[ST G0 LL DAC header](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dac.h)
-and [ST F4 LL DAC header](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_ll_dac.h).
+Then it:
 
-SetValue checks initialization first:
+1. enables the DAC clock;
+2. puts only the selected pin into analog mode;
+3. clears this channel's old trigger, waveform, DMA and IRQ settings;
+4. selects direct output with the output buffer on (on G0 — MCR "normal mode, external pin, buffered");
+5. writes zero and enables the channel.
 
-- Before successful SetUp or after DeInit: NotInit, no register write.
-- Value above 4095: Error, previous code is unchanged.
-- Value 0..4095: one volatile register write, then OK.
+The other channel is not touched. Register fields: [ST G0 LL DAC](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dac.h), [ST F4 LL DAC](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_ll_dac.h).
 
-No extra initialization flag is stored: the non-null register pointer marks a
-successful setup. Error does not invalidate an already initialized channel.
+**`SetValue(value)`** checks initialization first:
 
-Only data_out is retained for fast writes and initialization state. SetUp/DeInit
-obtain the DAC block address locally from Instance; there is no stored DACx pointer.
+| Situation | Result |
+| --- | --- |
+| Before a successful `SetUp()` or after `DeInit()` | `NotInit`, nothing is written |
+| `value > 4095` | `Error`, the previous code stays on the output |
+| `0 ≤ value ≤ 4095` | one volatile register write, then `OK` |
 
-SetUp/SetValue confirm configuration/register writes. They do not wait for
-analog startup or settling. Observe the selected device's datasheet limits for
-startup, settling, output buffer and load. Direct DHR writes update DOR without
-a trigger when TEN is clear; see
-[ST RM0401, DAC channel enable and conversion](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+An `Error` does not undo a successful setup.
+
+**State is stored minimally.** The object keeps only the pointer to the data register; a non-null pointer means "set up". `SetUp()`/`DeInit()` compute the DAC block address from the instance when needed — there is no separate `DACx` field or init flag.
+
+**No analog waiting.** `SetUp()`/`SetValue()` only confirm register writes. They do not wait for analog start-up or settling. Take start-up time, settling time, buffer and load limits from your device's datasheet. With the trigger disabled (TEN = 0), a write to DHR updates the output register immediately — see [ST RM0401, DAC channel enable and conversion](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 
 ---
 
 ## 5. Devices and channel lifetime
 
-Supported families are F4/F7/G0 where the selected CMSIS header exposes DAC1.
-Selecting this module on a device without DAC produces a compile-time diagnostic.
+**Supported devices:** F4/F7/G0 whose CMSIS header defines DAC1. Selecting the module on a device without a DAC is a compile-time error.
 
-F410 supports only CH1; CH2 is rejected during constinit construction. Other supported F4 DAC devices use
-the CMSIS DAC_CHANNEL2_SUPPORT capability. F7/G0 devices with DAC expose both
-channel slots. Check that the chosen output is bonded in the selected package.
-F410's single channel is documented in
-[ST RM0401](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+| Device | Channels |
+| --- | --- |
+| F410 | CH1 only; CH2 is rejected at `constinit` construction ([ST RM0401](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)) |
+| Other F4 | CH2 availability follows CMSIS `DAC_CHANNEL2_SUPPORT` |
+| F7 / G0 with DAC | CH1 and CH2 |
 
-Keep one object per hardware channel. Two different objects may control CH1 and
-CH2 independently; the driver does not allocate a separate ownership registry.
-Serialize setup/deinitialization and writes that could overlap the same channel.
-Do not modify DAC configuration externally while this object owns the channel.
+Check that the pin is actually bonded in your package.
 
-DeInit disables only the selected channel and clears its register pointer.
-Repeated DeInit is harmless. DAC/GPIO clocks and the analog pin configuration
-are retained. A disabled output is not a promise to hold the previous voltage.
-The destructor is passive: explicitly call DeInit before destroying an active object.
+**Ownership rules:**
+
+- One object per hardware channel. CH1 and CH2 may belong to different objects; there is no ownership registry.
+- Serialize setup, teardown and writes that could overlap on the same channel.
+- Do not change the DAC configuration of an owned channel from other code.
+
+**`DeInit()`:**
+
+- disables only the selected channel and clears the register pointer;
+- is harmless to call repeatedly;
+- keeps the DAC/GPIO clocks and the pin's analog mode;
+- does **not** promise to hold the previous voltage.
+
+The destructor does nothing to the hardware — call `DeInit()` before destroying an active object.
 
 ---
 
 ## 6. Usage Examples
 
-Independent example; check device/package availability and every returned status.
+A complete example. Check that the DAC and pin exist on your device/package and check every returned status.
 
 ```cpp
 #include "dac.hpp"
+
 constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1);
-// In main, after successful System/RCC initialization:
-if (output.SetUp() == SysInitStatus::InitOK) {
-    SysStatus written = output.SetValue(2048);
-    // Check written before relying on the output.
+
+int main()
+{
+    // ... successful System/RCC initialization ...
+    if (output.SetUp() == SysInitStatus::InitOK) {
+        SysStatus written = output.SetValue(2048);
+        // Check written before relying on the output.
+    }
 }
 ```
 
@@ -150,7 +173,12 @@ if (output.SetUp() == SysInitStatus::InitOK) {
 
 ## 7. Edge Cases
 
-Values above 4095 return Error. Repeated SetUp requires DeInit; call configuration from main. GPIO/clock resources shared with another channel must be preserved.
+| Situation | Behaviour |
+| --- | --- |
+| Value above 4095 | `Error`; the output keeps the previous code. |
+| `SetUp()` called twice | `InitError`; call `DeInit()` first. |
+| Setup from an interrupt | Not intended — configure from `main`. |
+| Both channels in use | Shared GPIO/DAC clocks must stay enabled; `DeInit()` of one channel keeps them. |
 
 ---
 
@@ -180,132 +208,155 @@ Values above 4095 return Error. Repeated SetUp requires DeInit; call configurati
 
 ## 1. Зачем это нужно
 
-Один DAC_Module закрепляет один доступный канал DAC, настраивает аналоговый выход и принимает 12-битные значения с правым выравниванием. Второй канал может использоваться независимо.
+`DAC_Module` управляет одним выходным каналом ЦАП: вы записываете число 0…4095, на выводе появляется соответствующее напряжение.
+
+- Один объект = один канал (CH1 на PA4 или CH2 на PA5).
+- Значения 12-битные, с правым выравниванием.
+- Второй канал может независимо обслуживаться другим объектом.
 
 ---
 
 ## 2. Постоянная инициализация и диагностика конструктора
 
-Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. DAC принимает DAC_Module::_1::instance и канал; привязки DMA нет.
+Объявляйте постоянные объекты периферии глобально с `constinit` (или как `static constinit` внутри функции). `DAC_Module` принимает `DAC_Module::_1::instance` и канал; привязки DMA нет.
 
-При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. Макрос выбирает путь через `std::is_constant_evaluated()`; во время выполнения напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+Что происходит при неверном аргументе (например, CH2 на F410, где есть только CH1):
+
+| Объявление | Результат |
+| --- | --- |
+| Объект с `constinit` | **Ошибка компиляции**, текст причины — в сообщении. |
+| Объект без `constinit` | Собирается; при старте конструктор останавливается в `System::DebugTrap(причина)`. |
+
+Как это устроено: каждая проверка вызывает `STM32_CONFIG_ERROR("причина")`. При вычислении на этапе компиляции макрос вызывает намеренно не-`constexpr` функцию, у которой текст причины — параметр шаблона, поэтому GCC печатает этот текст. Во время выполнения напрямую вызывается `System::DebugTrap(text)`.
+
+`constinit` обязателен по правилам использования, но конструктор его наличие не проверяет. `SetUp()` по-прежнему проверяет состояние аппаратуры и повторную инициализацию. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
 
 ---
 
 ## 3. Атомарные операции
 
-DAC_USE_ATOMIC в dac.hpp: 0 по умолчанию — обычные изменения управляющих
-полей, 1 — ATOMIC_* ST для CR/MCR и включения тактирования. Пересоберите DAC
-и приложение после изменения. Запись данных и очистка W1C остаются прямыми.
-Настройка не заменяет согласование целой операции с каналом.
+**`DAC_USE_ATOMIC`** (в `dac.hpp`, по умолчанию `0`):
+
+- `0` — обычное «прочитать-изменить-записать» управляющих регистров.
+- `1` — макросы ST `ATOMIC_*` для CR/MCR и бита включения тактирования.
+
+Запись данных и сброс флагов записью единицы (write-1-to-clear) всегда прямые. Атомарность отдельных операций не делает атомарной всю настройку канала. После изменения пересоберите DAC и приложение.
 
 ---
 
 ## 4. Подключение и API
 
-Модуль включается в project.json:
+Включите модуль в `project.json`:
 
-~~~json
+```json
 "drivers": ["DAC"]
-~~~
+```
 
-DAC_Module записывает 12-битный код с правым выравниванием в один выходной канал.
-System/GPIO входят в ядро библиотеки; этому API не требуется подключение DMA/IRQ.
+Зависимости: только ядро (System, GPIO). DMA и регистрация IRQ не нужны.
 
 | Метод | Результат |
-|---|---|
-| SetUp() | SysInitStatus::InitOK либо InitError |
-| SetValue(uint32_t) | SysStatus::OK, Error либо NotInit |
-| DeInit() | Отключает выбранный канал, возвращает void |
+| --- | --- |
+| `SetUp()` | `SysInitStatus::InitOK` или `InitError` |
+| `SetValue(uint32_t)` | `SysStatus::OK`, `Error` или `NotInit` |
+| `DeInit()` | Отключает этот канал; возвращает `void` |
 
-Конструктор закрепляет DAC1 и канал: CH1 — PA4, CH2 — PA5. CMSIS-имя DAC —
-алиас того же экземпляра. Ссылка на Instance и канал неизменяемы и находятся в protected,
-служебный volatile-указатель регистра — в private. Конструктор не обращается
-к аппаратуре. Копирование и перемещение запрещены.
+**Конструктор:**
 
-~~~cpp
+- Закрепляет DAC1 и `CHANNEL::CH1` (PA4) или `CHANNEL::CH2` (PA5). CMSIS-имя `DAC` — псевдоним того же блока.
+- Не обращается к аппаратуре.
+- Экземпляр и канал неизменяемы; копирование и перемещение запрещены.
+
+```cpp
 #include "dac.hpp"
 
 constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1); // PA4
 
 // После настройки System/RCC:
 if (output.SetUp() == SysInitStatus::InitOK) {
-    SysStatus result = output.SetValue(2048);
+    SysStatus result = output.SetValue(2048);   // примерно половина Vref
     // Проверить result == SysStatus::OK.
 }
 // После окончания использования:
 output.DeInit();
-~~~
+```
 
 ---
 
 ## 5. Настройка и запись
 
-SetUp до обращения к регистрам проверяет экземпляр, канал и отсутствие повторной
-инициализации. Повторный SetUp — InitError; после DeInit настройка снова разрешена.
+**`SetUp()`** до обращения к регистрам проверяет экземпляр, канал и то, что объект ещё не настроен. Повторный `SetUp()` возвращает `InitError`; после `DeInit()` настройка снова разрешена.
 
-Включается тактирование DAC, только выбранный пин переводится в analog.
-Для выбранного канала сбрасываются прежние настройки триггера, генерации
-сигналов, DMA и IRQ, включается прямой вывод с выходным буфером, записывается
-ноль и разрешается канал. На G0 в MCR задаётся обычный режим с выводом на пин
-и включённым буфером. Второй канал сохраняется. Поля описаны в
-[ST G0 LL DAC](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dac.h)
-и [ST F4 LL DAC](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_ll_dac.h).
+Затем метод:
 
-SetValue сначала проверяет инициализацию:
+1. включает тактирование DAC;
+2. переводит в аналоговый режим только выбранный вывод;
+3. сбрасывает у этого канала прежние настройки триггера, генерации сигналов, DMA и IRQ;
+4. включает прямой вывод с выходным буфером (на G0 — режим MCR «обычный, на внешний вывод, с буфером»);
+5. записывает ноль и разрешает канал.
 
-- До успешного SetUp и после DeInit: NotInit, записи нет.
-- Значение больше 4095: Error, предыдущий код сохраняется.
-- Значение 0..4095: одна volatile-запись, затем OK.
+Второй канал не затрагивается. Поля регистров: [ST G0 LL DAC](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dac.h), [ST F4 LL DAC](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_ll_dac.h).
 
-Отдельного флага инициализации нет: признаком служит ненулевой указатель регистра.
-Ошибка значения не отменяет выполненную инициализацию.
+**`SetValue(value)`** сначала проверяет инициализацию:
 
-Для быстрой записи и признака настройки сохраняется только data_out. SetUp/DeInit
-получают адрес блока DAC локально из Instance; отдельного поля DACx нет.
+| Ситуация | Результат |
+| --- | --- |
+| До успешного `SetUp()` или после `DeInit()` | `NotInit`, записи нет |
+| `value > 4095` | `Error`, на выходе остаётся прежний код |
+| `0 ≤ value ≤ 4095` | одна volatile-запись в регистр, затем `OK` |
 
-Успех настройки/записи не означает, что аналоговый выход уже установился.
-Время запуска и установления, допустимую нагрузку и ограничения буфера
-нужно учитывать по datasheet выбранного МК. При TEN=0 запись DHR обновляет DOR
-без триггера; см.
-[ST RM0401, включение и преобразование DAC](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+`Error` не отменяет выполненную настройку.
+
+**Состояние хранится минимально.** Объект хранит только указатель на регистр данных; ненулевой указатель означает «настроен». `SetUp()`/`DeInit()` вычисляют адрес блока DAC из экземпляра — отдельного поля `DACx` и флага инициализации нет.
+
+**Аналоговую часть драйвер не ждёт.** `SetUp()`/`SetValue()` подтверждают только запись в регистры, но не запуск и установление аналогового выхода. Время запуска и установления, ограничения буфера и нагрузки берите из datasheet вашего МК. При выключенном триггере (TEN = 0) запись в DHR сразу обновляет выходной регистр — см. [ST RM0401, включение и преобразование DAC](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 
 ---
 
 ## 6. Поддержка МК и время жизни
 
-Поддерживаются F4/F7/G0, если в выбранном CMSIS есть DAC1.
-При подключении модуля на МК без DAC выдаётся понятная ошибка компиляции.
+**Поддерживаемые МК:** F4/F7/G0, в CMSIS-заголовке которых есть DAC1. Подключение модуля на МК без ЦАП — ошибка компиляции.
 
-У F410 есть только CH1: CH2 отклоняется при constinit-конструировании.
-Для остальных F4 доступность CH2 проверяется по DAC_CHANNEL2_SUPPORT из CMSIS.
-У поддерживаемых F7/G0 с DAC доступны оба канала. Наличие вывода в конкретном
-корпусе проверяет пользователь. Единственный канал F410 описан в
-[ST RM0401](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+| МК | Каналы |
+| --- | --- |
+| F410 | Только CH1; CH2 отклоняется при `constinit`-конструировании ([ST RM0401](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)) |
+| Остальные F4 | Наличие CH2 определяется по `DAC_CHANNEL2_SUPPORT` из CMSIS |
+| F7 / G0 с DAC | CH1 и CH2 |
 
-На аппаратный канал создаётся один объект. CH1 и CH2 могут обслуживаться разными
-объектами; дополнительного реестра владельцев нет. Настройка, отключение и запись
-не должны конфликтовать при одновременных вызовах. Внешний код не должен менять
-конфигурацию занятого этим объектом канала.
+Наличие вывода в конкретном корпусе проверяет пользователь.
 
-DeInit отключает только выбранный канал и обнуляет служебный указатель.
-Повторный вызов безопасен. Общие тактовые сигналы DAC/GPIO и analog-настройка
-пина сохраняются. Отключение не гарантирует удержания прежнего напряжения.
-Деструктор не меняет аппаратуру: перед уничтожением активного объекта нужен DeInit.
+**Правила владения:**
+
+- Один объект на аппаратный канал. CH1 и CH2 могут принадлежать разным объектам; реестра владельцев нет.
+- Настройка, отключение и запись в один канал не должны пересекаться по времени.
+- Внешний код не должен менять конфигурацию занятого канала.
+
+**`DeInit()`:**
+
+- отключает только выбранный канал и обнуляет указатель регистра;
+- безопасен при повторном вызове;
+- сохраняет тактирование DAC/GPIO и аналоговый режим вывода;
+- **не гарантирует** удержание прежнего напряжения.
+
+Деструктор аппаратуру не трогает — перед уничтожением активного объекта вызовите `DeInit()`.
 
 ---
 
 ## 7. Примеры использования
 
-Отдельный пример; проверьте наличие блока/пинов в корпусе и каждый возвращаемый статус.
+Полный пример. Проверьте наличие ЦАП и вывода в вашем МК/корпусе и каждый возвращаемый статус.
 
 ```cpp
 #include "dac.hpp"
+
 constinit DAC_Module output(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1);
-// In main, after successful System/RCC initialization:
-if (output.SetUp() == SysInitStatus::InitOK) {
-    SysStatus written = output.SetValue(2048);
-    // Check written before relying on the output.
+
+int main()
+{
+    // ... успешная инициализация System/RCC ...
+    if (output.SetUp() == SysInitStatus::InitOK) {
+        SysStatus written = output.SetValue(2048);
+        // Проверьте written, прежде чем полагаться на выход.
+    }
 }
 ```
 
@@ -313,7 +364,12 @@ if (output.SetUp() == SysInitStatus::InitOK) {
 
 ## 8. Угловые случаи
 
-Значения выше 4095 возвращают Error. Повторный SetUp требует DeInit; настройка вызывается из main. Общие GPIO/такты другого канала должны сохраняться.
+| Ситуация | Поведение |
+| --- | --- |
+| Значение больше 4095 | `Error`; на выходе остаётся прежний код. |
+| `SetUp()` дважды | `InitError`; сначала вызовите `DeInit()`. |
+| Настройка из прерывания | Не предусмотрена — настраивайте из `main`. |
+| Используются оба канала | Общие такты GPIO/DAC должны оставаться включёнными; `DeInit()` одного канала их сохраняет. |
 
 ---
 

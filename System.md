@@ -24,10 +24,9 @@
 
 ## 1. Why this exists — the connective layer between all drivers
 
-`system.hpp`/`system.cpp` is not a separate peripheral but **shared infrastructure** that
-literally every other driver in this project depends on:
+`system.hpp`/`system.cpp` is not a peripheral driver but **shared infrastructure** that every other driver depends on:
 
-```
+```text
                               ┌────────────────────┐
                               │   system.hpp/cpp   │
                               │  System, SysStatus,│
@@ -45,23 +44,17 @@ literally every other driver in this project depends on:
    and APBx/TIMx...
 ```
 
-Three things that `System` gives to all other drivers:
+What `System` provides to all drivers:
 
-1. **`SysStatus`/`SysInitStatus`** — two shared result enums for operations/initialization,
-   used by literally every `.hpp` in `Drivers/src` (see §8) — a single "success/error/busy/
-   timeout" vocabulary instead of each driver inventing its own set of codes.
-2. **Clock variables** (`SystemCoreClock`, `APB1BusClock`, ...) — written by
-   [`ClockSystem::Init<config>()`](RCC.md), read by `UART`/`TIM`/`SPI` to calculate dividers/BRR
-   (see §3).
-3. **`System::GetTick()`/`Delay_ms()`/`Delay_us()`** — timeouts for blocking operations
-   (`USART::Send()`, `SPI::Send()`, the HSE/PLL waits in `ClockSystem::Init<config>()`) are all built
-   on the same millisecond counter (§4).
+| What | Purpose | Section |
+| --- | --- | --- |
+| `SysStatus` / `SysInitStatus` | one shared vocabulary of results (OK/Error/Busy/Timeout…) instead of per-driver codes | §8 |
+| Clock variables (`SystemCoreClock`, `APB1BusClock`, …) | written by [`ClockSystem::Init<config>()`](RCC.md), read by drivers to compute dividers/BRR | §3 |
+| `GetTick()`, `Delay_ms()`, `Delay_us()`, `WaitBits()` | the millisecond counter behind every timeout (USART/SPI blocking calls, RCC oscillator waits…) | §4, §5 |
+| Cache helpers, MPU setup (F7) | DMA/cache coherency | §6 |
+| `DebugTrap()`, `STM32_CONFIG_ERROR` | configuration-error reporting | §7 |
 
----
-
-SysTick periods use integer HCLK cycles. If HCLK is not divisible by 1000,
-GetTick/Delay_ms/timeouts inherit the resulting rate error; for G0 LSE at
-32768 Hz, AHB /1, the rate is 1024 ticks/s. See [RCC.md](RCC.md).
+> **SysTick accuracy:** the SysTick period is an integer number of HCLK cycles. If HCLK is not divisible by 1000, `GetTick()`/`Delay_ms()`/timeouts inherit that rate error — e.g. G0 on LSE 32768 Hz with AHB /1 gives 1024 ticks/s. See [RCC.md](RCC.md).
 
 ---
 
@@ -71,51 +64,33 @@ GetTick/Delay_ms/timeouts inherit the resulting rate error; for G0 LSE at
 static SysInitStatus Init();
 ```
 
-Called once at the very start of `main()`, before any other driver (see `src/main.cpp`).
-Configures low-level things that don't belong to any particular peripheral:
+Call **once at the very start of `main()`**, before any other driver. It configures low-level things that belong to no particular peripheral:
 
-1. **FPU** (with `__FPU_PRESENT`/`__FPU_USED`) — unless
-   `STM32_STARTUP_ENABLES_FPU` is defined, grants access to CP10/CP11 and executes
-   DSB/ISB. The current base exports that definition because startup enables
-   FPU before constructors. An alternate startup must omit the definition
-   unless it performs that initialization itself.
-2. **Clock state and SysTick** — update the frequency variables and start
-   SysTick at 16 MHz. On G0 the APB2 and APB2 timer frequencies are zero because
-   that bus does not exist. Without `STM32_USE_BOOTLOADER`, call once after
-   hardware reset, before changing clocks, power or Flash latency.
-3. **Preparation after a bootloader (F4/F7/G0)** — compiled only with
-   `STM32_USE_BOOTLOADER`. The base defines it automatically when `bootloader`
-   is configured in project.json; it reaches both images and their shared
-   driver library. `InitAfterBootloader()` enables HSI, waits for readiness
-   and the actual source switch without a timeout, then restores bus dividers
-   /1 (including G0 HSIDIV). It starts SysTick through `InitClockState()`,
-   restores G0 VOS Range 1, then sets Flash latency to 0 WS. VOS and latency
-   waits retain their 100 ms timeouts; failure returns `InitError`.
-4. **Flash accelerator/cache** — family-specific:
-   - F4: `PRFTEN` (prefetch) + `ICEN`/`DCEN` (instruction/data cache).
-   - F7: `PRFTEN` + `ARTEN` (ART Accelerator) + `SCB_EnableICache()`/`SCB_EnableDCache()`
-     (caches of the Cortex-M7 core itself, not the Flash controller) + enabling `PWR` clocking
-     (needed for voltage scaling, which [`ClockSystem`](RCC.md) controls).
-   - G0: `PRFTEN` + `ICEN`.
-   - L0: nothing — this core has no ART/cache, wait states are configured differently.
+1. **FPU** (if `__FPU_PRESENT`/`__FPU_USED`): grants CP10/CP11 access and executes DSB/ISB — **unless** `STM32_STARTUP_ENABLES_FPU` is defined. The current base defines it because its startup already enables the FPU before constructors. A different startup must drop the definition unless it does the same.
+2. **Clock state and SysTick:** sets the frequency variables and starts SysTick at 16 MHz (HSI). On G0 the APB2 and APB2-timer frequencies are 0 (no such bus). Without `STM32_USE_BOOTLOADER`, call it once after hardware reset, before changing clocks, power or Flash latency.
+3. **After a bootloader (F4/F7/G0)** — compiled only with `STM32_USE_BOOTLOADER` (set automatically by the base when `bootloader` is configured in `project.json`; it reaches both images and the shared driver library). `InitAfterBootloader()`:
+   - enables HSI and waits for readiness and the actual switch (**no timeout**);
+   - restores bus dividers to /1 (including G0 HSIDIV);
+   - starts SysTick through `InitClockState()`;
+   - restores G0 VOS Range 1, then Flash latency 0 WS (these waits keep 100 ms timeouts; failure → `InitError`).
+4. **Flash accelerator / caches:**
 
-Call with interrupts enabled, outside interrupt handlers, so the newly started
-SysTick can service the timed waits. No IPSR/PRIMASK checks or alternate timer
-are added. With `STM32_USE_BOOTLOADER`, the initial HSI waits deliberately have
-no timeout; HSI failure can keep initialization there. G0 temporarily raises
-0 WS to 1 WS before selecting
-16 MHz, so a previous VOS Range 2 configuration remains safe until Range 1 is ready.
+| Family | Enabled |
+| --- | --- |
+| F4 | `PRFTEN` (prefetch), `ICEN`/`DCEN` (Flash instruction/data cache) |
+| F7 | `PRFTEN`, `ARTEN` (ART accelerator), Cortex-M7 I-cache and D-cache (`SCB_EnableICache()`/`SCB_EnableDCache()`), `PWR` clock (needed by [ClockSystem](RCC.md) for voltage scaling) |
+| G0 | `PRFTEN`, `ICEN` |
+| L0 | nothing (no ART/cache) |
 
-This is a startup operation, before peripheral setup. With `STM32_USE_BOOTLOADER`
-it selects HSI and changes bus dividers; PLL/HSE enable and configuration,
-HSI trim, MCO, RCC interrupts,
-peripheral enable/reset registers, RTC, LSE/LSI, other peripheral clock muxes
-and the tick count are retained. After a later clock change, `ClockSystem`
-applies the selected frequencies and calls `InitTicks(ticks)` with a precomputed period.
+**Calling rules:**
 
-**L0 limitation:** its existing path is retained. It only sets the software
-frequencies to 16 MHz and initializes SysTick; it assumes hardware already uses
-HSI at that frequency. RCC, power and Flash latency are not restored on L0.
+- Call with interrupts enabled, outside interrupt handlers, so the newly started SysTick can serve the timed waits. No IPSR/PRIMASK checks are made.
+- With `STM32_USE_BOOTLOADER` the initial HSI waits deliberately have no timeout — a dead HSI will hang there.
+- On G0, 0 WS is temporarily raised to 1 WS before switching to 16 MHz, so a leftover VOS Range 2 stays safe until Range 1 is ready.
+
+**What it does not touch** (bootloader path): PLL/HSE enable and configuration, HSI trim, MCO, RCC interrupts, peripheral enable/reset registers, RTC, LSE/LSI, peripheral clock muxes, tick count. After a later clock change, `ClockSystem` publishes the new frequencies and calls `InitTicks(ticks)` with a precomputed period.
+
+**L0 limitation:** the old path is kept — it only sets the software frequencies to 16 MHz and starts SysTick, assuming hardware already runs from HSI. RCC, power and Flash latency are not restored.
 
 ```cpp
 int main() {
@@ -123,14 +98,12 @@ int main() {
     constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
     if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
         System::DebugTrap("Clock init");
-    System::Enable_CYCCNT();                            // for Delay_us(), see §5
+    System::Enable_CYCCNT();                            // F4/F7, for Delay_us() — §5
     ...
 }
 ```
 
-Startup initializes RAM and invokes global/static constructors before main.
-The current base also enables FPU there. Such constructors must not wait for
-SysTick: it has not been started and startup still masks interrupts.
+> Startup initializes RAM and runs global/static constructors **before** `main()` (the current base also enables the FPU there). Such constructors must not wait on SysTick — it is not running yet and interrupts are still masked. `constinit` driver objects have no constructor code at all.
 
 ---
 
@@ -140,96 +113,63 @@ SysTick: it has not been started and startup still masks interrupts.
 static uint32_t SystemCoreClock; // AHB/core/GPIO/DMA/USB
 static uint32_t APB1BusClock;    // WWDG, SPI2/3, USART2/3, UART4/5, I2C1-3, CAN1/2, DAC
 static uint32_t APB2BusClock;    // USART1/6, ADC1-3, SPI1/4, SYSCFG, SAI1/2
-static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (taking the "x2" rule into account, see RCC.md)
+static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (with the "×2" rule, see RCC.md)
 static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 ```
 
-These are ordinary static variables: System::Init() assigns the initial HSI
-values, and **ClockSystem::Init<config>() applies the configured frequencies**
-(see [RCC.md](RCC.md)); every other
-driver only reads them:
+- `System::Init()` sets the initial HSI values (16 MHz).
+- **`ClockSystem::Init<config>()` publishes the configured frequencies** (see [RCC.md](RCC.md)).
+- Every other driver only **reads** them. Each peripheral's `_N::instance` points to the variable of its bus, e.g. USART computes BRR from `APB1BusClock` or `APB2BusClock` depending on the instance ([UART.md](UART.md)); TIM uses `TIMxAPB1Clock`/`TIMxAPB2Clock` ([TIM.md](TIM.md)); SPI and I2C likewise.
 
-- `USART::SetUp()` — `USARTx->BRR = *_info->bus_clk / BaudRate;` (where `bus_clk` points to
-  `APB1BusClock` or `APB2BusClock` depending on which bus the particular USART sits on — see
-  [UART.md](UART.md)).
-- `TIM::SetFrequency()` — the same thing through `_info->bus_clk`, but against
-  `TIMxAPB1Clock`/`TIMxAPB2Clock` (see [TIM.md](TIM.md)).
-- `SPI` — calculates `BaudRate` through a clock divider the same way.
-
-So the order of calls in `main()` matters: `ClockSystem::Init<config>()` must run **before**
-`SetUp()` of any peripheral driver — otherwise `USART::SetUp()` will compute `BRR` from
-16 MHz (HSI, the default value set by `System::Init()`) instead of the real post-PLL
-frequency.
+**Hence the call order matters:** `ClockSystem::Init<config>()` must run **before** any peripheral `SetUp()`. Otherwise, for example, `USART::SetUp()` computes BRR from 16 MHz instead of the real post-PLL frequency.
 
 ---
 
 ## 4. SysTick and the millisecond counter
 
-`System::WaitBits(reg, mask, value, timeout)` waits for `(reg & mask) == value`.
-Use value=0 for cleared bits, value=mask for all bits set, or an encoded field
-value. Returns true on a match and false on timeout, measured with GetTick.
-A zero timeout checks the condition once. SysTick must be able to interrupt
-the caller, just as for Delay_ms. RCC uses this shared function for hardware waits.
-
 ```cpp
-static SysInitStatus InitTicks();   // SysTick_Config(SystemCoreClock / TICK_BASE)
-static SysInitStatus InitTicks(uint32_t ticks); // Precomputed HCLK cycles
-static void          TickIncrease(); // called from SysTick_Handler
+static SysInitStatus InitTicks();               // SysTick_Config(SystemCoreClock / TICK_BASE)
+static SysInitStatus InitTicks(uint32_t ticks); // precomputed HCLK cycles (used by ClockSystem)
+static void          TickIncrease();            // called from SysTick_Handler
 static uint32_t      GetTick();
 static bool          WaitBits(volatile uint32_t& reg, uint32_t mask, uint32_t value, uint32_t timeout);
 static void          Delay_ms(uint32_t delay);
 ```
 
-`TICK_BASE = 1 kHz` is the target rate. Integer reload gives exactly 1 ms only
-when HCLK is divisible by TICK_BASE; see [RCC.md](RCC.md) for the quantization error.
-`SysTick_Config()` assigns its fixed lowest priority on each call, including
-reconfiguration after a clock change. The handler:
+**`WaitBits(reg, mask, value, timeout)`** waits until `(reg & mask) == value`:
 
-```cpp
-extern "C" void SysTick_Handler(void) { System::TickIncrease(); }
-```
+- `value = 0` → wait for bits cleared; `value = mask` → all bits set; or an encoded field value.
+- Returns `true` on match, `false` on timeout (measured with `GetTick()`). A zero timeout checks once.
+- RCC and other drivers use it for hardware waits. SysTick must be able to interrupt the caller.
 
-increments a single `static volatile uint32_t Tick` (a module-level variable, not a class
-field) — `GetTick()` simply reads it. On a 32-bit ARM with an aligned address this read is
-atomic by itself, so `GetTick()` needs neither `__disable_irq()` nor atomics.
+**The tick:**
 
-`Delay_ms()` is not `while(GetTick() < target)`, but uses a difference instead:
+- `TICK_BASE = 1 kHz` is the target rate; exact 1 ms only when HCLK is divisible by it (see [RCC.md](RCC.md)).
+- `SysTick_Config()` sets SysTick to the lowest priority on every call, including after clock changes.
+- The handler `extern "C" void SysTick_Handler(void) { System::TickIncrease(); }` increments one `static volatile uint32_t Tick`. On 32-bit ARM an aligned 32-bit read is atomic, so `GetTick()` needs no interrupt disabling.
+
+**`Delay_ms()` — wrap-safe:**
 
 ```cpp
 const uint32_t wait = (delay < 0x7FFFFFFFUL) ? delay + 1UL : 0x7FFFFFFFUL;
 while ((GetTick() - tick_start) < wait) {}
 ```
 
-The wait includes one tick to compensate for the partial first tick and is
-capped at `0x7FFFFFFF` ticks (about 24.9 days at 1 kHz). Larger requests saturate;
-`Delay_ms(0)` still waits for the next tick. To observe completion before the
-subtraction wraps again, polling must resume within half the counter range.
+- One extra tick compensates for the partial first tick, so `Delay_ms(N)` waits **at least** N ms; `Delay_ms(0)` waits for the next tick.
+- Capped at `0x7FFFFFFF` ticks (~24.9 days at 1 kHz).
+- **Why subtraction:** unsigned `GetTick() - tick_start` stays correct even if `Tick` wraps (after ~49.7 days) in the middle of a wait; `GetTick() < target` would fail at that moment. All timeouts in the project use this `GetTick() - start > timeout` pattern instead of an absolute deadline (the same idea as `Delay_us()` below and TIM's hardware counters).
 
-Subtraction instead of a direct comparison is the same "wrap-around safe" reasoning as in
-[`TIM_HWCounter`](TIM.md#11-дополнительные-режимы-и-интеграция)/`Delay_us()` below: unsigned subtraction works
-correctly even when `Tick` manages to wrap around (after ~49.7 days of continuous operation)
-right in the middle of a wait — `target - tick_start` stays the correct distance in ticks,
-while `GetTick() < target` would give a wrong answer at that moment. All timeouts in the
-project (`USART::Send`, the HSE/PLL/CLOCKSWITCH timeouts in `ClockSystem::Init<config>()`, ...) use this
-same `GetTick() - tick_start > timeout` pattern instead of storing an absolute "deadline".
+**When `Delay_ms()`/timeouts cannot work:**
 
----
+- before SysTick is started, while SysTick is masked, or inside an interrupt of equal or higher preemption priority — the tick never advances;
+- a callback called from an ISR still runs in that ISR, even after a local mask is restored;
+- `GetTick()` itself may be read anywhere.
 
-`Delay_ms()` requires a running, serviceable SysTick. It cannot finish with
-SysTick masked, before initialization or from a handler of equal/higher
-preemption priority. Callbacks invoked by an ISR still execute in that ISR
-after a local interrupt mask is restored. `GetTick()` itself may be read there.
-No IPSR/PRIMASK checks or alternate timer are introduced. Long periods without
-SysTick servicing lose elapsed ticks: one pending exception does not count all
-missed periods. This counter is not a wall clock across long critical sections.
+Because SysTick has the **lowest** priority, any IRQ at the default priority 0 runs ahead of it — such handlers must not call `Delay_ms()` or wait on a `GetTick()` timeout. Equal preemption priorities never interrupt each other, whatever the sub-priority.
 
-`IPSR` identifies the active exception (zero in ordinary code); `PRIMASK` masks
-configurable interrupts when set. On F4/F7, `BASEPRI` can also mask SysTick by
-priority. These registers explain the restriction; the driver does not inspect
-them. `InitTicks()` gives SysTick the lowest priority. Other IRQs left at their
-default priority 0 therefore run ahead of SysTick and cannot call `Delay_ms()`
-or wait for a `GetTick()` timeout inside their handlers. Equal preemption
-priorities also cannot interrupt one another, regardless of subpriority.
+**Background:** `IPSR` holds the active exception number (0 in thread code); a set `PRIMASK` masks configurable interrupts; on F4/F7 `BASEPRI` can also mask SysTick by priority. The driver does not inspect these registers.
+
+Long periods without SysTick service **lose ticks** — one pending exception does not count all missed periods. The counter is not a wall clock across long critical sections.
 
 ---
 
@@ -243,9 +183,9 @@ static uint32_t SWOTrace(const uint8_t* ptr, uint32_t len);
 #endif
 ```
 
-Available only where a DWT block exists (Cortex-M4/M7 — **not** on Cortex-M0/M0+, hence the
-`!L0 && !G0` condition). `Enable_CYCCNT()` enables tracing (`DEMCR::TRCENA`) and the cycle
-counter itself (`DWT->CTRL::CYCCNTENA`) — mandatory before the first `Delay_us()`.
+Available only where a DWT block exists — Cortex-M4/M7 (F4/F7), **not** Cortex-M0/M0+ (G0/L0).
+
+**`Enable_CYCCNT()`** enables trace (`DEMCR.TRCENA`) and the cycle counter (`DWT->CTRL.CYCCNTENA`). Required before the first `Delay_us()`. On F7 it unlocks DWT first. It does not reset an already-running counter and does not configure ITM output.
 
 ```cpp
 void System::Delay_us(uint32_t delay) {
@@ -256,84 +196,68 @@ void System::Delay_us(uint32_t delay) {
 }
 ```
 
-The 64-bit product avoids overflow and rounding up avoids losing fractional
-cycles when the core frequency is not a whole number of MHz. Large arguments
-are clamped to **`0x7FFFFFFF` cycles**, not to a fixed microsecond duration.
-The maximum duration is `0x7FFFFFFF / SystemCoreClock` seconds: about 134.2 s at
-16 MHz, 11.9 s at 180 MHz and 9.94 s at 216 MHz.
+- The 64-bit product avoids overflow; rounding **up** keeps fractional cycles when the core clock is not a whole number of MHz.
+- Large arguments are capped at **`0x7FFFFFFF` cycles**, i.e. `0x7FFFFFFF / SystemCoreClock` seconds:
 
-Unsigned subtraction handles counter wrap-around. The half-range limit gives
-the polling loop half the counter period to observe completion. Suspending
-polling for that long can still miss the interval. CYCCNT must be running and
-`SystemCoreClock` must match hardware and remain unchanged during the delay.
+| Core clock | Maximum delay |
+| --- | --- |
+| 16 MHz | ≈ 134.2 s |
+| 180 MHz | ≈ 11.9 s |
+| 216 MHz | ≈ 9.94 s |
 
-F7 initialization unlocks DWT before enabling CYCCNT. It does not reset an
-already-running cycle counter and does not configure the ITM output.
+- Unsigned subtraction handles counter wrap. If polling is suspended for half the counter period, the end can still be missed.
+- CYCCNT must be running, and `SystemCoreClock` must match the hardware and not change during the delay.
 
-`SWOTrace()` writes to ITM channel 0 without waiting. It returns the number of
-bytes accepted by the port, which may be smaller than the requested length.
-Disabled tracing, a disabled channel, an unready port or a null pointer yields
-an immediate return. The debugger must configure ITM/SWO; enabling CYCCNT does
-not do that. Availability on F4/F7 follows the core's ITM capabilities.
+**`SWOTrace(ptr, len)`** writes to ITM channel 0 **without waiting** and returns how many bytes the port accepted (possibly fewer than `len`). Trace disabled, channel disabled, port not ready or `nullptr` → returns immediately. The debugger must configure ITM/SWO; `Enable_CYCCNT()` does not.
 
 ---
 
 ## 6. MPU on STM32F7
 
-`System::MPU_Init()` installs an access guard in MPU region 0. It prevents
-ordinary and speculative CPU accesses to unused external-memory addresses.
-The guard does not initialize an external-memory controller or DMA buffers.
+### External-memory guard
 
-The region spans 4 GiB and is divided into eight 512 MiB subregions. The
-`0x87` mask disables subregions 0, 1, 2 and 7; only 3 through 6 are guarded:
+`System::MPU_Init()` installs a guard in **MPU region 0** that blocks ordinary and **speculative** CPU accesses to unused external-memory addresses (Cortex-M7 can speculatively read from them). It does not initialize an external-memory controller or DMA buffers.
+
+The region spans 4 GiB in eight 512 MiB subregions; mask `0x87` disables subregions 0, 1, 2 and 7, so only 3…6 are guarded:
 
 | Address range | Effect for privileged CPU code |
-|---|---|
+| --- | --- |
 | `0x00000000–0x5FFFFFFF` | Standard memory map unless another MPU region overrides it |
 | `0x60000000–0xDFFFFFFF` | No read, write or instruction execution |
 | `0xE0000000–0xFFFFFFFF` | Standard memory map unless another MPU region overrides it |
 
-The guarded range includes FMC memory, FMC control mappings and memory-mapped
-QSPI. Without permission from a higher-numbered region, accesses there fault:
-MemManage if enabled, otherwise escalation to HardFault. Region 0 is replaced;
-regions 1 and above retain their configurations and take precedence where they
-overlap. `PRIVDEFENA` retains the default map for privileged accesses outside
-the guard. Unprivileged code needs its own explicit region permissions.
-`HFNMIENA` is not enabled, so this MPU configuration is not enforced in NMI or
-HardFault handlers.
+- The guarded range covers FMC memory, FMC control mappings and memory-mapped QSPI. Accesses there fault — MemManage if enabled, otherwise HardFault — unless a higher-numbered region allows them.
+- Region 0 is replaced; regions 1+ keep their settings and win where they overlap.
+- `PRIVDEFENA` keeps the default map for privileged accesses outside the guard. Unprivileged code needs explicit region permissions.
+- `HFNMIENA` is not set, so the MPU is not enforced inside NMI/HardFault handlers.
 
-Call the guard setup and configure any used external-memory regions before
-enabling caches in `System::Init()`. The following example grants access to
-64 KiB of data RAM at `0xC0000000`; adapt the address, size and attributes to
-your actual board. It only configures the MPU: configure FMC separately before
-reading or writing that memory.
+**Using external memory:** call the guard and configure your external-memory regions **before** caches are enabled in `System::Init()`. Example — 64 KiB of data RAM at `0xC0000000` (adapt address, size and attributes to your board; configure FMC separately before accessing it):
 
 ```cpp
 System::MPU_Init();
 
 __DMB();
 MPU->CTRL = 0;
-MPU->RNR  = 1;                 // Higher priority than the region 0 guard
-MPU->RBAR = 0xC0000000UL;      // Base aligned to the 64 KiB region size
+MPU->RNR  = 1;                 // higher priority than the region 0 guard
+MPU->RBAR = 0xC0000000UL;      // base aligned to the 64 KiB region size
 MPU->RASR = MPU_RASR_ENABLE_Msk
           | (15UL << MPU_RASR_SIZE_Pos) // 2^(15 + 1) = 64 KiB
-          | (3UL  << MPU_RASR_AP_Pos)   // Read/write access
+          | (3UL  << MPU_RASR_AP_Pos)   // read/write
           | (1UL  << MPU_RASR_TEX_Pos)
           | MPU_RASR_C_Msk | MPU_RASR_B_Msk // Normal, write-back/write-allocate
-          | MPU_RASR_XN_Msk;           // Data only, no execution
+          | MPU_RASR_XN_Msk;           // data only, no execution
 MPU->CTRL = MPU_CTRL_ENABLE_Msk | MPU_CTRL_PRIVDEFENA_Msk;
 __DSB();
 __ISB();
 
-System::Init();                // Enables the F7 caches after the MPU setup
+System::Init();                // enables the F7 caches after the MPU setup
 ```
 
-The guard itself does not change the cacheability of internal SRAM.
-`MPU_Init()` remains optional and does not create DMA areas.
+The guard does not change internal SRAM cacheability. `MPU_Init()` is optional and does not create DMA areas.
 
 ### Optional non-cacheable DMA areas (F7 + base)
 
-In the base's `project.json`, enable drivers and specify named areas:
+Non-cacheable buffers let DMA and CPU share memory **without any cache maintenance**. Declare them in the base's `project.json`:
 
 ```json
 "dma_regions": [
@@ -341,88 +265,58 @@ In the base's `project.json`, enable drivers and specify named areas:
 ]
 ```
 
-The address is automatic: CMake allocates each area from the end of the selected
-internal SRAM1/SRAM2 bank, in list order, aligning its base to its size. Sizes
-must be powers of two, at least 32 bytes. Alignment gaps are reserved too;
-ordinary `.data`/`.bss`, heap, stack and `.sram2_bss` cannot overlap those areas.
-SRAM1 must retain room for ordinary data/heap/stack; SRAM2 can be used entirely.
-Insufficient memory is a configuration or link error. Names must be unique
-identifiers; MPU numbers must be unique in 1..7 (region 0 remains reserved).
-An empty list, null or missing key reserves no DMA area. Nonempty configuration
-requires F7 with drivers; external RAM and explicit `address` are unsupported.
+**Allocation rules:**
 
-Place global or static zero-initialized buffers in the corresponding section:
+- Addresses are automatic: CMake allocates areas from the **end** of the chosen internal SRAM1/SRAM2, in list order, base aligned to the area size.
+- `size` — a power of two, ≥ 32 bytes. Alignment gaps are reserved too; `.data`/`.bss`, heap, stack and `.sram2_bss` cannot overlap the areas.
+- SRAM1 must keep room for ordinary data/heap/stack; SRAM2 may be used entirely. Not enough memory → configuration or link error.
+- `name` — unique identifier; `mpu_region` — unique, 1…7 (region 0 is reserved).
+- Empty list, `null` or missing key → no areas. A non-empty list requires F7 with drivers; external RAM and explicit `address` are not supported.
+
+**Placing buffers** (global or static, zero-initialized only):
 
 ```cpp
 __attribute__((section(".dma.adc"))) static uint16_t adc_buffer[1024];
 ```
 
-The linker uses `NOLOAD`; the existing startup zero table clears the placed
-buffers before constructors. Nonzero initializers and objects requiring dynamic
-initialization are unsupported: NOLOAD does not copy their initial data from
-Flash. A buffer in an unconfigured `.dma.*` section causes a link error.
-Automatic local variables and heap allocations do not enter these sections.
+- The section is `NOLOAD`; startup's zero table clears it before constructors.
+- Non-zero initializers and objects with dynamic initialization are **not** supported (NOLOAD copies nothing from Flash).
+- A buffer in an unconfigured `.dma.*` section → link error. Locals and heap allocations never go there.
 
-`System::Init()` reads the linker table and applies only the specified MPU
-regions: Normal non-cacheable, shareable, read/write, execute-never
-(`TEX=1, C=0, B=0, S=1, AP=3, XN=1`). If D-cache is already enabled, the CMSIS
-disable function cleans/invalidates it, preserving dirty data in RAM, before
-the MPU change. Init then enables D-cache again. This whole-cache operation
-occurs during initialization, not on every DMA transfer.
+**What `System::Init()` does with them:** reads the linker table and programs only those MPU regions as Normal, non-cacheable, shareable, read/write, execute-never (`TEX=1, C=0, B=0, S=1, AP=3, XN=1`). If the D-cache is already on, CMSIS cleans/invalidates it while disabling (dirty data are kept in RAM), the MPU is changed, then the D-cache is re-enabled. This whole-cache operation happens once at init, not per transfer.
 
-Other MPU regions remain configured. Select MPU numbers that do not conflict
-with your own map; a higher-numbered overlapping region can override the DMA
-attributes. Init enables the privileged default memory map and retains other
-MPU control flags. It does not automatically install the region 0 external-memory
-guard. Call Init at the beginning of main before DMA/peripheral setup; constructors
-must not start DMA. The bootloader must stop its DMA before handing over control.
+- Other MPU regions stay; choose numbers that do not clash with your map — a higher-numbered overlapping region can override the DMA attributes.
+- Init enables the privileged default map and keeps other MPU control flags. It does **not** install the region-0 external-memory guard automatically.
+- Call `Init()` at the start of `main`, before DMA/peripheral setup; constructors must not start DMA. A bootloader must stop its DMA before handing over.
 
-The base needs the updated `STM32-base_files/linker/linker-f7.ld.in` template.
-It also requires a driver version with DMA-region support; configuration rejects
-older versions rather than silently leaving the buffers cacheable.
-For an existing vendored template, refresh that file or configure with
-`STM32_BASE_FILES_DIR` pointing to the updated checkout. Each firmware image
-uses the areas from its own project.json; an application's areas are not inherited
-by the bootloader. Standalone/custom linker scripts without the table continue
-to work through weak symbols, with no automatic DMA MPU setup.
+**Requirements:** the updated `STM32-base_files/linker/linker-f7.ld.in` template and a driver version with DMA-region support (configuration rejects older drivers, so buffers never silently stay cacheable). For a vendored template, refresh the file or point `STM32_BASE_FILES_DIR` to the updated checkout. Each firmware image uses areas from its own `project.json` (the bootloader does not inherit the application's). Custom linker scripts without the table still work via weak symbols, just without automatic DMA MPU setup.
 
-Non-cacheable buffers do not need cache maintenance, but CPU/DMA ownership and
-transfer ordering still apply. DMA with ordinary cacheable buffers still needs
-maintenance at transfer boundaries. Adding this to the remaining drivers is a
-separate agreed step.
+### Cache rules for DMA with cacheable buffers
 
-For subsequent driver changes, the agreed transfer rules are:
+Non-cacheable buffers need no maintenance, but CPU/DMA ownership and ordering still matter. For ordinary cacheable buffers:
 
-- TX: clean the buffer's cache lines before DMA reads the data.
-- RX: clean/invalidate the buffer before DMA starts, then invalidate after
-  completion before the CPU reads it. Do not clean stale RX lines afterwards.
-- Operate on the affected lines, not the entire cache. F7 lines are 32 bytes;
-  buffers and independently processed portions need exclusive, aligned lines.
-  Rounding a range must not include unrelated writable data in adjacent bytes.
-- CPU must not access the DMA-owned portion during transfer. Circular buffers
-  require ownership and cache maintenance for each completed portion.
+| Transfer | Rule |
+| --- | --- |
+| TX | clean the buffer's lines **before** DMA reads them |
+| RX | clean+invalidate **before** DMA starts; invalidate **after** completion, before the CPU reads. Never clean stale RX lines afterwards |
 
-The shared operations are implemented in System:
+- Operate on the affected lines only. F7 lines are 32 bytes; buffers (and independently processed parts) must own whole, aligned lines — rounding must not touch unrelated writable data.
+- The CPU must not access the DMA-owned part during a transfer. Circular buffers need ownership and maintenance per completed part.
+
+The shared helpers:
 
 ```cpp
 System::CacheClean(tx_buffer, tx_bytes);
-System::CacheCleanInvalidate(rx_buffer, rx_bytes); // before starting RX
-System::CacheInvalidate(rx_buffer, received_bytes); // after DMA has stopped
+System::CacheCleanInvalidate(rx_buffer, rx_bytes);   // before starting RX
+System::CacheInvalidate(rx_buffer, received_bytes);  // after DMA has stopped
 ```
 
-The peripheral driver chooses the address, byte count and call timing. Direct
-DMA users make those calls themselves. DMA does not retain buffer/cache state.
-On F7, the functions skip a range wholly inside a project DMA region or when
-D-cache is disabled; otherwise CMSIS handles the intersecting 32-byte lines.
-On F4/G0/L0 they are inline no-ops. Zero size/nullptr also performs no operation.
-Use valid ranges fitting the CMSIS signed byte count, including line rounding.
-Call after System::Init() and retain the configured MPU attributes. Integration
-into individual peripheral drivers remains part of their respective reviews.
+- Peripheral drivers choose address, byte count and timing themselves; direct DMA users call these explicitly. DMA keeps no cache state.
+- F7: skipped when the range lies wholly in a project DMA area or the D-cache is off; otherwise CMSIS handles the intersecting 32-byte lines.
+- F4/G0/L0: inline no-ops. Zero size or `nullptr` does nothing.
+- Use valid ranges that fit CMSIS's signed byte count (including rounding). Call after `System::Init()`.
 
-See [ST AN4838](https://www.st.com/resource/en/application_note/DM00272912-.pdf)
-for MPU region attributes and
-[ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf)
-for cache/DMA coherency.
+References: [ST AN4838](https://www.st.com/resource/en/application_note/DM00272912-.pdf) (MPU attributes), [ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf) (cache/DMA coherency).
 
 ---
 
@@ -432,36 +326,30 @@ for cache/DMA coherency.
 [[noreturn]] static void DebugTrap(const char* msg);
 ```
 
-The one project-wide way to report "this is a software configuration error, not a runtime
-peripheral failure" — used in the constructors of `USART`/`SPI`/`TIM_PWM`/... to check "this
-pin belongs to the wrong peripheral module" (see
-[GPIO.md §6](GPIO.md#6-constexpr-таблицы-пинов-и-защита-от-опечаток)).
+The project-wide way to stop on a **software/configuration error** (as opposed to a run-time peripheral failure, which is returned as a status).
 
-Behavior depends on the build:
+| Build | Behaviour |
+| --- | --- |
+| **Debug** (`DEBUG` defined) | stores `msg` in `volatile _debug_trap_msg` (visible in Watch/Memory even if the stack is lost to optimization); on F4/F7 with trace and ITM channel 0 enabled, prints the message over **blocking SWO** (`ITM_SendChar()`); then `__BKPT(0)` and an endless loop |
+| **Release** | inline endless loop in `system.hpp`; the argument is ignored, so unused message strings are removed by the optimizer |
 
-- **Debug** (`DEBUG` defined by CMake): `msg` is stored in `volatile _debug_trap_msg`
-  (visible in the debugger's Watch/Memory window even without a call stack — useful if
-  optimization inlines/destroys the stack). On F4/F7, when trace and ITM channel 0
-  are enabled, the null-terminated message is sent through **blocking SWO** using
-  `ITM_SendChar()`. Then `__BKPT(0)` is executed and the function loops forever.
-- **Release**: an inline body in system.hpp ignores the argument and loops
-  forever. Optimisation can discard unused diagnostic strings without LTO;
-  their removal still depends on the build settings.
+**Configuration errors in constructors** use `STM32_CONFIG_ERROR("reason")` (see also [GPIO.md §6](GPIO.md#6-constexpr-таблицы-пинов-и-защита-от-опечаток)):
 
-Fixed-binding constructor checks use STM32_CONFIG_ERROR("reason"). Its
-non-constexpr function template stm32::CONFIGURATION_ERROR<reason>() carries
-the string as a template argument, so GCC includes the reason in the error
-message under constinit/consteval. std::is_constant_evaluated() selects this path;
-at runtime the macro calls DebugTrap(text) directly, without calling the template.
-constinit remains required by the driver API contract. See
-[Initialization.md](Initialization.md) for examples and diagnostics.
+```cpp
+#define STM32_CONFIG_ERROR(text) \
+  (std::is_constant_evaluated() ? ::stm32::CONFIGURATION_ERROR<text>() : ::System::DebugTrap(text))
+```
 
-The debugger must configure ITM/SWO. Disabled trace or `nullptr` skips the
-output; G0/L0 have no ITM output. An enabled but stalled ITM channel can keep
-the function waiting before BKPT. This path intentionally blocks and uses no
-SysTick, so it can report an error before `System::Init()` or from an interrupt.
-Ordinary `SWOTrace()` remains nonblocking. `SetDebugOutput()` has been removed;
-there is no output callback or UART setup for `DebugTrap()`.
+- **At compile time** (`constinit`/`consteval`): calls the deliberately non-`constexpr` `stm32::CONFIGURATION_ERROR<reason>()`. The text is a template argument, so GCC prints the reason **inside the error message**.
+- **At run time**: calls `DebugTrap(text)` directly — the debugger shows a readable message, not a template frame.
+- `constinit` is required by the driver API. Examples and diagnostics: [Initialization.md](Initialization.md).
+
+**Notes:**
+
+- The debugger must configure ITM/SWO. With trace disabled or `msg == nullptr` the output is skipped; G0/L0 have no ITM.
+- An enabled but stalled ITM channel can keep `DebugTrap` waiting before the breakpoint.
+- This path is intentionally blocking and uses no SysTick, so it works before `System::Init()` and inside interrupts.
+- Ordinary `SWOTrace()` stays non-blocking. `SetDebugOutput()` was removed — there is no output callback or UART for `DebugTrap()`.
 
 ---
 
@@ -472,19 +360,14 @@ enum class SysStatus     : uint8_t { OK, Error, Busy, NotInit, Timeout };
 enum class SysInitStatus : uint8_t { NotInit, InitOK, InitError = 0xFF };
 ```
 
-A shared result vocabulary for all drivers — `SysStatus` for runtime operations (`Send()`,
-`Receive()`, ...), `SysInitStatus` for one-time setup (`SetUp()`, `Init()`). Not the most
-granular scheme (there's no separate code for "invalid argument" vs. "device not found" —
-both are usually just `Error`/`InitError`), but it's uniform across the whole project, so
-calling code doesn't need to remember different enums for different peripherals.
+| Enum | Used for | Values |
+| --- | --- | --- |
+| `SysStatus` | run-time operations (`Send()`, `Receive()`, …) | `OK`, `Error`, `Busy`, `NotInit`, `Timeout` |
+| `SysInitStatus` | one-time setup (`SetUp()`, `Init()`) | `NotInit`, `InitOK`, `InitError` |
 
-`BIT_BB`/`BB_RD`/`BB_WR` — low-level bit-banding address-arithmetic functions
-(`(addr - PERIPH_BASE) * 32 + bit * 4 + PERIPH_BB_BASE`), on which `PIN::SetLevel_BB()`/
-`GetLevel_BB()`/`TogglePin_BB()` are built — a detailed explanation of the bit-banding
-technique itself, and why it's only available on F4, is in
-[GPIO.md §5](GPIO.md#5-bit-banding-только-f4); here these functions are simply defined
-(F4-only, `#if defined(STM32F4)`), since historically this is a system-wide core capability
-rather than a GPIO-specific one.
+Deliberately coarse — there is no separate "invalid argument" vs "device not found" (both are `Error`/`InitError`) — but uniform across the whole project, so callers never juggle per-peripheral enums. Drivers expose details through their own `GetError()`/error masks where needed.
+
+**`BIT_BB`/`BB_RD`/`BB_WR`** — bit-band address arithmetic (`(addr - PERIPH_BASE) * 32 + bit * 4 + PERIPH_BB_BASE`), used by `PIN::SetLevel_BB()`/`GetLevel_BB()`/`TogglePin_BB()`. Defined only for F4 (`#if defined(STM32F4)`), since it is a core capability rather than a GPIO feature. The technique itself and why it is F4-only: [GPIO.md §5](GPIO.md#5-bit-banding-только-f4).
 
 ---
 
@@ -498,11 +381,11 @@ int main() {
     constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
     if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
         System::DebugTrap("Clock init");
-    System::Enable_CYCCNT();   // required before the first Delay_us()
+    System::Enable_CYCCNT();   // F4/F7 only; required before the first Delay_us()
 
     uint32_t tick = System::GetTick();
     for (;;) {
-        if (System::GetTick() - tick > 500) {
+        if (System::GetTick() - tick > 500) {   // wrap-safe
             tick = System::GetTick();
             // once every 500 ms...
         }
@@ -517,7 +400,16 @@ extern "C" void HardFault_Handler(void) { while(1){} }
 
 ```cpp
 System::Enable_CYCCNT();     // once
-System::Delay_us(50);        // 50 us, blocking
+System::Delay_us(50);        // 50 µs, blocking
+```
+
+### Waiting for a hardware flag with a timeout
+
+```cpp
+// Wait up to 10 ms for HSERDY to be set.
+if (!System::WaitBits(RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY, 10)) {
+    // timeout
+}
 ```
 
 ### DebugTrap with SWO output
@@ -531,39 +423,24 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
 
 ## 10. Edge Cases
 
-- **Call order matters**: `System::Init()` →
-  `ClockSystem::Init<config>()` → `System::Enable_CYCCNT()` → `SetUp()` of any
-  peripheral drivers. A peripheral `SetUp()` called before `ClockSystem::Init<config>()` will compute
-  dividers from HSI (16 MHz) rather than the real frequency (see §3).
-- **`Enable_CYCCNT()`/`Delay_us()`/`SWOTrace()` are unavailable on STM32L0/G0** — both use
-  Cortex-M0/M0+, which has no DWT block with `CYCCNT`. Calling them on these targets is a
-  compile error (the functions simply don't exist in this build), not a runtime failure.
-- **Large `Delay_ms()` requests** — the wait, including its compensating tick,
-  saturates at `0x7FFFFFFF` ticks. `Delay_ms(0xFFFFFFFF)` uses this same limit.
-- **`DebugTrap()` in a release build doesn't store `msg` anywhere** — the string may not even
-  be included in the binary by the compiler (if `msg` isn't used anywhere else), unlike the
-  debug build, where `_debug_trap_msg` always points to it.
-- **`TickIncrease()` is only meant to be called from `SysTick_Handler`** — calling it from
-  anywhere else isn't an error (it's just a variable increment), but it will break the
-  correspondence between `GetTick()` and real time.
+| Situation | Behaviour |
+| --- | --- |
+| Peripheral `SetUp()` before `ClockSystem::Init<config>()` | Dividers computed from HSI 16 MHz, not the real clock (§3). Order: `System::Init()` → `ClockSystem::Init<config>()` → `Enable_CYCCNT()` → peripheral `SetUp()`. |
+| `Enable_CYCCNT()`/`Delay_us()`/`SWOTrace()` on G0/L0 | Compile error — Cortex-M0/M0+ has no DWT/CYCCNT, so the functions do not exist. |
+| `Delay_ms(0xFFFFFFFF)` | Saturates at `0x7FFFFFFF` ticks, including the compensating tick. |
+| `DebugTrap()` in release | `msg` is not stored; the string may not be in the binary at all. |
+| `TickIncrease()` called outside `SysTick_Handler` | Not an error, but `GetTick()` stops matching real time. |
+| `Delay_ms()` in a priority-0 IRQ | Never finishes — SysTick has the lowest priority. |
 
 ---
 
 ## See Also
 
-- [RCC.md](RCC.md) — the only writer of the clock variables described in §3.
+- [RCC.md](RCC.md) — the only writer of the clock variables (§3).
 - [GPIO.md](GPIO.md) — `BIT_BB`/`BB_RD`/`BB_WR` (§8) are used by the `PIN::*_BB()` methods.
-- [IRQ_Registry.md](IRQ_Registry.md) — an independent mechanism for dispatching peripheral
-  IRQs; `SysTick_Handler`/`NMI_Handler`/`HardFault_Handler` and similar Cortex-M exceptions
-  are not part of it and are configured separately (see `src/main.cpp`).
-- [UART.md](UART.md), [TIM.md](TIM.md), [SPI.md](SPI.md), [RTC.md](RTC.md), [DMA.md](DMA.md),
-  [Flash.md](Flash.md) — all read `SysStatus`/`SysInitStatus` (§8) and `System::GetTick()`
-  (§4) from this module.
-
-- [RCC.md](RCC.md)
-- [DMA.md](DMA.md)
-- [IRQ_Registry.md](IRQ_Registry.md)
-- [Initialization.md](Initialization.md)
+- [IRQ_Registry.md](IRQ_Registry.md) — dispatching of peripheral IRQs; `SysTick_Handler`, `NMI_Handler`, `HardFault_Handler` and other Cortex-M exceptions are not part of it.
+- [UART.md](UART.md), [TIM.md](TIM.md), [SPI.md](SPI.md), [RTC.md](RTC.md), [DMA.md](DMA.md), [Flash.md](Flash.md) — use `SysStatus`/`SysInitStatus` (§8) and `GetTick()` (§4).
+- [Initialization.md](Initialization.md) — `constinit` and `STM32_CONFIG_ERROR` diagnostics.
 
 ---
 
@@ -587,10 +464,9 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
 
 ## 1. Зачем это нужно — связующая часть между всеми драйверами
 
-`system.hpp`/`system.cpp` — не отдельная периферия, а **общая инфраструктура**, от которой
-зависят буквально все остальные драйверы этого проекта:
+`system.hpp`/`system.cpp` — не драйвер периферии, а **общая инфраструктура**, от которой зависят все остальные драйверы:
 
-```
+```text
                               ┌────────────────────┐
                               │   system.hpp/cpp   │
                               │  System, SysStatus,│
@@ -608,23 +484,17 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
    и APBx/TIMx...
 ```
 
-Три вещи, которые `System` даёт всем остальным драйверам:
+Что `System` даёт всем драйверам:
 
-1. **`SysStatus`/`SysInitStatus`** — два общих enum'а результата операции/инициализации,
-   которые использует буквально каждый `.hpp` в `Drivers/src` (см. §8) — единый словарь
-   "успех/ошибка/занято/таймаут" вместо своего набора кодов в каждом драйвере.
-2. **Тактовые переменные** (`SystemCoreClock`, `APB1BusClock`, ...) — записываются
-   [`ClockSystem::Init<config>()`](RCC.md), читаются `UART`/`TIM`/`SPI` для расчёта делителей/BRR
-   (см. §3).
-3. **`System::GetTick()`/`Delay_ms()`/`Delay_us()`** — таймауты блокирующих операций
-   (`USART::Send()`, `SPI::Send()`, `ClockSystem::Init<config>()`'s HSE/PLL ожидания) все построены
-   на одном и том же миллисекундном счётчике (§4).
+| Что | Зачем | Раздел |
+| --- | --- | --- |
+| `SysStatus` / `SysInitStatus` | единый словарь результатов (OK/Error/Busy/Timeout…) вместо своих кодов в каждом драйвере | §8 |
+| Тактовые переменные (`SystemCoreClock`, `APB1BusClock`, …) | записывает [`ClockSystem::Init<config>()`](RCC.md), драйверы читают для расчёта делителей/BRR | §3 |
+| `GetTick()`, `Delay_ms()`, `Delay_us()`, `WaitBits()` | миллисекундный счётчик, на котором построены все таймауты (блокирующие вызовы USART/SPI, ожидания генераторов в RCC…) | §4, §5 |
+| Функции кеша, настройка MPU (F7) | согласование DMA и кеша | §6 |
+| `DebugTrap()`, `STM32_CONFIG_ERROR` | сообщения об ошибках конфигурации | §7 |
 
----
-
-Период SysTick задаётся целым числом тактов HCLK. Если HCLK не кратна 1000,
-GetTick/Delay_ms/таймауты имеют погрешность частоты тика; для G0 LSE 32768 Гц
-с AHB /1 это 1024 тика/с. Подробности — [RCC.md](RCC.md).
+> **Точность SysTick:** период SysTick — целое число тактов HCLK. Если HCLK не кратна 1000, `GetTick()`/`Delay_ms()`/таймауты получают ту же погрешность — например, G0 от LSE 32768 Гц с AHB /1 даёт 1024 тика/с. См. [RCC.md](RCC.md).
 
 ---
 
@@ -634,62 +504,46 @@ GetTick/Delay_ms/таймауты имеют погрешность частот
 static SysInitStatus Init();
 ```
 
-Вызывается один раз в начале `main()`, до любого другого драйвера (см. `src/main.cpp`).
-Настраивает низкоуровневые вещи, которые не относятся ни к одной конкретной периферии:
+Вызывайте **один раз в самом начале `main()`**, до любого другого драйвера. Настраивает низкоуровневые вещи, не относящиеся к конкретной периферии:
 
-1. **FPU** (с `__FPU_PRESENT`/`__FPU_USED`) — при отсутствии определения
-   `STM32_STARTUP_ENABLES_FPU` включает доступ к CP10/CP11 и выполняет DSB/ISB.
-   Текущий base передаёт это определение, поскольку startup включает FPU до
-   конструкторов. При другом startup определение следует убрать, если он
-   самостоятельно не выполняет эту инициализацию.
-2. **Переменные частот и SysTick** — обновить частоты и запустить SysTick
-   на 16 МГц. На G0 частоты APB2 и её таймеров равны нулю: этой шины нет.
-   Без `STM32_USE_BOOTLOADER` вызывать один раз после аппаратного сброса,
-   до изменения тактирования, питания или Flash latency.
-3. **Подготовка после загрузчика (F4/F7/G0)** — компилируется только при
-   `STM32_USE_BOOTLOADER`. База автоматически задаёт макрос при настроенном
-   `bootloader` в project.json; он передаётся обоим образам и общей библиотеке
-   драйверов. `InitAfterBootloader()` включает HSI, ждёт готовности и фактического
-   переключения без таймаута, затем возвращает делители шин /1 (включая HSIDIV G0).
-   Через `InitClockState()` запускается SysTick, затем восстанавливаются
-   VOS Range 1 на G0 и Flash latency 0 WS. Таймауты VOS и latency сохраняются
-   по 100 мс; ошибка возвращает `InitError`.
-4. **Flash-акселератор/кэш** — по семействам:
-   - F4: `PRFTEN` (prefetch) + `ICEN`/`DCEN` (инструкционный/данных кэш).
-   - F7: `PRFTEN` + `ARTEN` (ART Accelerator) + `SCB_EnableICache()`/`SCB_EnableDCache()`
-     (кэши самого ядра Cortex-M7, не Flash-контроллера) + включение тактирования `PWR`
-     (нужно для voltage scaling, которым управляет [`ClockSystem`](RCC.md)).
-   - G0: `PRFTEN` + `ICEN`.
-   - L0: ничего — нет ART/кэша на этом ядре, wait states настраиваются иначе.
+1. **FPU** (если `__FPU_PRESENT`/`__FPU_USED`): открывает доступ к CP10/CP11 и выполняет DSB/ISB — **если не** определён `STM32_STARTUP_ENABLES_FPU`. Текущая база определяет его, поскольку её startup включает FPU ещё до конструкторов. При другом startup определение нужно убрать, если он сам этого не делает.
+2. **Частоты и SysTick:** записывает переменные частот и запускает SysTick на 16 МГц (HSI). На G0 частоты APB2 и её таймеров равны 0 (такой шины нет). Без `STM32_USE_BOOTLOADER` вызывать один раз после аппаратного сброса, до изменения тактирования, питания или задержки Flash.
+3. **После загрузчика (F4/F7/G0)** — компилируется только с `STM32_USE_BOOTLOADER` (база задаёт его автоматически при настроенном `bootloader` в `project.json`; макрос получают оба образа и общая библиотека драйверов). `InitAfterBootloader()`:
+   - включает HSI и ждёт готовности и фактического переключения (**без таймаута**);
+   - возвращает делители шин в /1 (включая HSIDIV на G0);
+   - запускает SysTick через `InitClockState()`;
+   - восстанавливает VOS Range 1 на G0, затем задержку Flash 0 WS (эти ожидания с таймаутом 100 мс; ошибка → `InitError`).
+4. **Flash-акселератор / кеши:**
 
-Вызывать с разрешёнными прерываниями, вне обработчиков, чтобы запущенный
-SysTick обслуживал таймауты. Проверок IPSR/PRIMASK и дополнительного таймера
-нет. При `STM32_USE_BOOTLOADER` первые ожидания HSI намеренно без таймаута:
-неисправный HSI может оставить
-инициализацию на этом этапе. На G0 перед переходом к 16 МГц значение 0 WS
-временно повышается до 1 WS для безопасной работы при оставшемся VOS Range 2.
+| Семейство | Что включается |
+| --- | --- |
+| F4 | `PRFTEN` (предвыборка), `ICEN`/`DCEN` (кеши инструкций/данных Flash) |
+| F7 | `PRFTEN`, `ARTEN` (ART-акселератор), I-cache и D-cache ядра Cortex-M7 (`SCB_EnableICache()`/`SCB_EnableDCache()`), тактирование `PWR` (нужно [ClockSystem](RCC.md) для масштабирования напряжения) |
+| G0 | `PRFTEN`, `ICEN` |
+| L0 | ничего (ART/кеша нет) |
 
-Это операция старта до настройки периферии. При `STM32_USE_BOOTLOADER`
-выбирается HSI и меняются делители шин; включение и настройки PLL/HSE,
-подстройка HSI, MCO, RCC-прерывания,
-регистры включения/сброса периферии, RTC, LSE/LSI, отдельные мультиплексоры
-периферийных тактов и счётчик тиков сохраняются. После дальнейшей смены частоты
-`ClockSystem` применяет выбранные частоты и вызывает `InitTicks(ticks)` с готовым периодом.
+**Правила вызова:**
 
-**Ограничение L0:** прежняя ветка сохранена. Она только записывает программные
-частоты 16 МГц и запускает SysTick, предполагая, что аппаратно уже выбран HSI
-с этой частотой. RCC, питание и Flash latency на L0 не восстанавливаются.
+- Вызывайте с разрешёнными прерываниями, вне обработчиков, чтобы запущенный SysTick обслуживал ожидания. Проверок IPSR/PRIMASK нет.
+- С `STM32_USE_BOOTLOADER` первые ожидания HSI намеренно без таймаута — неисправный HSI оставит программу там.
+- На G0 перед переходом на 16 МГц задержка 0 WS временно повышается до 1 WS, чтобы оставшийся VOS Range 2 был безопасен до готовности Range 1.
+
+**Что не трогается** (путь после загрузчика): включение и настройки PLL/HSE, подстройка HSI, MCO, прерывания RCC, регистры включения/сброса периферии, RTC, LSE/LSI, мультиплексоры тактирования периферии, счётчик тиков. После последующей смены частоты `ClockSystem` публикует новые частоты и вызывает `InitTicks(ticks)` с готовым периодом.
+
+**Ограничение L0:** сохранена старая ветка — она только записывает программные частоты 16 МГц и запускает SysTick, предполагая, что аппаратура уже работает от HSI. RCC, питание и задержка Flash не восстанавливаются.
 
 ```cpp
 int main() {
-    System::Init();                                    // FPU, Flash/cache, SysTick @ HSI
+    System::Init();                                    // FPU, Flash/кеш, SysTick @ HSI
     constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
     if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
         System::DebugTrap("Clock init");
-    System::Enable_CYCCNT();                            // для Delay_us(), см. §5
+    System::Enable_CYCCNT();                            // F4/F7, для Delay_us() — §5
     ...
 }
 ```
+
+> Startup инициализирует RAM и вызывает глобальные/статические конструкторы **до** `main()` (текущая база там же включает FPU). Такие конструкторы не должны ждать SysTick — он ещё не запущен, прерывания замаскированы. У `constinit`-объектов драйверов кода конструктора нет вовсе.
 
 ---
 
@@ -699,98 +553,63 @@ int main() {
 static uint32_t SystemCoreClock; // AHB/ядро/GPIO/DMA/USB
 static uint32_t APB1BusClock;    // WWDG, SPI2/3, USART2/3, UART4/5, I2C1-3, CAN1/2, DAC
 static uint32_t APB2BusClock;    // USART1/6, ADC1-3, SPI1/4, SYSCFG, SAI1/2
-static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (с учётом правила "x2", см. RCC.md)
+static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (с учётом правила «×2», см. RCC.md)
 static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 ```
 
-Это обычные статические переменные: System::Init() задаёт начальные значения
-HSI, а **ClockSystem::Init<config>() применяет выбранные частоты**
-(см. [RCC.md](RCC.md)); все остальные драйверы только
-читают:
+- `System::Init()` задаёт начальные значения HSI (16 МГц).
+- **`ClockSystem::Init<config>()` публикует выбранные частоты** (см. [RCC.md](RCC.md)).
+- Все остальные драйверы их только **читают**. `_N::instance` каждой периферии указывает на переменную своей шины: например, USART считает BRR от `APB1BusClock` или `APB2BusClock` в зависимости от экземпляра ([UART.md](UART.md)); TIM использует `TIMxAPB1Clock`/`TIMxAPB2Clock` ([TIM.md](TIM.md)); SPI и I2C — аналогично.
 
-- `USART::SetUp()` — `USARTx->BRR = *_info->bus_clk / BaudRate;` (где `bus_clk` указывает на
-  `APB1BusClock` или `APB2BusClock` в зависимости от того, на какой шине сидит конкретный
-  USART — см. [UART.md](UART.md)).
-- `TIM::SetFrequency()` — то же самое через `_info->bus_clk`, только на `TIMxAPB1Clock`/
-  `TIMxAPB2Clock` (см. [TIM.md](TIM.md)).
-- `SPI` — расчёт `BaudRate` через делитель тактовой БД аналогично.
-
-Так что порядок вызовов в `main()` важен: `ClockSystem::Init<config>()` должен отработать **до**
-`SetUp()` любого периферийного драйвера — иначе `USART::SetUp()` посчитает `BRR` от 16 МГц
-(HSI, значение по умолчанию из `System::Init()`), а не от реальной частоты после PLL.
+**Поэтому порядок вызовов важен:** `ClockSystem::Init<config>()` должен выполниться **до** `SetUp()` любой периферии. Иначе, например, `USART::SetUp()` посчитает BRR от 16 МГц, а не от реальной частоты после PLL.
 
 ---
 
 ## 4. SysTick и миллисекундный счётчик
 
-`System::WaitBits(reg, mask, value, timeout)` ожидает `(reg & mask) == value`.
-Для сброса битов value=0, для установки всех битов value=mask; для поля регистра
-задаётся его ожидаемое закодированное значение. Возвращает true при совпадении,
-false при таймауте по GetTick. Нулевой таймаут проверяет условие один раз.
-Как и для Delay_ms, SysTick должен прерывать вызывающий код. RCC использует
-эту общую функцию для аппаратных ожиданий.
-
 ```cpp
-static SysInitStatus InitTicks();   // SysTick_Config(SystemCoreClock / TICK_BASE)
-static SysInitStatus InitTicks(uint32_t ticks); // Precomputed HCLK cycles
-static void          TickIncrease(); // вызывается из SysTick_Handler
+static SysInitStatus InitTicks();               // SysTick_Config(SystemCoreClock / TICK_BASE)
+static SysInitStatus InitTicks(uint32_t ticks); // готовое число тактов HCLK (использует ClockSystem)
+static void          TickIncrease();            // вызывается из SysTick_Handler
 static uint32_t      GetTick();
 static bool          WaitBits(volatile uint32_t& reg, uint32_t mask, uint32_t value, uint32_t timeout);
 static void          Delay_ms(uint32_t delay);
 ```
 
-`TICK_BASE = 1 кГц` — целевая частота. Целочисленный reload даёт ровно 1 мс
-только при HCLK, кратной TICK_BASE; погрешность описана в [RCC.md](RCC.md).
-`SysTick_Config()` при каждом вызове назначает ему фиксированный самый низкий
-приоритет, в том числе после изменения частоты. Обработчик:
+**`WaitBits(reg, mask, value, timeout)`** ждёт `(reg & mask) == value`:
 
-```cpp
-extern "C" void SysTick_Handler(void) { System::TickIncrease(); }
-```
+- `value = 0` — ждать сброса битов; `value = mask` — установки всех битов; либо закодированное значение поля.
+- Возвращает `true` при совпадении, `false` по таймауту (по `GetTick()`). Нулевой таймаут — однократная проверка.
+- RCC и другие драйверы используют её для аппаратных ожиданий. SysTick должен иметь возможность прервать вызывающий код.
 
-инкрементирует единственный `static volatile uint32_t Tick` (модульная переменная, не поле
-класса) — `GetTick()` просто читает её. На 32-битном ARM с выровненным адресом это чтение
-атомарно само по себе, поэтому `GetTick()` не требует ни `__disable_irq()`, ни атомиков.
+**Тик:**
 
-`Delay_ms()` — не `while(GetTick() < target)`, а через разность:
+- `TICK_BASE = 1 кГц` — целевая частота; ровно 1 мс только при HCLK, кратной ей (см. [RCC.md](RCC.md)).
+- `SysTick_Config()` при каждом вызове назначает SysTick самый низкий приоритет, в том числе после смены частоты.
+- Обработчик `extern "C" void SysTick_Handler(void) { System::TickIncrease(); }` увеличивает единственную `static volatile uint32_t Tick`. На 32-битном ARM чтение выровненного 32-битного значения атомарно, поэтому `GetTick()` не требует запрета прерываний.
+
+**`Delay_ms()` — безопасен при переполнении:**
 
 ```cpp
 const uint32_t wait = (delay < 0x7FFFFFFFUL) ? delay + 1UL : 0x7FFFFFFFUL;
 while ((GetTick() - tick_start) < wait) {}
 ```
 
-Ожидание включает один тик для компенсации неполного первого тика и ограничено
-`0x7FFFFFFF` тиками (около 24,9 суток при 1 кГц). Большие запросы ограничиваются
-этим пределом; `Delay_ms(0)` по-прежнему ждёт следующего тика. Чтобы заметить
-завершение до нового переполнения разности, опрос должен возобновиться в пределах
-половины диапазона счётчика.
+- Лишний тик компенсирует неполный первый тик, поэтому `Delay_ms(N)` ждёт **не меньше** N мс; `Delay_ms(0)` ждёт следующего тика.
+- Ограничено `0x7FFFFFFF` тиками (~24,9 суток при 1 кГц).
+- **Почему вычитание:** беззнаковое `GetTick() - tick_start` остаётся верным, даже если `Tick` переполнится (через ~49,7 суток) посреди ожидания; `GetTick() < target` в этот момент дало бы неверный результат. Все таймауты проекта используют шаблон `GetTick() - start > timeout`, а не абсолютный «дедлайн» (та же идея, что в `Delay_us()` ниже и аппаратных счётчиках TIM — [TIM.md](TIM.md#11-дополнительные-режимы-и-интеграция)).
 
-Вычитание вместо прямого сравнения — это то же самое "wrap-around safe" рассуждение, что и в
-[`TIM_HWCounter`](TIM.md#11-дополнительные-режимы-и-интеграция)/`Delay_us()` ниже: беззнаковое вычитание корректно
-работает даже когда `Tick` успевает переполниться (после ~49.7 суток непрерывной работы) прямо
-посреди ожидания — `target - tick_start` останется верным расстоянием в тиках, а `GetTick() <
-target` в этот момент дало бы неверный результат. Все таймауты в проекте (`USART::Send`,
-`ClockSystem::Init<config>()`'s HSE/PLL/CLOCKSWITCH таймауты, ...) используют этот же паттерн
-`GetTick() - tick_start > timeout`, а не хранят абсолютный "дедлайн".
+**Когда `Delay_ms()`/таймауты не работают:**
 
----
+- до запуска SysTick, при замаскированном SysTick или внутри прерывания с равным или более высоким приоритетом вытеснения — тик не растёт;
+- callback, вызванный из ISR, остаётся в контексте этого ISR даже после восстановления локальной маски;
+- сам `GetTick()` читать можно где угодно.
 
-Для `Delay_ms()` SysTick должен быть запущен и иметь возможность выполнить
-обработчик. Ожидание не завершится до инициализации, при маскировке SysTick
-или внутри IRQ с равным/более высоким приоритетом вытеснения. Callback из ISR
-остаётся в контексте ISR даже после восстановления локальной маски IRQ.
-Сам `GetTick()` читать там можно. Проверки IPSR/PRIMASK и запасной таймер не
-добавляются. Долгий запрет обслуживания SysTick теряет прошедшие тики: одно
-ожидающее исключение не считает все пропущенные периоды. Этот счётчик не
-является точными часами при длительных критических секциях.
+Поскольку у SysTick **самый низкий** приоритет, любое IRQ с приоритетом по умолчанию 0 выполняется раньше него — из таких обработчиков нельзя вызывать `Delay_ms()` или ждать таймаут по `GetTick()`. Равные приоритеты вытеснения не прерывают друг друга независимо от subpriority.
 
-`IPSR` содержит номер активного исключения (ноль в обычном коде); установленный
-`PRIMASK` запрещает маскируемые прерывания. На F4/F7 `BASEPRI` также может
-маскировать SysTick по приоритету. Эти регистры объясняют ограничение, драйвер
-их не проверяет. `InitTicks()` назначает SysTick самый низкий приоритет.
-Остальные IRQ с исходным приоритетом 0 выполняются раньше SysTick, поэтому
-из их обработчиков нельзя вызывать `Delay_ms()` или ждать таймаут по `GetTick()`.
-Равные приоритеты вытеснения тоже не прерывают друг друга независимо от subpriority.
+**Справка:** `IPSR` содержит номер активного исключения (0 в обычном коде); установленный `PRIMASK` маскирует настраиваемые прерывания; на F4/F7 `BASEPRI` также может маскировать SysTick по приоритету. Драйвер эти регистры не проверяет.
+
+Долгий запрет обслуживания SysTick **теряет тики** — одно ожидающее исключение не учитывает все пропущенные периоды. Счётчик не является точными часами при длительных критических секциях.
 
 ---
 
@@ -804,9 +623,9 @@ static uint32_t SWOTrace(const uint8_t* ptr, uint32_t len);
 #endif
 ```
 
-Доступно только там, где есть блок DWT (Cortex-M4/M7 — **не** на Cortex-M0/M0+, откуда и
-условие `!L0 && !G0`). `Enable_CYCCNT()` включает трассировку (`DEMCR::TRCENA`) и сам счётчик
-тактов (`DWT->CTRL::CYCCNTENA`) — обязателен до первого `Delay_us()`.
+Доступно только там, где есть блок DWT — Cortex-M4/M7 (F4/F7), **не** Cortex-M0/M0+ (G0/L0).
+
+**`Enable_CYCCNT()`** включает трассировку (`DEMCR.TRCENA`) и счётчик тактов (`DWT->CTRL.CYCCNTENA`). Обязателен до первого `Delay_us()`. На F7 сначала разблокирует DWT. Уже работающий счётчик не сбрасывается; выход ITM не настраивается.
 
 ```cpp
 void System::Delay_us(uint32_t delay) {
@@ -817,85 +636,68 @@ void System::Delay_us(uint32_t delay) {
 }
 ```
 
-64-битное произведение исключает переполнение; округление вверх сохраняет
-дробные такты при частоте, не кратной целому МГц. Большие аргументы ограничены
-**`0x7FFFFFFF` тактами**, а не постоянным количеством микросекунд.
-Предел длительности — `0x7FFFFFFF / SystemCoreClock` секунд: примерно 134,2 с
-на 16 МГц, 11,9 с на 180 МГц и 9,94 с на 216 МГц.
+- 64-битное произведение исключает переполнение; округление **вверх** сохраняет дробные такты, если частота ядра не кратна целому МГц.
+- Большие аргументы ограничены **`0x7FFFFFFF` тактами**, то есть `0x7FFFFFFF / SystemCoreClock` секунд:
 
-Беззнаковое вычитание корректно при переполнении счётчика. Ограничение половиной
-диапазона оставляет циклу половину периода счётчика для обнаружения завершения.
-При приостановке опроса на такое время интервал всё ещё можно пропустить.
-CYCCNT должен работать, `SystemCoreClock` — соответствовать аппаратной частоте,
-а частота — оставаться неизменной на время задержки.
+| Частота ядра | Максимальная задержка |
+| --- | --- |
+| 16 МГц | ≈ 134,2 с |
+| 180 МГц | ≈ 11,9 с |
+| 216 МГц | ≈ 9,94 с |
 
-На F7 запуск разблокирует DWT перед включением CYCCNT. Уже работающий счётчик
-не сбрасывается; выход ITM этим не настраивается.
+- Беззнаковое вычитание корректно при переполнении счётчика. Если опрос приостановлен на половину периода счётчика, конец всё же можно пропустить.
+- CYCCNT должен работать, а `SystemCoreClock` — соответствовать аппаратуре и не меняться во время задержки.
 
-`SWOTrace()` пишет в канал ITM №0 без ожидания. Возвращается число байтов,
-принятых портом, которое может быть меньше запрошенной длины. Если трассировка
-или канал выключены, порт не готов либо указатель нулевой, функция сразу
-возвращается. ITM/SWO настраивает отладчик; включение CYCCNT этого не делает.
-Доступность функции на F4/F7 определяется наличием ITM у ядра.
+**`SWOTrace(ptr, len)`** пишет в канал ITM 0 **без ожидания** и возвращает число принятых портом байтов (может быть меньше `len`). Трассировка или канал выключены, порт не готов или `nullptr` — сразу возврат. ITM/SWO настраивает отладчик; `Enable_CYCCNT()` этого не делает.
 
 ---
 
 ## 6. MPU на STM32F7
 
-`System::MPU_Init()` устанавливает защиту от доступа в регионе MPU №0.
-Она закрывает неиспользуемые адреса внешней памяти от обычных и спекулятивных
-обращений CPU. Функция не инициализирует контроллер внешней памяти или DMA-буферы.
+### Защита внешней памяти
 
-Регион охватывает 4 ГиБ и разделён на восемь подрегионов по 512 МиБ. Маска
-`0x87` отключает подрегионы 0, 1, 2 и 7; защита действует только в 3–6:
+`System::MPU_Init()` устанавливает в **регионе MPU 0** защиту, которая блокирует обычные и **спекулятивные** обращения процессора к неиспользуемым адресам внешней памяти (Cortex-M7 может спекулятивно читать оттуда). Контроллер внешней памяти и DMA-буферы она не настраивает.
 
-| Диапазон адресов | Поведение для привилегированного кода CPU |
-|---|---|
+Регион охватывает 4 ГиБ в восьми подрегионах по 512 МиБ; маска `0x87` отключает подрегионы 0, 1, 2 и 7, поэтому защищены только 3…6:
+
+| Диапазон адресов | Поведение для привилегированного кода |
+| --- | --- |
 | `0x00000000–0x5FFFFFFF` | Стандартная карта памяти, если её не перекрывает другой регион |
 | `0x60000000–0xDFFFFFFF` | Чтение, запись и исполнение запрещены |
 | `0xE0000000–0xFFFFFFFF` | Стандартная карта памяти, если её не перекрывает другой регион |
 
-Закрытый диапазон включает память FMC, отображения управляющих регистров FMC
-и memory-mapped QSPI. Без разрешающего региона с большим номером обращения
-сюда вызывают исключение: MemManage, если он включён, иначе HardFault.
-Регион №0 перезаписывается; настройки регионов №1 и выше сохраняются и имеют
-приоритет при перекрытии адресов. `PRIVDEFENA` сохраняет стандартную карту для
-привилегированного доступа вне защиты. Непривилегированному коду нужны свои
-явные разрешения регионов. `HFNMIENA` не включён: эта настройка MPU не действует
-в обработчиках NMI и HardFault.
+- Закрытый диапазон включает память FMC, отображения управляющих регистров FMC и memory-mapped QSPI. Обращения туда вызывают исключение — MemManage, если он включён, иначе HardFault, — если их не разрешает регион с большим номером.
+- Регион 0 перезаписывается; регионы 1+ сохраняют настройки и имеют приоритет при перекрытии.
+- `PRIVDEFENA` сохраняет стандартную карту для привилегированного доступа вне защиты. Непривилегированному коду нужны явные разрешения.
+- `HFNMIENA` не установлен — внутри обработчиков NMI/HardFault MPU не действует.
 
-Защиту и разрешающие регионы используемой внешней памяти следует настроить
-до включения кешей в `System::Init()`. Пример ниже разрешает 64 КиБ памяти
-данных по адресу `0xC0000000`; адрес, размер и атрибуты нужно выбрать по своей
-плате. Это только настройка MPU: FMC отдельно настраивается до первого доступа
-к этой памяти.
+**Использование внешней памяти:** вызовите защиту и настройте свои регионы внешней памяти **до** включения кешей в `System::Init()`. Пример — 64 КиБ RAM данных по адресу `0xC0000000` (адрес, размер и атрибуты подберите под свою плату; FMC настраивается отдельно до первого обращения):
 
 ```cpp
 System::MPU_Init();
 
 __DMB();
 MPU->CTRL = 0;
-MPU->RNR  = 1;                 // Приоритет выше защиты региона №0
-MPU->RBAR = 0xC0000000UL;      // Начало выровнено по размеру 64 КиБ
+MPU->RNR  = 1;                 // приоритет выше защиты региона 0
+MPU->RBAR = 0xC0000000UL;      // начало выровнено по размеру 64 КиБ
 MPU->RASR = MPU_RASR_ENABLE_Msk
           | (15UL << MPU_RASR_SIZE_Pos) // 2^(15 + 1) = 64 КиБ
-          | (3UL  << MPU_RASR_AP_Pos)   // Чтение и запись
+          | (3UL  << MPU_RASR_AP_Pos)   // чтение и запись
           | (1UL  << MPU_RASR_TEX_Pos)
           | MPU_RASR_C_Msk | MPU_RASR_B_Msk // Normal, write-back/write-allocate
-          | MPU_RASR_XN_Msk;           // Данные, исполнение запрещено
+          | MPU_RASR_XN_Msk;           // только данные, исполнение запрещено
 MPU->CTRL = MPU_CTRL_ENABLE_Msk | MPU_CTRL_PRIVDEFENA_Msk;
 __DSB();
 __ISB();
 
-System::Init();                // Кеши F7 включаются после настройки MPU
+System::Init();                // кеши F7 включаются после настройки MPU
 ```
 
-Сама защита не меняет кешируемость внутренней SRAM.
-`MPU_Init()` остаётся необязательным и не создаёт DMA-области.
+Защита не меняет кешируемость внутренней SRAM. `MPU_Init()` необязателен и DMA-области не создаёт.
 
 ### Необязательные некешируемые DMA-области (F7 + base)
 
-В `project.json` базы включите драйверы и задайте именованные области:
+Некешируемые буферы позволяют DMA и процессору делить память **без обслуживания кеша**. Объявите их в `project.json` базы:
 
 ```json
 "dma_regions": [
@@ -903,92 +705,58 @@ System::Init();                // Кеши F7 включаются после н
 ]
 ```
 
-Адрес вычисляется автоматически: CMake выделяет области с конца выбранной
-внутренней SRAM1/SRAM2 в порядке списка, выравнивая начало по размеру области.
-Размер — степень двойки, не меньше 32 байт. Отступы для выравнивания также
-резервируются; обычные `.data`/`.bss`, heap, stack и `.sram2_bss` не могут
-занять эту память. В SRAM1 должно остаться место для обычных данных/heap/stack;
-SRAM2 можно занять целиком. Нехватка памяти — ошибка конфигурации или линковки.
-Имена — уникальные идентификаторы; номера MPU — уникальные в диапазоне 1..7
-(регион 0 остаётся зарезервированным). Пустой список, null или отсутствие ключа
-ничего не резервируют. Непустая настройка требует F7 с драйверами; внешняя RAM
-и явный `address` не поддерживаются.
+**Правила размещения:**
 
-Глобальный или static-буфер с нулевой инициализацией размещается в своей секции:
+- Адреса автоматические: CMake выделяет области с **конца** выбранной внутренней SRAM1/SRAM2 в порядке списка, начало выравнивается по размеру области.
+- `size` — степень двойки, ≥ 32 байт. Промежутки выравнивания тоже резервируются; `.data`/`.bss`, heap, stack и `.sram2_bss` не могут пересечься с областями.
+- В SRAM1 должно остаться место для обычных данных/heap/stack; SRAM2 можно занять целиком. Не хватает памяти → ошибка конфигурации или линковки.
+- `name` — уникальный идентификатор; `mpu_region` — уникальный, 1…7 (регион 0 зарезервирован).
+- Пустой список, `null` или отсутствие ключа → областей нет. Непустой список требует F7 с драйверами; внешняя RAM и явный `address` не поддерживаются.
+
+**Размещение буферов** (глобальные или static, только с нулевой инициализацией):
 
 ```cpp
 __attribute__((section(".dma.adc"))) static uint16_t adc_buffer[1024];
 ```
 
-Linker использует `NOLOAD`; существующая таблица startup обнуляет размещённые
-буферы до конструкторов. Ненулевые начальные значения и объекты с динамической
-инициализацией не поддерживаются: NOLOAD не копирует их начальные данные из
-Flash. Буфер в ненастроенной секции `.dma.*` вызывает ошибку линковки.
-Обычные локальные переменные и выделения из heap в эти секции не попадают.
+- Секция `NOLOAD`; таблица обнуления startup очищает её до конструкторов.
+- Ненулевые начальные значения и объекты с динамической инициализацией **не** поддерживаются (NOLOAD ничего не копирует из Flash).
+- Буфер в ненастроенной секции `.dma.*` → ошибка линковки. Локальные переменные и heap туда не попадают.
 
-`System::Init()` читает таблицу linker и настраивает только заданные регионы MPU:
-Normal non-cacheable, shareable, чтение/запись, запрет исполнения
-(`TEX=1, C=0, B=0, S=1, AP=3, XN=1`). Если D-cache уже включён, функция CMSIS
-при выключении выполняет clean/invalidate и сохраняет изменённые данные в RAM
-до изменения MPU. Затем Init снова включает D-cache. Эта операция со всем кешем
-происходит при инициализации, а не при каждой передаче DMA.
+**Что делает с ними `System::Init()`:** читает таблицу линкера и программирует только эти регионы MPU как Normal, некешируемые, shareable, чтение/запись, без исполнения (`TEX=1, C=0, B=0, S=1, AP=3, XN=1`). Если D-cache уже включён, CMSIS при выключении делает clean/invalidate (изменённые данные сохраняются в RAM), MPU меняется, затем D-cache включается снова. Эта операция со всем кешем выполняется один раз при инициализации, а не на каждую передачу.
 
-Остальные регионы MPU сохраняются. Выбирайте номера без конфликта с собственной
-картой: перекрывающий регион с большим номером может изменить атрибуты DMA-памяти.
-Init включает стандартную карту для привилегированного доступа и сохраняет
-остальные флаги управления MPU. Защита внешней памяти в регионе 0 автоматически
-не устанавливается. Вызывайте Init в начале main до настройки DMA/периферии;
-конструкторы не должны запускать DMA. Загрузчик должен остановить свой DMA
-перед передачей управления приложению.
+- Остальные регионы MPU сохраняются; выбирайте номера без конфликта с вашей картой — перекрывающий регион с большим номером может изменить атрибуты DMA-памяти.
+- Init включает стандартную карту для привилегированного доступа и сохраняет остальные флаги MPU. Защиту внешней памяти в регионе 0 он **не** устанавливает автоматически.
+- Вызывайте `Init()` в начале `main`, до настройки DMA/периферии; конструкторы не должны запускать DMA. Загрузчик должен остановить свой DMA перед передачей управления.
 
-Базе нужен обновлённый шаблон `STM32-base_files/linker/linker-f7.ld.in`.
-Также нужна версия драйверов с поддержкой DMA-областей; конфигурация отклоняет
-старую версию, чтобы буферы не остались кешируемыми без сообщения об ошибке.
-Если шаблон уже сохранён в проекте, обновите этот файл либо задайте
-`STM32_BASE_FILES_DIR` с путём к обновлённой рабочей копии. Каждый образ использует
-области из собственного project.json; настройки приложения не наследуются
-загрузчиком. Собственные linker scripts без таблицы продолжают работать через
-weak-символы, без автоматической настройки DMA MPU.
+**Требования:** обновлённый шаблон `STM32-base_files/linker/linker-f7.ld.in` и версия драйверов с поддержкой DMA-областей (конфигурация отклоняет старые драйверы, чтобы буферы не остались кешируемыми молча). Для сохранённого в проекте шаблона обновите файл или укажите `STM32_BASE_FILES_DIR` на обновлённую рабочую копию. Каждый образ использует области из своего `project.json` (загрузчик не наследует области приложения). Собственные linker-скрипты без таблицы продолжают работать через weak-символы, но без автоматической настройки MPU для DMA.
 
-Некешируемым буферам обслуживание кеша не требуется, но владение CPU/DMA и
-порядок передачи сохраняют значение. Для DMA с обычными кешируемыми буферами
-по-прежнему нужно обслуживание на границах передачи. Его добавление в остальные
-драйверы остаётся отдельным согласованным этапом.
+### Правила кеша для DMA с кешируемыми буферами
 
-Для последующих правок драйверов согласованы правила передачи:
+Некешируемым буферам обслуживание не нужно, но владение CPU/DMA и порядок по-прежнему важны. Для обычных кешируемых буферов:
 
-- TX: clean строк буфера до чтения данных DMA.
-- RX: clean/invalidate буфера перед запуском DMA, затем invalidate после
-  завершения до чтения CPU. После RX нельзя делать clean устаревших строк.
-- Обрабатываются затронутые строки, а не весь кеш. На F7 строка — 32 байта;
-  буфер и независимо обрабатываемые части должны владеть целыми выровненными
-  строками. Округление диапазона не должно затрагивать посторонние изменяемые данные.
-- CPU не обращается к части буфера, принадлежащей DMA, во время передачи.
-  Для кольцевого буфера владение и обслуживание нужны для каждой завершённой части.
+| Передача | Правило |
+| --- | --- |
+| TX | clean линий буфера **до** того, как DMA их прочитает |
+| RX | clean+invalidate **до** запуска DMA; invalidate **после** завершения, до чтения процессором. Нельзя делать clean устаревших RX-линий после приёма |
 
-Общие операции реализованы в System:
+- Обрабатываются только затронутые линии. На F7 линия — 32 байта; буфер (и независимо обрабатываемые части) должен владеть целыми выровненными линиями — округление не должно задевать посторонние изменяемые данные.
+- Процессор не обращается к части буфера, принадлежащей DMA, во время передачи. Кольцевым буферам нужны владение и обслуживание для каждой завершённой части.
+
+Общие функции:
 
 ```cpp
 System::CacheClean(tx_buffer, tx_bytes);
-System::CacheCleanInvalidate(rx_buffer, rx_bytes); // до запуска RX
-System::CacheInvalidate(rx_buffer, received_bytes); // после остановки DMA
+System::CacheCleanInvalidate(rx_buffer, rx_bytes);   // до запуска RX
+System::CacheInvalidate(rx_buffer, received_bytes);  // после остановки DMA
 ```
 
-Периферийный драйвер определяет адрес, размер в байтах и момент вызова.
-При прямом использовании DMA эти вызовы делает пользователь. DMA не хранит
-состояние буфера/кеша. На F7 функции пропускают обслуживание диапазона целиком
-внутри настроенной DMA-области и при выключенном D-cache; в остальных случаях
-CMSIS обрабатывает пересекающиеся 32-байтные строки. На F4/G0/L0 функции пустые
-и определены inline. Нулевой размер/nullptr также не выполняет операции.
-Диапазон должен быть корректным и помещаться в знаковый размер CMSIS с учётом
-округления до строк. Вызывайте после System::Init() и сохраняйте настроенные
-атрибуты MPU. Подключение этих операций в периферии выполняется при разборе
-соответствующего драйвера.
+- Драйверы периферии сами выбирают адрес, размер и момент вызова; при прямом использовании DMA вызовы делает пользователь. DMA не хранит состояние кеша.
+- F7: пропускаются, если диапазон целиком в DMA-области проекта или D-cache выключен; иначе CMSIS обрабатывает пересекающиеся 32-байтные линии.
+- F4/G0/L0: пустые inline-функции. Нулевой размер или `nullptr` ничего не делает.
+- Диапазон должен быть корректным и помещаться в знаковый размер CMSIS (с учётом округления). Вызывайте после `System::Init()`.
 
-Описание атрибутов регионов — в
-[ST AN4838](https://www.st.com/resource/en/application_note/DM00272912-.pdf),
-согласование кеша и DMA — в
-[ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf).
+Источники: [ST AN4838](https://www.st.com/resource/en/application_note/DM00272912-.pdf) (атрибуты регионов MPU), [ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf) (согласование кеша и DMA).
 
 ---
 
@@ -998,35 +766,30 @@ CMSIS обрабатывает пересекающиеся 32-байтные с
 [[noreturn]] static void DebugTrap(const char* msg);
 ```
 
-Единственный по всему проекту способ сообщить "это программная ошибка конфигурации, а не
-рантайм-сбой периферии" — используется в конструкторах `USART`/`SPI`/`TIM_PWM`/... для проверки
-"пин принадлежит не тому периферийному модулю" (см. [GPIO.md §6](GPIO.md#6-constexpr-таблицы-пинов-и-защита-от-опечаток)).
+Общий для проекта способ остановиться на **программной ошибке/ошибке конфигурации** (в отличие от сбоя периферии во время работы, который возвращается статусом).
 
-Поведение зависит от сборки:
+| Сборка | Поведение |
+| --- | --- |
+| **Debug** (`DEBUG` определён) | сохраняет `msg` в `volatile _debug_trap_msg` (видно в Watch/Memory, даже если стек испорчен оптимизацией); на F4/F7 при включённых трассировке и канале ITM 0 выводит сообщение через **блокирующий SWO** (`ITM_SendChar()`); затем `__BKPT(0)` и бесконечный цикл |
+| **Release** | встроенный бесконечный цикл в `system.hpp`; аргумент игнорируется, поэтому неиспользуемые строки удаляет оптимизатор |
 
-- **Debug** (`DEBUG` определён CMake'ом): `msg` сохраняется в `volatile _debug_trap_msg`
-  (видно в Watch/Memory окне отладчика даже без стека вызовов — полезно, если оптимизация
-  инлайнит/уничтожает стек). На F4/F7 при включённой трассировке и канале ITM №0
-  строка с нулевым завершением выводится через **блокирующий SWO** посредством
-  `ITM_SendChar()`. Затем выполняется `__BKPT(0)` и бесконечный цикл.
-- **Release**: тело inline в system.hpp игнорирует аргумент и выполняет
-  бесконечный цикл. Оптимизатор может удалить неиспользуемые строки без LTO;
-  фактическое удаление зависит от параметров сборки.
+**Ошибки конфигурации в конструкторах** используют `STM32_CONFIG_ERROR("причина")` (см. также [GPIO.md §6](GPIO.md#6-constexpr-таблицы-пинов-и-защита-от-опечаток)):
 
-Проверки постоянных привязок используют STM32_CONFIG_ERROR("причина").
-Неконстантная функция stm32::CONFIGURATION_ERROR<reason>() получает строку как
-параметр шаблона: при constinit/consteval GCC включает её в само сообщение ошибки.
-Путь выбирает std::is_constant_evaluated(); во время выполнения макрос напрямую
-вызывает DebugTrap(text), без вызова шаблонной функции. По контракту API драйверы
-требуется объявлять с constinit. Примеры и диагностика:
-[Initialization.md](Initialization.md).
+```cpp
+#define STM32_CONFIG_ERROR(text) \
+  (std::is_constant_evaluated() ? ::stm32::CONFIGURATION_ERROR<text>() : ::System::DebugTrap(text))
+```
 
-ITM/SWO настраивает отладчик. При выключенной трассировке или `nullptr` вывод
-пропускается; на G0/L0 ITM-вывода нет. Включённый, но остановившийся канал ITM
-может задержать функцию до BKPT. Этот путь намеренно блокирующий и не использует
-SysTick: он применим до `System::Init()` и из прерывания. Обычный `SWOTrace()`
-остаётся неблокирующим. `SetDebugOutput()` удалён; колбэка вывода и настройки
-UART для `DebugTrap()` нет.
+- **При компиляции** (`constinit`/`consteval`): вызывается намеренно не-`constexpr` функция `stm32::CONFIGURATION_ERROR<reason>()`. Текст — параметр шаблона, поэтому GCC печатает причину **в самом сообщении об ошибке**.
+- **Во время работы**: напрямую вызывается `DebugTrap(text)` — отладчик показывает читаемое сообщение, а не кадр шаблонной функции.
+- `constinit` обязателен по правилам API драйверов. Примеры и диагностика: [Initialization.md](Initialization.md).
+
+**Замечания:**
+
+- ITM/SWO настраивает отладчик. При выключенной трассировке или `msg == nullptr` вывод пропускается; на G0/L0 ITM нет.
+- Включённый, но остановившийся канал ITM может задержать `DebugTrap` до точки останова.
+- Этот путь намеренно блокирующий и не использует SysTick, поэтому работает до `System::Init()` и внутри прерываний.
+- Обычный `SWOTrace()` остаётся неблокирующим. `SetDebugOutput()` удалён — callback вывода и UART для `DebugTrap()` нет.
 
 ---
 
@@ -1037,18 +800,14 @@ enum class SysStatus     : uint8_t { OK, Error, Busy, NotInit, Timeout };
 enum class SysInitStatus : uint8_t { NotInit, InitOK, InitError = 0xFF };
 ```
 
-Общий словарь результатов для всех драйверов — `SysStatus` для рантайм-операций (`Send()`,
-`Receive()`, ...), `SysInitStatus` для однократных настроек (`SetUp()`, `Init()`). Не самая
-детализированная схема (нет отдельного кода "неверный аргумент" vs "устройство не найдено" —
-оба варианта чаще всего `Error`/`InitError`), но единая на весь проект, так что вызывающему коду
-не нужно помнить разные enum'ы для разных периферий.
+| Enum | Для чего | Значения |
+| --- | --- | --- |
+| `SysStatus` | операции во время работы (`Send()`, `Receive()`, …) | `OK`, `Error`, `Busy`, `NotInit`, `Timeout` |
+| `SysInitStatus` | однократная настройка (`SetUp()`, `Init()`) | `NotInit`, `InitOK`, `InitError` |
 
-`BIT_BB`/`BB_RD`/`BB_WR` — низкоуровневые функции адресной арифметики bit-banding
-(`(addr - PERIPH_BASE) * 32 + bit * 4 + PERIPH_BB_BASE`), на которых построены
-`PIN::SetLevel_BB()`/`GetLevel_BB()`/`TogglePin_BB()` — подробное объяснение самой техники
-bit-banding и почему она доступна только на F4 — в [GPIO.md §5](GPIO.md#5-bit-banding-только-f4);
-здесь эти функции просто определены (F4-only, `#if defined(STM32F4)`), так как исторически это
-общесистемная, а не GPIO-специфичная возможность ядра.
+Намеренно грубая схема — нет отдельных кодов «неверный аргумент» и «устройство не найдено» (оба — `Error`/`InitError`), — зато единая на весь проект: вызывающему коду не нужно помнить разные enum для разной периферии. Подробности драйверы сообщают через свои `GetError()`/маски ошибок там, где это нужно.
+
+**`BIT_BB`/`BB_RD`/`BB_WR`** — адресная арифметика bit-banding (`(addr - PERIPH_BASE) * 32 + bit * 4 + PERIPH_BB_BASE`), на которой построены `PIN::SetLevel_BB()`/`GetLevel_BB()`/`TogglePin_BB()`. Определены только для F4 (`#if defined(STM32F4)`), поскольку это возможность ядра, а не GPIO. Сама техника и почему она только на F4: [GPIO.md §5](GPIO.md#5-bit-banding-только-f4).
 
 ---
 
@@ -1062,11 +821,11 @@ int main() {
     constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
     if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
         System::DebugTrap("Clock init");
-    System::Enable_CYCCNT();   // требуется перед первым Delay_us()
+    System::Enable_CYCCNT();   // только F4/F7; требуется перед первым Delay_us()
 
     uint32_t tick = System::GetTick();
     for (;;) {
-        if (System::GetTick() - tick > 500) {
+        if (System::GetTick() - tick > 500) {   // безопасно при переполнении
             tick = System::GetTick();
             // раз в 500 мс...
         }
@@ -1084,10 +843,19 @@ System::Enable_CYCCNT();     // один раз
 System::Delay_us(50);        // 50 мкс, блокирующая
 ```
 
+### Ожидание аппаратного флага с таймаутом
+
+```cpp
+// Ждать установки HSERDY не дольше 10 мс.
+if (!System::WaitBits(RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY, 10)) {
+    // таймаут
+}
+```
+
 ### DebugTrap с выводом через SWO
 
 ```cpp
-// Включить канал ITM №0 / SWO в отладчике (F4/F7, сборка DEBUG).
+// Включить канал ITM 0 / SWO в отладчике (F4/F7, сборка DEBUG).
 System::DebugTrap("Invalid peripheral pin"); // блокирующий вывод, брейкпоинт, останов
 ```
 
@@ -1095,36 +863,21 @@ System::DebugTrap("Invalid peripheral pin"); // блокирующий выво�
 
 ## 10. Угловые случаи
 
-- **Порядок вызовов важен**: `System::Init()` →
-  `ClockSystem::Init<config>()` → `System::Enable_CYCCNT()` → `SetUp()` любых
-  периферийных драйверов. Периферийный `SetUp()` до `ClockSystem::Init<config>()` посчитает делители
-  от HSI (16 МГц), а не от реальной частоты (см. §3).
-- **`Enable_CYCCNT()`/`Delay_us()`/`SWOTrace()` недоступны на STM32L0/G0** — оба используют
-  Cortex-M0/M0+, где нет блока DWT с `CYCCNT`. Вызов на этих целях — ошибка компиляции
-  (функции просто не существуют в этой сборке), а не рантайм-сбой.
-- **Большие запросы `Delay_ms()`** — ожидание вместе с компенсирующим тиком
-  ограничено `0x7FFFFFFF` тиками. `Delay_ms(0xFFFFFFFF)` использует тот же предел.
-- **`DebugTrap()` в release-сборке не сохраняет `msg` нигде** — строка может быть даже не
-  включена в бинарник компилятором (если `msg` не используется больше нигде), в отличие от
-  debug-сборки, где `_debug_trap_msg` всегда указывает на неё.
-- **`TickIncrease()` вызывается только из `SysTick_Handler`** — вызов из любого другого места
-  не является ошибкой (это просто инкремент переменной), но нарушит соответствие между
-  `GetTick()` и реальным временем.
+| Ситуация | Поведение |
+| --- | --- |
+| `SetUp()` периферии до `ClockSystem::Init<config>()` | Делители считаются от HSI 16 МГц, а не от реальной частоты (§3). Порядок: `System::Init()` → `ClockSystem::Init<config>()` → `Enable_CYCCNT()` → `SetUp()` периферии. |
+| `Enable_CYCCNT()`/`Delay_us()`/`SWOTrace()` на G0/L0 | Ошибка компиляции — у Cortex-M0/M0+ нет DWT/CYCCNT, функций не существует. |
+| `Delay_ms(0xFFFFFFFF)` | Ограничивается `0x7FFFFFFF` тиками вместе с компенсирующим тиком. |
+| `DebugTrap()` в release | `msg` не сохраняется; строки может вообще не быть в прошивке. |
+| `TickIncrease()` вне `SysTick_Handler` | Не ошибка, но `GetTick()` перестанет соответствовать реальному времени. |
+| `Delay_ms()` в IRQ с приоритетом 0 | Никогда не завершится — у SysTick самый низкий приоритет. |
 
 ---
 
 ## См. также
 
-- [RCC.md](RCC.md) — единственный писатель тактовых переменных, описанных в §3.
-- [GPIO.md](GPIO.md) — `BIT_BB`/`BB_RD`/`BB_WR` (§8) используются `PIN::*_BB()`-методами.
-- [IRQ_Registry.md](IRQ_Registry.md) — независимый механизм диспетчеризации периферийных IRQ;
-  `SysTick_Handler`/`NMI_Handler`/`HardFault_Handler` и подобные исключения Cortex-M сюда не
-  входят и настраиваются отдельно (см. `src/main.cpp`).
-- [UART.md](UART.md), [TIM.md](TIM.md), [SPI.md](SPI.md), [RTC.md](RTC.md), [DMA.md](DMA.md),
-  [Flash.md](Flash.md) — все читают `SysStatus`/`SysInitStatus` (§8) и `System::GetTick()` (§4)
-  из этого модуля.
-
-- [RCC.md](RCC.md)
-- [DMA.md](DMA.md)
-- [IRQ_Registry.md](IRQ_Registry.md)
-- [Initialization.md](Initialization.md)
+- [RCC.md](RCC.md) — единственный, кто записывает тактовые переменные (§3).
+- [GPIO.md](GPIO.md) — `BIT_BB`/`BB_RD`/`BB_WR` (§8) используются методами `PIN::*_BB()`.
+- [IRQ_Registry.md](IRQ_Registry.md) — диспетчеризация периферийных IRQ; `SysTick_Handler`, `NMI_Handler`, `HardFault_Handler` и другие исключения Cortex-M в неё не входят.
+- [UART.md](UART.md), [TIM.md](TIM.md), [SPI.md](SPI.md), [RTC.md](RTC.md), [DMA.md](DMA.md), [Flash.md](Flash.md) — используют `SysStatus`/`SysInitStatus` (§8) и `GetTick()` (§4).
+- [Initialization.md](Initialization.md) — `constinit` и диагностика `STM32_CONFIG_ERROR`.

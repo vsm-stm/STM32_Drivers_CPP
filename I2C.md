@@ -25,103 +25,153 @@
 
 ## 1. Why This Is Needed
 
-I2C implements a 7-bit master with blocking, IRQ and DMA operations. The operation model is shared while hardware branches account for F4 I2C v1 and F7/G0 I2C v2. Slave mode and F4 FMPI2C1 are not implemented here.
+`I2C` is an **I2C master** with 7-bit addressing. Every operation exists in three flavours: blocking, interrupt-driven and DMA.
+
+| Family | Hardware block |
+| --- | --- |
+| F4 | I2C v1 (SR1/SR2, CCR/TRISE) |
+| F7, G0 | I2C v2 (TIMINGR, NBYTES/RELOAD) |
+
+The API is the same on all families; the hardware differences are handled inside.
+
+**Not supported:** slave mode, and the separate FMPI2C1 block of some F4 devices.
 
 ---
 
 ## 2. Constant Initialization and Constructor Diagnostics
 
-Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use the provided _N::instance, named pins and optional _N::DMA routes. G0 takes numeric DMAx_Channely_BASE selections; the peripheral fixes the request source.
+Declare the object at file scope with `constinit` (or as `static constinit` inside a function). Arguments:
 
-For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. The macro uses `std::is_constant_evaluated()` to select that path; at runtime it calls `System::DebugTrap(text)` directly, without calling the template. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. Metadata is read from Instance; the cached register pointer is the setup marker and is cleared after failed initial setup or DeInit. No second metadata pointer is stored. See [Initialization.md](Initialization.md) for constructor variants and migration.
+- `I2C::_N::instance`;
+- named SCL and SDA pins of that instance;
+- optional TX and RX DMA: named routes `_N::DMA::...` on F4/F7, physical channel addresses `DMAx_Channely_BASE` on G0 (the request ID comes from the peripheral).
+
+What happens with a wrong argument:
+
+| Declaration | Result |
+| --- | --- |
+| `constinit` object | **Compilation error** with the reason text in the message. |
+| Object without `constinit` | Compiles; at start-up the constructor stops in `System::DebugTrap(reason)`. |
+
+Every check calls `STM32_CONFIG_ERROR("reason")`: at compile time a GCC error containing the reason, at run time `System::DebugTrap(text)`. `constinit` is required by the usage contract but not enforced.
+
+`SetUp()` still checks hardware state and occupied resources. The object stores the instance reference and one register pointer; a null pointer means "not set up" (it is cleared after a failed first `SetUp()` and by `DeInit()`). Details: [Initialization.md](Initialization.md).
 
 ---
 
 ## 3. Setup and Compile-Time Timing
 
-One object owns an I2C master. Pins and optional TX/RX DMA are fixed at
-construction; blocking/IRQ operations remain usable when DMA is configured.
-System/RCC must be initialized first. SetUp configures AF open-drain GPIO with
-pull-up, PCLK kernel clock, timing and embedded DMA; real bus pull-ups must match
-capacitance/rate. Repeated SetUp requires DeInit. Failure rolls back only newly
-acquired DMA/registrations and preserves other shared handlers.
+**One object owns one I2C master.** Pins and DMA are fixed by the constructor. With DMA configured, blocking and IRQ operations are still available.
 
 ```cpp
 template<ClockSystem::Config clocks, SPEED speed = SPEED::STANDARD>
 SysInitStatus SetUp();
 ```
 
-Use the same clocks as ClockSystem::Init<clocks>(). The driver obtains APB1 through
-ClockSystem::GetAPB1Clock<clocks>(), sharing RCC Prepare and validation. Invalid
-configurations/timing are compile errors. Apply compares the derived APB1 with
-System::APB1BusClock before GPIO/MMIO/acquisition. This is nominal state, not an
-oscillator measurement; always check RCC Init. Direct RCC changes and dynamic
-timing recalculation are outside this contract.
+**Pass the same `clocks` you gave to `ClockSystem::Init<clocks>()`.** System/RCC must be initialized first.
 
-F4 supports STANDARD 100 kHz and FAST 400 kHz. FAST_PLUS 1 MHz is for F7/G0 with
-appropriate clock/electrical conditions. F7/G0 calculation in
-src/tools/i2c_timing_utility.hpp runs only at compile time: the old 128-entry
-permanent RAM array and runtime search are removed. Search retains ST ordering:
-first suitable SCLDEL/SDADEL per PRESC, then minimum period error, keeping the
-first tie. Invalid periods are skipped early. Analog filter is on, DNF=0;
-rise/fall assumptions are 1000/300 ns STANDARD, 300/300 ns FAST, 100/100 ns FAST_PLUS.
-This selects an allowed nearby timing, not necessarily exact Hz. The application
-checks actual signal edges. Older SetUp(SPEED) and SetUp<pclk_hz, SPEED>() are removed.
+`SetUp()`:
+
+- configures SCL/SDA as alternate-function open-drain with pull-up;
+- uses PCLK as the I2C kernel clock;
+- writes the precomputed timing;
+- sets up the embedded DMA and registers the interrupts.
+
+> The internal pull-ups are weak. Real buses need external pull-up resistors sized for the bus capacitance and speed.
+
+A repeated `SetUp()` requires `DeInit()` first. On failure only what this call acquired (DMA, registrations) is rolled back; other handlers on shared vectors stay.
+
+**Timing is computed at compile time.**
+
+- APB1 comes from `ClockSystem::GetAPB1Clock<clocks>()`, which shares RCC's preparation and validation — no duplicated PLL/divider formulas.
+- F4: CCR/TRISE/FREQ are precomputed. F7/G0: TIMINGR is precomputed.
+- An invalid clock configuration, speed or timing is a **build error**.
+- Before touching GPIO/registers/DMA, `SetUp()` compares this APB1 with `System::APB1BusClock` (the value published by RCC) and returns `InitError` on mismatch. This is a check of the nominal value, not a measurement — always check the RCC init result yourself.
+- Changing RCC behind ClockSystem's back, or recalculating timing at run time, is not supported.
+
+**Speeds:**
+
+| Speed | Rate | Families |
+| --- | --- | --- |
+| `STANDARD` (default) | 100 kHz | F4, F7, G0 |
+| `FAST` | 400 kHz | F4, F7, G0 |
+| `FAST_PLUS` | 1 MHz | F7, G0 (with suitable clock and electrical conditions) |
+
+**F7/G0 timing search** (`src/tools/i2c_timing_utility.hpp`) runs only in the compiler. The old 128-entry RAM table (2.5 KB) and the run-time search are gone. The algorithm keeps ST's ordering:
+
+1. for each PRESC, take the first valid SCLDEL/SDADEL;
+2. then choose the smallest period error (first match wins a tie);
+3. impossible periods are skipped early.
+
+Assumptions: analog filter on, digital filter (DNF) = 0, rise/fall times 1000/300 ns (STANDARD), 300/300 ns (FAST), 100/100 ns (FAST_PLUS). The result is the closest **allowed** timing, not necessarily the exact frequency — check the real signal edges on your board.
+
+The old `SetUp(SPEED)` and `SetUp<pclk_hz, SPEED>()` were removed.
 
 ---
 
 ## 4. Transfer API and Status
 
 | Operation | Blocking | IRQ | DMA |
-|---|---|---|---|
-| Write | Send | Send_IRQ | Send_DMA |
-| Read | Receive | Receive_IRQ | Receive_DMA |
-| Register write | WriteReg | WriteReg_IRQ | WriteReg_DMA |
-| Register read | ReadReg | ReadReg_IRQ | ReadReg_DMA |
+| --- | --- | --- | --- |
+| Write | `Send` | `Send_IRQ` | `Send_DMA` |
+| Read | `Receive` | `Receive_IRQ` | `Receive_DMA` |
+| Register write | `WriteReg` | `WriteReg_IRQ` | `WriteReg_DMA` |
+| Register read | `ReadReg` | `ReadReg_IRQ` | `ReadReg_DMA` |
 
-addr is an unshifted 0..0x7F address. len counts bytes, up to 65535.
-REG::_8BIT/_16BIT selects one/two register address bytes, high byte first.
-ReadReg uses repeated START. F7/G0 split NBYTES into up to 255-byte RELOAD parts
-without changing user length. Zero Send/Receive returns Error. CPU WriteReg may
-send only the register address with len=0; DMA requires nonzero payload. IsReady
-is a blocking address probe.
+**Arguments:**
 
-Blocking calls return OK/Busy/NotInit/Error/Timeout; GetError gives the reason.
-GetTick must run. F4 ACK/POS/ADDR/STOP handling for the final 1–3 bytes is sensitive
-to ISR latency; the driver does not add internal IRQ masking.
+- `addr` — 7-bit address **not shifted** (0…0x7F).
+- `len` — number of bytes, up to 65535. F7/G0 split it into ≤255-byte NBYTES chunks internally (RELOAD); your buffer length is unaffected.
+- `REG::_8BIT` / `REG::_16BIT` — one or two register-address bytes, high byte first.
+- `ReadReg` uses a repeated START between the register address and the read.
 
-Asynchronous OK means started, not completed. The buffer belongs to the driver
-until completion and must remain alive/unmodified. Poll IsBusy/GetError or use
-callbacks. There is no internal IRQ/DMA timeout: main enforces a deadline and
-calls Abort with this object's IRQs excluded. Abort confirms DMA stop, resets
-I2C, publishes Aborted without a callback and retains bindings/registrations.
+**Special cases:**
+
+- `Send`/`Receive` with `len = 0` → `Error`.
+- `WriteReg`/`WriteReg_IRQ` with `len = 0` sends only the register address (allowed). DMA variants require `len > 0`.
+- `IsReady(addr)` — blocking address probe without data.
+
+**Blocking calls** return `OK`, `Busy`, `NotInit`, `Error` or `Timeout`; `GetError()` gives the reason. They need a running `GetTick()`. On F4 the ACK/POS/ADDR/STOP handling of the last 1–3 bytes is sensitive to interrupt latency — long foreign ISRs can break it. The driver does not mask interrupts internally.
+
+**Asynchronous calls (IRQ/DMA):**
+
+- `OK` means **started**, not finished.
+- Until completion the buffer belongs to the driver — do not modify, free or read it.
+- Check `IsBusy()`/`GetError()` or use callbacks.
+- **There is no internal timeout.** `main` must enforce its own deadline and call `Abort()` if needed.
+
+**`Abort()`** (from `main`, with this object's IRQs not running): disables requests, confirms the DMA stop, resets the I2C block and sets `GetError()` to `Aborted`. No callback is called. Bindings and registrations stay.
 
 ---
 
 ## 5. IRQ and Completion
 
-SetUp registers I2C EV/ER (one shared vector on G0) and separate TX/RX DMA objects.
-Each DMA handler reads its resource once through GetIRQFlags and the public
-FLAG_TC/FLAG_ERRORS masks; HT is unused. Registry full/duplicate failures return
-InitError. Shared G0 DMA TX/RX vectors require two registry slots.
+**Registration.** `SetUp()` registers the I2C event/error handler (one shared vector on G0) and separate TX/RX DMA handlers. Each DMA handler reads only its own stream/channel through `GetIRQFlags()` with the public `FLAG_TC`/`FLAG_ERRORS` masks; half-transfer is not used. A full registry or a duplicate registration → `InitError`. On G0, when TX and RX DMA share one vector, that needs **two** registry slots.
 
-Handlers for one object must not preempt each other. The application serializes
-start/Abort/DeInit with these IRQs. Callbacks must not wait, call blocking I/O,
-Abort/DeInit or change the registry. No internal blanket masking is introduced.
+**Rules for the application:**
 
-F4 TX completes after BTF and issuing STOP; RX DMA issues STOP after TC (one-byte
-RX issues it after ADDR). There is no wait for STOP to clear: another start
-returns Busy while STOP/BUSY remain set.
+- Handlers of one I2C object must not preempt each other (give them the same priority).
+- Serialize start/`Abort()`/`DeInit()` with these interrupts.
+- Callbacks must not wait, run blocking I/O, call `Abort()`/`DeInit()` or change the registry.
 
-F7/G0 require both STOPF for the bus phase and DMA TC. If STOPF arrives first,
-remain Busy until DMA completes; if TC arrives first, its source is disabled
-while the flag remains until bus completion. Successful publication requires
-zero DMA residual count. CPU STOPF also checks register/payload completion.
+**When is a transfer complete?**
 
-F4/F7 errors request DMA stop and finish on TC or TE with EN=0. G0 discards an
-error packet after the stop command without interpreting CNDTR as partial data.
-IRQ does not wait for EN/STOP or drain an unbounded FIFO. Missing events can
-leave Busy: the external deadline and Abort cover that case too.
+| Family | Rule |
+| --- | --- |
+| F4 TX | after BTF and issuing STOP |
+| F4 RX DMA | STOP is issued after DMA TC (for a 1-byte read — right after ADDR) |
+| F7/G0 | **both** STOPF (bus phase done) **and** DMA TC are required |
+
+- F4 does not wait for STOP to clear. A new start returns `Busy` while STOP/BUSY are still set.
+- F7/G0: if STOPF arrives first, the object stays `Busy` until the DMA interrupt; if TC arrives first, the TC source is disabled and the flag kept until the bus finishes. Success additionally requires the DMA remaining count to be zero. For CPU transfers STOPF also checks that the register address and data were fully sent.
+
+**Errors:**
+
+- F4/F7: the driver requests a DMA stop and finishes on TC or TE with EN = 0.
+- G0: the failed packet is discarded after the stop command; CNDTR is not interpreted as partial data.
+- No waits for EN/STOP and no unbounded FIFO draining inside interrupts.
+
+An incomplete transfer is never reported as success. If expected events never arrive, the object may stay `Busy` — the external deadline + `Abort()` cover this too.
 
 ---
 
@@ -139,49 +189,74 @@ protected:
 };
 ```
 
-OnComplete/OnError run from I2C or DMA IRQ after state/buffer handover. Error
-data must not be read. Blocking methods do not invoke these callbacks. The old
-SetDoneCallback/SetErrorCallback API is removed.
+- `OnComplete()`/`OnError()` run in the I2C or DMA interrupt, **after** the state is updated and the buffer is handed back.
+- After `OnError()` do not use the received data.
+- Blocking methods never call these callbacks.
+- The old `SetDoneCallback`/`SetErrorCallback` API was removed.
 
 ---
 
 ## 7. Cache and Noncacheable DMA Memory
 
-TX uses System::CacheClean before DMA. RX uses CacheCleanInvalidate before
-start and CacheInvalidate after successful completion, before CPU access.
-On F7 the application owns all affected 32-byte lines including padding; len
-need not be divisible by 32. Error buffers are not invalidated for partial reads.
-System skips a range entirely inside a configured noncacheable DMA region;
-F4/G0 helpers are empty. Project/MPU settings do not switch I2C implementations.
+Relevant on F7 (data cache); on F4/G0 the cache helpers are empty.
+
+| Direction | Before DMA | After success |
+| --- | --- | --- |
+| TX | `System::CacheClean` | — |
+| RX | `System::CacheCleanInvalidate` | `System::CacheInvalidate`, before the CPU reads |
+
+- The application owns **every 32-byte cache line** the buffer touches, including padding. `len` does not have to be a multiple of 32.
+- After an error the RX buffer is not invalidated and must not be read as partial data.
+- Ranges entirely inside a configured noncacheable DMA region are skipped by System automatically.
+- Project/MPU settings do not switch I2C implementations.
 
 ---
 
 ## 8. Atomic Register Updates
 
-I2C_USE_ATOMIC in i2c.hpp defaults to 0 (SET_BIT/CLEAR_BIT/MODIFY_REG); 1 selects
-ST ATOMIC_*. F4/F7 use LDREX/STREX; G0 briefly saves/masks/restores PRIMASK.
-DMA_USE_ATOMIC independently controls DMA CR/CCR. Rebuild library/application;
-a define confined to main.cpp is insufficient. One atomic RMW does not serialize
-the FSM/transfer/buffer handover. ICR/SR, data registers and NBYTES/START commands
-are written directly according to hardware semantics.
+**`I2C_USE_ATOMIC`** (in `i2c.hpp`, default `0`):
+
+| Value | Read-modify-write of control registers |
+| --- | --- |
+| `0` | plain `SET_BIT`/`CLEAR_BIT`/`MODIFY_REG` |
+| `1` | ST `ATOMIC_*`: LDREX/STREX on F4/F7; short PRIMASK save/mask/restore on G0 |
+
+- `DMA_USE_ATOMIC` controls the DMA CR/CCR independently.
+- Rebuild the library and application after changing it — a `#define` only in `main.cpp` is not enough.
+- One atomic RMW does not serialize a whole transfer, the state machine or buffer handover.
+- ICR/SR, data registers and NBYTES/START commands are always written directly, as the hardware requires.
 
 ---
 
 ## 9. DeInit and Bus Recovery
 
-Call DeInit from main before destroying the object. It stops the operation,
-releases its DMA/IRQ entries, resets I2C and returns pins to input. Other handlers
-on shared vectors remain. Repeated DeInit is allowed; the same bindings can
-subsequently SetUp again. Recover is application code: DeInit first, drive GPIO
-as appropriate, confirm released lines with device-specific delays/deadlines,
-then SetUp. No hidden universal recovery service is provided.
+**`DeInit()`** (from `main`, before destroying the object):
+
+- stops the current operation;
+- releases its DMA and IRQ registrations (other handlers on shared vectors stay);
+- resets the I2C block and returns the pins to input.
+
+Repeated `DeInit()` is allowed; afterwards `SetUp()` can be called again with the same bindings.
+
+**Bus recovery is application code.** If a slave holds SDA low:
+
+1. `DeInit()` the driver;
+2. drive SCL/SDA as GPIO (e.g. clock pulses on SCL);
+3. confirm the lines are released, with delays/deadlines suitable for your devices;
+4. `SetUp()` again.
+
+The driver has no built-in universal recovery routine (`Recover()` was removed).
 
 ---
 
 ## 10. Usage Examples
 
+Setup (same `clocks` for RCC and I2C):
+
 ```cpp
-constexpr ClockSystem::Config clocks{};
+#include "i2c.hpp"
+
+constexpr ClockSystem::Config clocks{};   // HSI, all dividers /1
 #if defined(STM32G0)
 constexpr I2C::DMAReq tx = DMA1_Channel1_BASE;
 constexpr I2C::DMAReq rx = DMA1_Channel2_BASE;
@@ -191,31 +266,45 @@ constexpr I2C::DMAReq rx = I2C::_1::DMA::RX_DMA1_Stream0;
 #endif
 
 constinit I2C bus(I2C::_1::instance, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9, tx, rx);
+
+// In main:
 if (System::Init() != SysInitStatus::InitOK) return;
 if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
 auto init = bus.SetUp<clocks, I2C::SPEED::FAST>();
 ```
+
+Blocking register read (device 0x68, register 0x75, 100 ms timeout):
 
 ```cpp
 uint8_t id = 0;
 auto status = bus.ReadReg(0x68, 0x75, &id, 1, I2C::REG::_8BIT, 100);
 ```
 
+DMA read with a deadline (from `main` only):
+
 ```cpp
 if (bus.Receive_DMA(0x68, buffer, sizeof(buffer)) == SysStatus::OK) {
     const uint32_t started = System::GetTick();
     while (bus.IsBusy() && System::GetTick() - started < 100u) {}
     if (bus.IsBusy()) bus.Abort();
+    // If GetError() != ERR::None, do not use the data.
 }
 ```
 
-Independent examples: check every returned status; the waiting/Abort example is main-only.
+Check every returned status.
 
 ---
 
 ## 11. Edge Cases
 
-No internal async timeout; use a main deadline and Abort. A failed RX buffer is invalid. A new F4 operation may remain Busy until STOP/BUSY clear. External pull-ups, electrical behavior and recovery belong to the application. Duplicate setup requires DeInit.
+| Situation | Behaviour |
+| --- | --- |
+| IRQ/DMA transfer never completes | No internal timeout; `main` sets a deadline and calls `Abort()`. |
+| RX ended with an error | Buffer content is invalid. |
+| F4: new transfer right after the previous one | May return `Busy` until STOP/BUSY clear. |
+| Slave holds the bus | Recovery is up to the application (section 9). |
+| Pull-ups, noise, bus capacitance | Application/hardware responsibility. |
+| `SetUp()` twice | Error; call `DeInit()` first. |
 
 ---
 
@@ -225,9 +314,6 @@ No internal async timeout; use a main deadline and Abort. A failed RX buffer is 
 - [RM0090, DMA1 request mapping](https://www.st.com/resource/en/reference_manual/rm0090-stm32f407-advanced-armbased-32bit-mcus-stmicroelectronics.pdf): I2C3 RX Stream2 CH3.
 - [RM0431, DMA1 request mapping](https://www.st.com/resource/en/reference_manual/rm0431-stm32f72xxx-and-stm32f73xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf): F72/F73 I2C1–3.
 - [RM0385](https://www.st.com/resource/en/reference_manual/dm00124865.pdf), [RM0410](https://www.st.com/resource/en/reference_manual/rm0410-stm32f76xxx-and-stm32f77xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf): I2C4 RX Stream2 CH2, TX Stream5 CH2.
-
-Перенос выполнен по исходникам. Сборки, тесты и проверка на плате не запускались.
-
 - [Initialization.md](Initialization.md)
 - [RCC.md](RCC.md)
 - [DMA.md](DMA.md)
@@ -257,24 +343,43 @@ No internal async timeout; use a main deadline and Abort. A failed RX buffer is 
 
 ## 1. Зачем это нужно
 
-I2C реализует master-обмен с адресами 7 бит, блокирующими, IRQ- и DMA-операциями. Общая модель операции сохраняется, аппаратные ветви F4 и F7/G0 учитывают разные поколения блока.
+`I2C` — **ведущий (master) I2C** с 7-битной адресацией. Каждая операция есть в трёх вариантах: блокирующем, через прерывания и через DMA.
+
+| Семейство | Аппаратный блок |
+| --- | --- |
+| F4 | I2C v1 (SR1/SR2, CCR/TRISE) |
+| F7, G0 | I2C v2 (TIMINGR, NBYTES/RELOAD) |
+
+API одинаков на всех семействах, различия аппаратуры учтены внутри.
+
+**Не поддерживаются:** режим ведомого (slave) и отдельный блок FMPI2C1 некоторых F4.
 
 ---
 
 ## 2. Постоянная инициализация и диагностика конструктора
 
-Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте готовый _N::instance, именованные пины и необязательные маршруты _N::DMA. На G0 передаются числовые DMAx_Channely_BASE, источник запроса закрепляет периферия.
+Объявляйте объект глобально с `constinit` (или как `static constinit` внутри функции). Аргументы:
 
-При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. Макрос выбирает путь через `std::is_constant_evaluated()`; во время выполнения напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Метаданные читаются из Instance; указатель регистров служит признаком настройки и обнуляется после ошибки первой настройки или DeInit. Второго указателя метаданных нет. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+- `I2C::_N::instance`;
+- именованные выводы SCL и SDA этого экземпляра;
+- необязательные TX и RX DMA: именованные маршруты `_N::DMA::...` на F4/F7, адреса физических каналов `DMAx_Channely_BASE` на G0 (номер запроса берётся из периферии).
+
+Что происходит при неверном аргументе:
+
+| Объявление | Результат |
+| --- | --- |
+| Объект с `constinit` | **Ошибка компиляции**, текст причины — в сообщении. |
+| Объект без `constinit` | Собирается; при старте конструктор останавливается в `System::DebugTrap(причина)`. |
+
+Каждая проверка вызывает `STM32_CONFIG_ERROR("причина")`: при компиляции — ошибка GCC с текстом причины, во время работы — `System::DebugTrap(text)`. `constinit` обязателен по правилам использования, но не проверяется.
+
+`SetUp()` по-прежнему проверяет состояние аппаратуры и занятость ресурсов. Объект хранит ссылку на instance и один указатель регистров; нулевой указатель означает «не настроен» (обнуляется после неудачного первого `SetUp()` и в `DeInit()`). Подробнее: [Initialization.md](Initialization.md).
 
 ---
 
 ## 3. Модель работы
 
-Один объект управляет одним I2C master. Поддерживаются F4 (I2C v1) и F7/G0
-(I2C v2), адреса 7 бит без сдвига, блокирующие, IRQ- и DMA-операции.
-Пины и DMA закрепляются конструктором. SetUp выполняется один раз до DeInit.
-Блокирующие операции и IRQ доступны и при настроенном DMA.
+**Один объект управляет одним ведущим I2C.** Выводы и DMA закрепляются конструктором. При настроенном DMA блокирующие и IRQ-операции тоже доступны.
 
 ```cpp
 constexpr ClockSystem::Config clocks{}; // HSI, делители шин /1.
@@ -293,139 +398,127 @@ if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
 auto init = bus.SetUp<clocks, I2C::SPEED::FAST>();
 ```
 
-Без DMA последние два аргумента опускаются. На F4/F7 именованный DMAReq содержит
-поток/CHSEL, периферию и направление. Несовместимая привязка при constinit вызывает ошибку компиляции. На G0 приложение выбирает физический канал; источник DMAMUX
-драйвер берёт из I2Cx и направления. Один ресурс нельзя одновременно закреплять
-за TX/RX этого объекта либо другим потребителем.
+- Без DMA последние два аргумента опускаются.
+- На F4/F7 именованный `DMAReq` уже содержит поток/канал (CHSEL), периферию и направление; несовместимая привязка при `constinit` — ошибка компиляции.
+- На G0 приложение выбирает физический канал, источник DMAMUX драйвер берёт из I2Cx и направления.
+- Один ресурс DMA нельзя одновременно закрепить за TX и RX или за другим потребителем.
 
-SetUp настраивает GPIO AF open-drain с pull-up, PCLK в качестве kernel clock,
-тайминг и внутренние DMA. Для реальной шины внешние подтяжки выбираются
-по её ёмкости и скорости. F4 поддерживает STANDARD (100 кГц) и FAST (400 кГц).
-FAST_PLUS (1 МГц) доступен F7/G0 при подходящем тактировании и электрических
-параметрах. FMPI2C1 на F4 не является поддерживаемым здесь I2C v1.
+**`SetUp()`:**
 
-InitError возвращается при повторной настройке, несовпадении APB1 с конфигурацией,
-отсутствующей периферии, занятом DMA или отказе регистрации IRQ.
-При отказе регистрации удаляются только добавленные этим вызовом записи
-и освобождаются приобретённые DMA. Проверяйте возвращённый статус.
+- настраивает SCL/SDA как альтернативную функцию open-drain с подтяжкой;
+- использует PCLK как тактирование ядра I2C;
+- записывает заранее рассчитанные тайминги;
+- настраивает встроенные DMA и регистрирует прерывания.
+
+> Внутренние подтяжки слабые. Реальной шине нужны внешние резисторы, подобранные под её ёмкость и скорость.
+
+| Скорость | Частота | Семейства |
+| --- | --- | --- |
+| `STANDARD` (по умолчанию) | 100 кГц | F4, F7, G0 |
+| `FAST` | 400 кГц | F4, F7, G0 |
+| `FAST_PLUS` | 1 МГц | F7, G0 (при подходящем тактировании и электрических параметрах) |
+
+`InitError` возвращается при: повторной настройке, несовпадении APB1 с конфигурацией, отсутствующей периферии, занятом DMA или отказе регистрации IRQ. При отказе удаляются только записи, добавленные этим вызовом, и освобождаются захваченные им DMA. Проверяйте возвращённый статус.
 
 ### Расчёт во время компиляции
 
-SetUp<clocks, SPEED>() принимает ClockSystem::Config, использованную в
-ClockSystem::Init<clocks>(). Частота APB1 берётся из
-ClockSystem::GetAPB1Clock<clocks>(): метод использует тот же Prepare и проверку
-ограничений устройства, что и RCC Init. Копии формул PLL/делителей в I2C нет.
+**Передавайте в `SetUp<clocks, SPEED>()` тот же `clocks`, что и в `ClockSystem::Init<clocks>()`.**
 
-Расчёт consteval, неверная конфигурация тактирования/скорость/тайминги дают ошибку
-компиляции. На F4 заранее рассчитываются CCR/TRISE/FREQ, на F7/G0 — TIMINGR.
-Без второго параметра выбирается STANDARD: bus.SetUp<clocks>(). Отдельно задавать
-частоту I2C kernel clock больше не требуется. Старые SetUp(SPEED) и
-SetUp<pclk_hz, SPEED>() удалены.
+- APB1 берётся из `ClockSystem::GetAPB1Clock<clocks>()` — тот же расчёт и те же проверки, что у RCC; копий формул PLL/делителей в I2C нет.
+- F4: заранее рассчитываются CCR/TRISE/FREQ. F7/G0: TIMINGR.
+- Неверная конфигурация тактирования, скорость или тайминги — **ошибка сборки**.
+- Без второго параметра выбирается STANDARD: `bus.SetUp<clocks>()`.
+- Старые `SetUp(SPEED)` и `SetUp<pclk_hz, SPEED>()` удалены.
 
-При запуске Apply сравнивает рассчитанную APB1 с System::APB1BusClock до изменения
-регистров, GPIO, DMA и регистрации IRQ. Несовпадение возвращает InitError без
-занятия ресурсов. Это сравнение с частотой, опубликованной RCC, а не измерение
-генератора; прямое изменение RCC мимо System/ClockSystem не поддерживается.
-Проверяйте успешность System/RCC Init перед настройкой I2C. Частота фиксирована
-на всё время работы I2C, динамический перерасчёт таймингов не добавлен.
+**Проверка при запуске.** До изменения регистров, GPIO, DMA и регистрации IRQ `SetUp()` сравнивает рассчитанную APB1 с `System::APB1BusClock`. Несовпадение → `InitError` без захвата ресурсов. Это сравнение с частотой, опубликованной RCC, а не измерение генератора. Изменение RCC в обход System/ClockSystem не поддерживается; результат System/RCC Init проверяйте до настройки I2C. Частота фиксирована на всё время работы I2C.
 
-Расчёт F7/G0 находится в src/tools/i2c_timing_utility.hpp. Прежние C utility,
-статический массив на 128 записей (2560 байт) и общий счётчик удалены. Массив
-из 16 записей на стеке MCU тоже не нужен: поиск выполняет только компилятор,
-по одному PRESC. Невозможные периоды отсекаются досрочно.
+**Поиск таймингов F7/G0** (`src/tools/i2c_timing_utility.hpp`) выполняет только компилятор. Старая C-утилита, статический массив на 128 записей (2560 байт RAM) и поиск во время работы удалены. Порядок выбора ST сохранён:
 
-Сохранены прежние ограничения/порядок выбора ST: первый подходящий SCLDEL/SDADEL
-для PRESC, затем минимальная ошибка периода. Равные результаты сохраняют первый
-вариант. Параметры не стали универсальной настройкой платы: analog filter включён,
-DNF=0, rise/fall — 1000/300 нс для STANDARD, 300/300 нс для FAST, 100/100 нс для
-FAST_PLUS. Выбирается ближайший допустимый вариант; точное равенство частоте
-не гарантируется. Соответствие фронтов фактической шине остаётся приложению.
+1. для каждого PRESC берётся первый подходящий SCLDEL/SDADEL;
+2. затем выбирается минимальная ошибка периода (при равенстве — первый вариант);
+3. невозможные периоды отсекаются досрочно.
 
-В CMake удалён только старый C-исходник utility и ненужный include path src/tools;
-настройки частоты/скорости в CMake не добавлялись.
+Допущения: аналоговый фильтр включён, цифровой фильтр (DNF) = 0, фронты нарастания/спада 1000/300 нс (STANDARD), 300/300 нс (FAST), 100/100 нс (FAST_PLUS). Выбирается ближайший **допустимый** вариант, точное совпадение частоты не гарантируется — проверьте реальные фронты на своей плате.
 
 ---
 
 ## 4. Передачи
 
 | Операция | Блокирующая | Через IRQ | Через DMA |
-|---|---|---|---|
-| Запись | Send | Send_IRQ | Send_DMA |
-| Чтение | Receive | Receive_IRQ | Receive_DMA |
-| Запись регистра | WriteReg | WriteReg_IRQ | WriteReg_DMA |
-| Чтение регистра | ReadReg | ReadReg_IRQ | ReadReg_DMA |
+| --- | --- | --- | --- |
+| Запись | `Send` | `Send_IRQ` | `Send_DMA` |
+| Чтение | `Receive` | `Receive_IRQ` | `Receive_DMA` |
+| Запись регистра | `WriteReg` | `WriteReg_IRQ` | `WriteReg_DMA` |
+| Чтение регистра | `ReadReg` | `ReadReg_IRQ` | `ReadReg_DMA` |
 
-addr — 0…0x7F без сдвига; len — число байтов, до 65535.
-REG::_8BIT/REG::_16BIT задаёт один/два байта адреса регистра, старший первым.
-ReadReg использует повторный START. F7/G0 разбивают NBYTES на части до 255
-с RELOAD; это не меняет длину пользовательского буфера.
+**Аргументы:**
 
-Нулевой Send/Receive — Error. Сохранена запись одного адреса регистра без
-payload через WriteReg/WriteReg_IRQ с len=0; DMA-операции требуют ненулевой len.
-IsReady — блокирующая адресная проба без данных.
+- `addr` — 7-битный адрес **без сдвига** (0…0x7F).
+- `len` — число байтов, до 65535. F7/G0 внутри разбивают его на порции NBYTES ≤ 255 (RELOAD); длина вашего буфера от этого не меняется.
+- `REG::_8BIT` / `REG::_16BIT` — один или два байта адреса регистра, старший первым.
+- `ReadReg` использует повторный START между адресом регистра и чтением.
+
+**Особые случаи:**
+
+- `Send`/`Receive` с `len = 0` → `Error`.
+- `WriteReg`/`WriteReg_IRQ` с `len = 0` передаёт только адрес регистра (допустимо). DMA-варианты требуют `len > 0`.
+- `IsReady(addr)` — блокирующая проба адреса без данных.
 
 ```cpp
 uint8_t id = 0;
 auto status = bus.ReadReg(0x68, 0x75, &id, 1, I2C::REG::_8BIT, 100);
 ```
 
-Блокирующие вызовы возвращают OK, Busy, NotInit, Error или Timeout.
-GetError уточняет причину. GetTick должен работать; передавать управление
-этому I2C из другого контекста во время блокирующей операции нельзя.
-На F4 последовательности ACK/POS/ADDR/STOP последних 1–3 байт чувствительны
-к задержке обслуживания. Длинные посторонние ISR требуют отдельной проверки
-на плате; внутреннее маскирование IRQ не вводится.
+**Блокирующие вызовы** возвращают `OK`, `Busy`, `NotInit`, `Error` или `Timeout`; причину уточняет `GetError()`. Нужен работающий `GetTick()`. Нельзя обращаться к этому I2C из другого контекста во время блокирующей операции. На F4 обработка ACK/POS/ADDR/STOP последних 1–3 байт чувствительна к задержке прерываний — длинные посторонние ISR нужно проверять на плате. Внутреннего маскирования прерываний нет.
 
-Асинхронный OK означает запуск. До окончания операции буфер принадлежит драйверу:
-его нельзя менять, освобождать или читать как завершённый результат.
-Успех/ошибка определяются через IsBusy/GetError либо callbacks.
-Встроенного таймаута IRQ/DMA нет; срок ограничивает main:
+**Асинхронные вызовы (IRQ/DMA):**
+
+- `OK` означает **запуск**, а не завершение.
+- До окончания буфер принадлежит драйверу — не меняйте, не освобождайте и не читайте его как готовый результат.
+- Результат узнавайте через `IsBusy()`/`GetError()` или callback.
+- **Встроенного таймаута нет.** Срок ограничивает `main`:
 
 ```cpp
 if (bus.Receive_DMA(0x68, buffer, sizeof(buffer)) == SysStatus::OK) {
     const uint32_t started = System::GetTick();
     while (bus.IsBusy() && System::GetTick() - started < 100u) {}
     if (bus.IsBusy()) bus.Abort();
-    // При GetError()!=ERR::None данные не использовать.
+    // При GetError() != ERR::None данные не использовать.
 }
 ```
 
-Abort вызывается из main при исключённой работе IRQ данного объекта.
-Он отключает запросы, подтверждает остановку DMA и сбрасывает I2C; callback
-не вызывается, GetError возвращает Aborted. Привязки и регистрации сохраняются.
+**`Abort()`** вызывается из `main`, когда прерывания этого объекта не выполняются. Он отключает запросы, подтверждает остановку DMA и сбрасывает I2C; callback не вызывается, `GetError()` возвращает `Aborted`. Привязки и регистрации сохраняются.
 
 ---
 
 ## 5. IRQ и завершение
 
-SetUp регистрирует обработчик I2C на EV/ER (один общий вектор на G0) и отдельные
-объекты DMA TX/RX. Каждый DMA-обработчик читает только свой канал/поток:
-GetIRQFlags с публичными FLAG_TC/FLAG_ERRORS. DMA HT для I2C не используется.
-Полный реестр или повторная регистрация возвращают InitError.
+**Регистрация.** `SetUp()` регистрирует обработчик событий/ошибок I2C (на G0 — один общий вектор) и отдельные обработчики DMA TX/RX. Каждый DMA-обработчик читает только свой поток/канал через `GetIRQFlags()` с публичными масками `FLAG_TC`/`FLAG_ERRORS`; прерывание половины передачи (HT) не используется. Заполненный реестр или повторная регистрация → `InitError`. На G0 общий вектор для двух направлений требует **двух** мест в IRQ_Registry.
 
-Общий вектор G0 для двух направлений требует двух мест IRQ_Registry.
-Все обработчики одного I2C должны иметь одинаковый приоритет либо иным способом
-не вытеснять друг друга. Приложение согласует старт/Abort/DeInit с этими IRQ.
-Из callbacks запрещены ожидания, блокирующие передачи, Abort/DeInit
-и изменение таблицы IRQ. Произвольное внутреннее маскирование не выполняется.
+**Правила для приложения:**
 
-F4 TX завершается по BTF и команде STOP; F4 RX DMA формирует STOP после TC
-(при одном байте STOP задаётся после ADDR). F4 не ждёт снятия STOP:
-следующий запуск возвращает Busy, пока STOP/BUSY ещё установлены.
+- Обработчики одного I2C не должны вытеснять друг друга (дайте им одинаковый приоритет).
+- Старт, `Abort()` и `DeInit()` согласуйте с этими прерываниями.
+- В callback запрещены ожидания, блокирующие передачи, `Abort()`/`DeInit()` и изменение реестра IRQ.
 
-F7/G0 подтверждают автобусную фазу по STOPF, а DMA — по TC.
-Если STOPF пришёл раньше последнего переноса DMA, объект остаётся Busy
-до DMA IRQ. Если TC пришёл первым, источник TC выключается, а флаг сохраняется
-до завершения I2C. При успешной публикации остаток счётчика DMA обязан быть нулём.
-Для CPU-передачи STOPF также проверяет завершённость адреса регистра и данных.
+**Когда передача завершена?**
 
-При ошибке F4/F7 драйвер запрашивает остановку DMA и завершает передачу
-после TC или аппаратного TE при EN=0. На G0 ошибочный пакет отбрасывается
-после команды остановки без использования CNDTR как длины частичных данных.
-Ожиданий EN/STOP и циклов обработки до опустошения FIFO в IRQ нет.
+| Семейство | Правило |
+| --- | --- |
+| F4 TX | после BTF и выдачи STOP |
+| F4 RX DMA | STOP формируется после DMA TC (при чтении одного байта — сразу после ADDR) |
+| F7/G0 | нужны **оба** события: STOPF (фаза шины окончена) **и** DMA TC |
 
-Неполная передача не публикуется как успешная. При исчезновении ожидаемых событий
-она может остаться Busy; внешний срок и Abort нужны и для этого случая.
+- F4 не ждёт снятия STOP: следующий запуск возвращает `Busy`, пока STOP/BUSY ещё установлены.
+- F7/G0: если STOPF пришёл первым, объект остаётся `Busy` до прерывания DMA; если первым пришёл TC, источник TC выключается, а флаг сохраняется до завершения шины. Для успеха остаток счётчика DMA обязан быть нулём. При передаче через CPU STOPF дополнительно проверяет, что адрес регистра и данные переданы полностью.
+
+**Ошибки:**
+
+- F4/F7: драйвер запрашивает остановку DMA и завершает передачу по TC или TE при EN = 0.
+- G0: ошибочный пакет отбрасывается после команды остановки; CNDTR не используется как длина частичных данных.
+- Внутри прерываний нет ожиданий EN/STOP и циклов опустошения FIFO.
+
+Неполная передача никогда не публикуется как успешная. Если ожидаемые события не пришли, объект может остаться `Busy` — для этого и нужны внешний срок и `Abort()`.
 
 ---
 
@@ -443,60 +536,74 @@ protected:
 };
 ```
 
-Callbacks вызываются из I2C или DMA IRQ после освобождения буфера и обновления
-состояния. Ошибочные данные не используются. Блокирующие методы callbacks
-не вызывают. Старые SetDoneCallback/SetErrorCallback удалены.
+- `OnComplete()`/`OnError()` вызываются из прерывания I2C или DMA **после** обновления состояния и освобождения буфера.
+- После `OnError()` принятые данные не используйте.
+- Блокирующие методы callback не вызывают.
+- Старые `SetDoneCallback`/`SetErrorCallback` удалены.
 
 ---
 
 ## 7. Кеш и некешируемая DMA-память
 
-TX: System::CacheClean перед передачей. RX: CacheCleanInvalidate перед запуском,
-CacheInvalidate после успешного завершения, до доступа CPU.
-На F7 вызывающий код владеет всеми затронутыми 32-байтными линиями, включая
-padding. len не обязана быть кратной 32. Ошибочный буфер не инвалидируется
-для чтения частичных данных и не считается пригодным.
+Актуально для F7 (кеш данных); на F4/G0 методы кеша пустые.
 
-System автоматически пропускает обслуживание диапазона, полностью лежащего
-в настроенной некешируемой DMA-области. На F4/G0 кеш-методы пустые.
-Настройки project/MPU не переключают ветки самого I2C.
+| Направление | Перед DMA | После успеха |
+| --- | --- | --- |
+| TX | `System::CacheClean` | — |
+| RX | `System::CacheCleanInvalidate` | `System::CacheInvalidate`, до чтения процессором |
+
+- Приложение владеет **всеми 32-байтными кеш-линиями**, которые задевает буфер, включая выравнивающие байты. `len` не обязана быть кратной 32.
+- После ошибки RX-буфер не инвалидируется и не считается пригодным для чтения частичных данных.
+- Диапазон, целиком лежащий в настроенной некешируемой DMA-области, System пропускает автоматически.
+- Настройки проекта/MPU не переключают реализацию I2C.
 
 ---
 
 ## 8. Атомарные изменения регистров
 
-I2C_USE_ATOMIC в i2c.hpp: 0 по умолчанию — SET_BIT/CLEAR_BIT/MODIFY_REG;
-1 — соответствующие ATOMIC_* ST. На F4/F7 используются LDREX/STREX,
-на G0 — краткое маскирование с восстановлением PRIMASK.
-DMA_USE_ATOMIC независимо задаёт операции CR/CCR самого DMA.
-После изменения пересобираются драйверы и приложение; определения только
-в main.cpp недостаточно.
+**`I2C_USE_ATOMIC`** (в `i2c.hpp`, по умолчанию `0`):
 
-Атомарность защищает одну операцию RMW. Она не заменяет согласование целой
-передачи, состояния FSM и владения буфером. ICR/SR, DR/TXDR/RXDR и команды
-NBYTES/START записываются напрямую согласно аппаратной семантике.
+| Значение | «Прочитать-изменить-записать» управляющих регистров |
+| --- | --- |
+| `0` | обычные `SET_BIT`/`CLEAR_BIT`/`MODIFY_REG` |
+| `1` | `ATOMIC_*` от ST: LDREX/STREX на F4/F7; краткое сохранение/маскирование/восстановление PRIMASK на G0 |
+
+- `DMA_USE_ATOMIC` независимо управляет регистрами CR/CCR самого DMA.
+- После изменения пересоберите драйверы и приложение — `#define` только в `main.cpp` недостаточно.
+- Атомарность защищает одну операцию, а не всю передачу, состояние автомата или передачу буфера.
+- ICR/SR, регистры данных и команды NBYTES/START всегда пишутся напрямую, как требует аппаратура.
 
 ---
 
 ## 9. DeInit и восстановление шины
 
-DeInit вызывается из main до уничтожения объекта. Останавливает обмен,
-освобождает свои DMA и IRQ-записи, сбрасывает блок и возвращает пины в input.
-Другие обработчики общего вектора сохраняются. Повторный DeInit допустим;
-после него можно снова вызвать SetUp с теми же конструкторными привязками.
+**`DeInit()`** (из `main`, до уничтожения объекта):
 
-Recover удалён из I2C. Приложение само восстанавливает удерживаемую slave шину:
-сначала завершает использование драйвера через DeInit, затем управляет GPIO,
-подтверждает отпускание линий и выбирает задержки/таймауты по своему устройству.
-После восстановления вновь вызывает SetUp. Универсальной реализации импульсов
-и скрытого сервиса восстановления в драйвере нет.
+- останавливает текущий обмен;
+- освобождает свои DMA и записи IRQ (другие обработчики общего вектора сохраняются);
+- сбрасывает блок I2C и переводит выводы во вход.
+
+Повторный `DeInit()` допустим; после него можно снова вызвать `SetUp()` с теми же привязками.
+
+**Восстановление шины — задача приложения.** Если ведомый удерживает SDA:
+
+1. `DeInit()` драйвера;
+2. управляйте SCL/SDA как GPIO (например, тактовые импульсы на SCL);
+3. убедитесь, что линии отпущены, с задержками/сроками, подходящими вашим устройствам;
+4. снова `SetUp()`.
+
+Встроенной универсальной процедуры восстановления нет (`Recover()` удалён).
 
 ---
 
 ## 10. Примеры использования
 
+Настройка (один и тот же `clocks` для RCC и I2C):
+
 ```cpp
-constexpr ClockSystem::Config clocks{}; // HSI, делители шин /1.
+#include "i2c.hpp"
+
+constexpr ClockSystem::Config clocks{};   // HSI, все делители /1
 #if defined(STM32G0)
 constexpr I2C::DMAReq tx = DMA1_Channel1_BASE;
 constexpr I2C::DMAReq rx = DMA1_Channel2_BASE;
@@ -506,33 +613,45 @@ constexpr I2C::DMAReq rx = I2C::_1::DMA::RX_DMA1_Stream0;
 #endif
 
 constinit I2C bus(I2C::_1::instance, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9, tx, rx);
-// В main: одна и та же конфигурация для RCC и I2C.
+
+// В main:
 if (System::Init() != SysInitStatus::InitOK) return;
 if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
 auto init = bus.SetUp<clocks, I2C::SPEED::FAST>();
 ```
+
+Блокирующее чтение регистра (устройство 0x68, регистр 0x75, таймаут 100 мс):
 
 ```cpp
 uint8_t id = 0;
 auto status = bus.ReadReg(0x68, 0x75, &id, 1, I2C::REG::_8BIT, 100);
 ```
 
+Чтение через DMA со сроком (только из `main`):
+
 ```cpp
 if (bus.Receive_DMA(0x68, buffer, sizeof(buffer)) == SysStatus::OK) {
     const uint32_t started = System::GetTick();
     while (bus.IsBusy() && System::GetTick() - started < 100u) {}
     if (bus.IsBusy()) bus.Abort();
-    // При GetError()!=ERR::None данные не использовать.
+    // При GetError() != ERR::None данные не использовать.
 }
 ```
 
-Примеры независимы. Настройка RCC и I2C использует один clocks; проверьте каждый возвращаемый статус. Цикл ожидания/Abort допускается только из main.
+Проверяйте каждый возвращаемый статус.
 
 ---
 
 ## 11. Угловые случаи
 
-Для IRQ/DMA нет встроенного таймаута: main задаёт срок и при необходимости вызывает Abort. Ошибочный RX-буфер не используется. F4 может вернуть Busy до снятия STOP/BUSY. Внешние подтяжки, помехи на линии и Recover остаются приложению; повторный SetUp требует DeInit.
+| Ситуация | Поведение |
+| --- | --- |
+| IRQ/DMA-передача не завершается | Встроенного таймаута нет; `main` задаёт срок и вызывает `Abort()`. |
+| Приём завершился ошибкой | Содержимое буфера недостоверно. |
+| F4: новая передача сразу после предыдущей | Может вернуть `Busy`, пока не снимутся STOP/BUSY. |
+| Ведомый удерживает шину | Восстановление — задача приложения (раздел 9). |
+| Подтяжки, помехи, ёмкость шины | Ответственность приложения и схемы. |
+| `SetUp()` дважды | Ошибка; сначала `DeInit()`. |
 
 ---
 
@@ -542,9 +661,6 @@ if (bus.Receive_DMA(0x68, buffer, sizeof(buffer)) == SysStatus::OK) {
 - [RM0090, DMA1 request mapping](https://www.st.com/resource/en/reference_manual/rm0090-stm32f407-advanced-armbased-32bit-mcus-stmicroelectronics.pdf): I2C3 RX Stream2 CH3.
 - [RM0431, DMA1 request mapping](https://www.st.com/resource/en/reference_manual/rm0431-stm32f72xxx-and-stm32f73xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf): F72/F73 I2C1–3.
 - [RM0385](https://www.st.com/resource/en/reference_manual/dm00124865.pdf), [RM0410](https://www.st.com/resource/en/reference_manual/rm0410-stm32f76xxx-and-stm32f77xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf): I2C4 RX Stream2 CH2, TX Stream5 CH2.
-
-Перенос выполнен по исходникам. Сборки, тесты и проверка на плате не запускались.
-
 - [Initialization.md](Initialization.md)
 - [RCC.md](RCC.md)
 - [DMA.md](DMA.md)

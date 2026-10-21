@@ -26,83 +26,101 @@
 
 ## 1. Why This Is Needed
 
-SPI owns a fixed TX/RX/TXRX binding with optional CS and DMA. Blocking, IRQ and DMA operations share the agreed transfer engine; Process in main confirms physical completion without waits in IRQ.
+`SPI` drives one SPI peripheral as master or slave.
+
+- The constructor fixes the **direction** (`TX`, `RX` or `TXRX`), the pins, an optional chip-select and optional DMA.
+- Transfers can be blocking, interrupt-driven or DMA — all share one transfer engine.
+- For asynchronous transfers, **`Process()`** in the main loop confirms that the last frame has really left the wire. Interrupt handlers never wait.
 
 ---
 
 ## 2. Constant Initialization and Constructor Diagnostics
 
-Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use the provided _N::instance, named pins and optional _N::DMA routes. G0 takes numeric DMAx_Channely_BASE selections; the peripheral fixes the request source.
+Declare the object at file scope with `constinit` (or as `static constinit` inside a function). Arguments: `SPI::_N::instance`, direction, named SCK/MOSI/MISO pins, optional CS/NSS pin, optional TX/RX DMA (named `_N::DMA::...` routes on F4/F7, physical `DMAx_Channely_BASE` on G0 — the SPI supplies the request IDs).
 
-For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. The macro uses `std::is_constant_evaluated()` to select that path; at runtime it calls `System::DebugTrap(text)` directly, without calling the template. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. Metadata is read from Instance; the cached register pointer is the setup marker and is cleared after failed initial setup or DeInit. No second metadata pointer is stored. See [Initialization.md](Initialization.md) for constructor variants and migration.
+What happens with a wrong argument (e.g. a MOSI pin of SPI2 on SPI1):
+
+| Declaration | Result |
+| --- | --- |
+| `constinit` object | **Compilation error** with the reason text in the message. |
+| Object without `constinit` | Compiles; at start-up the constructor stops in `System::DebugTrap(reason)`. |
+
+Every check calls `STM32_CONFIG_ERROR("reason")`: at compile time a GCC error containing the reason, at run time `System::DebugTrap(text)`. `constinit` is required by the usage contract but not enforced.
+
+`SetUp()` still checks hardware state and occupied resources. The object keeps the instance reference plus one register pointer; null means "not set up" (cleared after a failed first `SetUp()` and by `DeInit()`). Details: [Initialization.md](Initialization.md).
 
 ---
 
 ## 3. Ownership and setup
 
-SPI_USE_ATOMIC in spi.hpp defaults to 0 (ordinary control-register RMW).
-Set 1 for ST ATOMIC_* updates and rebuild SPI and its users. This protects
-individual control updates, not a complete transfer or buffer handover.
-DMA control operations have their own DMA_USE_ATOMIC setting.
+**One object controls one SPI peripheral.**
 
-One SPI object controls one hardware peripheral. Initialize System/RCC first.
-Call SetUp() once; use DeInit() before reconfiguration or destruction. SPI owns
-its DMA objects; keep the SPI object and active buffers alive.
+- Initialize System/RCC first.
+- Call `SetUp()` once; call `DeInit()` before reconfiguring or destroying the object (the destructor does not do it).
+- The SPI owns its DMA objects. Keep the SPI object and active buffers alive.
 
-The constructor retains its optional SS pin:
+**Constructor:**
 
-~~~cpp
-constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
-        SPI::_1::MISO::PA6, PIN(GPIOB_BASE, 0)); // Optional software master CS
-~~~
+```cpp
+constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX,
+                  SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6,
+                  PIN(GPIOB_BASE, 0));   // optional software master CS
+```
 
-SCK is required. A direction's data pin may be omitted when it is not used
-externally. Named AF pins are checked for peripheral ownership at construction
-time for constinit objects; incompatible bindings fail compilation.
+- SCK is required. A data pin may be omitted (`PIN{}`) if that direction is not used externally.
+- Named AF pins are checked for peripheral ownership at compile time.
+- After CS come the optional `DMAReq` for TX and RX.
 
-The constructor fixes Direction::TX, RX or TXRX and optional DMAReq after SS.
-F4/F7 receive named stream requests; G0 receives only physical channels.
-SPI owns the DMA objects and chooses G0 TX/RX request sources automatically.
-Clock/mode/frame settings remain in SetUp(Init_struct_Typedef), or its existing
-flat overload. TX uses BIDIMODE/BIDIOE: no RX work or second DMA. RX uses full
-duplex with RXONLY clear; master dummy TX runs through TX IRQ, while slave RX
-has no dummy transmitter. TXRX permits Send, Receive and SendReceive operations.
-A method incompatible with the fixed direction returns Error.
+**What the direction means:**
 
-~~~cpp
+| Direction | Hardware mode | Allowed methods |
+| --- | --- | --- |
+| `TX` | bidirectional one-line output (BIDIMODE/BIDIOE); no RX work, no second DMA | `Send` |
+| `RX` | full duplex, RXONLY cleared; master clocks with dummy frames from the TX interrupt, slave only receives | `Receive` |
+| `TXRX` | full duplex | `Send` (RX discarded), `Receive` (dummy TX), `SendReceive` |
+
+A method that does not fit the fixed direction returns `Error`.
+
+**`SetUp()`** — clock, mode and frame settings (or the `Init_struct_Typedef` overload):
+
+```cpp
 SysInitStatus initialized = bus.SetUp(
     SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
     SPI::Data_frame_format::Byte, SPI::Frame_Format::MSB,
     SPI::cPolPha::None, SPI::BaudRate::DIV8);
-~~~
+```
 
-Check InitOK before starting. Invalid enums, missing SCK, Hard NSS without its
-pin, software-NSS slave, unsupported instance, repeat setup or IRQ registration
-failure return InitError. Tables cover CMSIS-present SPI1–SPI6 on F4/F7 and SPI1–SPI3 on G0.
-Named pins depend on the device AF map; check that the chosen pin is bonded in
-its package. SPI5 on F410/F411/F412/F413/F423 uses AF6; larger F4/F7 use AF5.
-G0 SPI2/SPI3 share SPI2_3_IRQn where SPI3 exists.
+Check for `InitOK` before starting. `InitError` on: invalid enum values, missing SCK, hardware NSS without its pin, slave with software NSS, unsupported instance, repeated setup, or IRQ registration failure.
+
+**Device coverage:**
+
+- SPI1–SPI6 on F4/F7 and SPI1–SPI3 on G0, where CMSIS declares them.
+- Named pins follow the device AF map — check that the pin is bonded in your package. SPI5 uses AF6 on F410/F411/F412/F413/F423 and AF5 on larger F4/F7.
+- On G0 with SPI3, SPI2 and SPI3 share `SPI2_3_IRQn`.
+
+**`SPI_USE_ATOMIC`** (in `spi.hpp`, default `0`): `1` switches control-register read-modify-write to ST `ATOMIC_*` macros. It protects single updates, not a whole transfer or buffer handover. DMA has its own `DMA_USE_ATOMIC`. Rebuild SPI and its users after changing it.
 
 ---
 
 ## 4. Software CS, hardware NSS and shared buses
 
-- Software-NSS master with SS: the driver initializes it high, asserts it at
-  start and deasserts it only at final completion/error/timeout.
-- Software-NSS master without SS: the application owns all chip-select GPIOs.
-- Hardware-NSS master: SSM is clear and SSOE is set. NSS follows SPI enable.
-- Slave: hardware NSS is required; SSM and SSOE are clear. Configure EXTI on
-  that same pin in the application to notify packet termination.
+| Configuration | Who drives chip select |
+| --- | --- |
+| Master, software NSS, CS pin passed | the driver: high after setup, low at start, high only after final completion/error/timeout |
+| Master, software NSS, no CS pin | the application (all CS GPIOs) |
+| Master, hardware NSS | hardware: SSM cleared, SSOE set; NSS follows SPI enable |
+| Slave | hardware NSS required (SSM/SSOE cleared); the application configures EXTI on that pin to detect packet end |
 
-On a shared bus use one SPI object and application-owned CS pins. This keeps CS
-active across multiple operations. Always release it on an error as well.
+**Shared bus:** use one SPI object and application-owned CS pins, so CS can stay low across several operations (command + response). Release CS on errors too.
 
-~~~cpp
-constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
+```cpp
+constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX,
+                  SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
 PIN flash_cs(GPIOB, 0), adc_cs(GPIOB, 1);
 flash_cs.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
 adc_cs.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
-// After successful bus.SetUp(Master, Software):
+
+// After a successful bus.SetUp(Master, Software):
 uint8_t command[] = {0x9F};
 uint8_t response[3];
 flash_cs.SetLevel(0);
@@ -110,152 +128,151 @@ SysStatus result = bus.Send(command, 1);
 if (result == SysStatus::OK) result = bus.Receive(response, 3);
 flash_cs.SetLevel(1);
 // Inspect result; the application chooses the device and protocol.
-~~~
+```
 
-RCC/SPI configuration is fixed while a transfer is active. Devices with different
-CPOL/CPHA/divider/frame settings require explicit idle reconfiguration through
-DeInit()/SetUp(); constructor-bound direction and DMA selections remain unchanged. No device scheduler is added.
+With IRQ/DMA transfers, release CS only after `Process()` reports physical completion — not right after a successful start.
+
+**Devices with different settings** (CPOL/CPHA, divider, frame size) need explicit reconfiguration while idle: `DeInit()` + `SetUp()`. The constructor's direction and DMA stay the same. There is no device scheduler.
 
 ---
 
 ## 5. Frames, directions and status
 
-Every transfer has uint8_t* and uint16_t* overloads. The selected overload must
-match SetUp(Byte/Half_Word). len is 1..65535 frames for every method:
+**Frame size.** Every transfer has `uint8_t*` and `uint16_t*` overloads; use the one matching `SetUp(Byte / Half_Word)`. `len` is always **1…65535 frames**:
 
-- uint8_t buffer: len bytes, 8-bit DR/DMA accesses.
-- uint16_t buffer: len half-words, 16-bit DR/DMA accesses; two-byte alignment.
-- F7/G0 RX FIFO threshold matches 8/16-bit frames, without implicit packing.
+- `uint8_t` buffer → `len` bytes, 8-bit DR/DMA accesses.
+- `uint16_t` buffer → `len` half-words (2·`len` bytes), 16-bit accesses, 2-byte alignment.
+- On F7/G0 the RX FIFO threshold matches the frame size; there is no implicit packing.
 
-Send transmits the supplied frames and discards RX. Receive transmits all-one
-dummy frames and stores RX. Send/Receive uses both supplied buffers.
+**What each operation transmits:** `Send` sends your frames and discards RX; `Receive` sends dummy frames (`0xFF` / `0xFFFF`) and stores RX; `SendReceive` uses both buffers. `Receive_DMA` uses two-line reception with dummy clocking (RXONLY is not used).
 
-| Mode | Methods | Meaning of returned OK |
-|---|---|---|
-| Blocking | Send, Receive, Send_Receive | Operation has completed |
-| IRQ | Send_IRQ, Receive_IRQ, SendReceive_IRQ | Operation has started |
-| DMA | Send_DMA, Receive_DMA, SendReceive_DMA | Operation has started |
+| Mode | Methods | Returned `OK` means |
+| --- | --- | --- |
+| Blocking | `Send`, `Receive`, `Send_Receive` | transfer **finished** |
+| IRQ | `Send_IRQ`, `Receive_IRQ`, `SendReceive_IRQ` | transfer **started** |
+| DMA | `Send_DMA`, `Receive_DMA`, `SendReceive_DMA` | transfer **started** |
 
-Receive_DMA uses dummy-clocked two-line reception. RXONLY is not used.
+| Constructor direction | Operations | Servicing |
+| --- | --- | --- |
+| `TX` | `Send` | TX only: TX DMA or TX IRQ |
+| `RX` | `Receive` | master: RX DMA/IRQ + dummy TX from IRQ; slave: RX only |
+| `TXRX` | `Send`, `Receive`, `SendReceive` | both directions; a direction without DMA is served by the SPI IRQ |
 
-| Constructor direction | Available operations | DMA/IRQ servicing |
-|---|---|---|
-| TX | Send | TX only; one TX DMA or TX IRQ |
-| RX | Receive | Master: RX DMA/IRQ and dummy TX IRQ; slave: RX only |
-| TXRX | Send, Receive, SendReceive | Both hardware directions; an unbound DMA direction uses IRQ |
+DMA binding does not remove blocking or IRQ methods. Example — `RX` master on G0 with one DMA and no MOSI:
 
-DMA binding does not remove blocking or IRQ methods. Direction::RX master with
-one DMA and no MOSI (G0 example):
-
-~~~cpp
+```cpp
 constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
 constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
-        PIN{}, SPI::_1::MISO::PA6, PIN{}, {}, rx);
+                  PIN{}, SPI::_1::MISO::PA6, PIN{}, {}, rx);
 // Check SetUp(Master, Software), then Receive_DMA(buffer, capacity).
-// Call Process() from main; only use the buffer after OK.
-~~~
+// Call Process() from main; use the buffer only after it returns OK.
+```
 
-NotInit means setup has not succeeded. Busy rejects a simultaneous operation.
-Null/zero arguments, >65535 count, frame-width/alignment mismatch, missing data
-pin or required DMA return Error. Error/Timeout permit another start after cleanup.
-One blocking timeout budget covers the entire call and needs a working System tick.
-Asynchronous calls impose no internal deadline; the application owns its deadline
-and can cancel through DeInit().
+**Status codes:**
 
-~~~cpp
-// After successful setup with Half_Word:
+| Result | When |
+| --- | --- |
+| `NotInit` | `SetUp()` has not succeeded |
+| `Busy` | another operation is running |
+| `Error` | null/zero arguments, more than 65535 frames, frame width or alignment mismatch, missing data pin or required DMA |
+| `Timeout` | blocking call exceeded its budget |
+
+- After `Error`/`Timeout` (and cleanup) a new transfer may start.
+- A blocking call has **one** timeout for the whole call and needs a running System tick.
+- Asynchronous calls have no internal deadline — the application enforces one and can cancel with `DeInit()`.
+
+```cpp
+// After a successful setup with Half_Word:
 uint16_t tx[] = {0x1234, 0xABCD}, rx[2];
-SysStatus result = bus.Send_Receive(tx, rx, 2); // Two 16-bit frames.
-~~~
+SysStatus result = bus.Send_Receive(tx, rx, 2);   // two 16-bit frames, not two bytes
+```
 
 ---
 
 ## 6. Physical completion through Process()
 
-IRQ moves frames. DMA TC ends buffer feeding/capture. Neither TXE nor TX DMA TC
-alone means that the last wire frame has finished.
+> Neither TXE nor TX DMA "transfer complete" means the last frame has left the wire. The interrupt moves frames; DMA TC only means the buffer has been fed or filled.
 
-Call Process() regularly from main after starting an IRQ/DMA operation:
+After starting an IRQ/DMA transfer, call `Process()` regularly from `main`:
 
-~~~cpp
+```cpp
 if (bus.SendReceive_IRQ(tx, rx, 2) == SysStatus::OK) {
-    // Return to the main loop.
+    // return to the main loop
 }
-// In main, while this operation is active:
+// In main, while the transfer is active:
 SysStatus state = bus.Process();
 if (state == SysStatus::OK) {
-    uint32_t received_frames = bus.GetDataReceivedCount();
-    // RX is available; its count is read without clearing it.
+    uint32_t received_frames = bus.GetDataReceivedCount();   // does not clear the count
+    // RX data is now available to the CPU.
 }
-~~~
+```
 
-For master, Process first requires completion of all planned TX/RX frame handling.
-It then checks SPI itself: F4 TXE=1 and BSY=0; F7/G0 TX FIFO empty and BSY=0.
-A single BSY=0 check during an unfinished operation is insufficient.
+**What `Process()` checks (master):**
 
-Process does not spin or wait for BSY. It performs stop/cache/CS handover before
-publishing OK and calling OnComplete(). Hardware errors call OnError(mask) after
-cleanup. These notifications run in main/Process context, not in DMA IRQ.
-GetStatus() is a pure read and does not perform this work.
+1. all planned TX/RX frames have been handled;
+2. then the SPI itself — F4: TXE = 1 and BSY = 0; F7/G0: TX FIFO empty and BSY = 0.
+
+A single BSY = 0 reading during an unfinished transfer is not enough — hence the order.
+
+**What `Process()` does:** it never spins on BSY; while it is too early it returns `Busy`. When done, it stops sources/DMA, does the cache handover, releases the driver-managed CS, publishes `OK` and calls `OnComplete()`. Hardware errors call `OnError(mask)` after cleanup. Both notifications run in `main` (inside `Process()`), not in a DMA interrupt.
+
+`GetStatus()` is a pure read and does none of this work. Blocking calls do not call `OnComplete()`; `OnError()` reports their hardware errors.
 
 ---
 
 ## 7. Slave: packet terminated by hardware NSS
 
-Slave packets may be shorter or longer than the prepared buffer. len is capacity,
-not a required packet length. The first len complete frames are retained.
-GetDataReceivedCount() reports stored frames after successful Process().
-Further frames set IsTruncated(), but the stored prefix is still a successful
-packet. At exactly len frames, truncation remains false. After the TX payload, slave feeds 0xFF/0xFFFF dummy frames until NSS rises.
-This tail is fed by TXE IRQ, including after TX DMA TC; choose SCK and interrupt
-latency accordingly. Continuous dummy output at maximum SCK is not guaranteed.
+In slave mode the **master** decides packet length; the end of a packet is NSS going high.
 
-Prepare TX/RX before the master selects NSS. The application configures and
-acknowledges rising-edge EXTI on the hardware NSS pin, then calls NssReleased():
+**Buffer capacity:**
 
-~~~cpp
-constinit SPI slave(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
-          SPI::_1::MISO::PA6, SPI::_1::SS::PA4);
+- `len` is the buffer capacity, not a required packet length. Packets may be shorter or longer.
+- The first `len` complete frames are stored; `GetDataReceivedCount()` reports how many (after `Process()` returns `OK`).
+- Extra frames are dropped and `IsTruncated()` becomes `true`; the stored prefix is still a successful packet. Exactly `len` frames is **not** truncation.
+- After the TX payload, the slave sends dummy `0xFF`/`0xFFFF` until NSS rises. This tail is fed by the TXE interrupt (also after TX DMA TC), so choose SCK with your interrupt latency in mind — continuous dummy output at maximum SCK is not guaranteed.
+
+**Packet end:** prepare TX/RX **before** the master selects NSS. The application configures a rising-edge EXTI on the hardware NSS pin, acknowledges it and calls `NssReleased()`:
+
+```cpp
+constinit SPI slave(SPI::_1::instance, SPI::Direction::TXRX,
+                    SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6,
+                    SPI::_1::SS::PA4);
 static uint8_t packet[64];
 // Check SetUp(Slave, Hard), then Receive_IRQ(packet, sizeof(packet)).
 
-// In the application's EXTI handler, after checking/acknowledging its NSS flag:
+// In the application's EXTI handler, after checking/acknowledging the NSS flag:
 slave.NssReleased();
 
-// In main, after the operation has started:
+// In main, after the transfer has started:
 if (slave.Process() == SysStatus::OK) {
     uint32_t frames = slave.GetDataReceivedCount();
     bool truncated = slave.IsTruncated();
-    // Process packet[0..frames); then rearm and check the start result.
+    // Use packet[0..frames), then re-arm and check the start result.
 }
-~~~
+```
 
-NssReleased disables SPI sources and requests DMA stop without waiting, cache
-work or completion callbacks. On F4/F7, each DMA IRQ collects its stop TC and
-final count; Process remains Busy until both directions are stopped. On G0,
-the last DMA request must already be serviced before the NSS stop. Process reads
-the stopped count; arbitrary in-flight aborts do not yield a valid packet or
-usable length. Errors discard the packet. No IRQ waits for hardware.
-Process returns DMA-written bytes to CPU, drains the final RX FIFO tail and
-publishes the packet. Slave completion also resets this SPI to flush any unused
-prefetched TX frames before the next packet. It does not use slave BSY as a packet boundary: affected
-devices have a documented slave-BSY erratum.
+**What happens inside:**
 
-The NSS EXTI, SPI and DMA handlers for the object must not preempt one another.
-EXTI must be serviced before a subsequent transaction, and the master must wait
-until Process() and rearm before selecting another packet. Software polling of NSS
-cannot replace edge capture if the master can produce short high pulses.
+- `NssReleased()` disables SPI sources and requests a DMA stop — no waiting, no cache work, no callbacks.
+- F4/F7: each DMA interrupt collects its stop TC and final count; `Process()` stays `Busy` until both directions have stopped.
+- G0: the last DMA request must already be serviced before the NSS stop; `Process()` reads the stopped count. An arbitrary mid-transfer abort does not give a valid length. On errors the whole packet is discarded.
+- `Process()` invalidates the DMA-written prefix, drains the last RX FIFO tail and publishes the packet. It also resets the SPI to flush TX frames prefetched but never sent.
+- Slave BSY is **not** used as a packet boundary — affected devices have a documented slave-BSY erratum.
 
-Only complete frames are reported. An incomplete last frame or a packet's protocol
-validity must be handled by the application. OVR before capacity is exhausted means
-data were lost and results in Error. OVR after capacity is exhausted is truncation.
+**Timing rules:**
+
+- The NSS EXTI, SPI and DMA handlers of this object must not preempt one another.
+- The EXTI edge must be serviced before the next transaction, and the master must wait until `Process()` has run and the slave is re-armed.
+- Polling NSS in the main loop cannot replace edge capture if the master can produce short high pulses.
+
+**Integrity:** only complete frames are reported; an incomplete last frame and protocol validity are the application's job. OVR **before** the buffer is full means data loss → `Error`. OVR **after** it is full is truncation.
 
 ---
 
 ## 8. Constructor-bound DMA, requests and fallback directions
 
-~~~cpp
-// F4/F7: the chosen resource is visible in its name.
+```cpp
+// F4/F7: the chosen resource is visible in the name.
 constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA2_Stream3;
 constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
 // G0 alternatives:
@@ -263,150 +280,165 @@ constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
 // constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
 
 constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
-        SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, tx, rx);
+                  SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, tx, rx);
 if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus::InitOK) {
-    // Send_DMA/Receive_DMA/SendReceive_DMA can now be started.
+    // Send_DMA / Receive_DMA / SendReceive_DMA can now be started.
 }
-~~~
+```
 
-SetUp configures ownership, width, direction and DR address for constructor-bound
-DMA. With constinit, a wrong request, shared TX/RX resource or DMA incompatible
-with Direction rejects compilation. Busy resources, hardware setup or registry
-failure give InitError. Only newly acquired resources are released on
-failure. SPI, DMA TX and DMA RX have separate registered handlers. Even when TX/RX
-share an NVIC vector, they need two registry slots; each checks only its own DMA.
+**Checks:**
 
-Send_DMA requires TX DMA; Receive_DMA requires RX DMA; SendReceive_DMA needs both.
-Direction::RX master uses only RX DMA and TX IRQ for dummy; slave RX uses only
-RX DMA. Direction::TX uses only TX DMA and has no receive work. In TXRX, an
-unbound opposite direction uses SPI IRQ for dummy TX or discarded RX. High SCK
-with IRQ servicing remains limited by interrupt latency.
-Send_DMA(minc=DISABLE) repeats the first frame. DMA buffers must be accessible by DMA.
+- At compile time (`constinit`): wrong request, TX and RX on the same resource, DMA not matching the direction.
+- In `SetUp()`: busy resources, hardware setup or registry failure → `InitError`; only resources acquired by this call are released.
+- `SetUp()` configures ownership, data width (= frame size), direction and the DR address.
+
+**Interrupts:** SPI, DMA TX and DMA RX have separate handlers. Even if TX and RX share one NVIC vector, they take **two** registry slots; each handler checks only its own DMA.
+
+**Which DMA each method needs:**
+
+| Method | DMA needed |
+| --- | --- |
+| `Send_DMA` | TX |
+| `Receive_DMA` | RX |
+| `SendReceive_DMA` | TX and RX |
+
+- `RX` master: only RX DMA; dummy frames come from the TX interrupt. `RX` slave: only RX DMA.
+- `TX`: only TX DMA, no receive work.
+- `TXRX`: a direction without DMA is served by the SPI interrupt (dummy TX or discarded RX). At high SCK, interrupt latency becomes the limit.
+- `Send_DMA(..., minc = DISABLE)` repeats the first frame.
+- DMA buffers must be in DMA-accessible memory.
 
 ---
 
 ## 9. F7 cache and buffer handover
 
-SPI uses System::CacheClean for TX, CacheCleanInvalidate before RX and
-CacheInvalidate after DMA stop completion: written prefix on success, full RX allocation on abort/error. Cache byte lengths are
-frame_count * frame_width. For minc=DISABLE only the repeated TX frame is cleaned.
+| Moment | Cache operation (through System) |
+| --- | --- |
+| before TX | `CacheClean` (only the repeated frame with `minc = DISABLE`) |
+| before RX | `CacheCleanInvalidate` |
+| after DMA stop, success | `CacheInvalidate` of the written prefix |
+| after abort/error | `CacheInvalidate` of the whole RX allocation |
 
-F7 cacheable RX allocations own complete 32-byte cache lines, including padding.
-Do not read/write them while Busy. System skips ranges wholly within a configured
-project non-cacheable DMA region; F4/G0 helpers are empty. No separate SPI build
-configuration is needed for non-cacheable buffers.
+Byte length = frame count × frame width.
 
-For TXRX DMA dummy feeding, the all-one source is immutable Flash. A separate discard word is never
-read or modified by CPU: its DMA writes do not need a CPU cache handover.
-DMA reachability remains a caller responsibility. For simultaneous TX/RX use
-distinct buffers; writing into a TX buffer that DMA has not yet consumed races
-with transmission.
+- Cacheable RX buffers on F7 must own complete 32-byte lines, including padding. Do not read or write them while `Busy`.
+- Ranges entirely inside a configured non-cacheable DMA region are skipped by System; on F4/G0 the helpers are empty. No separate SPI build option is needed.
+- For `TXRX` DMA dummy feeding the all-ones source is a constant in Flash; the separate discard word is never touched by the CPU, so it needs no cache handover.
+- For simultaneous TX/RX use **different** buffers — receiving into a TX buffer DMA has not yet read corrupts the transmission.
 
-~~~cpp
-alignas(32) static uint16_t rx[64]; // Owns all affected cache lines.
+```cpp
+alignas(32) static uint16_t rx[64];   // owns all affected cache lines
 static uint16_t tx[64];
 // After Half_Word setup with constructor-bound DMA:
-bus.SendReceive_DMA(tx, rx, 64); // 64 frames, 128 cache-maintained RX bytes.
+bus.SendReceive_DMA(tx, rx, 64);      // 64 frames = 128 cache-maintained RX bytes
 // Do not access rx before Process() completes.
-~~~
+```
 
 ---
 
 ## 10. IRQ, errors, callbacks and cleanup
 
-SetUp registers the SPI object and enables its NVIC line once. IRQ_en changes only
-CR2 source bits; enable transfer sources only for an active operation.
-SetUp also registers separate DMA TX/RX handler objects. DeInit removes only the
-SPI object's entries and retains other handlers/shared NVIC state. Registry changes
-belong to main, never to callbacks.
+**Registration:**
 
-One IRQ/NSS entry reads or discards at most one RX FIFO: one frame on F4,
-four 8-bit or two 16-bit frames on F7/G0. Error handling and normal RX share
-the same remaining count. Incoming clocks cannot extend this loop indefinitely.
-Pending RX continues through later interrupts; after NSS, Process drains the
-stopped FIFO tail before publishing the packet. TX IRQ writes at most one frame.
+- `SetUp()` registers the SPI object and enables its NVIC line once, and separately registers the DMA TX/RX handlers.
+- `IRQ_en()` changes only CR2 source bits. Transfer sources are enabled only while a transfer runs.
+- `DeInit()` removes only this object's entries; other handlers and shared NVIC state stay.
+- Registry changes happen in `main`, never in callbacks.
 
-SPI IRQ shares entry CR2/SR snapshots between error/RX/TX checks. F4 reads the
-first RX frame without re-reading SR; F7/G0 refresh SR for subsequent FIFO frames.
-The DR/SR sequence clearing OVR and the final wire-status check in Process remain.
-Each DMA handler uses one GetIRQFlags() snapshot for TC and supported errors.
+**Bounded work per interrupt:** one SPI/NSS interrupt entry reads or discards at most one RX FIFO — 1 frame on F4; 4 × 8-bit or 2 × 16-bit frames on F7/G0. Error handling and normal RX share that budget, so incoming clocks cannot extend the loop indefinitely. Remaining RX is handled by later interrupts; after NSS, `Process()` drains the stopped FIFO. The TX interrupt writes at most one frame.
 
-Errors are combined into one OnError(uint32_t) mask: Overrun, ModeFault,
-DmaTx and DmaRx. CRCERR/FRE and their Crc/Frame enum entries were removed: hardware
-CRC and TI mode are not enabled. DMA errors take precedence over TC. Sources stop in IRQ, final
-cache/status/error notification happens in Process(). A blocking timeout releases
-automatic CS and resets the aborted SPI to discard queued/latched state; unrelated
-peripherals and shared clocks are untouched.
+**Snapshots:** error/RX/TX checks share one CR2/SR snapshot per entry. F4 reads the first RX frame without re-reading SR; F7/G0 refresh SR for further FIFO frames. The DR/SR sequence clearing OVR and the final wire-status check in `Process()` remain. Each DMA handler uses one `GetIRQFlags()` snapshot for TC and errors.
 
-Operational callbacks are protected: OnTxEmpty, OnRxByte, OnRxWord,
-OnDmaTxComplete, OnDmaRxComplete. Overrides call their base to preserve processing.
-OnComplete and OnError are empty notifications. Byte/word callbacks also run during
-blocking polling or final FIFO drain in the calling/main context.
+**Errors** are reported once through `OnError(uint32_t mask)` with bits `Overrun`, `ModeFault`, `DmaTx`, `DmaRx`.
 
-~~~cpp
+- CRCERR/FRE and the `Crc`/`Frame` enum entries were removed — hardware CRC and TI mode are not used.
+- DMA errors take precedence over TC.
+- Sources stop in the interrupt; cache, status and the notification happen in `Process()`.
+- A blocking timeout releases the driver-managed CS and resets only the aborted SPI to discard queued/latched state; other peripherals and shared clocks are untouched.
+
+**Callbacks** (protected virtual):
+
+| Callback | Type | Override rule |
+| --- | --- | --- |
+| `OnTxEmpty`, `OnRxByte`, `OnRxWord`, `OnDmaTxComplete`, `OnDmaRxComplete` | part of standard processing | call the base implementation to keep storage/count/truncation |
+| `OnComplete`, `OnError` | notifications | empty by default |
+
+Byte/word callbacks also run during blocking polling or the final FIFO drain, in the calling/`main` context.
+
+```cpp
 class Link : public SPI {
 public:
     using SPI::SPI;
 protected:
     void OnRxWord(uint16_t frame) override {
-        SPI::OnRxWord(frame); // Preserve storage/count/truncation.
+        SPI::OnRxWord(frame);   // keep storage/count/truncation
     }
-    void OnComplete() override { /* Main/Process: packet is available. */ }
-    void OnError(uint32_t errors) override { /* Main: record failure mask. */ }
+    void OnComplete() override { /* main/Process: packet is available */ }
+    void OnError(uint32_t errors) override { /* main: record the failure mask */ }
 };
-~~~
+```
 
-DeInit cancels without completion callbacks, stops DMA, returns an active RX buffer,
-unregisters this object and releases DMA resources. Disable/serialize the user's
-NSS EXTI callback first. The destructor does not call DeInit.
+**`DeInit()`** cancels without completion callbacks, stops DMA, returns an active RX buffer to the CPU, unregisters this object and releases the DMA resources. Disable or serialize your NSS EXTI callback first. The received count and truncation flag are reset on the next start or by `DeInit()`. The destructor does not call `DeInit()`.
 
 ---
 
 ## 11. Usage Examples
 
-Independent example; check device/package availability and every returned status.
+A minimal master. Check device/package availability and every returned status.
 
 ```cpp
 #include "spi.hpp"
 using S = SPI::_1;
+
 constinit SPI bus(S::instance, SPI::Direction::TXRX,
-    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6);
+                  S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6);
+
 // In main, after System/RCC initialization:
 if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software)
         != SysInitStatus::InitOK)
     System::DebugTrap("SPI setup");
-// Use the transfer examples above. For async transfers call bus.Process()
-// in main until physical completion; buffers must remain alive.
+
+uint8_t tx[] = {0x9F, 0, 0, 0}, rx[4];
+if (bus.SendReceive_IRQ(tx, rx, 4) == SysStatus::OK) {
+    while (bus.Process() == SysStatus::Busy) { /* other main-loop work */ }
+    // rx is valid if Process() returned OK; buffers must stay alive until then.
+}
 ```
+
+More examples: shared bus (section 4), RX-only DMA (section 5), slave (section 7), DMA binding (section 8).
 
 ---
 
 ## 12. Edge Cases
 
-DMA TC is buffer completion, not wire completion. Call Process in main. Slave framing is strictly NSS-driven; G0 requires the last DMA request serviced before stop. The application serializes handlers/control, owns cache lines and handles truncated packets.
+| Situation | Behaviour |
+| --- | --- |
+| DMA TC received | Buffer done, not wire done — call `Process()` in `main`. |
+| Slave packet length | Determined only by NSS; extra frames → `IsTruncated()`. |
+| G0 slave: NSS rises before the last DMA request is serviced | Not supported — the final request must be serviced before the stop. |
+| Handler preemption, control serialization | Application responsibility. |
+| F7 cache-line ownership | Application responsibility. |
 
 ---
 
 ## See Also
 
-- [ST RM0444 — SPI 32-bit FIFOs](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
-- [ST RM0431 — F7 SPI FIFO capacity](https://www.st.com/resource/en/reference_manual/dm00305990.pdf).
-- [ST AN5543 — data flow, DMA and physical completion, NSS](https://www.st.com/resource/en/application_note/an5543-guidelines-for-enhanced-spi-communication-on-stm32-mcus-and-mpus-stmicroelectronics.pdf).
-- [ST F7 SPI driver — FIFO threshold and transaction-end checks](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Src/stm32f7xx_hal_spi.c).
-- [ST F429 errata §2.12.5 — slave BSY](https://www.st.com/resource/en/errata_sheet/dm00068628-stm32f427437-and-stm32f429439-line-limitations-stmicroelectronics.pdf).
-- [ST F411 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f411ce.pdf).
-- [ST F410 datasheet — SPI5 AF6 pins](https://www.st.com/resource/en/datasheet/stm32f410rb.pdf).
-- [ST F412 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f412ve.pdf).
-- [ST F413 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f413cg.pdf).
-- [ST F429 datasheet — SPI4–SPI6 pins](https://www.st.com/resource/en/datasheet/stm32f429zi.pdf).
-- [ST F767 datasheet — SPI4–SPI6 pins](https://www.st.com/resource/en/datasheet/stm32f767vi.pdf).
-- [ST RM0385 — DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00124865.pdf).
-- [ST RM0383 — F411 DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00119316-stm32f4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
-- [ST RM0401 — F410 DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00180366-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
-- [ST G0B1 datasheet — SPI3 pins](https://www.st.com/resource/en/datasheet/stm32g0b1kc.pdf).
-- [ST G0 LL DMAMUX — SPI3 RX=66, TX=67](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h).
-- [DMA.md](DMA.md), [IRQ_Registry.md](IRQ_Registry.md), [System.md](System.md).
-
+- [ST RM0444 — SPI 32-bit FIFOs](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST RM0431 — F7 SPI FIFO capacity](https://www.st.com/resource/en/reference_manual/dm00305990.pdf)
+- [ST AN5543 — data flow, DMA and physical completion, NSS](https://www.st.com/resource/en/application_note/an5543-guidelines-for-enhanced-spi-communication-on-stm32-mcus-and-mpus-stmicroelectronics.pdf)
+- [ST F7 SPI driver — FIFO threshold and transaction-end checks](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Src/stm32f7xx_hal_spi.c)
+- [ST F429 errata §2.12.5 — slave BSY](https://www.st.com/resource/en/errata_sheet/dm00068628-stm32f427437-and-stm32f429439-line-limitations-stmicroelectronics.pdf)
+- [ST F411 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f411ce.pdf)
+- [ST F410 datasheet — SPI5 AF6 pins](https://www.st.com/resource/en/datasheet/stm32f410rb.pdf)
+- [ST F412 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f412ve.pdf)
+- [ST F413 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f413cg.pdf)
+- [ST F429 datasheet — SPI4–SPI6 pins](https://www.st.com/resource/en/datasheet/stm32f429zi.pdf)
+- [ST F767 datasheet — SPI4–SPI6 pins](https://www.st.com/resource/en/datasheet/stm32f767vi.pdf)
+- [ST RM0385 — DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00124865.pdf)
+- [ST RM0383 — F411 DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00119316-stm32f4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST RM0401 — F410 DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00180366-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST G0B1 datasheet — SPI3 pins](https://www.st.com/resource/en/datasheet/stm32g0b1kc.pdf)
+- [ST G0 LL DMAMUX — SPI3 RX=66, TX=67](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h)
 - [Initialization.md](Initialization.md)
 - [DMA.md](DMA.md)
 - [GPIO.md](GPIO.md)
@@ -436,44 +468,61 @@ DMA TC is buffer completion, not wire completion. Call Process in main. Slave fr
 
 ## 1. Зачем это нужно
 
-SPI закрепляет направление TX/RX/TXRX, необязательный CS и DMA. Блокирующие, IRQ- и DMA-вызовы используют общий механизм обмена; Process в main подтверждает физическое завершение без ожиданий в IRQ.
+`SPI` управляет одним блоком SPI в режиме ведущего (master) или ведомого (slave).
+
+- Конструктор закрепляет **направление** (`TX`, `RX` или `TXRX`), выводы, необязательный chip-select и необязательный DMA.
+- Обмен бывает блокирующим, через прерывания или через DMA — всё работает на одном механизме обмена.
+- Для асинхронного обмена **`Process()`** в основном цикле подтверждает, что последний кадр действительно ушёл на линию. Обработчики прерываний ничего не ждут.
 
 ---
 
 ## 2. Постоянная инициализация и диагностика конструктора
 
-Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте готовый _N::instance, именованные пины и необязательные маршруты _N::DMA. На G0 передаются числовые DMAx_Channely_BASE, источник запроса закрепляет периферия.
+Объявляйте объект глобально с `constinit` (или как `static constinit` внутри функции). Аргументы: `SPI::_N::instance`, направление, именованные выводы SCK/MOSI/MISO, необязательный вывод CS/NSS, необязательные TX/RX DMA (именованные маршруты `_N::DMA::...` на F4/F7, физические `DMAx_Channely_BASE` на G0 — номера запросов подставляет SPI).
 
-При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. Макрос выбирает путь через `std::is_constant_evaluated()`; во время выполнения напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Метаданные читаются из Instance; указатель регистров служит признаком настройки и обнуляется после ошибки первой настройки или DeInit. Второго указателя метаданных нет. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+Что происходит при неверном аргументе (например, вывод MOSI от SPI2 у SPI1):
+
+| Объявление | Результат |
+| --- | --- |
+| Объект с `constinit` | **Ошибка компиляции**, текст причины — в сообщении. |
+| Объект без `constinit` | Собирается; при старте конструктор останавливается в `System::DebugTrap(причина)`. |
+
+Каждая проверка вызывает `STM32_CONFIG_ERROR("причина")`: при компиляции — ошибка GCC с текстом причины, во время работы — `System::DebugTrap(text)`. `constinit` обязателен по правилам использования, но не проверяется.
+
+`SetUp()` по-прежнему проверяет состояние аппаратуры и занятость ресурсов. Объект хранит ссылку на instance и один указатель регистров; нулевой указатель — «не настроен» (обнуляется после неудачного первого `SetUp()` и в `DeInit()`). Подробнее: [Initialization.md](Initialization.md).
 
 ---
 
 ## 3. Настройка и владение
 
-Один объект SPI обслуживает одну аппаратную периферию. Сначала настраиваются
-System/RCC. Повторный SetUp — ошибка до DeInit. DMA хранится внутри SPI;
-объект SPI и активные буферы должны жить до завершения использования.
-Деструктор автоматически DeInit не вызывает. SPI_USE_ATOMIC в spi.hpp:
-0 — обычные изменения управляющих регистров, 1 — ATOMIC_* ST.
-После изменения нужно пересобрать драйвер и приложение. Атомарность отдельных
-операций не заменяет согласование запуска и IRQ.
+**Один объект управляет одним блоком SPI.**
 
-Конструктор сохраняет необязательный SS. В master с программным NSS переданный
-SS автоматически управляется драйвером; без него устройствами управляет приложение.
-Аппаратный NSS требует соответствующий пин. Slave использует аппаратный NSS.
+- Сначала настройте System/RCC.
+- `SetUp()` вызывается один раз; перед перенастройкой или уничтожением объекта — `DeInit()` (деструктор его не вызывает).
+- DMA хранится внутри SPI. Объект SPI и активные буферы должны существовать до конца использования.
 
-В конструкторе фиксируются Direction::TX/RX/TXRX и DMA после SS. Структура
-настроек остаётся в SetUp, как и прежняя перегрузка с отдельными параметрами.
-TX использует BIDIMODE/BIDIOE без RX и второго DMA. RX работает через full duplex
-без RXONLY: master выдаёт dummy через TX IRQ, slave только принимает. TXRX
-разрешает Send/Receive/SendReceive; Send отбрасывает RX, Receive выдаёт dummy.
-Несовместимый с направлением метод возвращает Error. Таблицы охватывают присутствующие в CMSIS SPI1–SPI6 для F4/F7 и SPI1–SPI3
-для G0. Пины зависят от карты AF; доступность вывода в корпусе проверяет
-пользователь. SPI5 у F410/F411/F412/F413/F423 использует AF6, у старших F4/F7 —
-AF5. У G0 с SPI3 блоки SPI2/SPI3 используют общий SPI2_3_IRQn.
+**Конструктор:**
 
-~~~cpp
-constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
+- SCK обязателен. Вывод данных можно опустить (`PIN{}`), если это направление снаружи не используется.
+- Принадлежность именованных выводов периферии проверяется при компиляции.
+- После CS идут необязательные `DMAReq` для TX и RX.
+- В master с программным NSS переданный CS автоматически управляется драйвером; без него chip-select управляет приложение. Аппаратный NSS требует соответствующий вывод. Slave всегда использует аппаратный NSS.
+
+**Что означает направление:**
+
+| Направление | Аппаратный режим | Разрешённые методы |
+| --- | --- | --- |
+| `TX` | однопроводной выход (BIDIMODE/BIDIOE); без RX и второго DMA | `Send` |
+| `RX` | full duplex, RXONLY сброшен; master тактирует пустыми кадрами из TX-прерывания, slave только принимает | `Receive` |
+| `TXRX` | full duplex | `Send` (RX отбрасывается), `Receive` (пустые TX), `SendReceive` |
+
+Метод, не подходящий закреплённому направлению, возвращает `Error`.
+
+**`SetUp()`** — тактирование, режим и формат кадра (или перегрузка с `Init_struct_Typedef`):
+
+```cpp
+constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX,
+                  SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6);
 SysInitStatus initialized = bus.SetUp(
     SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
     SPI::Data_frame_format::Half_Word, SPI::Frame_Format::MSB,
@@ -481,161 +530,178 @@ SysInitStatus initialized = bus.SetUp(
 uint16_t tx[] = {0x1234, 0xABCD}, rx[2];
 // Только после initialized == InitOK:
 SysStatus result = bus.Send_Receive(tx, rx, 2); // Два кадра, не два байта.
-~~~
+```
+
+`InitError` при: неверных значениях enum, отсутствии SCK, аппаратном NSS без вывода, slave с программным NSS, неподдерживаемом экземпляре, повторной настройке или ошибке регистрации IRQ.
+
+**Поддержка МК:**
+
+- SPI1–SPI6 на F4/F7 и SPI1–SPI3 на G0, если они объявлены в CMSIS.
+- Именованные выводы следуют карте AF; наличие вывода в корпусе проверяет пользователь. SPI5 на F410/F411/F412/F413/F423 использует AF6, на старших F4/F7 — AF5.
+- На G0 с SPI3 блоки SPI2 и SPI3 делят `SPI2_3_IRQn`.
+
+**`SPI_USE_ATOMIC`** (в `spi.hpp`, по умолчанию `0`): `1` переключает «прочитать-изменить-записать» управляющих регистров на макросы ST `ATOMIC_*`. Защищается отдельная операция, а не весь обмен или передача буфера. У DMA своя настройка `DMA_USE_ATOMIC`. После изменения пересоберите драйвер и приложение.
 
 ---
 
 ## 4. Общая шина и SS
 
-Для нескольких устройств используется один SPI и отдельные CS приложения.
-Так CS может оставаться активным между отправкой команды и чтением ответа.
-При ошибке приложение тоже снимает свой CS. При IRQ/DMA CS снимается после
-физического завершения через Process, а не сразу после успешного старта.
+| Конфигурация | Кто управляет chip-select |
+| --- | --- |
+| Master, программный NSS, вывод CS передан | драйвер: высокий уровень после настройки, низкий при старте, высокий только после окончательного завершения/ошибки/таймаута |
+| Master, программный NSS, без вывода CS | приложение (все CS-выводы) |
+| Master, аппаратный NSS | аппаратура: SSM сброшен, SSOE установлен; NSS следует за включением SPI |
+| Slave | нужен аппаратный NSS (SSM/SSOE сброшены); приложение настраивает EXTI на этом выводе для определения конца пакета |
 
-~~~cpp
+Программный NSS в режиме slave не поддерживается.
+
+**Общая шина:** используйте один объект SPI и выводы CS приложения — тогда CS может оставаться активным между командой и ответом. При ошибке тоже снимайте CS.
+
+```cpp
 PIN cs(GPIOB, 0);
 cs.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
-// bus настроен на Master/Software, SS в конструкторе не передан.
+// bus настроен как Master/Software, CS в конструктор не передан.
 cs.SetLevel(0);
 SysStatus result = bus.Send(command, command_frames);
 if (result == SysStatus::OK) result = bus.Receive(reply, reply_capacity);
 cs.SetLevel(1);
-~~~
+```
 
-В master Hard сбрасывает SSM и включает SSOE; NSS управляется через SPE.
-В slave Hard сбрасывает SSM/SSOE. Программный NSS в slave не поддерживается.
-Для устройств с разными настройками требуется явный DeInit/SetUp в простое,
-с повторной настройкой тех же DMA из конструктора. Направление и выбранные DMAReq
-не меняются после DeInit. Планировщик устройств
-или автоматическое переключение их конфигураций не добавлены.
+При обмене через IRQ/DMA снимайте CS только после того, как `Process()` сообщит о физическом завершении, а не сразу после успешного запуска.
+
+**Устройства с разными настройками** (CPOL/CPHA, делитель, размер кадра) требуют явной перенастройки в простое: `DeInit()` + `SetUp()`. Направление и DMA из конструктора не меняются. Планировщика устройств нет.
 
 ---
 
 ## 5. Размер кадра и методы
 
-У методов есть перегрузки uint8_t*/uint16_t*. Они должны соответствовать
-Byte/Half_Word из SetUp. len — 1..65535 кадров. Для 16 бит размер буфера в байтах
-равен len*2; нужны 16-битные обращения к DR, выравнивание и Half_Word у DMA.
-На F7/G0 порог RX FIFO соответствует размеру кадра.
+**Размер кадра.** У каждого метода есть перегрузки `uint8_t*` и `uint16_t*`; используйте ту, что соответствует `SetUp(Byte / Half_Word)`. `len` всегда — **1…65535 кадров**:
 
-| Режим | Методы | Значение OK при возврате |
-|---|---|---|
-| Блокирующий | Send, Receive, Send_Receive | Обмен завершён |
-| IRQ | Send_IRQ, Receive_IRQ, SendReceive_IRQ | Обмен запущен |
-| DMA | Send_DMA, Receive_DMA, SendReceive_DMA | Обмен запущен |
+- буфер `uint8_t` → `len` байт, 8-битные обращения к DR/DMA;
+- буфер `uint16_t` → `len` полуслов (2·`len` байт), 16-битные обращения, выравнивание на 2 байта;
+- на F7/G0 порог RX FIFO соответствует размеру кадра, неявной упаковки нет.
 
-Receive_DMA использует full duplex с dummy, без RXONLY.
-Dummy равен 0xFF для 8 бит и 0xFFFF для 16 бит.
+**Что передаёт каждая операция:** `Send` передаёт ваши кадры и отбрасывает RX; `Receive` передаёт пустые кадры (`0xFF` / `0xFFFF`) и сохраняет RX; `SendReceive` использует оба буфера. `Receive_DMA` использует двухпроводной приём с пустыми кадрами (RXONLY не используется).
+
+| Режим | Методы | Значение `OK` при возврате |
+| --- | --- | --- |
+| Блокирующий | `Send`, `Receive`, `Send_Receive` | обмен **завершён** |
+| IRQ | `Send_IRQ`, `Receive_IRQ`, `SendReceive_IRQ` | обмен **запущен** |
+| DMA | `Send_DMA`, `Receive_DMA`, `SendReceive_DMA` | обмен **запущен** |
 
 | Направление конструктора | Операции | Обслуживание |
-|---|---|---|
-| TX | Send | Только TX: один TX DMA либо TX IRQ |
-| RX | Receive | Master: RX DMA/IRQ и dummy TX IRQ; slave: только RX |
-| TXRX | Send, Receive, SendReceive | Обе аппаратные стороны; без DMA сторону обслуживает IRQ |
+| --- | --- | --- |
+| `TX` | `Send` | только TX: TX DMA или TX IRQ |
+| `RX` | `Receive` | master: RX DMA/IRQ + пустые TX из прерывания; slave: только RX |
+| `TXRX` | `Send`, `Receive`, `SendReceive` | оба направления; направление без DMA обслуживает прерывание SPI |
 
-Подключённый DMA не отменяет блокирующие методы и методы IRQ. Пример RX master
-G0 без MOSI и второго DMA:
+Привязанный DMA не отменяет блокирующие методы и методы IRQ. Пример — `RX` master на G0 с одним DMA и без MOSI:
 
-~~~cpp
+```cpp
 constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
 constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
-        PIN{}, SPI::_1::MISO::PA6, PIN{}, {}, rx);
+                  PIN{}, SPI::_1::MISO::PA6, PIN{}, {}, rx);
 // Проверить SetUp(Master, Software), затем Receive_DMA(buffer, capacity).
-// Вызывать Process из main; использовать буфер только после OK.
-~~~
+// Вызывать Process() из main; использовать буфер только после OK.
+```
 
-До SetUp возвращается NotInit, при занятом SPI — Busy. Нулевой/некорректный буфер,
-длина 0 или >65535, неверная ширина/выравнивание, отсутствующий пин данных или
-необходимый DMA — Error. Блокирующий timeout один на весь вызов, требует GetTick;
-после Timeout/Error можно начать новый обмен. У асинхронных методов внутреннего
-дедлайна нет: приложение контролирует время и может отменить обмен через DeInit.
+**Коды статуса:**
+
+| Результат | Когда |
+| --- | --- |
+| `NotInit` | `SetUp()` не выполнен успешно |
+| `Busy` | идёт другая операция |
+| `Error` | нулевые аргументы, больше 65535 кадров, несоответствие ширины кадра или выравнивания, нет вывода данных или нужного DMA |
+| `Timeout` | блокирующий вызов превысил отведённое время |
+
+- После `Error`/`Timeout` (и очистки) можно начать новый обмен.
+- У блокирующего вызова **один** таймаут на весь вызов; нужен работающий `GetTick()`.
+- У асинхронных вызовов внутреннего срока нет — приложение контролирует время само и может отменить обмен через `DeInit()`.
 
 ---
 
 ## 6. Process и завершение
 
-IRQ обслуживает кадры, DMA TC завершает работу с буфером. Физическое завершение
-проверяет Process в mainloop. Для master сначала должны быть обработаны все
-запланированные TX/RX кадры, затем F4 проверяет TXE=1/BSY=0, F7/G0 — пустой
-TX FIFO и BSY=0. Process не содержит ожидания BSY и возвращает Busy, пока рано.
+> Ни TXE, ни «передача завершена» TX DMA не означают, что последний кадр ушёл на линию. Прерывание перемещает кадры; DMA TC лишь означает, что буфер передан или заполнен.
 
-~~~cpp
+После запуска обмена через IRQ/DMA регулярно вызывайте `Process()` из `main`:
+
+```cpp
 // После успешного SendReceive_IRQ или SendReceive_DMA:
 SysStatus state = bus.Process();
 if (state == SysStatus::OK) {
     uint32_t frames = bus.GetDataReceivedCount();
-    // Теперь RX доступен CPU; чтение счётчика его не сбрасывает.
+    // Теперь RX доступен процессору; чтение счётчика его не сбрасывает.
 }
-~~~
+```
 
-Process останавливает источники/DMA, возвращает кеш, снимает необязательный
-программный SS, публикует статус и вызывает OnComplete/OnError. Эти уведомления
-выполняются из main/Process, не из DMA IRQ. GetStatus только читает статус.
-Для блокирующих вызовов OnComplete не вызывается; OnError сообщает аппаратные ошибки.
+**Что проверяет `Process()` (master):**
+
+1. все запланированные TX/RX-кадры обработаны;
+2. затем сам SPI — F4: TXE = 1 и BSY = 0; F7/G0: TX FIFO пуст и BSY = 0.
+
+Одного чтения BSY = 0 во время незавершённого обмена недостаточно — поэтому такой порядок.
+
+**Что делает `Process()`:** никогда не крутится в ожидании BSY; пока рано — возвращает `Busy`. По завершении останавливает источники/DMA, обслуживает кеш, снимает CS, которым управляет драйвер, публикует `OK` и вызывает `OnComplete()`. Аппаратные ошибки после очистки вызывают `OnError(mask)`. Оба уведомления выполняются в `main` (внутри `Process()`), а не в прерывании DMA.
+
+`GetStatus()` только читает статус и этой работы не выполняет. Блокирующие вызовы `OnComplete()` не вызывают; `OnError()` сообщает об их аппаратных ошибках.
 
 ---
 
 ## 7. Slave до снятия аппаратного NSS
 
-len — вместимость буфера. Пакет может быть короче; сохраняются первые len полных
-кадров. GetDataReceivedCount возвращает число сохранённых кадров после успешного
-Process. Дополнительные кадры отбрасываются с IsTruncated=true. Ровно len кадров
-не считаются усечением. После TX-буфера slave выдаёт dummy 0xFF/0xFFFF до снятия NSS.
-Хвост обслуживает TXE IRQ, в том числе после TX DMA TC: частота SCK должна
-учитывать задержку обслуживания. Непрерывная выдача на максимальной SCK не гарантируется.
+В режиме slave длину пакета определяет **ведущий**; конец пакета — подъём NSS.
 
-Приложение настраивает EXTI по нарастающему фронту на пине аппаратного NSS,
-само проверяет/сбрасывает флаг и вызывает NssReleased:
+**Вместимость буфера:**
 
-~~~cpp
-constinit SPI slave(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7,
-          SPI::_1::MISO::PA6, SPI::_1::SS::PA4);
+- `len` — вместимость буфера, а не обязательная длина пакета. Пакет может быть короче или длиннее.
+- Сохраняются первые `len` полных кадров; их число сообщает `GetDataReceivedCount()` (после `OK` от `Process()`).
+- Лишние кадры отбрасываются, и `IsTruncated()` становится `true`; сохранённый префикс всё равно считается успешным пакетом. Ровно `len` кадров — **не** усечение.
+- После TX-данных slave выдаёт пустые `0xFF`/`0xFFFF` до подъёма NSS. Этот хвост подаёт прерывание TXE (в том числе после TX DMA TC), поэтому выбирайте SCK с учётом задержки прерываний — непрерывная выдача на максимальной SCK не гарантируется.
+
+**Конец пакета:** подготовьте TX/RX **до** того, как ведущий опустит NSS. Приложение настраивает EXTI по нарастающему фронту на выводе аппаратного NSS, подтверждает флаг и вызывает `NssReleased()`:
+
+```cpp
+constinit SPI slave(SPI::_1::instance, SPI::Direction::TXRX,
+                    SPI::_1::SCK::PA5, SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6,
+                    SPI::_1::SS::PA4);
 static uint8_t packet[64];
 // Проверить SetUp(Slave, Hard), затем Receive_IRQ(packet, sizeof(packet)).
 
-// В пользовательском EXTI после подтверждения флага снятия NSS:
+// В пользовательском EXTI после проверки/подтверждения флага NSS:
 slave.NssReleased();
 
-// В main после старта:
+// В main после запуска:
 if (slave.Process() == SysStatus::OK) {
     uint32_t frames = slave.GetDataReceivedCount();
     bool truncated = slave.IsTruncated();
-    // Обработать packet[0..frames), затем снова взвести приём.
+    // Обработать packet[0..frames), затем снова запустить приём.
 }
-~~~
+```
 
-NssReleased отключает источники и запрашивает остановку DMA без ожидания,
-обслуживания кеша и завершающих callbacks. F4/F7 фиксируют остановку и счётчик
-по DMA TC в отдельном DMA IRQ; Process остаётся Busy до завершения остановки.
-На G0 последний DMA-запрос должен быть уже обслужен до остановки по NSS.
-Process читает остановленный CNDTR. Произвольный abort во время переноса не
-гарантирует длину; при ошибке весь пакет отбрасывается. Ожиданий в IRQ нет. Process инвалидирует записанный DMA префикс,
-дочитывает хвост RX FIFO и публикует результат. После slave-пакета SPI также
-сбрасывается для удаления заранее загруженных, но не переданных TX кадров. Slave BSY не используется как
-граница пакета из-за аппаратных ограничений.
+**Что происходит внутри:**
 
-Обработчики NSS EXTI, SPI и DMA этого объекта не должны прерывать друг друга.
-Фронт должен быть обслужен до следующего пакета, а master должен дождаться
-Process и повторного взведения slave. Приём без пауз между пакетами не обещается.
-Только опрос NSS в mainloop может пропустить короткую паузу.
+- `NssReleased()` отключает источники SPI и запрашивает остановку DMA — без ожиданий, работы с кешем и callback.
+- F4/F7: каждое прерывание DMA фиксирует TC остановки и итоговый счётчик; `Process()` остаётся `Busy`, пока не остановятся оба направления.
+- G0: последний запрос DMA должен быть обслужен до остановки по NSS; `Process()` читает остановленный счётчик. Произвольная остановка посреди переноса не даёт достоверной длины. При ошибках весь пакет отбрасывается.
+- `Process()` инвалидирует записанный DMA префикс, дочитывает хвост RX FIFO и публикует пакет. Также сбрасывает SPI, чтобы удалить заранее загруженные, но не переданные TX-кадры.
+- BSY в режиме slave **не** используется как граница пакета — у ряда МК есть документированная ошибка (errata) slave-BSY.
 
-Неполный последний кадр и корректность протокола проверяет приложение.
-OVR до заполнения буфера означает потерю данных и Error. После заполнения —
-усечение с сохранением префикса.
+**Требования к времени:**
+
+- Обработчики NSS EXTI, SPI и DMA этого объекта не должны вытеснять друг друга.
+- Фронт EXTI должен быть обслужен до следующего пакета, а ведущий должен дождаться выполнения `Process()` и повторного запуска приёма.
+- Опрос NSS в основном цикле не заменяет захват фронта, если ведущий может давать короткие импульсы.
+
+**Целостность:** сообщаются только полные кадры; неполный последний кадр и корректность протокола проверяет приложение. OVR **до** заполнения буфера — потеря данных → `Error`. OVR **после** заполнения — усечение с сохранением префикса.
 
 ---
 
 ## 8. DMA и кеш
 
-DMA передаются в конструктор после SS и настраиваются внутри SetUp; отдельного
-AttachDMA нет. SetUp проверяет полный DMAReq, настройку и регистрацию. Занятый
-DMA, одинаковый объект TX/RX или DMA несовместимого направления — InitError.
-При отказе освобождаются только полученные этим вызовом ресурсы. SPI, DMA TX и
-DMA RX регистрируются отдельно. Даже при общем векторе TX/RX нужны два места
-в реестре; каждый обработчик проверяет только собственный DMA. Ширина DMA
-соответствует кадру.
+**Привязка DMA.** DMA передаются в конструктор после CS и настраиваются в `SetUp()`; отдельного `AttachDMA()` нет.
 
-~~~cpp
+```cpp
 // F4/F7:
 constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA2_Stream3;
 constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
@@ -643,107 +709,160 @@ constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
 // constexpr SPI::DMAReq tx = DMA1_Channel2_BASE;
 // constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
 constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
-        SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, tx, rx);
+                  SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, tx, rx);
 // Проверить bus.SetUp(Master, Software), затем запускать обмен.
-~~~
+```
 
-Send_DMA требует TX DMA, Receive_DMA — RX DMA, SendReceive_DMA — оба.
-В RX master работает один RX DMA, dummy выдаёт TX IRQ; в RX slave нужен только
-RX DMA. TX использует один TX DMA без обслуживания RX. В TXRX неподключённую
-сторону обслуживает SPI IRQ. Частота SCK должна учитывать задержку IRQ. minc=DISABLE повторяет первый кадр TX.
+**Проверки:**
 
-Кеш обслуживается через System: clean TX, clean+invalidate перед RX, invalidate
-записанного префикса после завершения остановки DMA; при ошибке/отмене — всего RX-буфера. Размер — кадры*ширина.
-При minc=DISABLE чистится только повторяемый кадр. CPU не обращается к активным
-RX cache lines и не меняет TX. Некешируемые области проекта пропускаются
-в System; на F4/G0 helpers пустые. Буферы должны быть доступны DMA. Для одновременного TX/RX используйте отдельные
-буферы: приём в ещё не прочитанные DMA исходные данные нарушает передачу.
-DMA dummy для TXRX неизменяем и находится во Flash; discard word CPU не читает/не меняет.
+- При компиляции (`constinit`): неверный запрос, один ресурс для TX и RX, DMA несовместимого направления.
+- В `SetUp()`: занятый DMA, ошибка настройки или регистрации → `InitError`; освобождается только захваченное этим вызовом.
+- Ширина данных DMA соответствует размеру кадра.
+
+**Прерывания:** SPI, DMA TX и DMA RX регистрируются отдельно. Даже при общем векторе TX/RX нужны **два** места в реестре; каждый обработчик проверяет только свой DMA.
+
+**Какой DMA нужен методу:**
+
+| Метод | Нужный DMA |
+| --- | --- |
+| `Send_DMA` | TX |
+| `Receive_DMA` | RX |
+| `SendReceive_DMA` | TX и RX |
+
+- `RX` master: только RX DMA, пустые кадры выдаёт TX-прерывание. `RX` slave: только RX DMA.
+- `TX`: только TX DMA, без обслуживания RX.
+- `TXRX`: направление без DMA обслуживает прерывание SPI. Частота SCK должна учитывать задержку прерываний.
+- `minc = DISABLE` повторяет первый TX-кадр.
+- Буферы должны быть доступны DMA.
+
+**Кеш** (через System; на F4/G0 функции пустые):
+
+| Момент | Операция |
+| --- | --- |
+| перед TX | `CacheClean` (при `minc = DISABLE` — только повторяемый кадр) |
+| перед RX | `CacheCleanInvalidate` |
+| после остановки DMA, успех | `CacheInvalidate` записанного префикса |
+| после отмены/ошибки | `CacheInvalidate` всего RX-буфера |
+
+Размер в байтах = число кадров × ширина кадра.
+
+- Процессор не обращается к активным RX-линиям кеша и не меняет TX-буфер во время обмена.
+- Некешируемые области проекта System пропускает.
+- Для одновременного TX/RX используйте **разные** буферы: приём в ещё не прочитанные DMA исходные данные портит передачу.
+- Источник пустых кадров для `TXRX` — неизменяемая константа во Flash; слово для отбрасываемых данных процессор не читает и не меняет.
+
+```cpp
+alignas(32) static uint16_t rx[64]; // Владеет всеми затронутыми кеш-линиями.
+static uint16_t tx[64];
+// После настройки Half_Word с DMA из конструктора:
+bus.SendReceive_DMA(tx, rx, 64);   // 64 кадра = 128 байт RX с обслуживанием кеша
+// Не обращаться к rx, пока Process() не вернёт результат.
+```
 
 ---
 
 ## 9. Ошибки, callbacks и освобождение
 
-IRQ_en меняет только CR2, не реестр/NVIC. SetUp регистрирует SPI и включает его
-NVIC; там же отдельно регистрируются обработчики DMA TX/RX. Источники разрешаются только
-для активного обмена. DeInit удаляет лишь свои записи, сохраняя общие обработчики.
+**Регистрация:**
 
-OnError(uint32_t) получает маску Overrun/ModeFault/DmaTx/DmaRx.
-CRCERR/FRE и элементы enum Crc/Frame удалены: аппаратный CRC и TI mode не включаются.
-При ошибке источники останавливаются в IRQ; кеш и уведомление — в Process.
-При timeout/error сбрасывается только прерванный SPI для удаления старой очереди
-и аппаратного состояния. Программный SS снимается.
+- `SetUp()` регистрирует объект SPI и один раз включает его линию NVIC, а также отдельно регистрирует обработчики DMA TX/RX.
+- `IRQ_en()` меняет только биты источников в CR2, не реестр и не NVIC. Источники обмена включаются только на время активной операции.
+- `DeInit()` удаляет только свои записи; общие обработчики и NVIC сохраняются.
 
-OnTxEmpty, OnRxByte, OnRxWord, OnDmaTxComplete, OnDmaRxComplete защищённые и имеют
-стандартную обработку. Наследник вызывает базовый callback, если она нужна.
-OnComplete/OnError — уведомления. Покадровые callbacks могут выполняться также
-из блокирующего вызова или при дочитывании FIFO в main. Менять реестр/подключение
-в callbacks запрещено.
+**Ошибки** сообщаются одним вызовом `OnError(uint32_t mask)` с битами `Overrun`, `ModeFault`, `DmaTx`, `DmaRx`.
 
-За один вход в SPI/NSS IRQ читается или отбрасывается не больше одного RX FIFO:
-один кадр на F4, четыре 8-битных или два 16-битных кадра на F7/G0. Обработка
-ошибки и обычный RX используют общий счётчик остатка. Новые такты не продлевают
-цикл без ограничения. Остаток обычного RX обслуживается следующими IRQ;
-после NSS Process дочитывает остановленный FIFO перед публикацией пакета.
-TX IRQ записывает не больше одного кадра.
+- CRCERR/FRE и элементы enum `Crc`/`Frame` удалены — аппаратный CRC и режим TI не используются.
+- Ошибки DMA приоритетнее TC.
+- Источники останавливаются в прерывании; кеш, статус и уведомление — в `Process()`.
+- При таймауте/ошибке сбрасывается только прерванный SPI (удаляются очередь и защёлкнутое состояние); CS, которым управляет драйвер, снимается.
 
-SPI IRQ использует общие снимки CR2/SR для проверок ошибок/RX/TX. На F4 первый
-RX-кадр читается без повторного SR; на F7/G0 SR обновляется для следующих кадров
-FIFO. Чтение SR для очистки OVR и подтверждения физического завершения в Process
-сохранено. В каждом DMA IRQ TC и ошибки берутся из одного GetIRQFlags().
+**Callback** (protected virtual):
 
-DeInit отменяет обмен без callbacks, останавливает DMA, возвращает активный RX
-буфер CPU, удаляет свои IRQ-записи и освобождает DMA. Перед этим пользователь
-отключает/согласовывает свой NSS EXTI. Счётчик/усечение сбрасываются при новом
-старте либо DeInit.
+| Callback | Тип | Правило переопределения |
+| --- | --- | --- |
+| `OnTxEmpty`, `OnRxByte`, `OnRxWord`, `OnDmaTxComplete`, `OnDmaRxComplete` | часть стандартной обработки | вызывайте базовую реализацию, чтобы сохранить запись/счётчик/усечение |
+| `OnComplete`, `OnError` | уведомления | по умолчанию пустые |
+
+Покадровые callback могут выполняться также из блокирующего вызова или при дочитывании FIFO в `main`. Менять реестр и привязки из callback запрещено.
+
+```cpp
+class Link : public SPI {
+public:
+    using SPI::SPI;
+protected:
+    void OnRxWord(uint16_t frame) override {
+        SPI::OnRxWord(frame); // Сохранить запись/счётчик/усечение.
+    }
+    void OnComplete() override { /* main/Process: пакет доступен */ }
+    void OnError(uint32_t errors) override { /* main: запомнить маску ошибок */ }
+};
+```
+
+**Ограниченная работа за одно прерывание:** один вход в прерывание SPI/NSS читает или отбрасывает не больше одного RX FIFO — 1 кадр на F4; 4 × 8 бит или 2 × 16 бит на F7/G0. Обработка ошибки и обычный RX используют общий счётчик, поэтому новые такты не продлевают цикл бесконечно. Остаток RX обслуживают следующие прерывания; после NSS `Process()` дочитывает остановленный FIFO. TX-прерывание записывает не больше одного кадра.
+
+**Снимки регистров:** проверки ошибок/RX/TX используют один снимок CR2/SR на вход. На F4 первый RX-кадр читается без повторного чтения SR; на F7/G0 SR обновляется для следующих кадров FIFO. Последовательность DR/SR для сброса OVR и итоговая проверка линии в `Process()` сохранены. Каждый обработчик DMA берёт TC и ошибки из одного `GetIRQFlags()`.
+
+**`DeInit()`** отменяет обмен без callback завершения, останавливает DMA, возвращает активный RX-буфер процессору, удаляет свои записи IRQ и освобождает DMA. Перед этим отключите или согласуйте свой NSS EXTI. Счётчик и признак усечения сбрасываются при новом запуске или в `DeInit()`. Деструктор `DeInit()` не вызывает.
 
 ---
 
 ## 10. Примеры использования
 
-Отдельный пример; проверьте наличие блока/пинов в корпусе и каждый возвращаемый статус.
+Минимальный master. Проверьте наличие блока/выводов в корпусе и каждый возвращаемый статус.
 
 ```cpp
 #include "spi.hpp"
 using S = SPI::_1;
+
 constinit SPI bus(S::instance, SPI::Direction::TXRX,
-    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6);
-// In main, after System/RCC initialization:
+                  S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6);
+
+// В main, после инициализации System/RCC:
 if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software)
         != SysInitStatus::InitOK)
     System::DebugTrap("SPI setup");
-// Use the transfer examples above. For async transfers call bus.Process()
-// in main until physical completion; buffers must remain alive.
+
+uint8_t tx[] = {0x9F, 0, 0, 0}, rx[4];
+if (bus.SendReceive_IRQ(tx, rx, 4) == SysStatus::OK) {
+    while (bus.Process() == SysStatus::Busy) { /* другая работа основного цикла */ }
+    // rx достоверен, если Process() вернул OK; буферы должны жить до этого момента.
+}
 ```
+
+Другие примеры: общая шина (раздел 4), приём только через RX DMA (раздел 5), slave (раздел 7), привязка DMA (раздел 8).
 
 ---
 
 ## 11. Угловые случаи
 
-DMA TC означает завершение буфера, а не обмена на проводах. Process вызывается из main. В slave граница задаётся NSS; на G0 последний DMA-запрос должен завершиться до остановки. Приложение согласует обработчики/управление, владеет кеш-линиями и обрабатывает усечение пакета.
+| Ситуация | Поведение |
+| --- | --- |
+| Получен DMA TC | Буфер завершён, но не обмен на линии — вызывайте `Process()` в `main`. |
+| Длина slave-пакета | Определяется только NSS; лишние кадры → `IsTruncated()`. |
+| G0 slave: NSS поднялся до обслуживания последнего запроса DMA | Не поддерживается — последний запрос должен быть обслужен до остановки. |
+| Вытеснение обработчиков, согласование управления | Ответственность приложения. |
+| Владение кеш-линиями на F7 | Ответственность приложения. |
 
 ---
 
 ## См. также
 
-- [ST RM0444 — SPI 32-bit FIFOs](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
-- [ST RM0431 — F7 SPI FIFO capacity](https://www.st.com/resource/en/reference_manual/dm00305990.pdf).
-- [ST AN5543 — data flow, DMA and physical completion, NSS](https://www.st.com/resource/en/application_note/an5543-guidelines-for-enhanced-spi-communication-on-stm32-mcus-and-mpus-stmicroelectronics.pdf).
-- [ST F7 SPI driver — FIFO threshold and transaction-end checks](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Src/stm32f7xx_hal_spi.c).
-- [ST F429 errata §2.12.5 — slave BSY](https://www.st.com/resource/en/errata_sheet/dm00068628-stm32f427437-and-stm32f429439-line-limitations-stmicroelectronics.pdf).
-- [ST F411 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f411ce.pdf).
-- [ST F410 datasheet — SPI5 AF6 pins](https://www.st.com/resource/en/datasheet/stm32f410rb.pdf).
-- [ST F412 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f412ve.pdf).
-- [ST F413 datasheet — AF mapping](https://www.st.com/resource/en/datasheet/stm32f413cg.pdf).
-- [ST F429 datasheet — SPI4–SPI6 pins](https://www.st.com/resource/en/datasheet/stm32f429zi.pdf).
-- [ST F767 datasheet — SPI4–SPI6 pins](https://www.st.com/resource/en/datasheet/stm32f767vi.pdf).
-- [ST RM0385 — DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00124865.pdf).
-- [ST RM0383 — F411 DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00119316-stm32f4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
-- [ST RM0401 — F410 DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00180366-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
-- [ST G0B1 datasheet — SPI3 pins](https://www.st.com/resource/en/datasheet/stm32g0b1kc.pdf).
-- [ST G0 LL DMAMUX — SPI3 RX=66, TX=67](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h).
-- [DMA.md](DMA.md), [IRQ_Registry.md](IRQ_Registry.md), [System.md](System.md).
-
+- [ST RM0444 — 32-битные FIFO SPI](https://www.st.com/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST RM0431 — ёмкость FIFO SPI на F7](https://www.st.com/resource/en/reference_manual/dm00305990.pdf)
+- [ST AN5543 — поток данных, DMA, физическое завершение, NSS](https://www.st.com/resource/en/application_note/an5543-guidelines-for-enhanced-spi-communication-on-stm32-mcus-and-mpus-stmicroelectronics.pdf)
+- [Драйвер ST F7 SPI — порог FIFO и проверки конца транзакции](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Src/stm32f7xx_hal_spi.c)
+- [ST F429 errata §2.12.5 — slave BSY](https://www.st.com/resource/en/errata_sheet/dm00068628-stm32f427437-and-stm32f429439-line-limitations-stmicroelectronics.pdf)
+- [ST F411 datasheet — карта AF](https://www.st.com/resource/en/datasheet/stm32f411ce.pdf)
+- [ST F410 datasheet — выводы SPI5 AF6](https://www.st.com/resource/en/datasheet/stm32f410rb.pdf)
+- [ST F412 datasheet — карта AF](https://www.st.com/resource/en/datasheet/stm32f412ve.pdf)
+- [ST F413 datasheet — карта AF](https://www.st.com/resource/en/datasheet/stm32f413cg.pdf)
+- [ST F429 datasheet — выводы SPI4–SPI6](https://www.st.com/resource/en/datasheet/stm32f429zi.pdf)
+- [ST F767 datasheet — выводы SPI4–SPI6](https://www.st.com/resource/en/datasheet/stm32f767vi.pdf)
+- [ST RM0385 — карта запросов DMA](https://www.st.com/resource/en/reference_manual/dm00124865.pdf)
+- [ST RM0383 — карта запросов DMA F411](https://www.st.com/resource/en/reference_manual/dm00119316-stm32f4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST RM0401 — карта запросов DMA F410](https://www.st.com/resource/en/reference_manual/dm00180366-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST G0B1 datasheet — выводы SPI3](https://www.st.com/resource/en/datasheet/stm32g0b1kc.pdf)
+- [ST G0 LL DMAMUX — SPI3 RX=66, TX=67](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h)
 - [Initialization.md](Initialization.md)
 - [DMA.md](DMA.md)
 - [GPIO.md](GPIO.md)

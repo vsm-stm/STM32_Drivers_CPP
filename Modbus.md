@@ -21,128 +21,211 @@
 
 ## 1. Why This Is Needed and Scope
 
-ModbusRTU_Slave is an RS-485 transport using USART with embedded TX/RX DMA,
-two fixed 256-byte buffers, CRC16 and an application parser. It is not a register
-table/function implementation: the parser checks address, function, length,
-broadcast policy and whether to reply.
+`ModbusRTU_Slave` is the **transport layer** of a Modbus RTU slave on RS-485. It provides:
 
-**Packet boundaries use UART IDLE, not strict RTU t1.5/t3.5.** IDLE is roughly
-one character of silence; an allowed RTU intra-frame pause can split reception.
-There is no separate t3.5 wait before a reply. Use only where the peer/pause
-behavior is ensured by the application; full RTU timing conformance is not
-claimed. No hardware TIM for these intervals is added.
+- a USART with its own TX and RX DMA;
+- two fixed 256-byte buffers (receive and reply);
+- CRC16 checking on receive and CRC16 appending on send;
+- control of the RS-485 driver-enable (DE) pin;
+- a call to **your** parser function for every packet with a correct CRC.
+
+It is **not** a ready Modbus register map. Your parser decides everything protocol-related: slave address, function code, request length, broadcast handling and whether to reply.
+
+> **Packet boundaries are detected by UART IDLE, not by strict RTU t1.5/t3.5 timing.**
+>
+> - IDLE fires after about one character time of silence. A pause inside a frame that RTU allows (up to 1.5 characters) can split one request into two packets.
+> - There is no separate t3.5 delay before the reply.
+> - No hardware timer is used for these intervals.
+>
+> Use this transport where the master's timing is known to be compatible. Full RTU timing conformance is not claimed.
 
 ---
 
 ## 2. Constant Initialization and Constructor Diagnostics
 
-Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use USART::_N::instance, its named TX/RX pins and both DMA routes, plus the application DE GPIO. G0 takes numeric DMAx_Channely_BASE selections; USART fixes request sources.
+Declare the object at file scope with `constinit` (or as `static constinit` inside a function). The constructor takes:
 
-For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. The macro uses `std::is_constant_evaluated()` to select that path; at runtime it calls `System::DebugTrap(text)` directly, without calling the template. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+- `USART::_N::instance`;
+- baud rate;
+- named TX and RX pins of that USART;
+- the DE pin (any GPIO);
+- **both** DMA routes — TX and RX.
+
+| Family | DMA argument |
+| --- | --- |
+| F4/F7 | Named route such as `USART::_3::DMA::TX_DMA1_Stream3` — it already encodes controller, stream, channel and direction. |
+| G0 | Physical channel address such as `DMA1_Channel2_BASE`; the USART supplies the DMAMUX request IDs. |
+
+What happens with a wrong argument:
+
+| Declaration | Result |
+| --- | --- |
+| `constinit` object | **Compilation error** with the reason text in the message. |
+| Object without `constinit` | Compiles; at start-up the constructor stops in `System::DebugTrap(reason)`. |
+
+Every check calls `STM32_CONFIG_ERROR("reason")`: at compile time it produces a GCC error containing the reason, at run time it calls `System::DebugTrap(text)`. `constinit` is required by the usage contract but not enforced. `SetUp()` still checks hardware state and occupied resources. Details: [Initialization.md](Initialization.md).
 
 ---
 
 ## 3. Initialization and Line Format
 
-Declare with constinit and USART::_N::instance. Both TX and RX DMA are required;
-F4/F7 named routes encode stream/direction, while G0 takes physical DMA channel
-base addresses and USART supplies request IDs. Wrong bindings are diagnosed by
-the USART/Modbus constructors. Repeat SetUp requires DeInit. SetRxParse installs
-the parser before starting reception.
+Order of calls:
 
-| FrameFormat | Line | Payload |
-|---|---|---|
-| E8_1 | 8E1 | Eight bits, even parity, one stop bit |
-| O8_1 | 8O1 | Eight bits, odd parity, one stop bit |
-| N8_2 | 8N2 | Eight bits, no parity, two stop bits |
-| N8_1 | 8N1 | Legacy default for compatibility |
+1. `SetRxParse(function)` — install your parser **before** reception starts.
+2. `SetUp(format)` — configures USART + DMA, then the DE pin (driven low before it becomes an output).
+3. Call `Rx_Process()` in the main loop.
 
-The format is fixed by SetUp. For 8E1/8O1 the hardware word is nine bits with
-parity in the final bit; DMA data remains byte-oriented.
+A repeated `SetUp()` fails until `DeInit()` is called.
+
+| FrameFormat | Line | Meaning |
+| --- | --- | --- |
+| `E8_1` | 8E1 | 8 data bits, even parity, 1 stop bit — standard RTU |
+| `O8_1` | 8O1 | 8 data bits, odd parity, 1 stop bit |
+| `N8_2` | 8N2 | 8 data bits, no parity, 2 stop bits — standard RTU without parity |
+| `N8_1` | 8N1 | Legacy default, kept for existing devices |
+
+The format is fixed at `SetUp()`. For 8E1/8O1 the USART is configured for a 9-bit word whose last bit is parity, so the payload stays 8 bits and DMA keeps working with bytes.
 
 ---
 
 ## 4. Receive and Main-Loop Parsing
 
-Call Rx_Process frequently from main. A ready packet is held until consumed;
-there is no queue of unlimited requests. It checks length/CRC, calls the parser
-with CRC excluded and rearms reception. Parser pointers are temporary and must
-not be retained across the next receive. An invalid packet is discarded.
+Call `Rx_Process()` often from `main`. Each call:
 
-F4/F7 IDLE requests a stop; DMA RX IRQ publishes after confirmed stop. G0 requires
-the last RX request serviced before the normal IDLE stop, as documented for
-USART. Error packets are not used. See UART.md for count/cache handover.
+1. If reception is not running (and no packet is waiting), arms RX DMA into the receive buffer.
+2. If a packet is ready:
+   - packets of 3 bytes or less, or a missing parser → discarded;
+   - CRC is checked; on match, your parser is called with the data **without** the 2 CRC bytes;
+   - on mismatch the packet is silently dropped;
+   - the "packet ready" flag is cleared, so the next call re-arms reception.
+
+After an RX error the next `Rx_Process()` starts reception again.
+
+**One receive buffer, no queue.** A ready packet stays in the buffer until `Rx_Process()` handles it; reception restarts only on the next call. While DMA is stopped or your parser is running, incoming bytes can be lost. The application is responsible for processing quickly enough and for the master's pauses.
+
+**Parser rules:**
+
+- runs in `main` context, not in an interrupt;
+- `data` points into the receive buffer — do not keep the pointer after returning, it will be overwritten by the next packet.
+
+**Packet end detection:**
+
+- F4/F7: IDLE requests a DMA stop; the packet is published from the DMA RX interrupt once the stop is confirmed.
+- G0: the last DMA request must be serviced before the IDLE stop, as described for USART.
+- Packets with line errors are not passed to the parser.
+
+Count and cache handover details: [UART.md](UART.md).
 
 ---
 
 ## 5. Reply Buffer, CRC and Physical Completion
 
-GetTxBufferPtr reserves the buffer; nullptr means busy or not initialized.
-It has room for 254 payload bytes plus two CRC bytes. SendData adds CRC, low
-byte first, through byte accesses (no unaligned uint16_t access). Do not modify
-the buffer after start. SendData is nonblocking: OK means started, not on-wire
-completion. NotInit/Busy/Error cover missing setup, active TX and invalid length
-or unreserved buffer.
+**Sending a reply:**
 
-A failed start lowers DE and keeps the prepared response for retry/cancel.
-Successful start clears old TC before enabling TCIE. Physical UART TC lowers DE,
-frees the TX buffer and disables only TCIE. DMA TX errors also lower DE/free it;
-an independent RX error does not disable an active response transmitter.
-Handlers do not wait or change registry/NVIC.
+1. `GetTxBufferPtr()` reserves the reply buffer. `nullptr` means busy or not set up.
+2. Fill up to **254** bytes (2 more are reserved for CRC).
+3. `SendData(len)` appends the CRC (low byte first, byte-wise — no unaligned 16-bit access), raises DE and starts TX DMA.
 
-CancelTxBuffer returns Busy during sending, OK for releasing a prepared/free
-buffer and NotInit before SetUp. F7 internal buffers have their own aligned
-32-byte lines; USART/System perform cache maintenance without sharing control
-fields with a DMA cache line.
+Do not modify the buffer after `SendData()` returned `OK`.
 
-DeInit in main releases USART/DMA resources, lowers DE and frees buffers. Wait
-for normal TC first if truncating a live response is not acceptable.
+| `SendData()` result | Meaning |
+| --- | --- |
+| `OK` | Transmission **started** (not finished on the wire). |
+| `NotInit` | `SetUp()` was not done. |
+| `Busy` | A reply is still being sent. |
+| `Error` | `len` is 0 or more than 254, or the buffer was not reserved. |
+
+If the DMA start fails, DE is lowered immediately and the prepared reply is kept, so you can retry `SendData()` or call `CancelTxBuffer()`.
+
+**When does DE go low?** Not when DMA finishes, but when the USART reports **TC** (transmission complete: the last stop bit has left the pin):
+
+- before starting, the old TC flag is cleared, then the TC interrupt is enabled;
+- the TC handler lowers DE, frees the buffer and disables only the TC interrupt source;
+- a DMA TX error also lowers DE and frees the buffer;
+- an RX error does **not** affect a reply being sent.
+
+Handlers never wait and never change the IRQ registry or NVIC.
+
+**`CancelTxBuffer()`** — give up a reserved but unsent reply:
+
+| Result | When |
+| --- | --- |
+| `OK` | Buffer was reserved or free — now free. |
+| `Busy` | A reply is on the wire; cannot cancel. |
+| `NotInit` | Before `SetUp()`. |
+
+**F7 cache:** both internal buffers are 32-byte aligned and occupy their own cache lines; no control field shares a line with them. Cache maintenance is done by USART through System.
+
+**`DeInit()`** (from `main`): releases USART/DMA, lowers DE and frees the reply buffer. A reply on the wire is cut off — wait for TC first (`GetTxBufferPtr()` returns non-null again) if the reply must be complete. GPIO and clocks follow the USART rules.
 
 ---
 
 ## 6. Usage Examples
 
+Setup and main loop (F4, USART3):
+
 ```cpp
-constinit ModbusRTU_Slave bus(USART::_3::instance, 19200, USART::_3::TX::PD8,
-    USART::_3::RX::PD9, PIN(GPIOD_BASE, 2),
+#include "Modbus-slave.hpp"
+
+constinit ModbusRTU_Slave bus(USART::_3::instance, 19200,
+    USART::_3::TX::PD8, USART::_3::RX::PD9,
+    PIN(GPIOD_BASE, 2),                    // DE
     USART::_3::DMA::TX_DMA1_Stream3,
     USART::_3::DMA::RX_DMA1_Stream1);
 
-void parse_request(uint8_t* data, uint32_t len) {
+void parse_request(uint8_t* data, uint32_t len)
+{
+    // main context; len already excludes CRC.
+    // Check address / function / broadcast here.
+    // Do not keep `data` after returning.
 }
-bus.SetRxParse(parse_request);
-SysInitStatus init = bus.SetUp(ModbusRTU_Slave::FrameFormat::E8_1);
-// for (;;) { bus.Rx_Process(); }
+
+int main()
+{
+    // ... successful System/RCC initialization ...
+    bus.SetRxParse(parse_request);
+    if (bus.SetUp(ModbusRTU_Slave::FrameFormat::E8_1) != SysInitStatus::InitOK) {
+        // handle the error
+    }
+    for (;;) {
+        bus.Rx_Process();
+    }
+}
 ```
+
+Sending a reply (usually from inside the parser):
 
 ```cpp
 uint8_t* reply = bus.GetTxBufferPtr();
 if (reply) {
-    reply[0] = 1;
+    reply[0] = 1;   // slave address; the content is up to the application
     reply[1] = 3;
     reply[2] = 0;
-    SysStatus sent = bus.SendData(3);
+    SysStatus sent = bus.SendData(3);   // appends CRC and starts DMA
+    // OK = started, not finished on the wire
 }
+
+// Changed your mind before SendData():
 SysStatus cancelled = bus.CancelTxBuffer();
 ```
-
-The examples operate on one bus. Check init/sent/cancelled; asynchronous OK does not confirm TC.
 
 ---
 
 ## 7. Edge Cases
 
-Strict RTU t1.5/t3.5 timing is not implemented. Response payload capacity is 254 bytes. The parser runs in main and owns protocol validation, not permanent RX storage. Active TX cannot be cancelled/modified. Wait for TC before teardown when a complete response is required.
+| Situation | Behaviour |
+| --- | --- |
+| Master pauses inside a frame | Strict t1.5/t3.5 is not implemented; the frame may be split by IDLE and fail CRC. |
+| Reply longer than 254 bytes | `SendData()` returns `Error`. |
+| Parser keeps the `data` pointer | Not allowed — the buffer is reused by the next reception. |
+| Cancel or edit a reply on the wire | Not possible — `CancelTxBuffer()` returns `Busy`. |
+| `DeInit()` during a reply | The reply is cut off; wait for TC first if it must be complete. |
 
 ---
 
 ## See Also
 
-Исходники/изменения просмотрены вручную; сборка и тесты в этом проходе не запускались.
-[Modbus over Serial Line, §2.5.1](https://www.modbus.org/file/secure/modbusoverserial.pdf)
-описывает RTU framing, parity и интервалы. Ограничения IDLE выше сохранены явно
-по согласованному решению.
-
+- [Modbus over Serial Line, §2.5.1](https://www.modbus.org/file/secure/modbusoverserial.pdf) — RTU framing, parity and timing. The IDLE-based boundary described above is a deliberate design decision.
 - [Initialization.md](Initialization.md)
 - [UART.md](UART.md)
 - [DMA.md](DMA.md)
@@ -167,40 +250,66 @@ Strict RTU t1.5/t3.5 timing is not implemented. Response payload capacity is 254
 
 ## 1. Зачем это нужно и область ответственности
 
-ModbusRTU_Slave использует USART с собственными TX/RX DMA, два фиксированных
-буфера по 256 байт, CRC16 и пользовательский parser. Это транспорт, а не готовая
-реализация таблицы регистров/функций Modbus. Parser проверяет адрес, код функции,
-длину запроса, broadcast и допустимость ответа.
+`ModbusRTU_Slave` — **транспортный уровень** ведомого Modbus RTU на RS-485. Он даёт:
 
-**Граница приёма сохранена по UART IDLE. Строгие интервалы RTU t1.5/t3.5 не
-реализованы.** IDLE наступает примерно через один символ тишины; допустимая RTU
-пауза внутри кадра может разделить его на два пакета. Отдельного ожидания t3.5
-перед ответом нет. Этот транспорт применим, когда поведение второй стороны и
-паузы гарантированы приложением; полное соответствие RTU timing не заявляется.
-Аппаратный TIM для этих интервалов в этой правке не добавлялся.
+- USART с собственными DMA на передачу и приём;
+- два фиксированных буфера по 256 байт (приём и ответ);
+- проверку CRC16 при приёме и добавление CRC16 при отправке;
+- управление выводом разрешения передатчика RS-485 (DE);
+- вызов **вашей** функции-парсера для каждого пакета с правильным CRC.
+
+Это **не** готовая таблица регистров Modbus. Всё, что касается протокола, решает ваш парсер: адрес устройства, код функции, длина запроса, широковещательные запросы и нужен ли ответ.
+
+> **Граница пакета определяется по UART IDLE, а не по строгим интервалам RTU t1.5/t3.5.**
+>
+> - IDLE срабатывает примерно через один символ тишины. Пауза внутри кадра, допустимая по RTU (до 1,5 символа), может разрезать запрос на два пакета.
+> - Отдельной паузы t3.5 перед ответом нет.
+> - Аппаратный таймер для этих интервалов не используется.
+>
+> Применяйте транспорт там, где тайминги ведущего заведомо совместимы. Полное соответствие RTU по таймингам не заявляется.
 
 ---
 
 ## 2. Постоянная инициализация и диагностика конструктора
 
-Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте USART::_N::instance, его пины TX/RX и оба DMA-маршрута, а также GPIO DE приложения. На G0 передаются числовые DMAx_Channely_BASE, источник запросов закрепляет USART.
+Объявляйте объект глобально с `constinit` (или как `static constinit` внутри функции). Конструктор принимает:
 
-При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. Макрос выбирает путь через `std::is_constant_evaluated()`; во время выполнения напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+- `USART::_N::instance`;
+- скорость;
+- именованные выводы TX и RX этого USART;
+- вывод DE (любой GPIO);
+- **оба** DMA-маршрута — TX и RX.
+
+| Семейство | Аргумент DMA |
+| --- | --- |
+| F4/F7 | Именованный маршрут, например `USART::_3::DMA::TX_DMA1_Stream3` — в нём уже закодированы контроллер, поток, канал и направление. |
+| G0 | Адрес физического канала, например `DMA1_Channel2_BASE`; номера запросов DMAMUX подставляет USART. |
+
+Что происходит при неверном аргументе:
+
+| Объявление | Результат |
+| --- | --- |
+| Объект с `constinit` | **Ошибка компиляции**, текст причины — в сообщении. |
+| Объект без `constinit` | Собирается; при старте конструктор останавливается в `System::DebugTrap(причина)`. |
+
+Каждая проверка вызывает `STM32_CONFIG_ERROR("причина")`: при компиляции это ошибка GCC с текстом причины, во время работы — вызов `System::DebugTrap(text)`. `constinit` обязателен по правилам использования, но не проверяется. `SetUp()` по-прежнему проверяет состояние аппаратуры и занятость ресурсов. Подробнее: [Initialization.md](Initialization.md).
 
 ---
 
 ## 3. Инициализация
 
-~~~cpp
-// F4: запрос однозначно содержит направление, контроллер и stream.
-constinit ModbusRTU_Slave bus(USART::_3::instance, 19200, USART::_3::TX::PD8,
-    USART::_3::RX::PD9, PIN(GPIOD_BASE, 2),
+```cpp
+// F4: маршрут DMA однозначно задаёт направление, контроллер и поток.
+constinit ModbusRTU_Slave bus(USART::_3::instance, 19200,
+    USART::_3::TX::PD8, USART::_3::RX::PD9,
+    PIN(GPIOD_BASE, 2),                    // DE
     USART::_3::DMA::TX_DMA1_Stream3,
     USART::_3::DMA::RX_DMA1_Stream1);
 
-void parse_request(uint8_t* data, uint32_t len) {
-    // Main context, len уже без CRC. Проверить адрес/функцию/broadcast.
-    // Нельзя сохранять data для использования после повторного приёма.
+void parse_request(uint8_t* data, uint32_t len)
+{
+    // Контекст main, len уже без CRC. Проверить адрес/функцию/broadcast.
+    // Нельзя сохранять data для использования после следующего приёма.
 }
 
 // После System/RCC:
@@ -208,50 +317,60 @@ bus.SetRxParse(parse_request);
 SysInitStatus init = bus.SetUp(ModbusRTU_Slave::FrameFormat::E8_1);
 // Основной цикл при успешном init:
 // for (;;) { bus.Rx_Process(); }
-~~~
+```
 
-На G0 в тех же позициях конструктора передаются физические DMA-каналы;
-направления/request выбирает USART. Оба DMA обязательны. Неверные привязки
-диагностируются конструктором, как у USART. Повторный SetUp — ошибка до DeInit.
+Порядок вызовов:
 
-Формат задаётся только при SetUp:
+1. `SetRxParse(функция)` — установить парсер **до** начала приёма.
+2. `SetUp(формат)` — настраивает USART и DMA, затем вывод DE (сначала в нём выставляется 0, потом он становится выходом).
+3. Вызывать `Rx_Process()` в основном цикле.
 
-| FrameFormat | Линия | Полезные данные |
-|---|---|---|
-| E8_1 | 8E1 | 8 бит + even parity + 1 stop |
-| O8_1 | 8O1 | 8 бит + odd parity + 1 stop |
-| N8_2 | 8N2 | 8 бит без parity + 2 stop |
-| N8_1 | 8N1 | Старый формат, по умолчанию для совместимости |
+На G0 в тех же позициях конструктора передаются физические каналы DMA; направление и номер запроса выбирает USART. Оба DMA обязательны. Неверные привязки диагностирует конструктор, как у USART. Повторный `SetUp()` — ошибка до вызова `DeInit()`.
 
-Для 8E1/8O1 USART аппаратно настраивается на 9-битное слово, в котором последний
-бит занимает parity. Это сохраняет 8 полезных бит и Byte DMA. Формат 8N1 оставлен
-для существующих устройств; обычный RTU без parity использует два stop-бита.
+| FrameFormat | Линия | Значение |
+| --- | --- | --- |
+| `E8_1` | 8E1 | 8 бит данных, чётность even, 1 стоп-бит — стандарт RTU |
+| `O8_1` | 8O1 | 8 бит данных, чётность odd, 1 стоп-бит |
+| `N8_2` | 8N2 | 8 бит данных без чётности, 2 стоп-бита — стандарт RTU без чётности |
+| `N8_1` | 8N1 | Старый формат по умолчанию, оставлен для существующих устройств |
+
+Формат задаётся только в `SetUp()`. Для 8E1/8O1 USART настраивается на 9-битное слово, последний бит которого — чётность; полезных бит остаётся 8, и DMA продолжает работать с байтами.
 
 ---
 
 ## 4. Приём
 
-Rx_Process вызывается из main часто и последовательно. Если приём не запущен,
-метод вооружает RX DMA. При готовом пакете он проверяет минимальный размер и CRC,
-вызывает parser только для правильного CRC, затем явно сбрасывает признак готовности.
-Неверный CRC/короткий пакет/отсутствие parser отбрасываются. После ошибки RX
-следующий Rx_Process может запустить приём заново.
+Вызывайте `Rx_Process()` из `main` часто. Каждый вызов:
 
-Один RX-буфер удерживается до обработки; непрерывного приёма в фоне и очереди нет.
-Следующий приём запускается очередным Rx_Process. Пока DMA остановлен или parser
-занят, новые данные могут потеряться. Полный буфер не доказывает наличие RTU t3.5.
-Приложение обеспечивает время обработки/паузы; добавления второго буфера не было.
+1. Если приём не запущен (и нет ожидающего пакета) — запускает RX DMA в буфер приёма.
+2. Если пакет готов:
+   - пакет из 3 байт и меньше или отсутствие парсера → пакет отбрасывается;
+   - проверяется CRC; при совпадении вызывается ваш парсер с данными **без** 2 байт CRC;
+   - при несовпадении пакет молча отбрасывается;
+   - признак «пакет готов» сбрасывается, и следующий вызов снова запускает приём.
 
-На F4/F7 нормальный IDLE запрашивает остановку, пакет публикуется в DMA RX IRQ
-после подтверждения остановки. На G0 действует согласованное условие USART:
-последний DMA-запрос должен быть обслужен до остановки по IDLE. Ошибочные пакеты
-не используются. Подробности — [UART.md](UART.md).
+После ошибки приёма следующий `Rx_Process()` запускает приём заново.
+
+**Один буфер приёма, без очереди.** Готовый пакет лежит в буфере, пока его не обработает `Rx_Process()`; приём возобновляется только на следующем вызове. Пока DMA остановлен или работает парсер, входящие байты могут потеряться. Успевать обрабатывать пакеты и обеспечивать паузы ведущего — задача приложения.
+
+**Правила для парсера:**
+
+- вызывается в контексте `main`, не из прерывания;
+- `data` указывает в буфер приёма — не сохраняйте указатель после возврата, следующий пакет его перезапишет.
+
+**Определение конца пакета:**
+
+- F4/F7: IDLE запрашивает остановку DMA; пакет публикуется из прерывания DMA RX после подтверждения остановки.
+- G0: последний запрос DMA должен быть обслужен до остановки по IDLE, как описано для USART.
+- Пакеты с ошибками линии в парсер не передаются.
+
+Подробности о счётчике и кеше: [UART.md](UART.md).
 
 ---
 
 ## 5. Ответ
 
-~~~cpp
+```cpp
 uint8_t* reply = bus.GetTxBufferPtr();
 if (reply) {
     reply[0] = 1; // Адрес; содержимое ответа определяет приложение.
@@ -262,85 +381,114 @@ if (reply) {
 }
 // Если передумали отправлять подготовленный ответ:
 SysStatus cancelled = bus.CancelTxBuffer();
-~~~
+```
 
-GetTxBufferPtr резервирует буфер; nullptr означает занятость или отсутствие SetUp.
-Доступно 254 байта данных + 2 байта CRC. После запуска нельзя менять содержимое.
-CRC читается и записывается отдельными байтами, low byte первым: невыровненных
-uint16_t-доступов нет.
+**Отправка ответа:**
 
-SendData не ждёт DMA/TC. Возвращает NotInit до SetUp, Busy при активной отправке,
-Error для неверной длины/отсутствия подготовленного буфера. При ошибке старта
-DE сразу опускается, подготовленный ответ сохраняется для повторной отправки или
-CancelTxBuffer. При успешном старте TCIE включается после очистки старого TC;
-физический TC снимает DE, освобождает буфер и выключает только источник TCIE.
+1. `GetTxBufferPtr()` резервирует буфер ответа. `nullptr` — занято или не выполнен `SetUp()`.
+2. Заполните до **254** байт (ещё 2 зарезервированы под CRC).
+3. `SendData(len)` дописывает CRC (младший байт первым, побайтно — без невыровненного 16-битного доступа), поднимает DE и запускает TX DMA.
 
-Ошибка DMA TX также снимает DE и освобождает буфер; независимая ошибка RX
-не отключает передатчик во время ответа. Обработчики не меняют реестр/NVIC и
-не ждут завершения аппаратуры. CancelTxBuffer возвращает Busy до окончания
-отправки, OK при освобождении подготовленного/свободного буфера, NotInit до SetUp.
+После `OK` от `SendData()` буфер менять нельзя.
 
-На F7 оба внутренних буфера выровнены по 32 байтам и занимают собственные
-кеш-линии. Операции обслуживания кеша выполняет USART через System. Отдельные
-поля управления не делят кеш-линию с буфером.
+| Результат `SendData()` | Значение |
+| --- | --- |
+| `OK` | Передача **запущена** (ещё не завершена на линии). |
+| `NotInit` | Не выполнен `SetUp()`. |
+| `Busy` | Предыдущий ответ ещё передаётся. |
+| `Error` | `len` равен 0 или больше 254, либо буфер не был зарезервирован. |
 
-DeInit вызывается из main: освобождает ресурсы USART/DMA, опускает DE и возвращает
-буфер в свободное состояние. Дождитесь штатного TC, если нельзя обрывать текущий
-ответ. GPIO/тактовые сигналы освобождаются по обычному контракту USART.
+Если запуск DMA не удался, DE сразу опускается, а подготовленный ответ сохраняется — можно повторить `SendData()` или вызвать `CancelTxBuffer()`.
+
+**Когда опускается DE?** Не по окончании DMA, а по флагу USART **TC** (передача завершена: последний стоп-бит покинул вывод):
+
+- перед запуском старый флаг TC сбрасывается, затем разрешается прерывание TC;
+- обработчик TC опускает DE, освобождает буфер и выключает только источник прерывания TC;
+- ошибка DMA TX тоже опускает DE и освобождает буфер;
+- ошибка приёма передачу ответа **не** прерывает.
+
+Обработчики ничего не ждут и не меняют реестр прерываний или NVIC.
+
+**`CancelTxBuffer()`** — отказаться от зарезервированного, но не отправленного ответа:
+
+| Результат | Когда |
+| --- | --- |
+| `OK` | Буфер был зарезервирован или свободен — теперь свободен. |
+| `Busy` | Ответ на линии; отменить нельзя. |
+| `NotInit` | До `SetUp()`. |
+
+**Кеш F7:** оба внутренних буфера выровнены по 32 байтам и занимают собственные кеш-линии; управляющие поля с ними линию не делят. Обслуживание кеша выполняет USART через System.
+
+**`DeInit()`** (из `main`): освобождает USART/DMA, опускает DE и освобождает буфер ответа. Передаваемый ответ обрывается — если он должен дойти целиком, сначала дождитесь TC (`GetTxBufferPtr()` снова возвращает не-`nullptr`). GPIO и тактирование освобождаются по правилам USART.
 
 ---
 
 ## 6. Примеры использования
 
+Настройка и основной цикл (F4, USART3):
+
 ```cpp
-// F4: запрос однозначно содержит направление, контроллер и stream.
-constinit ModbusRTU_Slave bus(USART::_3::instance, 19200, USART::_3::TX::PD8,
-    USART::_3::RX::PD9, PIN(GPIOD_BASE, 2),
+#include "Modbus-slave.hpp"
+
+constinit ModbusRTU_Slave bus(USART::_3::instance, 19200,
+    USART::_3::TX::PD8, USART::_3::RX::PD9,
+    PIN(GPIOD_BASE, 2),                    // DE
     USART::_3::DMA::TX_DMA1_Stream3,
     USART::_3::DMA::RX_DMA1_Stream1);
 
-void parse_request(uint8_t* data, uint32_t len) {
-    // Main context, len уже без CRC. Проверить адрес/функцию/broadcast.
-    // Нельзя сохранять data для использования после повторного приёма.
+void parse_request(uint8_t* data, uint32_t len)
+{
+    // Контекст main; len уже без CRC.
+    // Здесь проверить адрес / функцию / broadcast.
+    // Не сохранять data после возврата.
 }
 
-// После System/RCC:
-bus.SetRxParse(parse_request);
-SysInitStatus init = bus.SetUp(ModbusRTU_Slave::FrameFormat::E8_1);
-// Основной цикл при успешном init:
-// for (;;) { bus.Rx_Process(); }
+int main()
+{
+    // ... успешная инициализация System/RCC ...
+    bus.SetRxParse(parse_request);
+    if (bus.SetUp(ModbusRTU_Slave::FrameFormat::E8_1) != SysInitStatus::InitOK) {
+        // обработка ошибки
+    }
+    for (;;) {
+        bus.Rx_Process();
+    }
+}
 ```
+
+Отправка ответа (обычно изнутри парсера):
 
 ```cpp
 uint8_t* reply = bus.GetTxBufferPtr();
 if (reply) {
-    reply[0] = 1; // Адрес; содержимое ответа определяет приложение.
+    reply[0] = 1;   // адрес; содержимое определяет приложение
     reply[1] = 3;
     reply[2] = 0;
-    SysStatus sent = bus.SendData(3); // Добавит CRC и запустит DMA.
-    // OK = запуск, а не завершение на проводе.
+    SysStatus sent = bus.SendData(3);   // добавит CRC и запустит DMA
+    // OK = запуск, а не завершение на линии
 }
-// Если передумали отправлять подготовленный ответ:
+
+// Передумали до SendData():
 SysStatus cancelled = bus.CancelTxBuffer();
 ```
-
-Это последовательность работы одного bus. Проверяйте init/sent/cancelled, не считайте OK асинхронной отправки подтверждением TC.
 
 ---
 
 ## 7. Угловые случаи
 
-Строгие RTU-паузы t1.5/t3.5 не реализованы: граница пакета — IDLE. Доступно 254 байта ответа до CRC. Parser вызывается из main, проверяет протокол и не сохраняет RX-указатель. Нельзя отменять/менять активный TX-буфер; дождитесь TC, если нельзя обрывать ответ перед DeInit.
+| Ситуация | Поведение |
+| --- | --- |
+| Ведущий делает паузу внутри кадра | Строгие t1.5/t3.5 не реализованы; кадр может разрезаться по IDLE и не пройти CRC. |
+| Ответ длиннее 254 байт | `SendData()` вернёт `Error`. |
+| Парсер сохраняет указатель `data` | Нельзя — буфер переиспользуется следующим приёмом. |
+| Отменить или изменить ответ на линии | Невозможно — `CancelTxBuffer()` вернёт `Busy`. |
+| `DeInit()` во время ответа | Ответ обрывается; если он нужен целиком, сначала дождитесь TC. |
 
 ---
 
 ## См. также
 
-Исходники/изменения просмотрены вручную; сборка и тесты в этом проходе не запускались.
-[Modbus over Serial Line, §2.5.1](https://www.modbus.org/file/secure/modbusoverserial.pdf)
-описывает RTU framing, parity и интервалы. Ограничения IDLE выше сохранены явно
-по согласованному решению.
-
+- [Modbus over Serial Line, §2.5.1](https://www.modbus.org/file/secure/modbusoverserial.pdf) — кадры RTU, чётность и интервалы. Граница по IDLE, описанная выше, — осознанное проектное решение.
 - [Initialization.md](Initialization.md)
 - [UART.md](UART.md)
 - [DMA.md](DMA.md)
