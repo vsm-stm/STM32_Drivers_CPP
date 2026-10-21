@@ -1,4 +1,4 @@
-# RCC / ClockSystem
+# RCC / ClockSystem — Detailed Description
 
 *[English](#english) · [Русский](#русский)*
 
@@ -6,372 +6,295 @@
 
 ## English
 
-## Contents
+## Table of Contents
 
-1. [Why this is needed](#1-why-this-is-needed)
-2. [Clock signal path](#2-clock-signal-path)
-3. [PLL — block diagram and parameters](#3-pll--block-diagram-and-parameters)
-4. [Limits by MCU family](#4-limits-by-mcu-family)
-5. [Files and roles](#5-files-and-roles)
-6. [Init() — step by step](#6-init--step-by-step)
-7. [Flash latency](#7-flash-latency)
-8. [Validation before applying](#8-validation-before-applying)
-9. [InitCalcPLL() — automatic coefficient selection](#9-initcalcpll--automatic-coefficient-selection)
-10. [Timeouts](#10-timeouts)
-11. [Usage examples](#11-usage-examples)
-12. [Edge cases](#12-edge-cases)
-
----
-
-## 1. Why this is needed
-
-`ClockSystem` is a static class (like `IRQ_Registry`, no instantiation) that configures the MCU's
-clock tree: selecting the SYSCLK source (HSI/HSE/PLL), PLL parameters, the AHB/APB1/APB2 bus
-dividers, Flash latency (wait states), and the derived variables (`System::SystemCoreClock`,
-`System::APB1BusClock`, etc.) that every other driver (UART, TIM, ...) later reads to compute its
-own dividers.
-
-There are two ways to get the frequency you want:
-
-- **`Init()`** — you specify PLL_M/N/P/Q/R and the bus dividers yourself. Full control, but you
-  must manually respect all the datasheet's constraints.
-- **`InitCalcPLL()`** — you specify only the desired SYSCLK and the PLL source; M/N/P and the bus
-  dividers are computed automatically (see [section 9](#9-initcalcpll--automatic-coefficient-selection)).
+1. [Why This Is Needed](#1-why-this-is-needed)
+2. [Initialization Order](#2-initialization-order)
+3. [Automatic PLL selection](#3-automatic-pll-selection)
+4. [Manual configuration](#4-manual-configuration)
+5. [Static validation and supported devices](#5-static-validation-and-supported-devices)
+6. [Runtime sequence](#6-runtime-sequence)
+7. [SysTick precision](#7-systick-precision)
+8. [Migration](#8-migration)
+9. [APB1 from the RCC Configuration for I2C](#9-apb1-from-the-rcc-configuration-for-i2c)
+10. [Usage Examples](#10-usage-examples)
+11. [Edge Cases](#11-edge-cases)
+12. [See Also](#see-also)
 
 ---
 
-## 2. Clock signal path
+## 1. Why This Is Needed
 
-```
-┌────────┐     ┌────────┐                                        ┌──────────────┐
-│  HSI   │     │  HSE    │                                       │   SYSCLK     │
-│(internal│    │(crystal,│                                       │ (RCC->CFGR   │
-│RC osc.)│     │Init()'s │                                       │  SW bits)    │
-└───┬────┘     │HSE_Clk) │                                       └──────┬───────┘
-    │          └───┬─────┘                                              │
-    │              │                                                    │
-    │   ┌──────────┴───────────┐                                        │
-    │   │  PLL (see section 3) │────────────────────────────────────────┤
-    │   │  Fsrc /M → VCO_in    │                                        │
-    │   │  VCO_in *N → VCO_out │                                        │
-    │   │  VCO_out /P (or /R)  │                                        │
-    │   └──────────────────────┘                                        │
-    └────────────────── HSI/HSE directly (PLL_ClkSrc == NO) ─────────────┘
-                                                                          │
-                                                                          ▼
-                                                              ┌───────────────────────┐
-                                                              │  AHB prescaler (HPRE)  │
-                                                              │  sys_clk / AHB_Pre     │
-                                                              └───────────┬───────────┘
-                                                                          │  System::SystemCoreClock
-                                                     ┌────────────────────┼────────────────────┐
-                                                     ▼                                          ▼
-                                       ┌─────────────────────────┐                ┌─────────────────────────┐
-                                       │ APB1 prescaler (PPRE1)  │                │ APB2 prescaler (PPRE2)  │
-                                       │ AHB_clk / APB1_Pre      │                │ AHB_clk / APB2_Pre      │
-                                       │ = System::APB1BusClock  │                │ = System::APB2BusClock  │
-                                       └────────────┬────────────┘                └────────────┬────────────┘
-                                                    │ if APBx_Pre > 1:                          │
-                                                    │ timers on this bus                        │
-                                                    │ get APBxClock * 2                         │
-                                                    ▼                                            ▼
-                                       System::TIMxAPB1Clock                     System::TIMxAPB2Clock
+`ClockSystem` sets up the chip's clock tree (oscillator → PLL → SYSCLK → AHB/APB buses) **once** after reset.
+
+The work is split in two:
+
+| At compile time | At run time |
+| --- | --- |
+| PLL coefficients, bus dividers, Flash wait states, SysTick periods, all limit checks | Write the precomputed register values, wait for oscillators/PLL to become ready, switch SYSCLK |
+
+A wrong configuration therefore fails the **build**, not the device.
+
+---
+
+## 2. Initialization Order
+
+```text
+System::Init()  →  ClockSystem::Init<config>()  →  peripherals
 ```
 
-**The "timers x2" rule**: in hardware, if the APBx divider is `> 1`, the clock frequency seen by
-timers on that bus is `APBxClock * 2`, not `APBxClock` (compensation for the Cortex-M bus
-architecture). If the divider is `== 1`, timers get the same frequency as the rest of the
-peripherals on that bus. That's exactly why the code has two separate variables
-(`System::APB1BusClock` for peripherals, `System::TIMxAPB1Clock` for `TIM::SetFrequency()`) rather
-than one:
+- Works on STM32F4, F7 and G0.
+- One clock setup per hardware reset.
+- Requires C++20 (already selected by the build).
+
+---
+
+## 3. Automatic PLL selection
+
+The easiest way: ask for a SYSCLK frequency and let `CalcPLL` find exact PLL coefficients.
 
 ```cpp
-System::TIMxAPB1Clock = (APB1_Pre == 1) ? (System::APB1BusClock) : (System::APB1BusClock * 2);
+constexpr auto clocks = ClockSystem::CalcPLL(
+    64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+
+if (System::Init() != SysInitStatus::InitOK)
+    System::DebugTrap("System init");
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-STM32G0 has no second APB2 bus (`PPRE_BUS_2_Pos == 0xFFFFFFFFU` is used as a "doesn't exist"
-marker) — in that case `System::APB2BusClock`/`TIMxAPB2Clock` are simply zeroed out, and all the
-code that configures PPRE2 compiles into a no-op via `if constexpr`.
+**`CalcPLL(frequency, source, hse_clock = 0, pll_q = 2)`:**
+
+- targets the exact nominal **SYSCLK**;
+- sets AHB to /1 and picks the smallest legal divider for each APB bus;
+- for HSE, pass the real crystal frequency in Hz as `hse_clock`;
+- `pll_q` is up to you — USB/SDIO/RNG clock requirements are **not** derived from SYSCLK.
+
+**How the search works:**
+
+1. Try PLL input dividers M from small to large — this gives the highest legal PLL input (comparison) frequency, which means lower jitter. ST recommends about 2 MHz on F4/F7 and about 16 MHz on G0 ([F4](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_hal_rcc.h), [F7](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Inc/stm32f7xx_hal_rcc.h), [G0](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_hal_rcc.h) RCC docs).
+2. For the same M, take the smallest legal output divider: P on F4/F7, R on G0.
+3. Accept only exact results, checked with 64-bit integers:
+
+```text
+Fsource * N == Frequested * M * output_divider
+```
+
+**No exact solution?** `CalcPLL` returns a configuration with `M = 0`, and `Init<clocks>()` fails a `static_assert` — the build stops. Choose another frequency or write a manual configuration. There is no "closest frequency" fallback.
 
 ---
 
-## 3. PLL — block diagram and parameters
+## 4. Manual configuration
 
-```
-Fsrc (HSI or HSE) ──/M──▶ VCO_in ──*N──▶ VCO_out ──/P──▶ sys_clk   (F4/F7, main output)
-                                              └──────/R──▶ sys_clk   (F446xx: PLL_R as an alternative
-                                                                       output, selected via
-                                                                       SystemClockSource::PLL_R; on G0
-                                                                       /R is the only output, /P is not
-                                                                       used there for sys_clk)
-```
-
-`ValidatePLLCfgr()` checks three ranges **before** a single bit of PLLCFGR is written:
-
-1. `VCO_in = Fsrc / M` must fall within `[PLL_CLK_IN_MIN, PLL_CLK_IN_MAX]` — the PLL has an input
-   frequency window outside of which it physically cannot lock.
-2. `VCO_out = VCO_in * N` must fall within `[PLL_N_CLK_MIN, PLL_N_CLK_MAX]`.
-3. The final `PLL_Out` (after `/P` or `/R`) must not exceed `SYS_CLK_LIMIT` for the specific MCU.
-
-If even one check fails, `Init()`/`InitCalcPLL()` return `SysInitStatus::InitError` **before**
-disabling the current PLL and **before** writing PLLCFGR, so the working clock configuration isn't
-destroyed on the way to a failed attempt (see [section 8](#8-validation-before-applying)).
-
-### PLL_CFGR fields
-
-| Field | Range (F4/F7, `STM32F446xx`/`STM32F767xx`) | Range (G0) | Purpose |
-|------|------------------------------------------------|----------------|------------|
-| `PLL_M` | 2 – 63 | 1 – 8 | Input divider: `VCO_in = Fsrc / M` |
-| `PLL_N` | 50 – 432 | 8 – 86 | Multiplier: `VCO_out = VCO_in * N` |
-| `PLL_P` | 2, 4, 6, 8 (only these 4 values) | 2 – 16 | Main output divider (F4/F7 sys_clk) |
-| `PLL_Q` | 2 – 15 | — | Separate output for USB/SDIO/RNG (usually 48 MHz) |
-| `PLL_R` | 2 – 7 (F446xx/F767xx only) | 2 – 16 | Alternative/main output into sys_clk (see below) |
-
-`f446xx_pllr_out` is a special flag: on STM32F446xx, the only member of the family where you can
-take `SystemClockSource::PLL_R` instead of `PLL`, in which case `PLL_Out` is computed via `/R`
-rather than `/P`. On G0, `/R` is the only path into sys_clk (F/P are used there for other
-peripheral outputs, not for SYSCLK), so `ConfigurePLL()` on G0 always sets `RCC_PLLCFGR_PLLREN`.
-
----
-
-## 4. Limits by MCU family
-
-All constants are `static constexpr` inside `ClockSystem`, read by the compiler at build time
-(no runtime branching — `#if defined(...)` has already picked the right block):
-
-| Family / chip | SYS_CLK_LIMIT | APB1_CLK_LIMIT | APB2_CLK_LIMIT | LATENCY_DIV |
-|-----------------|---------------|-----------------|-----------------|--------------|
-| STM32F446xx / F429xx | 180 MHz | 45 MHz | 90 MHz | 30 MHz/wait-state |
-| STM32F405xx / F407xx | 168 MHz | 42 MHz | 84 MHz | 30 MHz/wait-state |
-| STM32F722xx / F746xx / F767xx | 216 MHz | 54 MHz | 108 MHz | 30 MHz/wait-state |
-| STM32F411xE | 100 MHz | 50 MHz | 100 MHz | 30 MHz/wait-state |
-| STM32G0 | 64 MHz | 64 MHz | — (no APB2) | 24 MHz/wait-state |
-
-If the target chip doesn't match any `#elif` — `#error "rcc.hpp: unsupported STM32 target..."`
-stops the build with a clear message instead of silently using the wrong constant.
-
----
-
-## 5. Files and roles
-
-```
-rcc.hpp
-  ├─ enum SystemClockSource, AHB_Divider, APB_Divider, PLL_ClockSource  — map 1:1 onto CFGR/PLLCFGR bits
-  ├─ struct BusDividers, PLL_CFGR                                       — parameter aggregates
-  └─ class ClockSystem { static Init(...), static InitCalcPLL(...) }    — the entire API, no instantiation
-
-rcc.cpp
-  ├─ Init()               — the full manual path, see section 6
-  ├─ EnableHSE()           — starts the crystal + waits for HSERDY
-  ├─ ValidatePLLCfgr()     — the three ranges from section 3, before writing any registers
-  ├─ ConfigurePLL()        — writes RCC->PLLCFGR (differs by family)
-  ├─ ValidateBusDividers() — computes the AHB/APB1/APB2 dividers and checks them against the limits from section 4
-  └─ InitCalcPLL()         — automatic M/N/P + bus divider selection, see section 9
-```
-
----
-
-## 6. Init() — step by step
+Example: F407, 8 MHz crystal, SYSCLK/HCLK 168 MHz, APB1 42 MHz, APB2 84 MHz:
 
 ```cpp
-static SysInitStatus Init(SystemClockSource ClkSrc, uint32_t HSE_Clk,
-                           BusDividers BusDiv, PLL_CFGR PLLCfgr);
+constexpr ClockSystem::Config clocks{
+    .ClkSrc  = ClockSystem::SystemClockSource::PLL,
+    .HSE_Clk = 8 * MHz,
+    .BusDiv  = {ClockSystem::AHB_Divider::DIV1,    // AHB  = 168 MHz
+                ClockSystem::APB_Divider::DIV4,    // APB1 =  42 MHz
+                ClockSystem::APB_Divider::DIV2},   // APB2 =  84 MHz
+    .PLLCfgr = {ClockSystem::PLL_ClockSource::HSE, 4, 168, 2, 7, 2}, // M, N, P, Q, R
+};
+// System::Init() has already run.
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-1. **HSE, if needed** — if `ClkSrc == HSE` or the PLL takes its input from HSE: `EnableHSE(HSE_Clk)`,
-   waits for `HSERDY` up to `HSE_TIMEOUT_MS` (100 ms). An error here aborts `Init()` immediately —
-   the PLL/dividers haven't been touched yet.
-2. **If the PLL isn't used** (`PLL_ClkSrc == NO`) — `sys_clk` is taken directly as `HSI_Clock` or
-   `HSE_Clk`, and the PLL is skipped entirely.
-3. **If the PLL is used**:
-   - `ValidatePLLCfgr()` — all three ranges from [section 3](#3-pll--block-diagram-and-parameters).
-     On failure — exit from `Init()`, nothing in RCC has been changed yet.
-   - Disable the PLL (`RCC_CR_PLLON` = 0), wait for `PLLRDY` = 0 (timeout `PLL_TIMEOUT_MS` = 2 ms) —
-     PLLCFGR cannot be reconfigured while the PLL is running.
-   - `ConfigurePLL()` — writes M/N/P/Q(/R) into `RCC->PLLCFGR`.
-   - **VOS/overdrive** (only if the target frequency requires a higher core voltage):
-     - F7: if `sys_clk > 180 MHz` — enable `PWR_CR1_ODEN` (overdrive), wait for `ODRDY`,
-       then `PWR_CR1_ODSWEN`, wait for `ODSWRDY` (both — timeout `OVERDRIVE_TIMEOUT_MS` = 100 ms).
-     - G0: set `PWR_CR1_VOS = Scale 1` unconditionally, wait for `PWR_SR2_VOSF` to clear.
-   - Enable the PLL (`RCC_CR_PLLON` = 1), wait for `PLLRDY` = 1 (timeout `PLL_TIMEOUT_MS`).
-4. **`ValidateBusDividers(sys_clk, BusDiv)`** — before switching SYSCLK, checks that
-   `sys_clk / AHB_Pre`, `.../APB1_Pre`, `.../APB2_Pre` stay within the limits from section 4.
-5. **Flash latency** — see [section 7](#7-flash-latency); an error if the result is `> 9` wait states.
-6. **Writing the dividers** — `RCC->CFGR` gets `HPRE`/`PPRE1`(/`PPRE2` if it exists).
-7. **Switching SYSCLK** — `RCC->CFGR |= (uint32_t)ClkSrc`, waits for `RCC_CFGR_SWS`
-   (timeout `CLOCKSWITCH_TIMEOUT_MS` = 5000 ms — the longest of all timeouts, since the source
-   switch itself can be slow for some transitions).
-8. **Updating the global variables** — `System::SystemCoreClock`, `APB1BusClock`,
-   `TIMxAPB1Clock` (and the APB2 counterparts, if the bus exists) — see the "timers x2" rule in
-   section 2.
-9. **`System::InitTicks()`** — reconfigures SysTick for the new `SystemCoreClock` (otherwise
-   `System::GetTick()` would count the wrong number of milliseconds after the frequency change).
+**Other sources:**
 
-Any step that returns an error stops `Init()` immediately (`return SysInitStatus::InitError`) — a
-partially applied configuration is only possible if the hardware transition itself hangs
-(a timeout), not because of the function's own logic.
+| Source | How to configure |
+| --- | --- |
+| HSI, no PLL | `constexpr ClockSystem::Config clocks{};` |
+| HSE, no PLL | `.ClkSrc = HSE` and `.HSE_Clk = <crystal Hz>` |
+| LSI (G0 only) | nominal 32000 Hz |
+| LSE (G0 only) | 32768 Hz; backup-domain write access is opened temporarily, the previous DBP bit is restored, RTC is not reset |
+
+**Which fields matter:** `ClkSrc` decides the active path.
+
+- For direct sources (HSI/HSE/LSI/LSE) the PLL fields are ignored.
+- `HSE_Clk` is ignored unless HSE actually feeds SYSCLK or the PLL.
+- F4/F7: `PLL` selects the P output; on F446 `PLL_R` selects the R output.
+- G0: `PLL` selects R. P/Q divisors are written where present, but the P/Q outputs stay disabled. G0 has no APB2.
+- R is ignored on devices without an R field.
 
 ---
 
-## 7. Flash latency
+## 5. Static validation and supported devices
 
-Flash can't keep up supplying data at high frequencies without wait states. The formula in the
-code:
+`Init<config>()` rejects at compile time:
+
+- unsupported sources and invalid enum values;
+- HSE outside its limits;
+- PLL coefficients out of range;
+- PLL input, VCO or output frequency out of range;
+- bus frequencies above the device maximum;
+- a SysTick period that does not fit the 24-bit counter.
+
+Limits are compared as exact fractions before any division. For manual configurations producing fractional-Hz frequencies, the published `uint32_t` frequency variables are rounded **down** to whole Hz. Automatic selection is exact to the requested Hz.
+
+**Device limits** (`rcc_defs.hpp` covers every F4/F7 selector in STM32-base_files):
+
+| Devices | SYSCLK/HCLK max | APB1 max | APB2 max |
+| --- | ---: | ---: | ---: |
+| F401 | 84 MHz | 42 MHz | 84 MHz |
+| F410/411/412/413/423 | 100 MHz | 50 MHz | 100 MHz |
+| F405/407/415/417 | 168 MHz | 42 MHz | 84 MHz |
+| F427/429/437/439/446/469/479 | 180 MHz | 45 MHz | 90 MHz |
+| F722/723/730/732/733/745/746/750/756/765/767/769/777/779 | 216 MHz | 54 MHz | 108 MHz |
+| G0 | 64 MHz | 64 MHz | — |
+
+Unknown F4/F7 selectors and other families stop with a clear `#error`.
+
+**Power assumptions** (fixed, not measured):
+
+- VDD = 3000 mV, i.e. the 2.7…3.6 V timing band (also valid at 3.3 V).
+- Voltage scaling: F401 — Scale 2; other F4/F7 — Scale 1; G0 — Range 1.
+- Over-drive is enabled when required: F4 above HCLK 168 MHz (where present), F7 above 180 MHz.
+- Flash latency is derived from HCLK: one wait state per 30 MHz on F4/F7, per 24 MHz on G0 Range 1.
+
+**PLL limits:**
+
+| Device | N | VCO min | Other |
+| --- | --- | --- | --- |
+| F401 | ≥ 192 | 192 MHz ([RM0368](https://www.st.com/resource/en/reference_manual/rm0368-stm32f401xbc-and-stm32f401xde-advanced-armbased-32bit-mcusstmicroelectronics.pdf)) | |
+| F469/479 | ≥ 50 | 192 MHz ([DS11189](https://www.st.com/resource/en/datasheet/stm32f469ii.pdf), [DS11118](https://www.st.com/resource/en/datasheet/stm32f479ni.pdf)) | |
+| Other F4/F7 | ≥ 50 | 100 MHz | |
+| G0 | 8…86 | 96 MHz | M = 1…8, R = 2…8, P = 2…32, Q = 2…8 where present ([G030 datasheet](https://www.st.com/resource/en/datasheet/stm32g030f6.pdf), [RM0444](https://www.st.com/resource/en/reference_manual/dm00371828-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)) |
+
+Minimum SYSCLK from PLL: 24 MHz on F4/F7 (F446: 12.5 MHz), 12 MHz on G0.
+
+---
+
+## 6. Runtime sequence
+
+What `Init<config>()` does on the hardware:
+
+1. **One attempt only.** A second call is rejected before touching registers. A hardware failure (oscillator does not start) also uses up the attempt — recover with a reset.
+2. Enable only the oscillator needed by `ClkSrc` (and the PLL's input).
+3. If using the PLL: stop the old unused PLL, set voltage scaling while the PLL is off, program and start the PLL, wait for lock. On F4/F7 wait for VOSRDY after the PLL starts, then enable over-drive if needed. On G0 wait for VOSF to clear.
+4. Raise Flash latency (one masked ACR write) **before** HCLK goes up.
+5. Set bus dividers while still running from HSI; reload SysTick for the intermediate HCLK. Clear TIMPRE where present so timer clocks follow the standard ×1/×2 rule.
+6. Switch SYSCLK (one masked CFGR write) and wait until SWS reports exactly that source.
+7. Publish the final HCLK and immediately reload SysTick with its precomputed period; check `InitTicks()`; publish APB/timer clocks and the HSE frequency.
+8. Lower Flash latency only after the frequency decrease is confirmed.
+
+**Timeouts:**
+
+| Wait | Limit |
+| --- | --- |
+| PLL lock, HSI/LSI ready | 2 ms |
+| HSE ready | 100 ms |
+| LSE ready | 5000 ms |
+| Voltage scaling / over-drive / Flash | 100 ms |
+| SYSCLK switch | 5000 ms |
+
+**Requirements:**
+
+- Timeouts use SysTick: call from `main` with interrupts enabled.
+- Stop peripherals, DMA and auxiliary PLLs before this initial setup.
+- Changing clocks later at run time is **not** supported.
+- Each clock change restarts SysTick (the current partial tick is lost; the tick counter keeps its value).
+- There is no automatic fallback to another oscillator, no retry logic and no IRQ locking.
+
+---
+
+## 7. SysTick precision
+
+```text
+cycles_per_tick = floor(HCLK / TICK_BASE)      LOAD = cycles_per_tick - 1
+actual tick rate = HCLK / cycles_per_tick
+```
+
+If HCLK is not a multiple of `TICK_BASE`, the tick is not exactly 1 kHz.
+
+**Example — LSE 32768 Hz, AHB /1:** period = 32 cycles → 1024 ticks/s → one `GetTick()` step = 0.9765625 ms. `Delay_ms()` and all tick-based timeouts share this error. With LSI, the RC oscillator's own tolerance adds to it.
+
+No fractional-period compensation is done. "Exact" PLL selection means the nominal SYSCLK, not crystal accuracy and not necessarily an exact 1 kHz SysTick.
+
+---
+
+## 8. Migration
+
+| Old API | New API |
+| --- | --- |
+| `ClockSystem::Init(...)` at run time | `constexpr ClockSystem::Config` + `ClockSystem::Init<config>()` |
+| `ClockSystem::InitCalcPLL(...)` | `constexpr auto c = ClockSystem::CalcPLL(...)` + `Init<c>()` |
+
+- `GetHSEClock()` and the System clock variables remain.
+- `System::InitTicks(ticks)` takes a precomputed cycle count; the old no-argument version is kept for existing callers.
+- Compile-time preparation does **not** require LTO. LTO and the syscalls/sysmem exclusions are a separate build topic.
+
+---
+
+## 9. APB1 from the RCC Configuration for I2C
+
+`ClockSystem::GetAPB1Clock<clocks>()` returns the nominal APB1 frequency of a configuration at compile time (`consteval`):
+
+- uses the same preparation/validation as `Init<config>()` — no duplicated formulas;
+- never touches hardware;
+- an invalid `Config` fails a `static_assert`.
+
+I2C uses it to compute its timing register at compile time:
 
 ```cpp
-uint32_t latency = (sys_clk - 1) / LATENCY_DIV;   // LATENCY_DIV = 30 MHz (F4/F7) or 24 MHz (G0)
-if (latency > 9) return SysInitStatus::InitError; // FLASH_ACR_LATENCY is a 4-bit field, max 9 on these MCUs
-FLASH->ACR = (FLASH->ACR & ~FLASH_ACR_LATENCY_Msk) | (latency << FLASH_ACR_LATENCY_Pos);
+constexpr ClockSystem::Config clocks{};          // HSI, all dividers /1
+// In main, after a successful System::Init():
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
+// bus is an I2C object with bound pins/DMA:
+auto status = bus.SetUp<clocks, I2C::SPEED::FAST>();
 ```
 
-Example: F4 at 180 MHz → `(180'000'000 - 1) / 30'000'000` = 5 wait states. G0 at 64 MHz →
-`(64'000'000-1) / 24'000'000` = 2 wait states.
-
-This write happens **before** switching `SYSCLK` to the new source — otherwise the core could
-already be running at the new (higher) frequency with a latency computed for the old one.
+Before touching hardware, I2C compares that nominal APB1 with `System::APB1BusClock`. Equal numbers do **not** prove that RCC init succeeded or that the configurations are identical — always check the result of `ClockSystem::Init` yourself. These are nominal calculations, not measurements.
 
 ---
 
-## 8. Validation before applying
+## 10. Usage Examples
 
-The order in `Init()` is deliberate: **validate all parameters first, then touch the registers**.
-If the PLL or bus divider check fails, the function exits early, and:
-
-- HSE (if it was enabled) stays enabled, but SYSCLK was never switched to it.
-- The old PLL is already disabled (the "disable PLL" step runs before `ConfigurePLL()`), so in the
-  worst case the MCU is left **on HSI after a failed reconfiguration attempt** — a known,
-  predictable state, not hung half-configured peripherals.
-
-This ordering is a deliberate trade-off: the current implementation has no fully safe rollback to
-"the configuration that existed before calling `Init()`" (the PLL is already disabled by the time
-the bus dividers are checked), but impossible configurations (a frequency outside the PLL's range,
-a bus above its limit) are always rejected before `RCC_CR_PLLON`, so the PLL is never started with
-coefficients that are already known to be wrong.
-
----
-
-## 9. InitCalcPLL() — automatic coefficient selection
+A complete minimal example (HSI, all dividers /1):
 
 ```cpp
-static SysInitStatus InitCalcPLL(uint32_t req_freq, PLL_ClockSource pll_src,
-                                  uint32_t hse_clk = 0, uint8_t pll_q = 2);
-```
+#include "rcc.hpp"
 
-A simplified algorithm — not an optimal search, but a fixed heuristic aimed at a "typical" request
-(frequencies that are multiples of 1 MHz, an HSE input in the tens-of-MHz range):
+constexpr ClockSystem::Config clocks{};   // HSI, bus dividers /1
 
-1. **`pll_m`** is chosen so that `VCO_in = input_clk / pll_m` is as close as possible to 2 MHz
-   (rounded up on inexact division): `pll_m = ceil(input_clk / 2 000 000)`.
-2. **`pll_n`** is chosen so that `VCO_out = req_freq * pll_n_scale` — rounded up to a whole number
-   of MHz: `pll_n = ceil(req_freq / 1 000 000)`.
-3. **`pll_p`** is fixed at 2 (the minimum divider — meaning `VCO_out` must equal `req_freq * 2`,
-   which is exactly what step 2 implies when `VCO_in` ≈ 2 MHz).
-4. **The bus dividers** are chosen using rough thresholds relative to the specific MCU's
-   `APB1_CLK_LIMIT`/`APB2_CLK_LIMIT` (not relative to the actual `req_freq / prescaler`) — three
-   cases: both buses `/1`, APB1 `/2` + APB2 `/1`, or APB1 `/4` + APB2 `/2`. This is a quick
-   heuristic, not a search for the minimal dividers that give the maximum peripheral frequency —
-   for non-standard `req_freq` values it's worth checking the resulting
-   `System::APB1BusClock`/`APB2BusClock` after the call.
-5. The assembled `PLL_CFGR{pll_src, pll_m, pll_n, pll_p, pll_q, /*pll_r=*/2}` and `BusDividers`
-   are passed to the regular `Init()` — all the validation from sections 3/4/8 applies as usual,
-   so an unreachable `req_freq` will still return `InitError` rather than silently configuring
-   something else.
-
-**Limitation**: the heuristic doesn't try alternative `M`/`N`/`P` combinations if the first one
-fails validation — it returns `InitError` right away. For frequencies that don't land exactly on
-whole MHz with `VCO_in` ≈ 2 MHz, you may need `Init()` with manually chosen parameters (for
-example, from the STM32CubeMX calculator).
-
----
-
-## 10. Timeouts
-
-| Constant | Value | What it waits for |
-|-----------|----------|----------|
-| `HSI_TIMEOUT_MS` | 2 ms | HSI startup (declared but not used in the current `Init()` — HSI starts almost instantly and isn't explicitly disabled) |
-| `LSI_TIMEOUT_MS` | 2 ms | LSI startup (used by other drivers, not directly by `rcc.cpp`) |
-| `HSE_TIMEOUT_MS` | 100 ms | `RCC_CR_HSERDY` after `RCC_CR_HSEON` |
-| `PLL_TIMEOUT_MS` | 2 ms | Both disabling (`PLLRDY` → 0) and enabling (`PLLRDY` → 1) the PLL |
-| `OVERDRIVE_TIMEOUT_MS` | 100 ms | F7 `ODRDY`/`ODSWRDY`; G0 `VOSF` |
-| `CLOCKSWITCH_TIMEOUT_MS` | 5000 ms | `RCC_CFGR_SWS` — confirmation that SYSCLK actually switched |
-
-Any of these timeouts expiring before the flag is ready immediately aborts `Init()` with
-`SysInitStatus::InitError` — not an infinite `while` loop (unlike `IRQ_Registry`'s `BKPT` traps;
-here the expected response to a hardware failure is to return an error to the caller, not halt the
-program).
-
----
-
-## 11. Usage examples
-
-### Automatic selection (InitCalcPLL) — the typical case, as in main.cpp
-
-```cpp
-System::Init();
-ClockSystem::InitCalcPLL(180'000'000, ClockSystem::PLL_ClockSource::HSE, 8'000'000);
-System::Enable_CYCCNT();
-```
-
-180 MHz from an 8 MHz external crystal (STM32F429), bus dividers are selected automatically based
-on this chip's `APB1_CLK_LIMIT`/`APB2_CLK_LIMIT`.
-
-### Manual configuration (Init) — full control over the PLL and dividers
-
-```cpp
-ClockSystem::BusDividers div;
-div.AHB_div  = ClockSystem::AHB_Divider::DIV1;
-div.APB1_div = ClockSystem::APB_Divider::DIV4;   // APB1 <= 45 MHz on F446xx
-div.APB2_div = ClockSystem::APB_Divider::DIV2;   // APB2 <= 90 MHz
-
-ClockSystem::PLL_CFGR pll;
-pll.PLL_ClkSrc = ClockSystem::PLL_ClockSource::HSE;
-pll.PLL_M = 4;    // 8 MHz / 4 = 2 MHz (VCO_in)
-pll.PLL_N = 180;  // 2 MHz * 180 = 360 MHz (VCO_out)
-pll.PLL_P = 2;    // 360 / 2 = 180 MHz (sys_clk)
-pll.PLL_Q = 7;    // 360 / 7 ≈ 51.4 MHz (USB — out of the 48 MHz spec, for field illustration only)
-
-ClockSystem::Init(ClockSystem::SystemClockSource::PLL, 8'000'000, div, pll);
-```
-
-### Without the PLL — directly from HSI (the default)
-
-```cpp
-ClockSystem::Init();   // HSI, no dividers, no PLL — the simplest start
-```
-
-### Reading the HSE frequency after initialization
-
-```cpp
-uint32_t hse = ClockSystem::GetHSEClock();  // 0 if HSE was never enabled
+int main()
+{
+    if (System::Init() != SysInitStatus::InitOK)
+        System::DebugTrap("System init");
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+        System::DebugTrap("RCC init");
+    // An I2C bus configured later uses the same config: bus.SetUp<clocks>().
+}
 ```
 
 ---
 
-## 12. Edge cases
+## 11. Edge Cases
 
-- **`STM32F446xx` + `SystemClockSource::PLL_R`** — the only combination where the final `sys_clk`
-  is computed via `/R` rather than `/P`; passed through the internal `f446xx_pllr_out` flag in
-  `ValidatePLLCfgr()`.
-- **STM32G0 has no APB2** — `PPRE_BUS_2_Pos` = `0xFFFFFFFFU` serves as a sentinel value; all code
-  touching APB2 is wrapped in `if constexpr (PPRE_BUS_2_Pos != 0xFFFFFFFFU)`, so on G0 these
-  branches aren't compiled at all (not merely skipped at runtime).
-- **`HSE_Clk > 26 MHz`** is unconditionally rejected in `EnableHSE()` — a limitation of the current
-  implementation, it doesn't account for bypass mode (an external oscillator instead of a crystal),
-  marked `// todo` in the code.
-- **Bus divider validation runs fresh on every `Init()`** — `AHB_Pre`/`APB1_Pre`/`APB2_Pre` are
-  reset at the start of `ValidateBusDividers()`; old values from a previous call are never reused,
-  even partially.
-- **`InitCalcPLL()` requires `hse_clk != 0` if `pll_src == HSE`** — otherwise `InitError`
-  immediately, before any computation.
+| Situation | Behaviour |
+| --- | --- |
+| Supply voltage other than 2.7…3.6 V | Not modelled — limits assume VDD = 3000 mV. |
+| Second `Init<config>()` call | Rejected; dynamic reconfiguration is not supported. |
+| No exact PLL solution | Build error; provide a manual configuration. |
+| HCLK not a multiple of `TICK_BASE` (e.g. LSE) | SysTick is slightly off 1 kHz (see section 7). |
 
 ---
 
-## See also
+## See Also
 
-- [System.md](System.md) — exactly where `SystemCoreClock`/`APB1BusClock`/... get written and who
-  reads them (`System::Init()`, `System::InitTicks()`, the order of calls in `main()`).
-- [UART.md](UART.md), [TIM.md](TIM.md), [SPI.md](SPI.md) — consumers of `bus_clk`: each computes
-  its own `BRR`/`PSC`/`ARR` from the variables this module configures.
+- [RM0090 — F405/407/415/417/427/429/437/439](https://www.st.com/resource/en/reference_manual/dm00031020-stm32f405-407-415-417-437-455-469-application-note-stmicroelectronics.pdf)
+- [RM0383 — F411](https://www.st.com/resource/en/reference_manual/rm0383-stm32f411xce-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0401 — F410](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0402 — F412](https://www.st.com/resource/en/reference_manual/rm0402-stm32f412-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0430 — F413/423](https://www.st.com/resource/en/reference_manual/rm0430-stm32f413423-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0431 — F72/73 Flash/VOS timing](https://www.st.com/resource/en/reference_manual/rm0431-stm32f72xxx-and-stm32f73xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [F746 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f746zg.pdf)
+- [F767 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f767zi.pdf)
+- [System.md](System.md)
+- [I2C.md](I2C.md)
+- [UART.md](UART.md)
 
 ---
 
@@ -380,359 +303,260 @@ uint32_t hse = ClockSystem::GetHSEClock();  // 0 if HSE was never enabled
 ## Содержание
 
 1. [Зачем это нужно](#1-зачем-это-нужно)
-2. [Путь тактового сигнала](#2-путь-тактового-сигнала)
-3. [PLL — блок-схема и параметры](#3-pll--блок-схема-и-параметры)
-4. [Лимиты по семействам МК](#4-лимиты-по-семействам-мк)
-5. [Файлы и роли](#5-файлы-и-роли)
-6. [Init() — пошагово](#6-init--пошагово)
-7. [Flash latency](#7-flash-latency)
-8. [Валидация до применения](#8-валидация-до-применения)
-9. [InitCalcPLL() — автоподбор коэффициентов](#9-initcalcpll--автоподбор-коэффициентов)
-10. [Таймауты](#10-таймауты)
-11. [Примеры использования](#11-примеры-использования)
-12. [Угловые случаи](#12-угловые-случаи)
+2. [Порядок инициализации](#2-порядок-инициализации)
+3. [API и проверка при компиляции](#3-api-и-проверка-при-компиляции)
+4. [Точная частота и приоритет для jitter](#4-точная-частота-и-приоритет-для-jitter)
+5. [Модели, питание и порядок переключения](#5-модели-питание-и-порядок-переключения)
+6. [Погрешность SysTick](#6-погрешность-systick)
+7. [APB1 из конфигурации RCC для I2C](#7-apb1-из-конфигурации-rcc-для-i2c)
+8. [Примеры использования](#8-примеры-использования)
+9. [Угловые случаи](#9-угловые-случаи)
+10. [См. также](#см-также)
 
 ---
 
 ## 1. Зачем это нужно
 
-`ClockSystem` — статический класс (как `IRQ_Registry`, без инстанцирования), который настраивает
-дерево тактирования МК: выбор источника SYSCLK (HSI/HSE/PLL), параметры PLL, делители шин
-AHB/APB1/APB2, задержку Flash (wait states) и производные переменные (`System::SystemCoreClock`,
-`System::APB1BusClock` и т.д.), которые потом читают все остальные драйверы (UART, TIM, ...) для
-расчёта своих делителей.
+`ClockSystem` **один раз** после сброса настраивает дерево тактирования (генератор → PLL → SYSCLK → шины AHB/APB).
 
-Два способа получить нужную частоту:
+Работа разделена на две части:
 
-- **`Init()`** — вы сами задаёте PLL_M/N/P/Q/R и делители шин. Полный контроль, но нужно вручную
-  соблюдать все ограничения даташита.
-- **`InitCalcPLL()`** — вы задаёте только желаемую SYSCLK и источник PLL; M/N/P и делители шин
-  вычисляются автоматически (см. [раздел 9](#9-initcalcpll--автоподбор-коэффициентов)).
+| При компиляции | Во время работы |
+| --- | --- |
+| Коэффициенты PLL, делители шин, задержки Flash, периоды SysTick, все проверки пределов | Запись заранее вычисленных значений в регистры, ожидание готовности генераторов/PLL, переключение SYSCLK |
+
+Поэтому неверная конфигурация ломает **сборку**, а не устройство.
 
 ---
 
-## 2. Путь тактового сигнала
+## 2. Порядок инициализации
 
-```
-┌────────┐     ┌────────┐                                        ┌──────────────┐
-│  HSI   │     │  HSE    │                                       │   SYSCLK     │
-│ (внутр.│     │(кварц,  │                                       │ (RCC->CFGR   │
-│ RC-ген)│     │Init()'s │                                       │  SW-биты)    │
-└───┬────┘     │HSE_Clk) │                                       └──────┬───────┘
-    │          └───┬─────┘                                              │
-    │              │                                                    │
-    │   ┌──────────┴───────────┐                                        │
-    │   │  PLL (см. раздел 3)  │────────────────────────────────────────┤
-    │   │  Fsrc /M → VCO_in    │                                        │
-    │   │  VCO_in *N → VCO_out │                                        │
-    │   │  VCO_out /P (или /R) │                                        │
-    │   └──────────────────────┘                                        │
-    └────────────────── HSI/HSE напрямую (PLL_ClkSrc == NO) ─────────────┘
-                                                                          │
-                                                                          ▼
-                                                              ┌───────────────────────┐
-                                                              │  AHB prescaler (HPRE)  │
-                                                              │  sys_clk / AHB_Pre     │
-                                                              └───────────┬───────────┘
-                                                                          │  System::SystemCoreClock
-                                                     ┌────────────────────┼────────────────────┐
-                                                     ▼                                          ▼
-                                       ┌─────────────────────────┐                ┌─────────────────────────┐
-                                       │ APB1 prescaler (PPRE1)  │                │ APB2 prescaler (PPRE2)  │
-                                       │ AHB_clk / APB1_Pre      │                │ AHB_clk / APB2_Pre      │
-                                       │ = System::APB1BusClock  │                │ = System::APB2BusClock  │
-                                       └────────────┬────────────┘                └────────────┬────────────┘
-                                                    │ если APBx_Pre > 1:                        │
-                                                    │ таймеры на этой шине                       │
-                                                    │ получают APBxClock * 2                     │
-                                                    ▼                                            ▼
-                                       System::TIMxAPB1Clock                     System::TIMxAPB2Clock
+```text
+System::Init()  →  ClockSystem::Init<config>()  →  периферия
 ```
 
-**Правило "таймеры x2"**: аппаратно, если APBx-делитель `> 1`, тактовая частота, которую видят
-таймеры на этой шине, — это `APBxClock * 2`, а не `APBxClock` (компенсация архитектуры шины
-Cortex-M). Если делитель `== 1`, таймеры получают ту же частоту, что и остальная периферия шины.
-Именно поэтому в коде две отдельные переменные (`System::APB1BusClock` для периферии,
-`System::TIMxAPB1Clock` для `TIM::SetFrequency()`), а не одна:
+- Работает на STM32F4, F7 и G0.
+- Одна настройка тактирования на один аппаратный сброс.
+- Нужен C++20 (уже выбран сборкой).
+
+---
+
+## 3. API и проверка при компиляции
+
+**Автоматический расчёт PLL** — укажите частоту SYSCLK, `CalcPLL` подберёт точные коэффициенты:
 
 ```cpp
-System::TIMxAPB1Clock = (APB1_Pre == 1) ? (System::APB1BusClock) : (System::APB1BusClock * 2);
+constexpr auto clocks = ClockSystem::CalcPLL(
+    64 * MHz, ClockSystem::PLL_ClockSource::HSI);
+
+if (System::Init() != SysInitStatus::InitOK)
+    System::DebugTrap("System init");
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-На STM32G0 нет второй шины APB2 (`PPRE_BUS_2_Pos == 0xFFFFFFFFU` как маркер "не существует") —
-`System::APB2BusClock`/`TIMxAPB2Clock` в этом случае просто зануляются, а весь код, который
-конфигурирует PPRE2, компилируется в no-op через `if constexpr`.
-
----
-
-## 3. PLL — блок-схема и параметры
-
-```
-Fsrc (HSI или HSE) ──/M──▶ VCO_in ──*N──▶ VCO_out ──/P──▶ sys_clk   (F4/F7, основной выход)
-                                              └──────/R──▶ sys_clk   (F446xx: PLL_R как альтернативный выход,
-                                                                       выбирается SystemClockSource::PLL_R;
-                                                                       на G0 /R — единственный выход, /P туда
-                                                                       не используется для sys_clk)
-```
-
-`ValidatePLLCfgr()` проверяет три диапазона **до** того, как хоть один бит PLLCFGR будет записан:
-
-1. `VCO_in = Fsrc / M` должен попасть в `[PLL_CLK_IN_MIN, PLL_CLK_IN_MAX]` — у PLL есть окно входной
-   частоты, вне которого он физически не залочится.
-2. `VCO_out = VCO_in * N` должен попасть в `[PLL_N_CLK_MIN, PLL_N_CLK_MAX]`.
-3. Итоговый `PLL_Out` (после `/P` или `/R`) не должен превышать `SYS_CLK_LIMIT` для конкретного МК.
-
-Если хоть одна проверка не проходит — `Init()`/`InitCalcPLL()` возвращают `SysInitStatus::InitError`
-**до** выключения текущего PLL и **до** записи PLLCFGR, так что рабочая конфигурация тактирования
-не разрушается по пути к неудачной попытке (см. [раздел 8](#8-валидация-до-применения)).
-
-### Поля PLL_CFGR
-
-| Поле | Диапазон (F4/F7, `STM32F446xx`/`STM32F767xx`) | Диапазон (G0) | Назначение |
-|------|------------------------------------------------|----------------|------------|
-| `PLL_M` | 2 – 63 | 1 – 8 | Входной делитель: `VCO_in = Fsrc / M` |
-| `PLL_N` | 50 – 432 | 8 – 86 | Умножитель: `VCO_out = VCO_in * N` |
-| `PLL_P` | 2, 4, 6, 8 (только эти 4 значения) | 2 – 16 | Основной выходной делитель (F4/F7 sys_clk) |
-| `PLL_Q` | 2 – 15 | — | Отдельный выход для USB/SDIO/RNG (48 МГц обычно) |
-| `PLL_R` | 2 – 7 (только F446xx/F767xx) | 2 – 16 | Альтернативный/основной выход в sys_clk (см. ниже) |
-
-`f446xx_pllr_out` — специальный флаг: на STM32F446xx единственном из семейства можно взять
-`SystemClockSource::PLL_R` вместо `PLL`, тогда `PLL_Out` считается через `/R`, а не `/P`. На G0
-`/R` — единственный путь в sys_clk (F/P там используются для других периферийных выходов, не для
-SYSCLK), поэтому `ConfigurePLL()` на G0 всегда включает `RCC_PLLCFGR_PLLREN`.
-
----
-
-## 4. Лимиты по семействам МК
-
-Все константы — `static constexpr` внутри `ClockSystem`, читаются компилятором на этапе сборки
-(нет рантайм-ветвления — `#if defined(...)` уже выбрал нужный блок):
-
-| Семейство / чип | SYS_CLK_LIMIT | APB1_CLK_LIMIT | APB2_CLK_LIMIT | LATENCY_DIV |
-|-----------------|---------------|-----------------|-----------------|--------------|
-| STM32F446xx / F429xx | 180 МГц | 45 МГц | 90 МГц | 30 МГц/wait-state |
-| STM32F405xx / F407xx | 168 МГц | 42 МГц | 84 МГц | 30 МГц/wait-state |
-| STM32F722xx / F746xx / F767xx | 216 МГц | 54 МГц | 108 МГц | 30 МГц/wait-state |
-| STM32F411xE | 100 МГц | 50 МГц | 100 МГц | 30 МГц/wait-state |
-| STM32G0 | 64 МГц | 64 МГц | — (нет APB2) | 24 МГц/wait-state |
-
-Если целевой чип не попадает ни под один `#elif` — `#error "rcc.hpp: unsupported STM32 target..."`
-останавливает сборку с понятным сообщением вместо тихой неправильной константы.
-
----
-
-## 5. Файлы и роли
-
-```
-rcc.hpp
-  ├─ enum SystemClockSource, AHB_Divider, APB_Divider, PLL_ClockSource  — маппятся 1:1 на биты CFGR/PLLCFGR
-  ├─ struct BusDividers, PLL_CFGR                                       — агрегаты параметров
-  └─ class ClockSystem { static Init(...), static InitCalcPLL(...) }    — весь API, без инстанцирования
-
-rcc.cpp
-  ├─ Init()               — полный ручной путь, см. раздел 6
-  ├─ EnableHSE()           — запуск кварца + ожидание HSERDY
-  ├─ ValidatePLLCfgr()     — три диапазона из раздела 3, до записи регистров
-  ├─ ConfigurePLL()        — запись RCC->PLLCFGR (различается по семействам)
-  ├─ ValidateBusDividers() — считает AHB/APB1/APB2 делители и сверяет лимиты из раздела 4
-  └─ InitCalcPLL()         — автоподбор M/N/P + делителей шин, см. раздел 9
-```
-
----
-
-## 6. Init() — пошагово
+**Ручная конфигурация** — пример для F407, кварц 8 МГц, SYSCLK/HCLK 168 МГц, APB1 42 МГц, APB2 84 МГц:
 
 ```cpp
-static SysInitStatus Init(SystemClockSource ClkSrc, uint32_t HSE_Clk,
-                           BusDividers BusDiv, PLL_CFGR PLLCfgr);
+constexpr ClockSystem::Config clocks{
+    .ClkSrc  = ClockSystem::SystemClockSource::PLL,
+    .HSE_Clk = 8 * MHz,
+    .BusDiv  = {ClockSystem::AHB_Divider::DIV1,    // AHB  = 168 МГц
+                ClockSystem::APB_Divider::DIV4,    // APB1 =  42 МГц
+                ClockSystem::APB_Divider::DIV2},   // APB2 =  84 МГц
+    .PLLCfgr = {ClockSystem::PLL_ClockSource::HSE, 4, 168, 2, 7, 2}, // M, N, P, Q, R
+};
+// System::Init() уже выполнен.
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+    System::DebugTrap("Clock init");
 ```
 
-1. **HSE, если нужен** — если `ClkSrc == HSE` или PLL берёт вход с HSE: `EnableHSE(HSE_Clk)`,
-   ждёт `HSERDY` до `HSE_TIMEOUT_MS` (100 мс). Ошибка здесь прерывает `Init()` немедленно —
-   PLL/делители ещё не тронуты.
-2. **Если PLL не используется** (`PLL_ClkSrc == NO`) — `sys_clk` берётся напрямую как `HSI_Clock`
-   или `HSE_Clk`, PLL полностью пропускается.
-3. **Если PLL используется**:
-   - `ValidatePLLCfgr()` — все три диапазона из [раздела 3](#3-pll--блок-схема-и-параметры).
-     Ошибка — выход из `Init()`, ничего в RCC ещё не менялось.
-   - Выключить PLL (`RCC_CR_PLLON` = 0), дождаться `PLLRDY` = 0 (таймаут `PLL_TIMEOUT_MS` = 2 мс) —
-     нельзя перенастраивать PLLCFGR, пока PLL работает.
-   - `ConfigurePLL()` — записать M/N/P/Q(/R) в `RCC->PLLCFGR`.
-   - **VOS/overdrive** (только если целевая частота требует повышенного напряжения ядра):
-     - F7: если `sys_clk > 180 МГц` — включить `PWR_CR1_ODEN` (overdrive), дождаться `ODRDY`,
-       затем `PWR_CR1_ODSWEN`, дождаться `ODSWRDY` (оба — таймаут `OVERDRIVE_TIMEOUT_MS` = 100 мс).
-     - G0: выставить `PWR_CR1_VOS = Scale 1` безусловно, дождаться сброса `PWR_SR2_VOSF`.
-   - Включить PLL (`RCC_CR_PLLON` = 1), дождаться `PLLRDY` = 1 (таймаут `PLL_TIMEOUT_MS`).
-4. **`ValidateBusDividers(sys_clk, BusDiv)`** — до переключения SYSCLK проверяет, что
-   `sys_clk / AHB_Pre`, `.../APB1_Pre`, `.../APB2_Pre` укладываются в лимиты из раздела 4.
-5. **Flash latency** — см. [раздел 7](#7-flash-latency); ошибка, если получилось `> 9` wait states.
-6. **Запись делителей** — `RCC->CFGR` получает `HPRE`/`PPRE1`(/`PPRE2` если есть).
-7. **Переключение SYSCLK** — `RCC->CFGR |= (uint32_t)ClkSrc`, ждёт `RCC_CFGR_SWS`
-   (таймаут `CLOCKSWITCH_TIMEOUT_MS` = 5000 мс — самый долгий из всех таймаутов, т.к. само
-   переключение источника может быть медленным при некоторых переходах).
-8. **Обновление глобальных переменных** — `System::SystemCoreClock`, `APB1BusClock`,
-   `TIMxAPB1Clock` (и APB2-аналоги, если шина существует) — см. правило "таймеры x2" в разделе 2.
-9. **`System::InitTicks()`** — перенастраивает SysTick под новую `SystemCoreClock` (иначе
-   `System::GetTick()` после смены частоты отсчитывал бы неверные миллисекунды).
+Для HSI без PLL достаточно `constexpr ClockSystem::Config clocks{};`. Старые `Init(...)` и `InitCalcPLL(...)` заменены этим API.
 
-Любой шаг, вернувший ошибку, останавливает `Init()` немедленно (`return SysInitStatus::InitError`) —
-частично применённая конфигурация возможна только если сам аппаратный переход завис (таймаут), а не
-из-за логики функции.
+**Что проверяет `Init<config>()` через `static_assert`:** источники, коэффициенты PLL, частоты входа/VCO/выхода PLL, значения делителей, пределы SYSCLK/HCLK/APB, период SysTick.
+
+**Что вычисляется при компиляции:** значения полей регистров, задержка Flash, итоговые частоты шин и таймеров, периоды SysTick.
+
+**Что остаётся на время работы:** запись настроек, ожидание аппаратных флагов и отказ при повторном вызове. LTO для этого не нужен.
+
+**Какие поля важны:** `ClkSrc` определяет активный путь.
+
+- Для прямых источников (HSI/HSE/LSI/LSE) поля PLL игнорируются.
+- `HSE_Clk` игнорируется, если HSE не питает SYSCLK или PLL.
+- F4/F7: `PLL` выбирает выход P; на F446 `PLL_R` выбирает выход R.
+- G0 поддерживает HSI/HSE/PLL/LSI/LSE; `PLL` использует выход R. Делители P/Q записываются, но выходы P/Q не включаются. APB2 на G0 нет.
+- LSE включается с временным разрешением записи в backup-домен; прежнее значение DBP восстанавливается, RTC не сбрасывается.
 
 ---
 
-## 7. Flash latency
+## 4. Точная частота и приоритет для jitter
 
-Flash не успевает отдавать данные на высоких частотах без wait states. Формула в коде:
+**`CalcPLL(frequency, source, hse_clock = 0, pll_q = 2)`:**
 
-```cpp
-uint32_t latency = (sys_clk - 1) / LATENCY_DIV;   // LATENCY_DIV = 30 МГц (F4/F7) или 24 МГц (G0)
-if (latency > 9) return SysInitStatus::InitError; // FLASH_ACR_LATENCY — 4-битное поле, максимум 9 на этих МК
-FLASH->ACR = (FLASH->ACR & ~FLASH_ACR_LATENCY_Msk) | (latency << FLASH_ACR_LATENCY_Pos);
+- рассчитывает точную номинальную **SYSCLK**;
+- ставит AHB /1 и выбирает минимальные допустимые делители APB;
+- для HSE передайте реальную частоту кварца в Гц в `hse_clock`;
+- `pll_q` задаёте вы — требования USB/SDIO/RNG из целевой SYSCLK **не** выводятся.
+
+**Как идёт поиск:**
+
+1. Делитель входа M перебирается от меньшего к большему — так получается максимальная допустимая частота сравнения PLL, а значит меньший джиттер. Ориентиры ST: около 2 МГц на входе PLL для F4/F7 и около 16 МГц для G0 (документация RCC: [F4](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_hal_rcc.h), [F7](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Inc/stm32f7xx_hal_rcc.h), [G0](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_hal_rcc.h)).
+2. При одинаковом M выбирается минимальный выходной делитель: P на F4/F7, R на G0.
+3. Принимается только точный результат, проверка в 64-битных целых:
+
+```text
+Fsource * N == Frequested * M * P/R
 ```
 
-Пример: F4 на 180 МГц → `(180'000'000 - 1) / 30'000'000` = 5 wait states. G0 на 64 МГц →
-`(64'000'000-1) / 24'000'000` = 2 wait states.
+**Точного решения нет?** `CalcPLL` вернёт конфигурацию с `M = 0`, и `Init<config>()` остановит сборку. Выберите другую частоту или задайте конфигурацию вручную (она тоже проверяется). Округления «до ближайшей частоты» нет.
 
-Запись происходит **до** переключения `SYSCLK` на новый источник — иначе ядро могло бы уже
-работать на новой (высокой) частоте с латентностью, рассчитанной под старую.
+Пределы частот сравниваются как точные дроби до деления. Если ручная конфигурация даёт дробные герцы, опубликованные переменные `uint32_t` округляются **вниз** до целых Гц; автоматический расчёт точен до заданного герца.
 
 ---
 
-## 8. Валидация до применения
+## 5. Модели, питание и порядок переключения
 
-Порядок в `Init()` намеренно такой: **сначала проверить все параметры, потом трогать регистры**.
-Если проверка PLL или делителей шин проваливается, функция выходит рано и:
+**Пределы моделей** (`rcc_defs.hpp` покрывает все F4/F7 из STM32-base_files):
 
-- HSE (если был включен) остаётся включённым, но SYSCLK на него не переключался.
-- Старый PLL уже выключен (шаг "Disable PLL" выполняется перед `ConfigurePLL()`), поэтому в
-  худшем случае МК остаётся на **HSI после неудачной попытки перенастройки** — известное,
-  предсказуемое состояние, а не зависшая полу-настроенная периферия.
+| МК | SYSCLK/HCLK макс. | APB1 макс. | APB2 макс. |
+| --- | ---: | ---: | ---: |
+| F401 | 84 МГц | 42 МГц | 84 МГц |
+| F410/411/412/413/423 | 100 МГц | 50 МГц | 100 МГц |
+| F405/407/415/417 | 168 МГц | 42 МГц | 84 МГц |
+| F427/429/437/439/446/469/479 | 180 МГц | 45 МГц | 90 МГц |
+| F722/723/730/732/733/745/746/750/756/765/767/769/777/779 | 216 МГц | 54 МГц | 108 МГц |
+| G0 | 64 МГц | 64 МГц | — |
 
-Такой порядок — осознанный компромисс: полностью безопасного отката до "конфигурации, которая
-была до вызова `Init()`" в текущей реализации нет (PLL уже выключен к моменту проверки делителей
-шин), но невозможные конфигурации (частота вне диапазона PLL, шина выше лимита) всегда
-отбраковываются до `RCC_CR_PLLON`, так что PLL никогда не запускается с заведомо неверными
-коэффициентами.
+Неизвестная модель F4/F7 или другое семейство — явный `#error`.
 
----
+**Допущения по питанию** (фиксированы, не измеряются):
 
-## 9. InitCalcPLL() — автоподбор коэффициентов
+- VDD = 3000 мВ, то есть диапазон таймингов 2,7…3,6 В (подходит и для 3,3 В).
+- Масштаб напряжения ядра: F401 — Scale 2; остальные F4/F7 — Scale 1; G0 — Range 1.
+- Over-drive включается при необходимости: F4 — при HCLK выше 168 МГц (где он есть), F7 — выше 180 МГц.
+- Задержка Flash считается от HCLK: один такт ожидания на каждые 30 МГц для F4/F7 и 24 МГц для G0 Range 1.
 
-```cpp
-static SysInitStatus InitCalcPLL(uint32_t req_freq, PLL_ClockSource pll_src,
-                                  uint32_t hse_clk = 0, uint8_t pll_q = 2);
-```
+**Пределы PLL:**
 
-Упрощённый алгоритм — не оптимальный перебор, а фиксированная эвристика, рассчитанная на
-"типичный" запрос (частоты, кратные 1 МГц, вход от HSE с частотой в единицы-десятки МГц):
+| МК | N | VCO мин. | Прочее |
+| --- | --- | --- | --- |
+| F401 | ≥ 192 | 192 МГц | |
+| F469/479 | ≥ 50 | 192 МГц (по datasheet) | |
+| Остальные F4/F7 | ≥ 50 | 100 МГц | |
+| G0 | 8…86 | 96 МГц (по datasheet) | M = 1…8, R = 2…8, P = 2…32, Q = 2…8 при наличии |
 
-1. **`pll_m`** выбирается так, чтобы `VCO_in = input_clk / pll_m` было как можно ближе к 2 МГц
-   (округление вверх при неточном делении): `pll_m = ceil(input_clk / 2 000 000)`.
-2. **`pll_n`** выбирается так, чтобы `VCO_out = req_freq * pll_n_scale` — округление вверх до
-   целого числа МГц: `pll_n = ceil(req_freq / 1 000 000)`.
-3. **`pll_p`** зафиксирован = 2 (минимальный делитель — значит `VCO_out` должен быть равен
-   `req_freq * 2`, что и подразумевает шаг 2 при `VCO_in` ≈ 2 МГц).
-4. **Делители шин** выбираются по грубым порогам относительно `APB1_CLK_LIMIT`/`APB2_CLK_LIMIT`
-   самого МК (не относительно фактической `req_freq / prescaler`) — три случая: обе шины `/1`,
-   APB1 `/2`+APB2 `/1`, или APB1 `/4`+APB2 `/2`. Это быстрая эвристика, а не поиск минимальных
-   делителей, дающих максимальную частоту периферии, — при нестандартных `req_freq` стоит
-   проверить получившиеся `System::APB1BusClock`/`APB2BusClock` после вызова.
-5. Собранные `PLL_CFGR{pll_src, pll_m, pll_n, pll_p, pll_q, /*pll_r=*/2}` и `BusDividers`
-   передаются в обычный `Init()` — вся валидация из разделов 3/4/8 применяется как обычно, так что
-   недостижимая `req_freq` всё равно вернёт `InitError`, а не тихо настроит что-то другое.
+Минимальная SYSCLK от PLL: 24 МГц для F4/F7 (F446 — 12,5 МГц), 12 МГц для G0.
 
-**Ограничение**: эвристика не перебирает альтернативные `M`/`N`/`P`, если первая комбинация не
-проходит валидацию — она возвращает `InitError` сразу. Для частот, которые не ложатся ровно на
-целочисленные МГц с `VCO_in` ≈ 2 МГц, может потребоваться `Init()` с параметрами, подобранными
-вручную (например, в калькуляторе STM32CubeMX).
+**Что `Init<config>()` делает с аппаратурой:**
 
----
+1. **Только одна попытка.** Повторный вызов отклоняется до записи регистров. Аппаратный отказ (генератор не запустился) тоже расходует попытку — нужен сброс.
+2. Включается нужный источник. Для PLL: остановить оставшуюся неиспользуемую PLL, задать масштаб напряжения, записать коэффициенты, запустить PLL, дождаться готовности напряжения и при необходимости over-drive. На F4/F7 VOSRDY ожидается после запуска PLL.
+3. Задержка Flash повышается одной записью ACR **до** повышения HCLK.
+4. Делители шин выставляются, пока система ещё на HSI; SysTick перенастраивается для промежуточной HCLK. TIMPRE сбрасывается (где есть), чтобы частоты таймеров подчинялись обычному правилу ×1/×2.
+5. SYSCLK переключается одной записью CFGR по маске; ожидается точное значение SWS.
+6. SysTick сразу перенастраивается по готовому периоду, результат проверяется, публикуются частоты APB и таймеров. Задержка Flash снижается только после подтверждённого снижения частоты.
 
-## 10. Таймауты
+**Пределы ожидания:**
 
-| Константа | Значение | Что ждёт |
-|-----------|----------|----------|
-| `HSI_TIMEOUT_MS` | 2 мс | Запуск HSI (объявлена, но в текущем `Init()` не используется — HSI стартует практически мгновенно и не выключается явно) |
-| `LSI_TIMEOUT_MS` | 2 мс | Запуск LSI (используется другими драйверами, не `rcc.cpp` напрямую) |
-| `HSE_TIMEOUT_MS` | 100 мс | `RCC_CR_HSERDY` после `RCC_CR_HSEON` |
-| `PLL_TIMEOUT_MS` | 2 мс | И выключение (`PLLRDY` → 0), и включение (`PLLRDY` → 1) PLL |
-| `OVERDRIVE_TIMEOUT_MS` | 100 мс | F7 `ODRDY`/`ODSWRDY`; G0 `VOSF` |
-| `CLOCKSWITCH_TIMEOUT_MS` | 5000 мс | `RCC_CFGR_SWS` — подтверждение факта переключения SYSCLK |
+| Ожидание | Предел |
+| --- | --- |
+| PLL, HSI/LSI | 2 мс |
+| HSE | 100 мс |
+| LSE | 5000 мс |
+| Напряжение / over-drive / Flash | 100 мс |
+| Переключение SYSCLK | 5000 мс |
 
-Любой из этих таймаутов, истёкший до готовности флага, немедленно прерывает `Init()` с
-`SysInitStatus::InitError` — не бесконечный `while` (в отличие от `IRQ_Registry`'s `BKPT`-ловушек,
-здесь ожидаемая реакция на сбой оборудования — вернуть ошибку вызывающему коду, а не остановить
-программу).
+**Требования:**
+
+- Таймауты считаются по SysTick: вызывайте из `main` с разрешёнными прерываниями.
+- Периферия, DMA и вспомогательные PLL должны быть остановлены до этой начальной настройки.
+- Изменение тактирования во время работы **не поддерживается**.
+- При смене HCLK SysTick перезапускается (часть текущего периода теряется, счётчик `GetTick()` сохраняется).
 
 ---
 
-## 11. Примеры использования
+## 6. Погрешность SysTick
 
-### Автоподбор (InitCalcPLL) — типичный случай, как в main.cpp
-
-```cpp
-System::Init();
-ClockSystem::InitCalcPLL(180'000'000, ClockSystem::PLL_ClockSource::HSE, 8'000'000);
-System::Enable_CYCCNT();
+```text
+период = floor(HCLK / TICK_BASE) тактов      LOAD = период - 1
+реальная частота тика = HCLK / период
 ```
 
-180 МГц из внешнего кварца 8 МГц (STM32F429), делители шин подбираются автоматически исходя
-из `APB1_CLK_LIMIT`/`APB2_CLK_LIMIT` этого чипа.
+Если HCLK не кратна `TICK_BASE`, тик отличается от 1 кГц.
 
-### Ручная настройка (Init) — полный контроль над PLL и делителями
+**Пример — LSE 32768 Гц, AHB /1:** период 32 такта → 1024 тика/с → один шаг `GetTick()` = 0,9765625 мс. `Delay_ms()` и таймауты имеют ту же погрешность; для LSI добавляется неточность самого RC-генератора.
+
+Период 0 или не помещающийся в 24-битный счётчик отклоняется при компиляции. Компенсации дробного периода (чередования периодов, дополнительного таймера) нет.
+
+Для готового периода есть `System::InitTicks(ticks)`; старая перегрузка без аргумента сохранена. LTO и исключение `syscalls.c`/`sysmem.c` из LTO — отдельный вопрос настройки сборки.
+
+---
+
+## 7. APB1 из конфигурации RCC для I2C
+
+`ClockSystem::GetAPB1Clock<clocks>()` возвращает номинальную частоту APB1 конфигурации на этапе компиляции (`consteval`):
+
+- использует ту же подготовку и проверки, что `Init<config>()` — формулы не дублируются;
+- не запускает генераторы и не трогает регистры;
+- неверный `Config` даёт `static_assert`.
+
+I2C берёт APB1 через этот метод, чтобы рассчитать регистр таймингов при компиляции:
 
 ```cpp
-ClockSystem::BusDividers div;
-div.AHB_div  = ClockSystem::AHB_Divider::DIV1;
-div.APB1_div = ClockSystem::APB_Divider::DIV4;   // APB1 <= 45 МГц на F446xx
-div.APB2_div = ClockSystem::APB_Divider::DIV2;   // APB2 <= 90 МГц
-
-ClockSystem::PLL_CFGR pll;
-pll.PLL_ClkSrc = ClockSystem::PLL_ClockSource::HSE;
-pll.PLL_M = 4;    // 8 МГц / 4 = 2 МГц (VCO_in)
-pll.PLL_N = 180;  // 2 МГц * 180 = 360 МГц (VCO_out)
-pll.PLL_P = 2;    // 360 / 2 = 180 МГц (sys_clk)
-pll.PLL_Q = 7;    // 360 / 7 ≈ 51.4 МГц (USB — вне спецификации 48 МГц, только для примера полей)
-
-ClockSystem::Init(ClockSystem::SystemClockSource::PLL, 8'000'000, div, pll);
+constexpr ClockSystem::Config clocks{};          // HSI, все делители /1
+// В main, после успешного System::Init():
+if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
+// bus — объект I2C с закреплёнными выводами/DMA:
+auto status = bus.SetUp<clocks, I2C::SPEED::FAST>();
 ```
 
-### Без PLL — напрямую от HSI (значение по умолчанию)
+Перед настройкой аппаратуры I2C сравнивает эту номинальную APB1 с `System::APB1BusClock`. Совпадение чисел **не доказывает**, что RCC настроен успешно или что конфигурации одинаковы — результат `ClockSystem::Init` проверяйте сами. Это номинальный расчёт, а не измерение частоты.
+
+---
+
+## 8. Примеры использования
+
+Полный минимальный пример (HSI, все делители /1):
 
 ```cpp
-ClockSystem::Init();   // HSI, без делителей, без PLL — самый простой старт
-```
+#include "rcc.hpp"
 
-### Чтение частоты HSE после инициализации
+constexpr ClockSystem::Config clocks{};   // HSI, делители шин /1
 
-```cpp
-uint32_t hse = ClockSystem::GetHSEClock();  // 0, если HSE не был включён
+int main()
+{
+    if (System::Init() != SysInitStatus::InitOK)
+        System::DebugTrap("System init");
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
+        System::DebugTrap("RCC init");
+    // I2C, настраиваемый позже, использует ту же конфигурацию: bus.SetUp<clocks>().
+}
 ```
 
 ---
 
-## 12. Угловые случаи
+## 9. Угловые случаи
 
-- **`STM32F446xx` + `SystemClockSource::PLL_R`** — единственная комбинация, где итоговая
-  `sys_clk` считается через `/R`, а не `/P`; передаётся через внутренний флаг
-  `f446xx_pllr_out` в `ValidatePLLCfgr()`.
-- **STM32G0 не имеет APB2** — `PPRE_BUS_2_Pos` = `0xFFFFFFFFU` служит sentinel-значением;
-  весь код, трогающий APB2, обёрнут в `if constexpr (PPRE_BUS_2_Pos != 0xFFFFFFFFU)`, поэтому
-  на G0 эти ветки не компилируются вообще (а не просто пропускаются в рантайме).
-- **`HSE_Clk > 26 МГц`** отклоняется в `EnableHSE()` безусловно — граница текущей реализации,
-  не учитывает bypass-режим (внешний генератор вместо кварца), помечено `// todo` в коде.
-- **Валидация делителей шин запускается заново при каждом `Init()`** — `AHB_Pre`/`APB1_Pre`/
-  `APB2_Pre` сбрасываются в начале `ValidateBusDividers()`, старые значения от предыдущего
-  вызова не переиспользуются даже частично.
-- **`InitCalcPLL()` требует `hse_clk != 0`, если `pll_src == HSE`** — иначе `InitError` сразу,
-  до каких-либо вычислений.
+| Ситуация | Поведение |
+| --- | --- |
+| Питание вне 2,7…3,6 В | Не моделируется — пределы рассчитаны на VDD = 3000 мВ. |
+| Повторный `Init<config>()` | Отклоняется; перенастройка во время работы не поддерживается. |
+| Нет точного решения PLL | Ошибка сборки; задайте конфигурацию вручную. |
+| HCLK не кратна `TICK_BASE` (например, LSE) | SysTick немного отличается от 1 кГц (см. раздел 6). |
 
 ---
 
 ## См. также
 
-- [System.md](System.md) — куда именно пишутся `SystemCoreClock`/`APB1BusClock`/... и кто их
-  читает (`System::Init()`, `System::InitTicks()`, порядок вызовов в `main()`).
-- [UART.md](UART.md), [TIM.md](TIM.md), [SPI.md](SPI.md) — потребители `bus_clk`: каждый считает
-  свой `BRR`/`PSC`/`ARR` от переменных, которые настраивает этот модуль.
+- [RM0090 — F405/407/415/417/427/429/437/439](https://www.st.com/resource/en/reference_manual/dm00031020-stm32f405-407-415-417-437-455-469-application-note-stmicroelectronics.pdf)
+- [RM0383 — F411](https://www.st.com/resource/en/reference_manual/rm0383-stm32f411xce-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0401 — F410](https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0402 — F412](https://www.st.com/resource/en/reference_manual/rm0402-stm32f412-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0430 — F413/423](https://www.st.com/resource/en/reference_manual/rm0430-stm32f413423-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [RM0431 — F72/73 Flash/VOS timing](https://www.st.com/resource/en/reference_manual/rm0431-stm32f72xxx-and-stm32f73xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [F746 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f746zg.pdf)
+- [F767 datasheet — PLL operating limits](https://www.st.com/resource/en/datasheet/stm32f767zi.pdf)
+- [RM0368 — F401](https://www.st.com/resource/en/reference_manual/rm0368-stm32f401xbc-and-stm32f401xde-advanced-armbased-32bit-mcusstmicroelectronics.pdf), [DS11189 — F469](https://www.st.com/resource/en/datasheet/stm32f469ii.pdf), [DS11118 — F479](https://www.st.com/resource/en/datasheet/stm32f479ni.pdf), [G030 datasheet](https://www.st.com/resource/en/datasheet/stm32g030f6.pdf), [RM0444 — G0x1](https://www.st.com/resource/en/reference_manual/dm00371828-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [System.md](System.md)
+- [I2C.md](I2C.md)
+- [UART.md](UART.md)
