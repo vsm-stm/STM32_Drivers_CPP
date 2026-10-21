@@ -6,61 +6,59 @@
 
 SysInitStatus TIM::Init()
 {
-	if (_info) return SysInitStatus::InitError;
+	if (TIMx) return SysInitStatus::InitError;
 	// Object-to-object binding cannot be read through TIM* during constinit.
 	if (_counter && (_counter == this || _counter->_instance.periph == _instance.periph
 		|| FindITR(GetTIMx(), _counter->GetTIMx()) < 0))
 		return SysInitStatus::InitError;
+	TIMx = reinterpret_cast<TIM_TypeDef*>(_instance.periph);
+	TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+	(void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
+	TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+	TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
 
-	const PeriphInfo* info = &_instance;
-	TIMx = reinterpret_cast<TIM_TypeDef*>(info->periph);
-	TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
-	(void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
-	TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
-	TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
-
-	const bool up_enabled = NVIC_GetEnableIRQ(info->irq_up) != 0;
-	const bool separate_cc = info->irq_cc != info->irq_up;
-	const bool cc_enabled = separate_cc && NVIC_GetEnableIRQ(info->irq_cc) != 0;
-	NVIC_DisableIRQ(info->irq_up);
-	if (separate_cc) NVIC_DisableIRQ(info->irq_cc);
-	bool registered = IRQ_Registry::Register(info->irq_up, this) == SysInitStatus::InitOK;
+	const bool up_enabled = NVIC_GetEnableIRQ(_instance.irq_up) != 0;
+	const bool separate_cc = _instance.irq_cc != _instance.irq_up;
+	const bool cc_enabled = separate_cc && NVIC_GetEnableIRQ(_instance.irq_cc) != 0;
+	NVIC_DisableIRQ(_instance.irq_up);
+	if (separate_cc) NVIC_DisableIRQ(_instance.irq_cc);
+	bool registered = IRQ_Registry::Register(_instance.irq_up, this) == SysInitStatus::InitOK;
 	if (registered && separate_cc
-		&& IRQ_Registry::Register(info->irq_cc, this) != SysInitStatus::InitOK) {
-		IRQ_Registry::Unregister(info->irq_up, this);
+		&& IRQ_Registry::Register(_instance.irq_cc, this) != SysInitStatus::InitOK) {
+		IRQ_Registry::Unregister(_instance.irq_up, this);
 		registered = false;
 	}
 	if (!registered) {
-		TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
-		if (up_enabled) NVIC_EnableIRQ(info->irq_up);
-		if (cc_enabled) NVIC_EnableIRQ(info->irq_cc);
+		TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+		TIMx = nullptr;
+		if (up_enabled) NVIC_EnableIRQ(_instance.irq_up);
+		if (cc_enabled) NVIC_EnableIRQ(_instance.irq_cc);
 		return SysInitStatus::InitError;
 	}
-	_info = info;
-	NVIC_EnableIRQ(info->irq_up);
-	if (separate_cc) NVIC_EnableIRQ(info->irq_cc);
+	NVIC_EnableIRQ(_instance.irq_up);
+	if (separate_cc) NVIC_EnableIRQ(_instance.irq_cc);
 	return SysInitStatus::InitOK;
 }
 
 SysInitStatus TIM::SetFrequency(uint32_t freq, uint32_t arr)
 {
-	if (!_info || !freq) return SysInitStatus::InitError;
-	const uint32_t clock = *_info->bus_clk;
-	if (freq > clock || (arr && arr - 1u > _info->arr_max))
+	if (!TIMx || !freq) return SysInitStatus::InitError;
+	const uint32_t clock = *_instance.bus_clk;
+	if (freq > clock || (arr && arr - 1u > _instance.arr_max))
 		return SysInitStatus::InitError;
 	const uint32_t ratio = clock / freq;
 	uint32_t psc;
 	if (!arr) {
 		// Minimum divider that fits a 16-bit period; 32-bit timers need no divider.
 		constexpr uint32_t period_16bit = 0x10000u;
-		psc = _info->arr_max == UINT32_MAX ? 1u : (ratio - 1u) / period_16bit + 1u;
+		psc = _instance.arr_max == UINT32_MAX ? 1u : (ratio - 1u) / period_16bit + 1u;
 		arr = ratio / psc;
 	} else {
 		// floor(floor(clock/freq)/arr) == floor(clock/(freq*arr)); no wide multiply.
 		psc = ratio / arr;
 	}
 	// arr is the period in ticks, not the register value. 65536 fits a 16-bit ARR.
-	if (!psc || psc > 0x10000u || !arr || arr - 1u > _info->arr_max)
+	if (!psc || psc > 0x10000u || !arr || arr - 1u > _instance.arr_max)
 		return SysInitStatus::InitError;
 	TIMx->PSC = psc - 1u;
 	TIMx->ARR = arr - 1u;
@@ -91,13 +89,13 @@ SysInitStatus TIM::SetUp(uint32_t freq, void (*cb)(void), uint32_t arr)
 SysInitStatus TIM::SetUpPWM(Channel ch, uint32_t value, void (*dma_callback)(void))
 {
     const uint32_t i = static_cast<uint32_t>(ch);
-    if (!CanSetUpChannel(i) || !_channels[i].pin.IsValid()
-        || GetPeriod() > _info->arr_max || value > GetPeriod())
+    if (!CanSetUpChannel(i) || !_channels[i].IsValid()
+        || GetPeriod() > _instance.arr_max || value > GetPeriod())
         return SysInitStatus::InitError;
     if (_channels[i].dma.HasSelection() && SetUpDMA(i) != SysInitStatus::InitOK)
         return SysInitStatus::InitError;
 
-    _channels[i].pin.ToPin().SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
+    _channels[i].ToPin().SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
     // Each CCMR holds two channel fields: low byte for CH1/CH3, high for CH2/CH4.
     const uint32_t shift = (i & 1U) * 8U;
     volatile uint32_t& ccmr = i < 2 ? TIMx->CCMR1 : TIMx->CCMR2;
@@ -110,7 +108,7 @@ SysInitStatus TIM::SetUpPWM(Channel ch, uint32_t value, void (*dma_callback)(voi
     TIM_SET_BIT(ccmr, TIM_CCMR1_OC1PE << shift);
     TIM_MODIFY_REG(TIMx->CCER, (TIM_CCER_CC1E | TIM_CCER_CC1P | TIM_CCER_CC1NP) << (i * 4U),
         TIM_CCER_CC1E << (i * 4U));
-    if (_info->has_bdtr) TIM_SET_BIT(TIMx->BDTR, TIM_BDTR_MOE);
+    if (_instance.has_bdtr) TIM_SET_BIT(TIMx->BDTR, TIM_BDTR_MOE);
     TIMx->SR = ~(TIM_SR_CC1IF << i);
     _dma_cb[i] = dma_callback;
     _pwm_channels |= static_cast<uint8_t>(1U << i);
@@ -121,15 +119,15 @@ SysInitStatus TIM::SetUpPWM(Channel ch, uint32_t value, void (*dma_callback)(voi
 SysInitStatus TIM::SetUpEncoder(uint32_t period, EncoderMode mode)
 {
     const uint32_t sms = static_cast<uint32_t>(mode);
-    if (_info || !period || !IS_TIM_ENCODER_INTERFACE_INSTANCE(TIMx)
+    if (TIMx || !period || !IS_TIM_ENCODER_INTERFACE_INSTANCE(GetTIMx())
         || sms < 1U || sms > 3U
-        || !_channels[0].pin.IsValid() || !_channels[1].pin.IsValid()
+        || !_channels[0].IsValid() || !_channels[1].IsValid()
         || _channels[0].dma.HasSelection() || _channels[1].dma.HasSelection())
         return SysInitStatus::InitError;
     if (Init() != SysInitStatus::InitOK) return SysInitStatus::InitError;
-    if (period - 1U > _info->arr_max) { DeInit(); return SysInitStatus::InitError; }
-    _channels[0].pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
-    _channels[1].pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
+    if (period - 1U > _instance.arr_max) { DeInit(); return SysInitStatus::InitError; }
+    _channels[0].ToPin().SetUp(PIN::TYPE::AF_PushPull);
+    _channels[1].ToPin().SetUp(PIN::TYPE::AF_PushPull);
     TIMx->ARR = period - 1U;
     TIMx->CCMR1 = TIM_CCMR1_CC1S_0 | TIM_CCMR1_CC2S_0; // Direct TI1 and TI2.
     TIMx->CCER = TIM_CCER_CC1E | TIM_CCER_CC2E;
@@ -144,14 +142,14 @@ SysInitStatus TIM::SetUpQuadrature(Channel a, Channel b, uint32_t freq,
     uint32_t period, void (*cb)(void))
 {
     const uint32_t ai = static_cast<uint32_t>(a), bi = static_cast<uint32_t>(b);
-    if (_info || !_counter || _counter->_info || ai >= 4U || bi >= 4U || ai == bi
+    if (TIMx || !_counter || _counter->TIMx || ai >= 4U || bi >= 4U || ai == bi
         || !freq || freq > UINT32_MAX / 2U || period < 4U || (period & 1U)
-        || !_channels[ai].pin.IsValid() || !_channels[bi].pin.IsValid()
+        || !_channels[ai].IsValid() || !_channels[bi].IsValid()
         || _channels[ai].dma.HasSelection() || _channels[bi].dma.HasSelection())
         return SysInitStatus::InitError;
     if (SetUp(freq * 2U, nullptr, period) != SysInitStatus::InitOK)
         return SysInitStatus::InitError;
-    if (ai >= _info->channel_count || bi >= _info->channel_count
+    if (ai >= _instance.channel_count || bi >= _instance.channel_count
         || SetUpTrigger(Trigger::Update) != SysInitStatus::InitOK) {
         DeInit();
         return SysInitStatus::InitError;
@@ -176,10 +174,10 @@ SysInitStatus TIM::SetUpQuadrature(Channel a, Channel b, uint32_t freq,
             TIM_CCMR1_OC1M_2 << shift);
         const uint32_t phase = period / 4U;
         *ccr(i) = i == ai ? phase : phase + period / 2U;
-        _channels[i].pin.ToPin().SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
+        _channels[i].ToPin().SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
         TIM_SET_BIT(TIMx->CCER, TIM_CCER_CC1E << (i * 4U));
     }
-    if (_info->has_bdtr) TIM_SET_BIT(TIMx->BDTR, TIM_BDTR_MOE);
+    if (_instance.has_bdtr) TIM_SET_BIT(TIMx->BDTR, TIM_BDTR_MOE);
     _channels_used = static_cast<uint8_t>((1U << ai) | (1U << bi));
     _quadrature_a = static_cast<uint8_t>(ai);
     _quadrature_b = static_cast<uint8_t>(bi);
@@ -189,7 +187,7 @@ SysInitStatus TIM::SetUpQuadrature(Channel a, Channel b, uint32_t freq,
 
 SysStatus TIM::GenPulse(int32_t cycles)
 {
-    if (!_info) return SysStatus::NotInit;
+    if (!TIMx) return SysStatus::NotInit;
     if (_mode != Mode::Quadrature) return SysStatus::Error;
     TIM_TypeDef* const counter = _counter->TIMx;
     if ((TIMx->CR1 | counter->CR1) & TIM_CR1_CEN) return SysStatus::Busy;
@@ -231,11 +229,11 @@ SysStatus TIM::GenPulse(int32_t cycles)
 SysInitStatus TIM::SetUpPulseBurst(Channel ch, uint32_t freq, uint32_t period, void (*cb)(void))
 {
     const uint32_t i = static_cast<uint32_t>(ch);
-    if (_info || i >= 4U || !IS_TIM_REPETITION_COUNTER_INSTANCE(TIMx)
-        || period < 2U || !_channels[i].pin.IsValid() || _channels[i].dma.HasSelection())
+    if (TIMx || i >= 4U || !IS_TIM_REPETITION_COUNTER_INSTANCE(GetTIMx())
+        || period < 2U || !_channels[i].IsValid() || _channels[i].dma.HasSelection())
         return SysInitStatus::InitError;
     if (SetUp(freq, cb, period) != SysInitStatus::InitOK) return SysInitStatus::InitError;
-    if (i >= _info->channel_count) {
+    if (i >= _instance.channel_count) {
         DeInit();
         return SysInitStatus::InitError;
     }
@@ -248,9 +246,9 @@ SysInitStatus TIM::SetUpPulseBurst(Channel ch, uint32_t freq, uint32_t period, v
         pwm2 << shift);
     *ccr(i) = period - period / 2U;
     TIM_SET_BIT(ccmr, TIM_CCMR1_OC1PE << shift);
-    _channels[i].pin.ToPin().SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
+    _channels[i].ToPin().SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
     TIM_SET_BIT(TIMx->CCER, TIM_CCER_CC1E << (i * 4U));
-    if (_info->has_bdtr) TIM_SET_BIT(TIMx->BDTR, TIM_BDTR_MOE);
+    if (_instance.has_bdtr) TIM_SET_BIT(TIMx->BDTR, TIM_BDTR_MOE);
     TIM_SET_BIT(TIMx->CR1, TIM_CR1_OPM | TIM_CR1_URS);
     _channels_used = static_cast<uint8_t>(1U << i);
     _mode = Mode::Burst;
@@ -259,7 +257,7 @@ SysInitStatus TIM::SetUpPulseBurst(Channel ch, uint32_t freq, uint32_t period, v
 
 SysStatus TIM::RunPulses(uint32_t count)
 {
-    if (!_info) return SysStatus::NotInit;
+    if (!TIMx) return SysStatus::NotInit;
     if (_mode != Mode::Burst) return SysStatus::Error;
     if (TIMx->CR1 & TIM_CR1_CEN) return SysStatus::Busy;
     if (!count) return SysStatus::OK;
@@ -288,14 +286,14 @@ int TIM::FindITR(TIM_TypeDef* source, TIM_TypeDef* slave)
 
 bool TIM::CanUseSource(const TIM* source) const
 {
-    return source && source != this && source->_info && source->_trigger_set
-        && !(source->TIMx->CR1 & TIM_CR1_CEN) && IS_TIM_SLAVE_INSTANCE(TIMx);
+    return source && source != this && source->TIMx && source->_trigger_set
+        && !(source->TIMx->CR1 & TIM_CR1_CEN) && IS_TIM_SLAVE_INSTANCE(GetTIMx());
 }
 
 SysInitStatus TIM::SetUpSlave(TIM* source, SlaveMode mode)
 {
     const uint32_t sms = static_cast<uint32_t>(mode);
-    if (!_info || _mode != Mode::Base || _slave_set || (TIMx->CR1 & TIM_CR1_CEN)
+    if (!TIMx || _mode != Mode::Base || _slave_set || (TIMx->CR1 & TIM_CR1_CEN)
         || !CanUseSource(source) || sms < 4U || sms > 7U)
         return SysInitStatus::InitError;
     const int itr = FindITR(source->TIMx, TIMx);
@@ -308,7 +306,7 @@ SysInitStatus TIM::SetUpSlave(TIM* source, SlaveMode mode)
 
 SysInitStatus TIM::SetUpOnePulse()
 {
-    if (!_info || _mode != Mode::Base || _opm_set || (TIMx->CR1 & TIM_CR1_CEN))
+    if (!TIMx || _mode != Mode::Base || _opm_set || (TIMx->CR1 & TIM_CR1_CEN))
         return SysInitStatus::InitError;
     TIM_SET_BIT(TIMx->CR1, TIM_CR1_OPM);
     _opm_set = true;
@@ -317,12 +315,12 @@ SysInitStatus TIM::SetUpOnePulse()
 
 SysInitStatus TIM::SetUpCounter(TIM* source, uint32_t period, void (*cb)(void))
 {
-    if (_info || !period || !CanUseSource(source)
+    if (TIMx || !period || !CanUseSource(source)
         || (source->TIMx->CR2 & TIM_CR2_MMS) != static_cast<uint32_t>(Trigger::Update))
         return SysInitStatus::InitError;
-    const int itr = FindITR(source->TIMx, TIMx);
+    const int itr = FindITR(source->TIMx, GetTIMx());
     if (itr < 0 || Init() != SysInitStatus::InitOK) return SysInitStatus::InitError;
-    if (period - 1U > _info->arr_max || !_info->channel_count) {
+    if (period - 1U > _instance.arr_max || !_instance.channel_count) {
         DeInit();
         return SysInitStatus::InitError;
     }
@@ -339,7 +337,7 @@ SysInitStatus TIM::SetUpCounter(TIM* source, uint32_t period, void (*cb)(void))
 
 SysStatus TIM::StopAfter(uint32_t count)
 {
-    if (!_info) return SysStatus::NotInit;
+    if (!TIMx) return SysStatus::NotInit;
     if (_mode != Mode::Counter || !count) return SysStatus::Error;
     const uint32_t current = TIMx->CNT;
     if (count > TIMx->ARR - current) return SysStatus::Error;
@@ -348,7 +346,7 @@ SysStatus TIM::StopAfter(uint32_t count)
 
 SysStatus TIM::StopAt(uint32_t target)
 {
-    if (!_info) return SysStatus::NotInit;
+    if (!TIMx) return SysStatus::NotInit;
     if (_mode != Mode::Counter) return SysStatus::Error;
     if ((TIMx->CR1 | _master->TIMx->CR1) & TIM_CR1_CEN) return SysStatus::Busy;
     if (target <= TIMx->CNT || target > TIMx->ARR) return SysStatus::Error;
@@ -362,10 +360,10 @@ SysInitStatus TIM::SetUpPulseMeasure(Channel input, void (*cb)(void))
 {
     const uint32_t i = static_cast<uint32_t>(input);
     if (i > 1U || !CanSetUpChannel(0) || !CanSetUpChannel(1) || !_period_explicit
-        || _slave_set || !IS_TIM_SLAVE_INSTANCE(TIMx) || !_channels[i].pin.IsValid()
+        || _slave_set || !IS_TIM_SLAVE_INSTANCE(TIMx) || !_channels[i].IsValid()
         || _channels[0].dma.HasSelection() || _channels[1].dma.HasSelection())
         return SysInitStatus::InitError;
-    _channels[i].pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
+    _channels[i].ToPin().SetUp(PIN::TYPE::AF_PushPull);
     const uint32_t mapping = i == 0U
         ? TIM_CCMR1_CC1S_0 | TIM_CCMR1_CC2S_1
         : TIM_CCMR1_CC1S_1 | TIM_CCMR1_CC2S_0;
@@ -392,9 +390,9 @@ SysInitStatus TIM::SetUpPulseMeasure(Channel input, void (*cb)(void))
 SysInitStatus TIM::SetUpCapture(Channel ch, void (*cb)(void))
 {
     const uint32_t i = static_cast<uint32_t>(ch);
-    if (!CanSetUpChannel(i) || !_period_explicit || !_channels[i].pin.IsValid() || _channels[i].dma.HasSelection())
+    if (!CanSetUpChannel(i) || !_period_explicit || !_channels[i].IsValid() || _channels[i].dma.HasSelection())
         return SysInitStatus::InitError;
-    _channels[i].pin.ToPin().SetUp(PIN::TYPE::AF_PushPull);
+    _channels[i].ToPin().SetUp(PIN::TYPE::AF_PushPull);
     const uint32_t shift = (i & 1U) * 8U;
     volatile uint32_t& ccmr = i < 2 ? TIMx->CCMR1 : TIMx->CCMR2;
     // Direct TIx; clear this channel's input mapping, prescaler and filter fields.
@@ -425,7 +423,7 @@ SysInitStatus TIM::SetCompareIRQ(Channel ch, uint32_t compare, void (*cb)(void))
 SysInitStatus TIM::SetUpTrigger(Trigger trigger)
 {
     const uint32_t mms = static_cast<uint32_t>(trigger);
-    if (!_info || _trigger_set || (TIMx->CR1 & TIM_CR1_CEN) || !IS_TIM_MASTER_INSTANCE(TIMx)
+    if (!TIMx || _trigger_set || (TIMx->CR1 & TIM_CR1_CEN) || !IS_TIM_MASTER_INSTANCE(TIMx)
         || (mms & ~TIM_CR2_MMS) || mms < static_cast<uint32_t>(Trigger::Update))
         return SysInitStatus::InitError;
     if (trigger == Trigger::ComparePulse && !(_channels_used & 1U)) return SysInitStatus::InitError;
@@ -440,17 +438,17 @@ SysInitStatus TIM::SetUpTrigger(Trigger trigger)
 
 void TIM::IRQ_en(IRQ irq, FunctionalState en)
 {
-    if (!_info) return;
+    if (!TIMx) return;
     const uint32_t bit = static_cast<uint32_t>(irq);
-    if (irq != IRQ::UE && (bit < TIM_DIER_CC1IE || bit >= (TIM_DIER_CC1IE << _info->channel_count))) return;
+    if (irq != IRQ::UE && (bit < TIM_DIER_CC1IE || bit >= (TIM_DIER_CC1IE << _instance.channel_count))) return;
     if (en) TIM_SET_BIT(TIMx->DIER, bit); else TIM_CLEAR_BIT(TIMx->DIER, bit);
 }
 
 SysStatus TIM::SetCCR(Channel ch, uint32_t value)
 {
-    if (!_info) return SysStatus::NotInit;
+    if (!TIMx) return SysStatus::NotInit;
     const uint32_t i = static_cast<uint32_t>(ch);
-    if (i >= _info->channel_count || !(_pwm_channels & (1U << i)) || value > GetPeriod()) return SysStatus::Error;
+    if (i >= _instance.channel_count || !(_pwm_channels & (1U << i)) || value > GetPeriod()) return SysStatus::Error;
     if (_dma_status[i] == SysStatus::Busy) return SysStatus::Busy;
     *ccr(i) = value;
     return SysStatus::OK;
@@ -458,7 +456,7 @@ SysStatus TIM::SetCCR(Channel ch, uint32_t value)
 
 SysStatus TIM::SetDuty(Channel ch, uint32_t percent)
 {
-    if (!_info) return SysStatus::NotInit;
+    if (!TIMx) return SysStatus::NotInit;
     if (percent > 100U) percent = 100U;
     const uint32_t period = GetPeriod();
     // Exact floor(period*percent/100), without a wide multiply/divide or overflow.
@@ -468,13 +466,13 @@ SysStatus TIM::SetDuty(Channel ch, uint32_t percent)
 uint32_t TIM::GetCapture(Channel ch) const
 {
     const uint32_t i = static_cast<uint32_t>(ch);
-    if (!_info || i >= _info->channel_count || !(_capture_channels & (1U << i))) return 0;
+    if (!TIMx || i >= _instance.channel_count || !(_capture_channels & (1U << i))) return 0;
     return *ccr(i);
 }
 
 void TIM::HandleIRQ()
 {
-    if (!_info) return;
+    if (!TIMx) return;
     constexpr uint32_t events = TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF | TIM_SR_CC4IF;
     const uint32_t sr = TIMx->SR & TIMx->DIER & events;
     // Acknowledge enabled events only. Capture callbacks notify; CCR is read
@@ -502,13 +500,13 @@ SysInitStatus TIM::SetUpDMA(uint32_t ch)
 #ifdef TIM2_BASE
     // Stream6/CH3 is wired to both CH2 and CH4. Those requests cannot be
     // independent when both are emitted at the same Update (CCDS=1).
-    if (TIMx == TIM2 && ((ch == 1U && (_dma_owned & 8U)) || (ch == 3U && (_dma_owned & 2U))))
+    if (TIMx == TIM2 && ((ch == 1U && DmaOwned(3)) || (ch == 3U && DmaOwned(1))))
         return SysInitStatus::InitError;
 #endif
 #endif
     DMA_Sx::StreamSettings cfg;
     cfg.direction = DMA_Sx::DIR::To_Per;
-    cfg.data_size = _info->arr_max == UINT32_MAX ? DMA_Sx::SIZE::Word : DMA_Sx::SIZE::Half_Word;
+    cfg.data_size = _instance.arr_max == UINT32_MAX ? DMA_Sx::SIZE::Word : DMA_Sx::SIZE::Half_Word;
     cfg.minc = true;
     cfg.per_address = reinterpret_cast<uint32_t>(ccr(ch));
     if (dma->SetUp(cfg) != SysInitStatus::InitOK) return SysInitStatus::InitError;
@@ -520,7 +518,6 @@ SysInitStatus TIM::SetUpDMA(uint32_t ch)
         if (enabled) NVIC_EnableIRQ(irq);
         return SysInitStatus::InitError;
     }
-    _dma_owned |= static_cast<uint8_t>(1U << ch);
     _dma_status[ch] = SysStatus::OK;
     TIM_SET_BIT(TIMx->CR2, TIM_CR2_CCDS); // All CC DMA requests are generated on Update.
     dma->Enable_IRQ(DMA_Sx::IRQ::TC);
@@ -543,11 +540,11 @@ SysStatus TIM::SendDMA(Channel ch, const uint32_t* data, uint32_t len)
 
 SysStatus TIM::StartDMA(Channel ch, const void* data, uint32_t len, DMA_Sx::SIZE width)
 {
-    if (!_info) return SysStatus::NotInit;
+    if (!TIMx) return SysStatus::NotInit;
     const uint32_t i = static_cast<uint32_t>(ch);
     const uint32_t bytes = width == DMA_Sx::SIZE::Word ? 4U : 2U;
-    if (i >= _info->channel_count || !(_dma_owned & (1U << i)) || !data || !len || len > 65535U
-        || ((_info->arr_max == UINT32_MAX) != (width == DMA_Sx::SIZE::Word))
+    if (i >= _instance.channel_count || !DmaOwned(i) || !data || !len || len > 65535U
+        || ((_instance.arr_max == UINT32_MAX) != (width == DMA_Sx::SIZE::Word))
         || (reinterpret_cast<uintptr_t>(data) & (bytes - 1U))) return SysStatus::Error;
     if (_dma_status[i] == SysStatus::Busy) return SysStatus::Busy;
     DMA_Sx* const dma = &_channels[i].dma;
@@ -597,12 +594,12 @@ void TIM::HandleDmaIRQ(uint32_t ch)
 
 void TIM::DeInit()
 {
-    if (!_info) return;
+    if (!TIMx) return;
     TIMx->DIER = 0;
     Stop();
     if (_mode == Mode::Quadrature) _counter->DeInit();
     for (uint32_t i = 0; i < 4; ++i) {
-        if (!(_dma_owned & (1U << i))) continue;
+        if (!DmaOwned(i)) continue;
         DMA_Sx* const dma = &_channels[i].dma;
         const IRQn_Type irq = dma->GetIRQn();
         const bool enabled = NVIC_GetEnableIRQ(irq) != 0;
@@ -620,7 +617,7 @@ void TIM::DeInit()
             if (enabled) NVIC_EnableIRQ(irq);
         } else NVIC_ClearPendingIRQ(irq);
     }
-    const IRQn_Type irqs[2] = {_info->irq_up, _info->irq_cc};
+    const IRQn_Type irqs[2] = {_instance.irq_up, _instance.irq_cc};
     for (unsigned i = 0; i < 2; ++i) {
         if (i && irqs[i] == irqs[0]) continue;
         const bool enabled = NVIC_GetEnableIRQ(irqs[i]) != 0;
@@ -630,10 +627,10 @@ void TIM::DeInit()
             if (enabled) NVIC_EnableIRQ(irqs[i]);
         } else NVIC_ClearPendingIRQ(irqs[i]);
     }
-    TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
-    TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
-    TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->clk_reg), _info->clk_bit);
-    _channels_used = _pwm_channels = _capture_channels = _dma_owned = 0;
+    TIM_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    TIM_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+    _channels_used = _pwm_channels = _capture_channels = 0;
     _update_cb = nullptr;
     for (unsigned i = 0; i < 4; ++i) {
         _cc_cb[i] = _dma_cb[i] = nullptr;
@@ -645,7 +642,7 @@ void TIM::DeInit()
     _slave_set = _opm_set = false;
     _quadrature_a = _quadrature_b = 0;
     _master = nullptr;
-    _info = nullptr;
+    TIMx = nullptr;
 }
 
 // Previous mode implementation, retained only for reference; not compiled.

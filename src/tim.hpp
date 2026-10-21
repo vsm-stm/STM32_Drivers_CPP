@@ -420,18 +420,19 @@ public:
     /// Change only this timer's interrupt source; registry and NVIC belong to setup.
     /// A generator-owned counter's completion source is managed by GenPulse.
     void IRQ_en(IRQ irq, FunctionalState en);
-    void Start() { if (_info) TIM_SET_BIT(TIMx->CR1, TIM_CR1_CEN); }
+    void Start() { if (TIMx) TIM_SET_BIT(TIMx->CR1, TIM_CR1_CEN); }
     void Stop() {
-        if (!_info) return;
+        if (!TIMx) return;
         TIM_CLEAR_BIT(TIMx->CR1, TIM_CR1_CEN);
         if (_mode == Mode::Quadrature) _counter->Stop();
     }
     void SetEnable(bool on) { if (on) Start(); else Stop(); }
+    /// Fixed hardware address, also available before SetUp; not an initialization query.
     TIM_TypeDef* GetTIMx() const { return reinterpret_cast<TIM_TypeDef*>(_instance.periph); }
-    uint32_t GetPeriod() const { return _info ? TIMx->ARR + 1U : 0U; }
-    uint32_t GetCounterClock() const { return _info ? *_info->bus_clk / (TIMx->PSC + 1U) : 0U; }
-    uint32_t Count() const { return _info ? TIMx->CNT : 0U; }
-    void Reset() { if (_info) TIMx->CNT = 0; }
+    uint32_t GetPeriod() const { return TIMx ? TIMx->ARR + 1U : 0U; }
+    uint32_t GetCounterClock() const { return TIMx ? *_instance.bus_clk / (TIMx->PSC + 1U) : 0U; }
+    uint32_t Count() const { return TIMx ? TIMx->CNT : 0U; }
+    void Reset() { if (TIMx) TIMx->CNT = 0; }
 
     /// PWM values only; NotInit/Error/Busy or OK. Percent is clamped at 100.
     SysStatus SetDuty(Channel ch, uint32_t percent);
@@ -478,11 +479,9 @@ public:
     void DeInit();
 
 private:
-    using PeriphInfo = Instance;
     const Instance& _instance;
-	TIM_TypeDef* TIMx = nullptr;
+	TIM_TypeDef* TIMx = nullptr; ///< Register cache and setup state.
     TIM* const _counter;
-    const PeriphInfo* _info = nullptr;
     static constexpr ChannelConfig ChannelBinding(uint32_t ch, ChannelConfig c0, ChannelConfig c1,
                                         ChannelConfig c2, ChannelConfig c3) {
         for (const ChannelConfig& cfg : {c0, c1, c2, c3})
@@ -495,22 +494,25 @@ private:
     static constexpr bool DmaMatches(uintptr_t timer, uint32_t ch, DMAReq req);
 #endif
     struct ChannelState {
-        TIM_PIN pin;
+        uint32_t port;
+        uint8_t pin;
+        uint8_t af;
         DMA_Sx dma;
         constexpr ChannelState(uintptr_t timer, ChannelConfig cfg)
-            : pin(cfg.pin),
+            : port(cfg.pin.port), pin(cfg.pin.pin), af(cfg.pin.af),
 #if defined(STM32G0)
               dma(cfg.dma, cfg.dma ? DmaRequest(timer, cfg.pin.channel) : 0U)
 #else
               dma(cfg.dma)
 #endif
         { (void)timer; }
+        constexpr bool IsValid() const { return port != 0; }
+        PIN ToPin() const { return PIN(reinterpret_cast<GPIO_TypeDef*>(port), pin, af); }
     };
-    ChannelState _channels[4]; // Pins and owned DMA; no retained copy of request metadata.
+    ChannelState _channels[4]; // Compact GPIO binding and DMA; channel is the array index.
     uint8_t _channels_used = 0;
     uint8_t _pwm_channels = 0;
     uint8_t _capture_channels = 0;
-    uint8_t _dma_owned = 0;
     enum class Mode : uint8_t { Base, Encoder, Quadrature, Burst, Counter };
     Mode _mode = Mode::Base;
     bool _slave_set = false;
@@ -526,6 +528,7 @@ private:
     volatile SysStatus _dma_status[4] = {
         SysStatus::NotInit, SysStatus::NotInit, SysStatus::NotInit, SysStatus::NotInit
     };
+    bool DmaOwned(uint32_t ch) const { return _dma_status[ch] != SysStatus::NotInit; }
 
     // Four fixed adapters: no DMA scan and no run-time channel index in the adapter.
     template<unsigned N> class DmaIRQ final : public IIRQHandler {
@@ -552,7 +555,7 @@ private:
     bool CanUseSource(const TIM* source) const;
     SysStatus StartDMA(Channel ch, const void* data, uint32_t len, DMA_Sx::SIZE width);
     bool CanSetUpChannel(uint32_t ch) const {
-        return _info && _mode == Mode::Base && ch < _info->channel_count && !(TIMx->CR1 & TIM_CR1_CEN)
+        return TIMx && _mode == Mode::Base && ch < _instance.channel_count && !(TIMx->CR1 & TIM_CR1_CEN)
             && !(_channels_used & (1U << ch));
     }
     volatile uint32_t* ccr(uint32_t ch) const {

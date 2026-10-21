@@ -19,7 +19,7 @@ static uint32_t BaudRegister(uint32_t clock, uint32_t baud)
 	return brr >= 16U && brr <= max_brr ? brr : 0;
 }
 
-uint32_t USART::KernelClock(const PeriphInfo& info) const
+uint32_t USART::KernelClock(const Instance& info) const
 {
 #if defined(STM32F7) || defined(STM32G0)
 	if (!info.clock_select && _clock_source != ClockSource::PCLK) return 0;
@@ -54,34 +54,33 @@ uint32_t USART::KernelClock(const PeriphInfo& info) const
 // peripheral already enabled the shared NVIC line. FIFO support is per instance.
 SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx, FrameFormat format)
 {
-	if (_info) return SysInitStatus::InitError;
+	if (USARTx) return SysInitStatus::InitError;
 	if (format != FrameFormat::N8_1 && format != FrameFormat::E8_1
 		&& format != FrameFormat::O8_1 && format != FrameFormat::N8_2)
 		return SysInitStatus::InitError;
-	const PeriphInfo* info = &_instance;
-	USARTx = reinterpret_cast<USART_TypeDef*>(info->periph);
-	const uint32_t brr = BaudRegister(KernelClock(*info), BaudRate);
+	const uint32_t brr = BaudRegister(KernelClock(_instance), BaudRate);
 	if (!brr) return SysInitStatus::InitError;
 #if defined(STM32G0)
 	if ((fifo != FIFO::NO && fifo != FIFO::EN)
 		|| static_cast<uint32_t>(fifo_th_tx) > static_cast<uint32_t>(FIFO_TH::all)
 		|| static_cast<uint32_t>(fifo_th_rx) > static_cast<uint32_t>(FIFO_TH::all)
-		|| (fifo == FIFO::EN && !IS_UART_FIFO_INSTANCE(USARTx))
+		|| (fifo == FIFO::EN && !IS_UART_FIFO_INSTANCE(reinterpret_cast<USART_TypeDef*>(_instance.periph)))
 		|| (fifo == FIFO::NO && (fifo_th_tx != FIFO_TH::NO || fifo_th_rx != FIFO_TH::NO)))
 		return SysInitStatus::InitError;
 #endif
 
-	UART_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
-	(void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
+	USARTx = reinterpret_cast<USART_TypeDef*>(_instance.periph);
+	UART_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+	(void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
 	USARTx->CR1 = 0; // BRR and FIFO configuration require UE=0.
 #if defined(STM32F7) || defined(STM32G0)
-	if (info->clock_select) {
+	if (_instance.clock_select) {
 		// Locate this instance's two-bit USARTxSEL field; the mask is nonzero here.
-		const uint32_t selection = static_cast<uint32_t>(_clock_source) << __builtin_ctz(info->clock_select);
+		const uint32_t selection = static_cast<uint32_t>(_clock_source) << __builtin_ctz(_instance.clock_select);
 #if defined(STM32F7)
-		UART_MODIFY_REG(RCC->DCKCFGR2, info->clock_select, selection);
+		UART_MODIFY_REG(RCC->DCKCFGR2, _instance.clock_select, selection);
 #else
-		UART_MODIFY_REG(RCC->CCIPR, info->clock_select, selection);
+		UART_MODIFY_REG(RCC->CCIPR, _instance.clock_select, selection);
 #endif
 	}
 #endif
@@ -120,32 +119,32 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx, Fr
 	USARTx->RQR = USART_RQR_RXFRQ;
 #endif
 
-	const bool irq_enabled = NVIC_GetEnableIRQ(info->irq) != 0;
-	NVIC_DisableIRQ(info->irq);
-	if (IRQ_Registry::Register(info->irq, this) != SysInitStatus::InitOK) {
+	const bool irq_enabled = NVIC_GetEnableIRQ(_instance.irq) != 0;
+	NVIC_DisableIRQ(_instance.irq);
+	if (IRQ_Registry::Register(_instance.irq, this) != SysInitStatus::InitOK) {
 		USARTx->CR1 = 0;
-		if (irq_enabled) NVIC_EnableIRQ(info->irq);
+		USARTx = nullptr;
+		if (irq_enabled) NVIC_EnableIRQ(_instance.irq);
 		return SysInitStatus::InitError;
 	}
-	_info = info;
 	if (SetUpDMA() != SysInitStatus::InitOK) {
-		IRQ_Registry::Unregister(info->irq, this);
+		IRQ_Registry::Unregister(_instance.irq, this);
 		USARTx->CR1 = 0;
-		_info = nullptr;
-		if (irq_enabled) NVIC_EnableIRQ(info->irq);
+		USARTx = nullptr;
+		if (irq_enabled) NVIC_EnableIRQ(_instance.irq);
 		return SysInitStatus::InitError;
 	}
 	rx_status = SysStatus::OK;
 	tx_status = SysStatus::OK;
 	UART_SET_BIT(USARTx->CR1, USART_CR1_UE);
-	NVIC_EnableIRQ(info->irq);
+	NVIC_EnableIRQ(_instance.irq);
 	return SysInitStatus::InitOK;
 }
 
 SysStatus USART::SetBaud(uint32_t baud)
 {
-	if (!_info) return SysStatus::NotInit;
-	const uint32_t brr = BaudRegister(KernelClock(*_info), baud);
+	if (!USARTx) return SysStatus::NotInit;
+	const uint32_t brr = BaudRegister(KernelClock(_instance), baud);
 	if (!brr) return SysStatus::Error;
 	// Caller ensures physical completion via TC; these are software transfer states.
 	if (tx_status == SysStatus::Busy || rx_status == SysStatus::Busy)
@@ -161,7 +160,7 @@ SysStatus USART::SetBaud(uint32_t baud)
 
 SysStatus USART::Send(uint8_t* data, uint32_t len, uint32_t timeout)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!USARTx) return SysStatus::NotInit;
 	if (!data || !len || !(USARTx->CR1 & USART_CR1_TE)) return SysStatus::Error;
 	if (tx_status == SysStatus::Busy) return SysStatus::Busy;
 	const uint32_t start = System::GetTick();
@@ -183,11 +182,10 @@ SysStatus USART::Send(uint8_t* data, uint32_t len, uint32_t timeout)
 // len bytes or return an error/timeout. It does not publish asynchronous ready.
 SysStatus USART::Receive(uint8_t* data, uint32_t len, uint32_t timeout)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!USARTx) return SysStatus::NotInit;
 	if (!data || !len || !(USARTx->CR1 & USART_CR1_RE)) return SysStatus::Error;
 	if (rx_status == SysStatus::Busy) return SysStatus::Busy;
 	ClearDataReceivedFlag();
-	data_overflow = false;
 	data_overflow_count = 0;
 #if defined(STM32F4)
 	(void)USARTx->SR;
@@ -225,7 +223,7 @@ SysStatus USART::Receive(uint8_t* data, uint32_t len, uint32_t timeout)
 
 SysStatus USART::Send_IRQ(uint8_t* data, uint32_t len)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!USARTx) return SysStatus::NotInit;
 	if (!data || !len || len > UINT16_MAX || !(USARTx->CR1 & USART_CR1_TE)) return SysStatus::Error;
 	if (tx_status == SysStatus::Busy) return SysStatus::Busy;
 	tx_data = { data, static_cast<uint16_t>(len) };
@@ -246,11 +244,10 @@ SysStatus USART::Send_IRQ(uint8_t* data, uint32_t len)
 
 SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!USARTx) return SysStatus::NotInit;
 	if (!data || !len || len > UINT16_MAX || !(USARTx->CR1 & USART_CR1_RE)) return SysStatus::Error;
 	if (rx_status == SysStatus::Busy) return SysStatus::Busy;
 	ClearDataReceivedFlag();
-	data_overflow = false;
 	data_overflow_count = 0;
 	_rx_dma_idle = false;
 	_rx_errors = 0;
@@ -278,7 +275,7 @@ SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len)
 
 SysStatus USART::Send_DMA(uint8_t* data, uint32_t len)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!USARTx) return SysStatus::NotInit;
 	if (!_dma_tx.HasSelection() || !data || !len || len > UINT16_MAX || !(USARTx->CR1 & USART_CR1_TE)) return SysStatus::Error;
 	if (tx_status == SysStatus::Busy) return SysStatus::Busy;
 	SysStatus status = _dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(data));
@@ -304,7 +301,7 @@ SysStatus USART::Send_DMA(uint8_t* data, uint32_t len)
 
 SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!USARTx) return SysStatus::NotInit;
 	if (!_dma_rx.HasSelection() || !data || !len || len > UINT16_MAX || !(USARTx->CR1 & USART_CR1_RE)) return SysStatus::Error;
 	if (rx_status == SysStatus::Busy) return SysStatus::Busy;
 	SysStatus status = _dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(data));
@@ -312,7 +309,6 @@ SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len)
 	status = _dma_rx.SetCount(len);
 	if (status != SysStatus::OK) return status;
 	ClearDataReceivedFlag();
-	data_overflow = false;
 	data_overflow_count = 0;
 	_rx_dma_idle = false;
 	_rx_errors = 0;
@@ -402,7 +398,7 @@ SysInitStatus USART::SetUpDMA()
 // TC interrupt, including an IDLE/error stop before the configured capacity.
 void USART::HandleIRQ()
 {
-	if (!_info) return;
+	if (!USARTx) return;
 	const uint32_t sr = Status_reg();
 	const uint32_t cr1 = USARTx->CR1;
 	const uint32_t cr3 = USARTx->CR3;
@@ -484,7 +480,7 @@ void USART::HandleIRQ()
 
 void USART::HandleDmaTxIRQ()
 {
-	if (!_info || tx_status != SysStatus::Busy) return;
+	if (!USARTx || tx_status != SysStatus::Busy) return;
 	const uint32_t flags = _dma_tx.GetIRQFlags();
 	const uint32_t errors = flags & DMA_Sx::FLAG_ERRORS;
 	if (errors) {
@@ -508,7 +504,7 @@ void USART::HandleDmaTxIRQ()
 
 void USART::HandleDmaRxIRQ()
 {
-	if (!_info || rx_status != SysStatus::Busy) return;
+	if (!USARTx || rx_status != SysStatus::Busy) return;
 	const uint32_t flags = _dma_rx.GetIRQFlags();
 	const uint32_t errors = flags & DMA_Sx::FLAG_ERRORS;
 	if (errors) {
@@ -548,7 +544,6 @@ void USART::OnTxEmpty()
 void USART::OnRxByte(uint8_t byte)
 {
 	if (!rx_data.size) {
-		data_overflow = true;
 		data_overflow_count = data_overflow_count + 1;
 		return;
 	}
@@ -605,7 +600,7 @@ void USART::OnIdle()
 			rx_data.data_ptr[data_received_count] = byte;
 			data_received_count = data_received_count + 1;
 		} else if (!dma) OnRxByte(byte);
-		else { data_overflow = true; data_overflow_count = data_overflow_count + 1; }
+		else { data_overflow_count = data_overflow_count + 1; }
 	}
 #else
 	ClearFlags(ISR_FLAGS::IDLE);
@@ -663,7 +658,7 @@ void USART::OnError(uint32_t) {}
 // Remove only this object from each unique vector before releasing DMA ownership.
 void USART::DeInit()
 {
-	if (!_info) return;
+	if (!USARTx) return;
 	const bool receiving_dma = _dma_rx.HasSelection() && (_rx_dma_idle || (USARTx->CR3 & USART_CR3_DMAR));
 	USARTx->CR1 = 0;
 	USARTx->CR3 = 0; // Disable sources and UART requests before stopping DMA.
@@ -672,7 +667,7 @@ void USART::DeInit()
 
 	const IRQn_Type no_irq = static_cast<IRQn_Type>(-1);
 	const IRQn_Type irqs[3] = {
-		_info->irq, _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : no_irq, _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : no_irq
+		_instance.irq, _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : no_irq, _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : no_irq
 	};
 	IIRQHandler* const handlers[3] = { this, &_dma_tx_irq, &_dma_rx_irq };
 	for (unsigned i = 0; i < 3; ++i) {
@@ -694,11 +689,10 @@ void USART::DeInit()
 	tx_data = {};
 	rx_data = {};
 	ClearDataReceivedFlag();
-	data_overflow = false;
 	data_overflow_count = 0;
 	_rx_dma_idle = false;
 	_rx_errors = 0;
 	tx_status = SysStatus::NotInit;
 	rx_status = SysStatus::NotInit;
-	_info = nullptr;
+	USARTx = nullptr;
 }

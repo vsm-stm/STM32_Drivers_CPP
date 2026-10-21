@@ -9,7 +9,7 @@
 SysInitStatus DAC_Module::SetUp()
 {
 	if (data_out) return SysInitStatus::InitError;
-	DACx = reinterpret_cast<DAC_TypeDef*>(_instance.periph);
+	DAC_TypeDef* const DACx = reinterpret_cast<DAC_TypeDef*>(_instance.periph);
 	DAC_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
 	(void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
 
@@ -39,6 +39,7 @@ SysInitStatus DAC_Module::SetUp()
 void DAC_Module::DeInit()
 {
 	if (!data_out) return;
+	DAC_TypeDef* const DACx = reinterpret_cast<DAC_TypeDef*>(_instance.periph);
 	DAC_CLEAR_BIT(DACx->CR, (ch == CHANNEL::CH1 ? DAC_CR_EN1 : DAC_CR_EN2));
 	data_out = nullptr;
 }

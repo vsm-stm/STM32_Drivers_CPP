@@ -327,7 +327,6 @@ private:
 	}
 	/// Main-only application of compiler-produced timing, ownership and IRQ setup.
 	SysInitStatus Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk);
-	using PeriphInfo = Instance;
 
 	enum class Mode : uint8_t { Poll, Irq, Dma };
 
@@ -394,10 +393,9 @@ private:
 	};
 
 	const Instance& _instance;
-	I2C_TypeDef* I2Cx = nullptr;
+	I2C_TypeDef* I2Cx = nullptr; ///< Register cache and setup state.
 	PIN               _scl;
 	PIN               _sda;
-	const PeriphInfo* _info = nullptr;
 	uint32_t _timing = 0;   ///< G0/F7: TIMINGR; F4: CCR | TRISE << 16 | FREQ << 24
 
 	DMA_Sx _dma_tx;

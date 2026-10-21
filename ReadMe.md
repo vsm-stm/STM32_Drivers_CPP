@@ -176,27 +176,24 @@ This file gives an overview and usage examples for each module. The full descrip
 
 ## 1. Architectural Principles
 
-### Peripheral tables (PeriphInfo)
+### Fixed peripheral descriptions (Instance)
 
-Instead of long if-else chains like `if (USARTx == USART1) { RCC->APB2ENR |= ...; }`, each driver keeps a **static table** describing every instance of the peripheral:
+USART/SPI/I2C/TIM/ADC receive a static `_N::instance` from their defs header.
+It describes numeric peripheral/RCC addresses, clock/reset masks, the bus-clock
+variable, IRQs and device capabilities. SetUp uses the description directly,
+without scanning a peripheral table:
 
 ```cpp
-struct PeriphInfo {
-    USART_TypeDef*      periph;   // pointer to the peripheral (USART1, USART2...)
-    volatile uint32_t*  clk_reg;  // clock-enable register (APBxENR)
-    uint32_t            clk_bit;  // bit in clk_reg
-    uint32_t const*     bus_clk;  // pointer to the bus-frequency variable
-    IRQn_Type           irq;      // interrupt vector number
-};
-static const PeriphInfo usart_table[];
+using U = USART::_3;
+constinit USART port(U::instance, 115200, U::TX::PD8, U::RX::PD9);
 ```
 
-When `SetUp()` is called, the driver scans the table, finds the right entry by the peripheral pointer, and automatically:
-- enables the clock
-- reads the current bus frequency
-- knows the interrupt vector
-
-This is the only place that needs updating when adding a new MCU.
+The object retains one reference to Instance and a cached register pointer.
+There is no duplicate `_info` pointer. Outside setup, the register pointer also
+marks initialization: it is null before setup, after failed initial setup and
+after DeInit. A repeated setup of an initialized object returns an error without
+clearing its working state. Register access in IRQ uses the cached pointer.
+DMA retains its own hardware-descriptor table and resource-acquisition state.
 
 ### Compile-time pin validation
 
@@ -1138,7 +1135,7 @@ system.hpp
 ## Adding a new MCU
 
 1. Add `#include "stm32xxxx.h"` to `system.hpp`.
-2. Add entries to the `PeriphInfo` tables in `uart.cpp`, `spi.cpp`, `tim.cpp`, `dma.cpp`.
+2. Update the peripheral Instance/pin/DMA definitions in the corresponding `*_defs.hpp` and, where needed, the hardware DMA descriptors in `dma.cpp`.
 3. Add stubs to `irq_registry_config.h`.
 4. Add verified frequency/PLL/power limits to `rcc_defs.hpp`.
 5. If needed, add register-abstraction macros (e.g. `RCC_GPIO_EN_REG` in `gpio.hpp`).
@@ -1293,27 +1290,25 @@ IRQ_en, конечный DMA всегда использует TC. См. [ADC.md
 
 ## 1. Архитектурные принципы
 
-### Таблицы периферии (PeriphInfo)
+### Постоянные описания периферии (Instance)
 
-Вместо длинных if-else цепочек вида `if (USARTx == USART1) { RCC->APB2ENR |= ...; }` каждый драйвер хранит **статическую таблицу** с описанием всех экземпляров периферии:
+USART/SPI/I2C/TIM/ADC принимают статический `_N::instance` из своего defs-заголовка.
+Он содержит числовые адреса периферии/RCC, маски тактирования/сброса, переменную
+частоты шины, IRQ и возможности блока. SetUp использует это описание напрямую,
+без поиска по таблице:
 
 ```cpp
-struct PeriphInfo {
-    USART_TypeDef*      periph;   // указатель на периферию (USART1, USART2...)
-    volatile uint32_t*  clk_reg;  // регистр включения тактирования (APBxENR)
-    uint32_t            clk_bit;  // бит в clk_reg
-    uint32_t const*     bus_clk;  // указатель на переменную с частотой шины
-    IRQn_Type           irq;      // номер вектора прерывания
-};
-static const PeriphInfo usart_table[];
+using U = USART::_3;
+constinit USART port(U::instance, 115200, U::TX::PD8, U::RX::PD9);
 ```
 
-При вызове `SetUp()` драйвер проходит по таблице, находит нужную запись по указателю на периферию, и автоматически:
-- включает тактирование
-- читает актуальную частоту шины
-- знает вектор прерывания
-
-Это единственное место, которое нужно обновлять при добавлении нового МК.
+Объект хранит одну ссылку на Instance и кешированный указатель регистров.
+Второго указателя `_info` нет. Вне настройки указатель регистров также служит
+признаком инициализации: до настройки, после ошибки первой настройки и после
+DeInit он нулевой. Повторная настройка действующего объекта возвращает ошибку,
+не сбрасывая его рабочее состояние. IRQ обращается к регистрам через кешированный
+указатель. DMA сохраняет собственную таблицу аппаратных дескрипторов и состояние
+захвата ресурса.
 
 ### Валидация пинов при компиляции
 
@@ -2256,7 +2251,7 @@ system.hpp
 ## Добавление нового МК
 
 1. Добавить `#include "stm32xxxx.h"` в `system.hpp`.
-2. Добавить записи в `PeriphInfo`-таблицы в `uart.cpp`, `spi.cpp`, `tim.cpp`, `dma.cpp`.
+2. Обновить Instance/пины/DMA в соответствующих `*_defs.hpp` и при необходимости аппаратные дескрипторы DMA в `dma.cpp`.
 3. Добавить стабы в `irq_registry_config.h`.
 4. Добавить проверенные частотные лимиты и особенности PLL/VOS в `rcc_defs.hpp`.
 5. При необходимости добавить макросы регистровых абстракций (например `RCC_GPIO_EN_REG` в `gpio.hpp`).

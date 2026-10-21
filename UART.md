@@ -32,7 +32,7 @@ USART provides independent byte-oriented TX/RX, blocking/IRQ/DMA operations and 
 
 Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use the provided _N::instance, named pins and optional _N::DMA routes. G0 takes numeric DMAx_Channely_BASE selections; the peripheral fixes the request source.
 
-For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. The macro uses `std::is_constant_evaluated()` to select that path; at runtime it calls `System::DebugTrap(text)` directly, without calling the template. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. The macro uses `std::is_constant_evaluated()` to select that path; at runtime it calls `System::DebugTrap(text)` directly, without calling the template. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. Metadata is read from Instance; the cached register pointer is the setup marker and is cleared after failed initial setup or DeInit. No second metadata pointer is stored. See [Initialization.md](Initialization.md) for constructor variants and migration.
 
 ---
 
@@ -143,6 +143,10 @@ asynchronous packet-ready flag.
 ## 6. One packet at a time
 
 Receive_IRQ/DMA starts a fresh packet and clears the previous ready/count/overflow state.
+GetOverflow() tests data_overflow_count != 0; no separate overflow flag is stored.
+The uint32_t counter wraps naturally without saturation, so wrap to zero also
+clears the reported overflow condition. GetOverflowCount reads and clears it
+after reception stops; a new Receive resets it too.
 IDLE ends the packet. On F4/F7 DMA RX follows this order without waiting in IRQ:
 
 1. Disable UART RX interrupt sources and DMAR requests.
@@ -356,7 +360,7 @@ USART предоставляет независимые TX/RX, блокирую�
 
 Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте готовый _N::instance, именованные пины и необязательные маршруты _N::DMA. На G0 передаются числовые DMAx_Channely_BASE, источник запроса закрепляет периферия.
 
-При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. Макрос выбирает путь через `std::is_constant_evaluated()`; во время выполнения напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. Макрос выбирает путь через `std::is_constant_evaluated()`; во время выполнения напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Метаданные читаются из Instance; указатель регистров служит признаком настройки и обнуляется после ошибки первой настройки или DeInit. Второго указателя метаданных нет. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
 
 ---
 
@@ -486,6 +490,11 @@ DMAR отключает запросы DMA, но не приёмник UART. Д�
 ---
 
 ## 6. DMA, кеш и ошибки
+
+GetOverflow() проверяет data_overflow_count != 0: отдельного флага нет.
+Счётчик uint32_t переполняется без насыщения; после перехода через ноль
+GetOverflow() вернёт false. GetOverflowCount читает и обнуляет счётчик после
+остановки приёма; новый Receive также его сбрасывает.
 
 Конструктор принимает описания dma_tx и dma_rx после пинов, по умолчанию {}.
 На F4/F7 передаётся именованный DMAReq с потоком; на G0 —

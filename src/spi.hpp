@@ -277,11 +277,11 @@ public:
                        cPolPha cpolpha = cPolPha::None, BaudRate br = BaudRate::DIV2);
 
     /// Low-level SPE controls; do not use to interrupt an owned active operation.
-    void Enable() { if (_info) SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE); }
-    void Disable() { if (_info) SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE); }
+    void Enable() { if (SPIx) SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE); }
+    void Disable() { if (SPIx) SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE); }
     /// Optional active-low software master CS. Hard NSS and absent CS are untouched.
     void SlaveSelect(FunctionalState en) {
-        if (_info && Master_slave == Master_sel::Master
+        if (SPIx && Master_slave == Master_sel::Master
             && nss_ctrl == NSS_ctrl::Software && _ss.IsValid()) _ss.SetLevel(!en);
     }
     /// Raw request gates; normal transfers manage them in start/stop order.
@@ -294,7 +294,7 @@ public:
     /// Changes CR2 only; safe for a callback to disable its own source.
     /// Enable sources only for an active transfer; SetUp() owns NVIC registration.
     void IRQ_en(IRQ irq, FunctionalState en) {
-        if (!_info) return;
+        if (!SPIx) return;
         if (en) SPI_SET_BIT(SPIx->CR2, static_cast<uint32_t>(irq));
         else SPI_CLEAR_BIT(SPIx->CR2, static_cast<uint32_t>(irq));
     }
@@ -317,13 +317,13 @@ public:
     SysStatus Receive(uint8_t* data, uint32_t len, uint32_t timeout = 100)
     { return Poll(nullptr, data, len, Data_frame_format::Byte, timeout); }
     SysStatus Send_Receive(uint8_t* tx, uint8_t* rx, uint32_t len, uint32_t timeout = 100)
-    { return tx && rx ? Poll(tx, rx, len, Data_frame_format::Byte, timeout) : (_info ? SysStatus::Error : SysStatus::NotInit); }
+    { return tx && rx ? Poll(tx, rx, len, Data_frame_format::Byte, timeout) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
     SysStatus Send(uint16_t* data, uint32_t len, uint32_t timeout = 100)
     { return Poll(data, nullptr, len, Data_frame_format::Half_Word, timeout); }
     SysStatus Receive(uint16_t* data, uint32_t len, uint32_t timeout = 100)
     { return Poll(nullptr, data, len, Data_frame_format::Half_Word, timeout); }
     SysStatus Send_Receive(uint16_t* tx, uint16_t* rx, uint32_t len, uint32_t timeout = 100)
-    { return tx && rx ? Poll(tx, rx, len, Data_frame_format::Half_Word, timeout) : (_info ? SysStatus::Error : SysStatus::NotInit); }
+    { return tx && rx ? Poll(tx, rx, len, Data_frame_format::Half_Word, timeout) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
 
     /**
      * @name IRQ transfers
@@ -337,13 +337,13 @@ public:
     SysStatus Receive_IRQ(uint8_t* data, uint32_t len)
     { return Start(nullptr, data, len, Data_frame_format::Byte, Mode::Irq); }
     SysStatus SendReceive_IRQ(uint8_t* tx, uint8_t* rx, uint32_t len)
-    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Byte, Mode::Irq) : (_info ? SysStatus::Error : SysStatus::NotInit); }
+    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Byte, Mode::Irq) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
     SysStatus Send_IRQ(uint16_t* data, uint32_t len)
     { return Start(data, nullptr, len, Data_frame_format::Half_Word, Mode::Irq); }
     SysStatus Receive_IRQ(uint16_t* data, uint32_t len)
     { return Start(nullptr, data, len, Data_frame_format::Half_Word, Mode::Irq); }
     SysStatus SendReceive_IRQ(uint16_t* tx, uint16_t* rx, uint32_t len)
-    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Half_Word, Mode::Irq) : (_info ? SysStatus::Error : SysStatus::NotInit); }
+    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Half_Word, Mode::Irq) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
 
     /**
      * @name DMA transfers
@@ -363,13 +363,13 @@ public:
     SysStatus Receive_DMA(uint8_t* data, uint32_t len)
     { return Start(nullptr, data, len, Data_frame_format::Byte, Mode::Dma); }
     SysStatus SendReceive_DMA(uint8_t* tx, uint8_t* rx, uint32_t len)
-    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Byte, Mode::Dma) : (_info ? SysStatus::Error : SysStatus::NotInit); }
+    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Byte, Mode::Dma) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
     SysStatus Send_DMA(uint16_t* data, uint32_t len, FunctionalState minc = ENABLE)
     { return Start(data, nullptr, len, Data_frame_format::Half_Word, Mode::Dma, minc); }
     SysStatus Receive_DMA(uint16_t* data, uint32_t len)
     { return Start(nullptr, data, len, Data_frame_format::Half_Word, Mode::Dma); }
     SysStatus SendReceive_DMA(uint16_t* tx, uint16_t* rx, uint32_t len)
-    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Half_Word, Mode::Dma) : (_info ? SysStatus::Error : SysStatus::NotInit); }
+    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Half_Word, Mode::Dma) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
 
     /**
      * @brief Complete an async operation from main without waiting for hardware.
@@ -422,7 +422,6 @@ public:
 
 private:
     enum class Mode : uint8_t { Polling, Irq, Dma };
-    using PeriphInfo = Instance;
     static constexpr uint32_t IRQ_MASK = SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE;
     static constexpr uint32_t DMA_MASK = SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN;
     // Motorola SPI without hardware CRC; TI frame errors are not applicable.
@@ -488,11 +487,10 @@ private:
 
 protected:
     const Instance& _instance;
-	SPI_TypeDef* SPIx = nullptr;
+	SPI_TypeDef* SPIx = nullptr; ///< Register cache and setup state.
     PIN _clk, _mosi, _miso, _ss;
     NSS_ctrl nss_ctrl{};
     Master_sel Master_slave{};
-    const PeriphInfo* _info = nullptr;
 
     /**
      * @name Operational callbacks

@@ -16,20 +16,19 @@ static constexpr uint32_t SR1_ERR = I2C_SR1_BERR | I2C_SR1_ARLO | I2C_SR1_AF;
 SysInitStatus I2C::Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk)
 {
     // Check RCC's published APB1 before changing registers or acquiring resources.
-    if (_info || System::APB1BusClock != expected_pclk) return SysInitStatus::InitError;
-    const PeriphInfo* info = &_instance;
-    I2Cx = reinterpret_cast<I2C_TypeDef*>(info->periph);
+    if (I2Cx || System::APB1BusClock != expected_pclk) return SysInitStatus::InitError;
+    I2Cx = reinterpret_cast<I2C_TypeDef*>(_instance.periph);
 
     _timing = timing;
 #if defined(STM32F4)
     (void)speed; // F4 register configuration is entirely encoded in timing.
 #endif
 
-    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
-    (void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
-    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
-    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
-    if (info->ksel_mask) I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->ksel_reg), info->ksel_mask);
+    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+    (void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
+    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    if (_instance.ksel_mask) I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.ksel_reg), _instance.ksel_mask);
     _scl.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High);
     _sda.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High);
 #if defined(STM32G0) || defined(STM32F7)
@@ -42,25 +41,23 @@ SysInitStatus I2C::Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk)
     (void)RCC->APB2ENR;
     auto& fmp = SYSCFG->PMC;
 #endif
-    if (speed == SPEED::FAST_PLUS) I2C_SET_BIT(fmp, info->fmp_bit);
-    else I2C_CLEAR_BIT(fmp, info->fmp_bit);
+    if (speed == SPEED::FAST_PLUS) I2C_SET_BIT(fmp, _instance.fmp_bit);
+    else I2C_CLEAR_BIT(fmp, _instance.fmp_bit);
     I2Cx->CR1 = 0;
     I2Cx->TIMINGR = _timing;
     I2Cx->CR1 = I2C_CR1_PE;
 #else
     ResetPeriph();
 #endif
-
-    _info = info;
     if (SetUpDMA() != SysInitStatus::InitOK) {
         I2Cx->CR1 = 0;
-        _info = nullptr;
+        I2Cx = nullptr;
         return SysInitStatus::InitError;
     }
 
     const IRQn_Type none = static_cast<IRQn_Type>(-1);
     const IRQn_Type irqs[4] = {
-        info->irq_ev, info->irq_er != info->irq_ev ? info->irq_er : none,
+        _instance.irq_ev, _instance.irq_er != _instance.irq_ev ? _instance.irq_er : none,
         _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : none,
         _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : none
     };
@@ -83,7 +80,7 @@ SysInitStatus I2C::Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk)
             if (_dma_tx.HasSelection()) _dma_tx.Release();
             if (_dma_rx.HasSelection()) _dma_rx.Release();
             I2Cx->CR1 = 0;
-            _info = nullptr;
+            I2Cx = nullptr;
             return SysInitStatus::InitError;
         }
         NVIC_EnableIRQ(irqs[i]); // Sources remain off until a transfer starts.
@@ -196,7 +193,7 @@ SysStatus I2C::ReadReg_DMA(uint8_t addr, uint16_t reg, uint8_t* data, uint16_t l
 SysStatus I2C::Begin(Mode mode, uint8_t addr, uint16_t reg, uint8_t reg_len,
 					 uint8_t* buf, uint16_t len, bool read)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!I2Cx) return SysStatus::NotInit;
 	if (addr > 0x7F || reg_len > 2 || (len && !buf) || (read && !len)) return SysStatus::Error;
 	if (_state != State::Idle) return SysStatus::Busy;
 
@@ -584,7 +581,7 @@ void I2C::Complete(bool notify)
 
 void I2C::HandleDmaTxIRQ()
 {
-    if (!_info || _mode != Mode::Dma || _read || _state == State::Idle) return;
+    if (!I2Cx || _mode != Mode::Dma || _read || _state == State::Idle) return;
     const uint32_t flags = _dma_tx.GetIRQFlags();
     if ((flags & DMA_Sx::FLAG_ERRORS) && _err == ERR::None) {
         _err = ERR::DmaError;
@@ -607,7 +604,7 @@ void I2C::HandleDmaTxIRQ()
 
 void I2C::HandleDmaRxIRQ()
 {
-    if (!_info || _mode != Mode::Dma || !_read || _state == State::Idle) return;
+    if (!I2Cx || _mode != Mode::Dma || !_read || _state == State::Idle) return;
     const uint32_t flags = _dma_rx.GetIRQFlags();
     if ((flags & DMA_Sx::FLAG_ERRORS) && _err == ERR::None) {
         _err = ERR::DmaError;
@@ -639,7 +636,7 @@ void I2C::HandleDmaRxIRQ()
 
 void I2C::HandleIRQ()
 {
-    if (!_info || _state == State::Idle || _state == State::DmaStop || _mode == Mode::Poll) return;
+    if (!I2Cx || _state == State::Idle || _state == State::DmaStop || _mode == Mode::Poll) return;
     Process(StatusReg()); // One snapshot, one bounded FSM step.
 }
 
@@ -665,7 +662,7 @@ void I2C::ResetPeriph()
 
 void I2C::Abort()
 {
-    if (!_info || _state == State::Idle || _mode == Mode::Poll) return;
+    if (!I2Cx || _state == State::Idle || _mode == Mode::Poll) return;
     _err = ERR::Aborted;
 #if defined(STM32F4)
     I2C_CLEAR_BIT(I2Cx->CR2, CR2_CTRL);
@@ -679,7 +676,7 @@ void I2C::Abort()
 
 void I2C::DeInit()
 {
-    if (!_info) return;
+    if (!I2Cx) return;
     Abort();
     I2Cx->CR1 = 0;
 #if defined(STM32F4)
@@ -689,7 +686,7 @@ void I2C::DeInit()
     if (_dma_rx.HasSelection()) _dma_rx.Stream_EN(DISABLE);
     const IRQn_Type none = static_cast<IRQn_Type>(-1);
     const IRQn_Type irqs[4] = {
-        _info->irq_ev, _info->irq_er != _info->irq_ev ? _info->irq_er : none,
+        _instance.irq_ev, _instance.irq_er != _instance.irq_ev ? _instance.irq_er : none,
         _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : none,
         _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : none
     };
@@ -706,17 +703,17 @@ void I2C::DeInit()
     if (_dma_tx.HasSelection()) _dma_tx.Release();
     if (_dma_rx.HasSelection()) _dma_rx.Release();
 #if defined(STM32G0)
-    I2C_CLEAR_BIT(SYSCFG->CFGR1, _info->fmp_bit);
+    I2C_CLEAR_BIT(SYSCFG->CFGR1, _instance.fmp_bit);
 #elif defined(STM32F7)
-    I2C_CLEAR_BIT(SYSCFG->PMC, _info->fmp_bit);
+    I2C_CLEAR_BIT(SYSCFG->PMC, _instance.fmp_bit);
 #endif
-    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
-    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
-    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->clk_reg), _info->clk_bit);
+    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
     _scl.SetUp(PIN::TYPE::INPUT_NO_Pull);
     _sda.SetUp(PIN::TYPE::INPUT_NO_Pull);
     _buf = nullptr;
     _state = State::Idle;
     _err = ERR::None;
-    _info = nullptr;
+    I2Cx = nullptr;
 }

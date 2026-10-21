@@ -56,7 +56,7 @@ System/GPIO are core dependencies; this API does not require DMA or IRQ registra
 | DeInit() | Disables this channel; returns void |
 
 The constructor binds DAC1 and CHANNEL::CH1 (PA4) or CH2 (PA5). The CMSIS DAC
-alias refers to the same instance. DACx/channel are fixed in protected members;
+alias refers to the same instance. The Instance reference/channel are fixed in protected members;
 the volatile data-register pointer is private. No hardware is accessed by the
 constructor. Copy and move are disabled.
 
@@ -97,6 +97,9 @@ SetValue checks initialization first:
 
 No extra initialization flag is stored: the non-null register pointer marks a
 successful setup. Error does not invalidate an already initialized channel.
+
+Only data_out is retained for fast writes and initialization state. SetUp/DeInit
+obtain the DAC block address locally from Instance; there is no stored DACx pointer.
 
 SetUp/SetValue confirm configuration/register writes. They do not wait for
 analog startup or settling. Observe the selected device's datasheet limits for
@@ -216,7 +219,7 @@ System/GPIO входят в ядро библиотеки; этому API не �
 | DeInit() | Отключает выбранный канал, возвращает void |
 
 Конструктор закрепляет DAC1 и канал: CH1 — PA4, CH2 — PA5. CMSIS-имя DAC —
-алиас того же экземпляра. DACx и канал неизменяемы и находятся в protected,
+алиас того же экземпляра. Ссылка на Instance и канал неизменяемы и находятся в protected,
 служебный volatile-указатель регистра — в private. Конструктор не обращается
 к аппаратуре. Копирование и перемещение запрещены.
 
@@ -257,6 +260,9 @@ SetValue сначала проверяет инициализацию:
 
 Отдельного флага инициализации нет: признаком служит ненулевой указатель регистра.
 Ошибка значения не отменяет выполненную инициализацию.
+
+Для быстрой записи и признака настройки сохраняется только data_out. SetUp/DeInit
+получают адрес блока DAC локально из Instance; отдельного поля DACx нет.
 
 Успех настройки/записи не означает, что аналоговый выход уже установился.
 Время запуска и установления, допустимую нагрузку и ограничения буфера

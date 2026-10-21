@@ -149,7 +149,6 @@ private:
 
 protected:
 	const Instance& _instance;
-	DAC_TypeDef* DACx = nullptr;
 	const CHANNEL ch;
 	PIN out_pin;
 };

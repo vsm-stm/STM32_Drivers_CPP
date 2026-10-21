@@ -82,13 +82,12 @@ static void ClearRunFlags(ADC_TypeDef* adc)
 // Setup is performed once; IRQ registration is published only after hardware setup.
 SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 {
-	if (_info) return SysInitStatus::InitError;
+	if (ADCx) return SysInitStatus::InitError;
 	if (_timer && !_timer->GetPeriod())
 		return SysInitStatus::InitError;
-	const PeriphInfo* info = &_instance;
-	ADCx = reinterpret_cast<ADC_TypeDef*>(info->periph);
-	ADC_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
-	(void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
+	ADCx = reinterpret_cast<ADC_TypeDef*>(_instance.periph);
+	ADC_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+	(void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
 
 	if (ADCx == ADC1) ADC_CLEAR_BIT(ADC->CCR, (EN_VREFINT | EN_TEMP | EN_VBAT));
 	bool ready = true;
@@ -131,31 +130,32 @@ SysInitStatus ADC_N::SetUp(SMPL smp1, SMPL smp2)
 #endif
 	ClearRunFlags(ADCx);
 	if (!ready) {
-		ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
+		ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+		ADCx = nullptr;
 		return SysInitStatus::InitError;
 	}
 
-	const bool enabled = NVIC_GetEnableIRQ(info->irqn) != 0;
-	NVIC_DisableIRQ(info->irqn);
-	if (IRQ_Registry::Register(info->irqn, this) != SysInitStatus::InitOK) {
+	const bool enabled = NVIC_GetEnableIRQ(_instance.irqn) != 0;
+	NVIC_DisableIRQ(_instance.irqn);
+	if (IRQ_Registry::Register(_instance.irqn, this) != SysInitStatus::InitOK) {
 #if defined(STM32G0)
 		Disable();
 #else
 		ADCx->CR2 = 0;
 #endif
-		ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
-		if (enabled) NVIC_EnableIRQ(info->irqn);
+		ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+		ADCx = nullptr;
+		if (enabled) NVIC_EnableIRQ(_instance.irqn);
 		return SysInitStatus::InitError;
 	}
 	_ch_count = 0;
 	_status = SysStatus::OK;
-	_info = info;
 	if (_dma.HasSelection() && SetUpDMA() != SysInitStatus::InitOK) {
 		DeInit();
-		if (enabled) NVIC_EnableIRQ(info->irqn);
+		if (enabled) NVIC_EnableIRQ(_instance.irqn);
 		return SysInitStatus::InitError;
 	}
-	NVIC_EnableIRQ(info->irqn);
+	NVIC_EnableIRQ(_instance.irqn);
 	return SysInitStatus::InitOK;
 }
 
@@ -221,7 +221,7 @@ SysStatus ADC_N::AddRank(uint8_t ch, CH_SMPL smpl)
 
 SysStatus ADC_N::AddChannel(ADC_PIN pin, CH_SMPL smpl)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!ADCx) return SysStatus::NotInit;
 	if (IsBusy()) return SysStatus::Busy;
 	if (!pin.IsValid() || pin.periph_base != reinterpret_cast<uint32_t>(ADCx))
 		return SysStatus::Error;
@@ -232,7 +232,7 @@ SysStatus ADC_N::AddChannel(ADC_PIN pin, CH_SMPL smpl)
 
 SysStatus ADC_N::AddChannel(INTERNAL in, CH_SMPL smpl)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!ADCx) return SysStatus::NotInit;
 	if (IsBusy()) return SysStatus::Busy;
 	if (ADCx != ADC1) return SysStatus::Error;
 	uint8_t ch;
@@ -260,7 +260,7 @@ SysStatus ADC_N::AddChannel(INTERNAL in, CH_SMPL smpl)
 
 SysStatus ADC_N::ClearChannels()
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!ADCx) return SysStatus::NotInit;
 	if (IsBusy()) return SysStatus::Busy;
 #if defined(STM32G0)
 	// Also re-establish the hardware mode after an earlier CHSELR timeout.
@@ -305,7 +305,6 @@ SysInitStatus ADC_N::SetUpDMA()
 		if (enabled) NVIC_EnableIRQ(irqn);
 		return SysInitStatus::InitError;
 	}
-	_dma_owned = true;
 	_dma_tc_irq = true;
 	_dma.Enable_IRQ(DMA_Sx::IRQ::TC);
 	_dma.Enable_IRQ(DMA_Sx::IRQ::TE);
@@ -329,7 +328,7 @@ bool ADC_N::SetRunMode(uint32_t bits)
 
 SysStatus ADC_N::Start(uint16_t* buf, uint32_t len)
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!ADCx) return SysStatus::NotInit;
 	if (IsBusy()) return SysStatus::Busy;
 	if (!_ch_count) return SysStatus::Error;
 	if (_dma.HasSelection()) {
@@ -393,7 +392,7 @@ SysStatus ADC_N::Start(uint16_t* buf, uint32_t len)
 
 bool ADC_N::IsBusy() const
 {
-	if (!_info || _status != SysStatus::Busy) return false;
+	if (!ADCx || _status != SysStatus::Busy) return false;
 	if (_dma.HasSelection() || IsRepeating()) return true;
 #if defined(STM32G0)
 	return (ADCx->CR & ADC_CR_ADSTART) != 0u;
@@ -409,7 +408,7 @@ SysStatus ADC_N::GetStatus() const
 
 uint16_t ADC_N::GetData()
 {
-	if (!_info) return 0;
+	if (!ADCx) return 0;
 #if defined(STM32F4) || defined(STM32F7)
 	if (!_dma.HasSelection() && !IsRepeating() && _status == SysStatus::Busy) {
 		if (!(ADCx->SR & ADC_SR_EOC)) return _last_data;
@@ -451,7 +450,7 @@ uint32_t ADC_N::StopDMA()
 
 SysStatus ADC_N::Stop()
 {
-	if (!_info) return SysStatus::NotInit;
+	if (!ADCx) return SysStatus::NotInit;
 	_status = SysStatus::NotInit; // Suppress notifications while stopping in main.
 	if (_timer) _timer->Stop();
 #if defined(STM32G0)
@@ -480,9 +479,9 @@ SysStatus ADC_N::Stop()
 
 void ADC_N::IRQ_en(IRQ irq, FunctionalState en)
 {
-	if (!_info) return;
+	if (!ADCx) return;
 	if (irq == IRQ::DMA_TC || irq == IRQ::DMA_HT) {
-		if (!_dma_owned) return;
+		if (!_dma.HasSelection()) return;
 		if (irq == IRQ::DMA_HT && IsBusy()) return; // Fix half-buffer layout before Start.
 		if (irq == IRQ::DMA_TC && !IsRepeating() && en == DISABLE) return;
 		bool& enabled = irq == IRQ::DMA_HT ? _dma_ht_irq : _dma_tc_irq;
@@ -538,7 +537,7 @@ void ADC_N::StopOnError(uint32_t errors)
 // ADC flags only. DMA completion and errors have a distinct registered handler.
 void ADC_N::HandleIRQ()
 {
-	if (!_info) return;
+	if (!ADCx) return;
 #if defined(STM32G0)
 	const uint32_t sr = ADCx->ISR;
 	const uint32_t flags = sr & ADCx->IER & (ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR);
@@ -575,7 +574,7 @@ void ADC_N::HandleIRQ()
 
 void ADC_N::HandleDmaIRQ()
 {
-	if (!_info || !_dma_owned) return;
+	if (!ADCx || !_dma.HasSelection()) return;
 	if (_status != SysStatus::Busy || !_buf) {
 		// Stop/DeInit disabled the sources and still need their final flags.
 		if (_status != SysStatus::NotInit) _dma.ClearFlags();
@@ -625,7 +624,7 @@ void ADC_N::HandleDmaIRQ()
 
 void ADC_N::DeInit()
 {
-	if (!_info) return;
+	if (!ADCx) return;
 	_status = SysStatus::NotInit;
 	if (_timer) _timer->Stop();
 #if defined(STM32G0)
@@ -639,7 +638,7 @@ void ADC_N::DeInit()
 #endif
 	StopDMA();
 	const IRQn_Type none = static_cast<IRQn_Type>(-1);
-	const IRQn_Type irqs[2] = { _info->irqn, _dma_owned ? _dma.GetIRQn() : none };
+	const IRQn_Type irqs[2] = { _instance.irqn, _dma.GetIRQn() };
 	IIRQHandler* const handlers[2] = { this, &_dma_irq };
 	for (unsigned i = 0; i < 2; ++i) {
 		if (irqs[i] == none) continue;
@@ -650,7 +649,7 @@ void ADC_N::DeInit()
 			if (enabled) NVIC_EnableIRQ(irqs[i]);
 		} else NVIC_ClearPendingIRQ(irqs[i]);
 	}
-	if (_dma_owned) _dma.Release();
+	_dma.Release(); // Returns NotInit without MMIO if setup never acquired DMA.
 #if defined(STM32G0)
 	// G0 has one ADC: its reset also releases the regulator/common configuration.
 	ADC_SET_BIT(RCC->APBRSTR2, RCC_APBRSTR2_ADCRST);
@@ -664,9 +663,8 @@ void ADC_N::DeInit()
 	_last_data = 0;
 	if (ADCx == ADC1) ADC_CLEAR_BIT(ADC->CCR, (EN_VREFINT | EN_TEMP | EN_VBAT));
 #endif
-	ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->clk_reg), _info->clk_bit);
-	_info = nullptr;
-	_dma_owned = false;
+	ADC_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+	ADCx = nullptr;
 	_dma_ht_irq = false;
 	_dma_tc_irq = false;
 	_errors = 0;

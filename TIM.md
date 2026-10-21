@@ -35,7 +35,7 @@ One TIM object owns a counter base and configures channel roles through function
 
 Declare fixed peripheral objects with `constinit` at file scope or as `static constinit`. Use the provided _N::instance, named pins and optional _N::DMA routes. G0 takes numeric DMAx_Channely_BASE selections; the peripheral fixes the request source.
 
-For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. The macro uses `std::is_constant_evaluated()` to select that path; at runtime it calls `System::DebugTrap(text)` directly, without calling the template. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. See [Initialization.md](Initialization.md) for constructor variants and migration.
+For peripheral binding checks, each failing condition uses `STM32_CONFIG_ERROR("reason")`. The reason is a template argument of the non-constexpr error function, so GCC includes it in the diagnostic itself. The macro uses `std::is_constant_evaluated()` to select that path; at runtime it calls `System::DebugTrap(text)` directly, without calling the template. A `constinit` initializer rejects that call during compilation; without constinit, a failing runtime construction stops. The keyword is mandatory by the usage contract, not enforced by the constructor. SetUp still checks hardware state and occupied resources. Metadata is read from Instance; the cached register pointer is the setup marker and is cleared after failed initial setup or DeInit. No second metadata pointer is stored. See [Initialization.md](Initialization.md) for constructor variants and migration.
 
 ---
 
@@ -51,6 +51,9 @@ constructor fixes up to four `{pin, dma}` descriptions, in any order. Named
 `TIM::_N::CHx::Pyz` pins carry the channel number, GPIO/AF and timer identity.
 Their numeric fields are checked by the `TIM_PIN` consteval constructor;
 peripheral ownership and duplicate bindings are checked during constinit initialization.
+Internal ChannelState retains only port/pin/AF and DMA. The array index supplies
+the channel, and Instance supplies the timer address; neither is copied into
+every channel. DmaOwned(i) uses _dma_status[i] != NotInit, without a second mask.
 Package bonding and exact device AF routing remain the application's checks.
 
 ```cpp
@@ -550,7 +553,7 @@ were performed for this API migration; the old compilation report is historical.
 
 Объявляйте объекты периферии глобально с `constinit` либо как `static constinit`. Используйте готовый _N::instance, именованные пины и необязательные маршруты _N::DMA. На G0 передаются числовые DMAx_Channely_BASE, источник запроса закрепляет периферия.
 
-При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. Макрос выбирает путь через `std::is_constant_evaluated()`; во время выполнения напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
+При проверке привязок периферии каждое неверное условие использует `STM32_CONFIG_ERROR("причина")`. Причина передаётся как параметр шаблона неконстантной функции, поэтому GCC включает её в само сообщение ошибки. Макрос выбирает путь через `std::is_constant_evaluated()`; во время выполнения напрямую вызывает `System::DebugTrap(text)`, без вызова шаблонной функции. При `constinit` такой вызов отклоняется при сборке; без него неверное runtime-создание останавливает программу. Ключевое слово обязательно по контракту, конструктор не проверяет его наличие. Проверки состояния аппаратуры и занятых ресурсов остаются в SetUp. Метаданные читаются из Instance; указатель регистров служит признаком настройки и обнуляется после ошибки первой настройки или DeInit. Второго указателя метаданных нет. Варианты конструкторов и миграция: [Initialization.md](Initialization.md).
 
 ---
 
@@ -566,6 +569,9 @@ DMA_USE_ATOMIC настраивается отдельно. Внешнее со�
 `TIM::_N::CHx::Pyz` уже содержит канал, порт/AF и принадлежность таймеру.
 Числа проверяет consteval TIM_PIN; конструктор TIM проверяет принадлежность
 и повторы. Корпус МК и точный AF-маршрут проверяет пользователь.
+Внутренний ChannelState хранит только порт/пин/AF и DMA. Номер канала задаёт
+индекс массива, адрес таймера берётся из Instance. DmaOwned(i) проверяет
+_dma_status[i] != NotInit; отдельной маски владения DMA нет.
 
 ```cpp
 constinit TIM timer(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});

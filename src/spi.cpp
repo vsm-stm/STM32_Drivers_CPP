@@ -32,7 +32,7 @@ void SPI::WriteFrame(uint16_t frame)
 SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
                         Frame_Format ff, cPolPha cpolpha, BaudRate br)
 {
-    if (_info
+    if (SPIx
         || (mstr != Master_sel::Master && mstr != Master_sel::Slave)
         || (nss != NSS_ctrl::Hard && nss != NSS_ctrl::Software)
         || (dff != Data_frame_format::Byte && dff != Data_frame_format::Half_Word)
@@ -42,13 +42,12 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
         || (nss == NSS_ctrl::Hard && !_ss.IsValid())
         || (mstr == Master_sel::Slave && nss != NSS_ctrl::Hard))
         return SysInitStatus::InitError;
-    const PeriphInfo* info = &_instance;
-    SPIx = reinterpret_cast<SPI_TypeDef*>(info->periph);
+    SPIx = reinterpret_cast<SPI_TypeDef*>(_instance.periph);
 
-    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->clk_reg), info->clk_bit);
-    (void)*reinterpret_cast<volatile uint32_t*>(info->clk_reg);
-    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
-    SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(info->rst_reg), info->rst_bit);
+    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+    (void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
+    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
 
     // AF selects the peripheral's input/output direction. Open-drain is not a
     // bus-conflict protection mechanism for an SPI input; use push-pull AF.
@@ -74,24 +73,24 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
 #endif
     SPIx->CR1 = cr1;
 
-    const bool enabled = NVIC_GetEnableIRQ(info->irq) != 0;
-    NVIC_DisableIRQ(info->irq);
-    if (IRQ_Registry::Register(info->irq, this) != SysInitStatus::InitOK) {
-        if (enabled) NVIC_EnableIRQ(info->irq);
+    const bool enabled = NVIC_GetEnableIRQ(_instance.irq) != 0;
+    NVIC_DisableIRQ(_instance.irq);
+    if (IRQ_Registry::Register(_instance.irq, this) != SysInitStatus::InitOK) {
+        SPIx = nullptr;
+        if (enabled) NVIC_EnableIRQ(_instance.irq);
         return SysInitStatus::InitError;
     }
-    _info = info;
     Master_slave = mstr;
     nss_ctrl = nss;
     _frame_format = dff;
     if (SetUpDMA() != SysInitStatus::InitOK) {
-        IRQ_Registry::Unregister(info->irq, this);
-        _info = nullptr;
-        if (enabled) NVIC_EnableIRQ(info->irq);
+        IRQ_Registry::Unregister(_instance.irq, this);
+        SPIx = nullptr;
+        if (enabled) NVIC_EnableIRQ(_instance.irq);
         return SysInitStatus::InitError;
     }
     _status = SysStatus::OK;
-    NVIC_EnableIRQ(info->irq);
+    NVIC_EnableIRQ(_instance.irq);
     return SysInitStatus::InitOK;
 }
 
@@ -99,7 +98,7 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
 SysStatus SPI::Start(const void* tx, void* rx, uint32_t len, Data_frame_format frame_format,
                      Mode mode, FunctionalState minc)
 {
-    if (!_info) return SysStatus::NotInit;
+    if (!SPIx) return SysStatus::NotInit;
     if ((!tx && !rx) || !len || len > 65535U || frame_format != _frame_format
         || (frame_format == Data_frame_format::Half_Word
             && ((reinterpret_cast<uintptr_t>(tx) | reinterpret_cast<uintptr_t>(rx)) & 1U))
@@ -280,7 +279,7 @@ void SPI::StopTransfer()
 
 void SPI::NssReleased()
 {
-    if (!_info || Master_slave != Master_sel::Slave || _status != SysStatus::Busy || _nss_ended)
+    if (!SPIx || Master_slave != Master_sel::Slave || _status != SysStatus::Busy || _nss_ended)
         return;
     uint32_t remaining = FifoFrames();
     uint32_t sr = SPIx->SR;
@@ -362,8 +361,8 @@ void SPI::Finish(SysStatus result, uint32_t errors)
         uint32_t cr1 = SPIx->CR1 & ~SPI_CR1_SPE;
         if (Master_slave == Master_sel::Master) cr1 |= SPI_CR1_MSTR;
         const uint32_t cr2 = SPIx->CR2 & ~(IRQ_MASK | DMA_MASK);
-        SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
-        SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
+        SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+        SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
         SPIx->CR1 = cr1;
         SPIx->CR2 = cr2;
     }
@@ -391,7 +390,7 @@ void SPI::OnDmaRxComplete()
 
 void SPI::HandleIRQ()
 {
-    if (!_info || _status != SysStatus::Busy || _nss_ended) return;
+    if (!SPIx || _status != SysStatus::Busy || _nss_ended) return;
     const uint32_t cr2 = SPIx->CR2;
     uint32_t sr = SPIx->SR;
     uint32_t remaining = FifoFrames();
@@ -520,7 +519,7 @@ SysInitStatus SPI::SetUpDMA()
 
 void SPI::DeInit()
 {
-    if (!_info) return;
+    if (!SPIx) return;
     if (_status == SysStatus::Busy) {
         _nss_ended = true; // A late DMA completion must not re-enable SPI sources.
         StopTransfer();
@@ -543,7 +542,7 @@ void SPI::DeInit()
     SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE);
     SlaveSelect(DISABLE);
     const IRQn_Type no_irq = static_cast<IRQn_Type>(-1);
-    const IRQn_Type irqs[3] = {_info->irq, _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : no_irq,
+    const IRQn_Type irqs[3] = {_instance.irq, _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : no_irq,
                             _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : no_irq};
     IIRQHandler* const handlers[3] = {this, &_dma_tx_irq, &_dma_rx_irq};
     for (unsigned i = 0; i < 3; ++i) {
@@ -558,9 +557,9 @@ void SPI::DeInit()
     if (_dma_tx.HasSelection()) _dma_tx.Release();
     if (_dma_rx.HasSelection()) _dma_rx.Release();
     _dma_pending = 0;
-    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
-    SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_info->rst_reg), _info->rst_bit);
-    _info = nullptr;
+    SPI_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    SPI_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+    SPIx = nullptr;
     _tx_data = nullptr;
     _rx_data = nullptr;
     _capacity = 0;

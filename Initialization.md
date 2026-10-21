@@ -70,6 +70,11 @@ runtime checks for initialization state, resource ownership, hardware readiness,
 transfer arguments and errors remain. Shared main/IRQ fields remain `volatile`;
 the constructor initializes them without reading their volatile values.
 
+USART/SPI/I2C/TIM/ADC retain the fixed Instance reference and a cached register
+pointer, without a second metadata pointer. Outside SetUp, a null register pointer
+means not initialized. Failed initial setup and DeInit clear it; repeated setup
+of an already initialized object returns an error and preserves that object.
+
 For inherited callbacks, use inherited constructors or a `constexpr` derived
 constructor and constant member initializers:
 
@@ -149,6 +154,11 @@ DMA нужно подключить заголовок периферии, чь�
 начинается в SetUp после System/RCC. Проверки текущего состояния, готовности
 оборудования, занятости ресурсов и аргументов обмена остаются в runtime.
 `volatile` у состояния main/IRQ сохраняется.
+
+USART/SPI/I2C/TIM/ADC хранят ссылку на Instance и кешированный указатель регистров,
+без второго указателя метаданных. Вне SetUp нулевой указатель регистров означает
+отсутствие инициализации. Ошибка первой настройки и DeInit обнуляют его; повторный
+SetUp уже настроенного объекта возвращает ошибку, сохраняя действующий объект.
 
 Для второго TIM согласовано исключение: соответствие аппаратных блоков и маршрут
 TRGO/ITR проверяются в Init с возвратом InitError до изменения оборудования.

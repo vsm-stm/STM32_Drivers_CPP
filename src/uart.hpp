@@ -319,7 +319,7 @@ public:
 		, ClockSource clock_source = ClockSource::PCLK
 #endif
 		)
-		: _instance(FindInstance(usartx)), USARTx(usartx), BaudRate(baudrate), _TX(tx), _RX(rx)
+		: _instance(FindInstance(usartx)), BaudRate(baudrate), _TX(tx), _RX(rx)
 #if defined(STM32F7) || defined(STM32G0)
 		, _clock_source(clock_source)
 #endif
@@ -415,7 +415,7 @@ public:
 	 */
 	inline void IRQ_en(IRQ irq, FunctionalState en)
 	{
-		if (!_info) return;
+		if (!USARTx) return;
 #if defined(STM32G0)
 		auto& reg = (irq == IRQ::TXFIFO || irq == IRQ::RXFIFO) ? USARTx->CR3 : USARTx->CR1;
 #else
@@ -621,13 +621,14 @@ public:
 	 */
 	inline void ClearDataReceivedFlag() { data_received = false; data_received_count = 0; }
 	/**
-	 * @brief Read the software buffer-overflow flag without clearing it.
+	 * @brief Test whether the software overflow count is nonzero, without clearing it.
 	 * Counts bytes discarded by the software receive callbacks when no room
 	 * remains; this is distinct from hardware ORE delivered to OnError().
+	 * The uint32_t count wraps naturally; after wrap to zero this returns false.
 	 */
-	inline bool GetOverflow() { return data_overflow; }
+	inline bool GetOverflow() { return data_overflow_count != 0; }
 	/**
-	 * @brief Read and clear software overflow count and its flag.
+	 * @brief Read and clear the software overflow count (no saturation).
 	 * @pre Reception has stopped; do not use read-and-clear concurrently with RX.
 	 * A new Receive also resets overflow state. Unlike GetDataReceivedCount(),
 	 * this getter retains its read-and-clear behavior.
@@ -635,7 +636,6 @@ public:
 	inline uint32_t GetOverflowCount() {
 		uint32_t count = data_overflow_count;
 		data_overflow_count = 0;
-		data_overflow = false;
 		return count;
 	}
 	/**
@@ -702,15 +702,9 @@ public:
 
 private:
 	const Instance& _instance;
-	USART_TypeDef* USARTx = nullptr; ///< Hardware binding is fixed by the constructor.
+	USART_TypeDef* USARTx = nullptr; ///< Register cache and setup state; reset on failure/DeInit.
 	uint32_t BaudRate;     ///< Requested baud retained across DeInit()/SetUp().
 
-	/**
-	 * @brief Active setup metadata; the fixed instance is bound by the constructor.
-	 * _info remains null until successful hardware setup; it is not a lookup result.
-	 * bus_clk points to the System PCLK variable maintained by RCC setup.
-	 */
-	using PeriphInfo = Instance;
 	PIN _TX; ///< Optional TX pin and stored AF.
 	PIN _RX; ///< Optional RX pin and stored AF.
 #if defined(STM32F7) || defined(STM32G0)
@@ -718,7 +712,7 @@ private:
 #endif
 	/// Selected nominal kernel frequency; zero for an unavailable/not-ready source.
 	static const Instance& FindInstance(USART_TypeDef* usart);
-	uint32_t KernelClock(const PeriphInfo& info) const;
+	uint32_t KernelClock(const Instance& info) const;
 
 	/**
 	 * @brief Asynchronous transfer descriptor, initialized before enabling a source.
@@ -738,11 +732,9 @@ private:
 	volatile SysStatus rx_status{SysStatus::NotInit};
 	volatile bool data_received{false};
 	volatile uint32_t data_received_count{0};
-	volatile bool data_overflow{false};
 	volatile uint32_t data_overflow_count{0};
 	DMA_Sx _dma_tx; ///< Owned TX resource; null hardware selection when absent.
 	DMA_Sx _dma_rx; ///< Owned RX resource; no external DMA object or rebinding.
-	const PeriphInfo* _info = nullptr;
 	SysInitStatus SetUpDMA(); ///< Configure constructor-bound DMA during SetUp().
 	/// Maximum ready words serviced in one direction per IRQ entry.
 	uint32_t FifoDepth() const {

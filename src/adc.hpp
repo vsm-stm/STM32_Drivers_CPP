@@ -264,9 +264,9 @@ public:
 	uint16_t GetData();
 
 #if defined(STM32G0)
-	inline bool IsEOC() const { return _info && (ADCx->ISR & ADC_ISR_EOC); }
+	inline bool IsEOC() const { return ADCx && (ADCx->ISR & ADC_ISR_EOC); }
 #else
-	inline bool IsEOC() const { return _info && (ADCx->SR & ADC_SR_EOC); }
+	inline bool IsEOC() const { return ADCx && (ADCx->SR & ADC_SR_EOC); }
 #endif
 
 	/// ADC peripheral sources plus the constructor-bound DMA's HT/TC sources.
@@ -320,18 +320,14 @@ protected:
 
 private:
 	const Instance& _instance;
-	ADC_TypeDef* ADCx = nullptr;
+	ADC_TypeDef* ADCx = nullptr; ///< Register cache and setup state.
 	const Conversion _conversion;
 	DMA_Sx _dma; ///< Empty constructor selection means capture without DMA.
 	TIM* const _timer;
 	const Trigger _trigger;
-
-	using PeriphInfo = Instance;
-	const PeriphInfo* _info = nullptr;
 	uint16_t* _buf = nullptr;
 	uint32_t _buf_bytes = 0;
 	uint8_t _ch_count = 0;
-	bool _dma_owned = false;
 	bool _dma_ht_irq = false;
 	bool _dma_tc_irq = false;
 
