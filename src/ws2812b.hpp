@@ -78,7 +78,11 @@ inline RGB FromHSV(uint8_t h, uint8_t s, uint8_t v)
 // Usage:
 //   WS2812B_Strip<6> strip(CCR_ONE, CCR_ZERO);
 //   strip.SetAll(RGB::Red());
+//   // Bind DMA in TIM's constructor, then SetUp(800000, nullptr, period).
+//   // SetUpPWM(CH1), SendDMA(CH1, Data(), Len()), then Start(). Check statuses.
 //   ws_tim.SendDMA(TIM::Channel::CH1, strip.Data(), strip.Len());
+//   // Keep the strip buffer unchanged until GetDMAStatus(CH1) leaves Busy.
+//   // TC releases the source buffer; the last CCR preload is applied later.
 // ---------------------------------------------------------------------------
 
 template<size_t N_LEDS, size_t RESET_SLOTS = 40>
@@ -153,7 +157,7 @@ public:
 	// DMA interface
 	// -----------------------------------------------------------------------
 
-	/** Raw CCR buffer — pass to TIM_PWM::SendDMA(). */
+	/** Raw CCR buffer — pass to TIM::SendDMA(channel, Data(), Len()). */
 	const uint16_t* Data() const { return _buf; }
 
 	/** Number of uint16_t elements in the buffer (DMA transfer count). */

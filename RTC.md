@@ -1,4 +1,4 @@
-# RTC / RTC_cl
+# RTC / RTC_cl — Detailed Description
 
 *[English](#english) · [Русский](#русский)*
 
@@ -6,341 +6,365 @@
 
 ## English
 
-## Contents
+## Table of Contents
 
-1. [Why this is needed](#1-why-this-is-needed)
-2. [Static class — why there is no instantiation](#2-static-class--why-there-is-no-instantiation)
-3. [SetUp() — clock source and "not losing time"](#3-setup--clock-source-and-not-losing-time)
-4. [Write Protection](#4-write-protection)
-5. [BCD time/date format](#5-bcd-timedate-format)
-6. [WakeUp Timer](#6-wakeup-timer)
-7. [Alarm A / Alarm B](#7-alarm-a--alarm-b)
-8. [IRQ_en() and a single handler for all sources](#8-irq_en-and-a-single-handler-for-all-sources)
-9. [Calibration (CALR)](#9-calibration-calr)
-10. [Usage examples](#10-usage-examples)
-11. [Edge cases](#11-edge-cases)
-
----
-
-## 1. Why this is needed
-
-`RTC_cl` is the STM32G0 real-time clock driver (the only family this project supports for RTC —
-it isn't abstracted across F4/F7 the way `UART`/`TIM`/`SPI` are). It provides time/date with
-BCD storage in hardware, three independent interrupt sources (WakeUp Timer, Alarm A, Alarm B),
-and survives an MCU reset and Stop mode, because it lives in the backup domain (`RCC->BDCR`),
-clocked separately from the main system (LSE/LSI, not HSE/HSI/PLL).
-
-Like [`IRQ_Registry`](IRQ_Registry.md), [`USART`](UART.md#5-irq_en--регистрация-по-требованию) and
-[`TIM`](TIM.md#4-irq_en-и-общийраздельный-вектор), it uses the "auto-register with IRQ_Registry on
-the first source enabled, auto-unregister on the last one disabled" pattern (`IRQ_en()`, see §8) —
-the user never needs to touch `IRQ_Registry`/`NVIC` directly.
+1. [Why This Is Needed and Ownership](#1-why-this-is-needed-and-ownership)
+2. [SetUp and Retained Configuration](#2-setup-and-retained-configuration)
+3. [Calendar Writes and Reads](#3-calendar-writes-and-reads)
+4. [WakeUp Timer](#4-wakeup-timer)
+5. [Alarms](#5-alarms)
+6. [Timestamp](#6-timestamp)
+7. [IRQ and DeInit](#7-irq-and-deinit)
+8. [Calibration and Frequency Output](#8-calibration-and-frequency-output)
+9. [Migration and Verification Limits](#9-migration-and-verification-limits)
+10. [Usage Examples](#10-usage-examples)
+11. [Edge Cases](#11-edge-cases)
+12. [See Also](#see-also)
 
 ---
 
-## 2. Static class — why there is no instantiation
+## 1. Why This Is Needed and Ownership
+
+`RTC_cl` drives the real-time clock on F4/F7/G0:
+
+- calendar (time and date);
+- periodic wake-up timer;
+- two alarms (A and B);
+- timestamp capture on an external edge.
+
+Events arrive through protected virtual callbacks (`OnWakeup`, `OnAlarmA`, `OnAlarmB`, `OnTimestamp`) that you override in a derived class — the same pattern as USART.
+
+**Ownership rules:**
+
+- One object owns the RTC after a successful `SetUp()`. A second `SetUp()` requires `DeInit()` first.
+- Copy and move are disabled. The object must stay alive while its interrupts are registered.
+- Call configuration and `DeInit()` from `main`, with SysTick running (timeouts use `GetTick()`; with SysTick masked they never expire).
+- Interrupt handlers never wait and never change registrations.
+- Coordinate configuration calls and calendar reads between `main` and interrupts yourself.
+
+---
+
+## 2. SetUp and Retained Configuration
 
 ```cpp
-class RTC_cl { /* all methods static */ };
+SysInitStatus status = clock.SetUp(RTC_cl::CLK_Source::LSE, 127, 255);
 ```
 
-Unlike `USART`/`SPI`/`TIM` (one object per physical peripheral instance), on STM32G0 there is
-**one** RTC for the whole chip — there's no point creating an object that could be instantiated
-multiple times. All methods are called as `RTC_cl::SetUp(...)`, `RTC_cl::EnableWakeUpTimer(...)`.
-The internal state (callbacks, the handler) consists of static class fields, not instance fields
-(see §8).
-
----
-
-## 3. SetUp() — clock source and "not losing time"
-
-```cpp
-static SysInitStatus SetUp(CLK_Source clk_src = CLK_Source::LSI,
-                            uint32_t prediv_a = 127, uint32_t prediv_s = 255);
-```
-
-The calendar clock frequency:
+**Arguments:** clock source (`LSI`, `LSE` or `HSE`; `NO` is rejected), `PREDIV_A` (0…127) and `PREDIV_S` (0…32767).
 
 ```text
-f_ck_spre = f_rtcclk / ((prediv_a + 1) * (prediv_s + 1))
+f_calendar = f_RTCCLK / ((PREDIV_A + 1) * (PREDIV_S + 1))
 ```
 
-By default (`prediv_a=127`, `prediv_s=255`) and LSE = 32768 Hz: `32768 / (128 * 256) = 1 Hz` —
-exactly one calendar tick per second (the standard configuration recommended in the Reference
-Manual — the two-stage divider balances the asynchronous stage's power consumption against the
-synchronous stage's accuracy).
+| Source | Dividers for 1 Hz | Notes |
+| --- | --- | --- |
+| LSE 32768 Hz | 127 / 255 | default dividers |
+| LSI nominal 32000 Hz | 127 / 249 | default 127/255 would give ≈ 0.97656 Hz; real LSI frequency varies with chip, temperature and supply |
+| HSE | application-chosen | HSE must already be running; on F4/F7 the application chooses RTCPRE, on G0 the input is HSE/32 |
 
-**Don't reinitialize if the RTC is already ticking from the desired source**:
+The driver starts LSI/LSE itself and keeps the board's LSE drive-strength setting (it does not force maximum drive).
 
-```cpp
-const bool already_running =
-    (RCC->BDCR & RCC_BDCR_RTCEN) &&
-    ((RCC->BDCR & RCC_BDCR_RTCSEL_Msk) == static_cast<uint32_t>(clk_src));
-if (!already_running) { /* ... set PRER, enter initialization mode ... */ }
-```
+**`InitError`** when: the RTC is already owned, the source/dividers are invalid, a wait times out, or the retained configuration uses an incompatible 12-hour format/BYPSHAD.
 
-A key subtlety, explicitly noted by a comment in the code: this check **must not** use the `RSF`
-flag (Registers Synchronized Flag, `ICSR`) — it is cleared on **any** system reset (a debugger
-attaching, `SYSRESETREQ`, ...), even if the RTC itself never stopped and is still counting time.
-Checking via `RTC_BDCR_RTCEN`/`RTCSEL` is immune to this, because both bits live in the backup
-domain, which a system reset doesn't touch — so `SetUp()` can safely be called again after a
-software reset without disturbing a clock that's already running.
+**The RTC survives reset, so `SetUp()` distinguishes two cases:**
+
+| Situation | What happens |
+| --- | --- |
+| RTC already running from the **same** source (RTCEN/INITS set) | Calendar and dividers are **kept**; shadow registers are resynchronized (RSF). New divider arguments are ignored for the running calendar. |
+| A **different** source is retained | **The backup domain is reset** and the new source applied. |
+
+> ⚠ **Changing the source resets the backup domain:** time, backup registers and other domain settings are lost, and a later `InitError` cannot bring them back. The reset also stops LSE — consider other users of LSE/backup domain.
+
+In both cases old Alarm/WUT/Timestamp events and their interrupts are disabled; enable the ones you need again.
+
+**Timeouts** (through `System::WaitBits`):
+
+| Wait | Limit |
+| --- | --- |
+| LSE ready | 5000 ms |
+| DBP, LSI, INITF, RSF, ALRAWF/ALRBWF, WUTWF | 1000 ms each |
+
+Write protection (WPR) is restored on every exit, including timeouts. A busy calibration (RECALPF) returns `Busy` immediately, without waiting.
 
 ---
 
-## 4. Write Protection
+## 3. Calendar Writes and Reads
+
+**Writing** — decimal values, 24-hour format, year 0…99 = 2000…2099:
 
 ```cpp
-inline static void WriteProtection(FunctionalState enable) {
-    if (enable) { RTC->WPR = 0xFF; }              // any wrong key — locks
-    else        { RTC->WPR = 0xCA; RTC->WPR = 0x53; } // the correct key pair — unlocks
-}
+SysStatus t = clock.SetTime({14, 25, 0});
+SysStatus d = clock.SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);   // 26 May 2022
 ```
 
-Most RTC registers are protected against accidental writes. **Every** public method of the class
-that touches protected registers (`SetTime`, `SetDate`, `EnableWakeUpTimer`, `EnableAlarm_A/B`,
-`IRQ_en`, `SetCalibration`, `EnableCOE`) removes the protection itself at the start and restores
-it at the end — calling code never needs to think about `WriteProtection()` directly.
+- All ranges are checked: hours, minutes, seconds, month, day (with month length and leap years), weekday (Monday = 1 … Sunday = 7). Invalid input is not written.
+- Results: `NotInit`, `Error`, `Timeout` or `OK`.
+- After the write the driver leaves INIT mode and resynchronizes shadows; a sync failure does not undo the write.
+- `SetTime` and `SetDate` are two separate operations — not an atomic pair.
+
+**Packed BCD variants:** `SetTime_hex`/`SetDate_hex` take BCD (`{0x14, 0x25, 0x00}` = 14:25:00) and check both BCD digits and calendar ranges. `to_bcd(0…99)` returns packed BCD, `0xFF` otherwise.
+
+**Reading:**
+
+| Method | Reads |
+| --- | --- |
+| `GetTime()` | TR, then DR (to release the shadow lock) |
+| `GetDate()` | DR alone |
+| `GetDateTime(time, date)` | coherent pair: TR then DR — use this when you need both |
+
+Read only after a successful `SetUp()`, and do not interrupt a pair read with another RTC read from a callback.
 
 ---
 
-## 5. BCD time/date format
-
-The RTC stores time/date in BCD (Binary-Coded Decimal — each decimal digit in its own 4-bit
-group) rather than in binary — this way they can be shown on a seven-segment display without any
-recalculation. `SetTime()`/`SetDate()` accept plain decimal `uint8_t` values and convert them
-internally:
+## 4. WakeUp Timer
 
 ```cpp
-inline static uint8_t to_bcd(uint8_t v) {
-    if (v > 99) return 0xFF;
-    uint8_t t = ((uint16_t)v * 205u) >> 11;   // fast division by 10 without hardware DIV
-    return (t << 4) | (v - t * 10u);
-}
+clock.EnableWakeUpTimer(0);   // 1 second with ck_spre = 1 Hz
+clock.EnableWakeUpTimer(4);   // 5 seconds; replaces the previous setting
+clock.DisableWakeUpTimer();
 ```
 
-`(v * 205) >> 11` is an integer-division-by-10 approximation trick via multiply and shift
-(`205/2048 ≈ 1/10`, exact across the whole `0..99` range) — faster than hardware division on
-Cortex-M0+ (no single-cycle `DIV`). `SetTime_hex()`/`SetDate_hex()` are conversion-free versions,
-for when the calling code already works directly with "raw" BCD values.
+`count` (0…65535) goes into WUTR, so the period is `(count + 1) / f_WUT`.
 
-`GetTime()`/`GetDate()` return **not** decoded decimal numbers, but structures with individual
-BCD digits (`RtcTime{su, st, mnu, mnt, hu, ht, ...}`, `RtcDate{du, dt, mu, mt, yu, yt, wdu}`) — the
-`.sec()`/`.min()`/`.hour()`/`.day()`/`.month()`/`.year()` methods assemble the decimal value
-(`st*10 + su`) only on demand, rather than always, saving the recomputation in cases where the raw
-digits are what's needed (for example, for direct output to a display).
+| WUCKSEL / `clock_div` | Clock |
+| --- | --- |
+| 000 | RTCCLK / 16 |
+| 001 | RTCCLK / 8 |
+| 010 | RTCCLK / 4 |
+| 011 | RTCCLK / 2 |
+| 100 | ck_spre (calendar 1 Hz), 16-bit counter |
+| 110 | ck_spre, counter extended by 65536 |
 
-Writing the time/date requires initialization mode (similar to writing `PRER` in `SetUp()`):
-`ICSR_INIT = 1`, wait for `INITF`, write the register, clear `INIT`.
+Codes 101/111 are rejected.
+
+**`EnableWakeUpTimer()`:** disables WUTE/WUTIE, waits for WUTWF (≤ 1000 ms), writes the configuration, clears old flags, then registers and enables the event. On timeout or registration failure the timer stays off. Returns `SysStatus`.
+
+`DisableWakeUpTimer()` does not wait. `OnWakeup()` is called after the flag is acknowledged.
 
 ---
 
-## 6. WakeUp Timer
+## 5. Alarms
 
 ```cpp
-static void EnableWakeUpTimer(uint32_t counter = 0, uint8_t clock_div = 0b100,
-                               void (*cb)(void) = nullptr);
-```
-
-The WUT clock source (`WUCKSEL`, 3 bits) has 6 options, from `RTCCLK/2` to `ck_spre` (1 Hz with
-the default pre-dividers) `+65536` added to the counter. The mode recommended in the doc comment
-is `0b100` (`ck_spre`, i.e. usually 1 Hz): period = `(counter + 1)` seconds — `counter=0` → 1 s,
-`counter=59` → 60 s.
-
-**`WUTR`/`WUCKSEL` are write-protected while `WUTE = 1`** (RM0454 §27.5.2) — before changing
-them you need to clear `WUTE` and wait for `WUTWF` (~2 RTCCLK cycles, about 61 µs at 32768 Hz):
-
-```cpp
-RTC->CR &= ~RTC_CR_WUTE;
-while (!(RTC->ICSR & RTC_ICSR_WUTWF)) {}
-RTC->WUTR = counter;
-RTC->CR   = (RTC->CR & ~RTC_CR_WUCKSEL_Msk) | (clock_div << RTC_CR_WUCKSEL_Pos) | RTC_CR_WUTE;
-```
-
-The `cb` callback is stored in the static field `_wut_cb` **before** waiting for `WUTWF` — so
-even if the user calls `EnableWakeUpTimer()` twice in a row with different callbacks, the last one
-passed always stays the active one. `IRQ_en(IRQ_s::WUT, ENABLE)` at the end registers with
-`IRQ_Registry` (see §8), which happens automatically — there's no need to call it separately.
-
----
-
-## 7. Alarm A / Alarm B
-
-```cpp
-struct AlarmField { uint8_t val = 0; Alarm_Masks mask = Alarm_Masks::Ignore; };
-struct AlarmConfig { AlarmField day, hour, min, sec; uint32_t sub_sec_msk = 0; uint32_t sub_sec = 0; };
-
-static void EnableAlarm_A(FunctionalState en, const AlarmConfig& cfg = kNoAlarm, void (*cb)(void) = nullptr);
-static void EnableAlarm_B(FunctionalState en, const AlarmConfig& cfg = kNoAlarm, void (*cb)(void) = nullptr);
-```
-
-Each field (`day`/`hour`/`min`/`sec`) is compared only if its `mask == Alarm_Masks::Care` —
-fields left at `Ignore` (the default value) don't take part in the comparison, meaning "trigger on
-any day, but exactly at 14:25:00" is achieved simply by not specifying `day`:
-
-```cpp
-RTC_cl::AlarmConfig cfg {
+RTC_cl::AlarmConfig alarm{
     .hour = {14, RTC_cl::Alarm_Masks::Care},
     .min  = {25, RTC_cl::Alarm_Masks::Care},
-    .sec  = { 0, RTC_cl::Alarm_Masks::Care},
-};   // day is left Ignore — triggers every day at 14:25:00
+    .sec  = {0,  RTC_cl::Alarm_Masks::Care}
+};
+clock.EnableAlarm_A(ENABLE, alarm);   // every day at 14:25:00
+clock.EnableAlarm_A(DISABLE);
+clock.EnableAlarm_B(ENABLE, alarm);   // Alarm B has the same interface
 ```
 
-`build_alrmr()` (a free function in `rtc.cpp`, not a class method) assembles `ALRMAR`/`ALRMBR`
-from an `AlarmConfig`, including the `MSKx` bits and the BCD conversion of each field via
-`to_bcd()`. `ALRMASSR`/`ALRMBSSR` (sub-second comparison) are programmed separately, if
-`sub_sec_msk != 0`.
+**`AlarmConfig` fields:**
 
-Before changing `ALRMAR`/`ALRMBR`, same as WUT: clear `ALRAE`/`ALRBE`, wait for
-`ALRAWF`/`ALRBWF`, then write. Disabling (`en == DISABLE`) just clears `ALRAE`/`ALRBE` and doesn't
-touch the match register — on the next `en == ENABLE` without passing a new `cfg` (`= kNoAlarm` by
-default), the "empty" configuration (all fields `Ignore`) will take effect, not the last one used
-— you should always pass `cfg` explicitly when re-enabling.
+- `Ignore` — field not compared; `Care` — compared with the given decimal value.
+- `day` — day of month (1…31), **not** weekday.
+- Hours 0…23, minutes/seconds 0…59.
+- `sub_sec` 0…32767 and `sub_sec_msk` (MASKSS) 0…15: 0 ignores sub-seconds, 1 compares the lowest bit, 15 compares all 15 bits. Pick the target according to your PRER dividers.
+
+> The default (all fields `Ignore`) is **not** "alarm off" — it matches every second.
+
+**`EnableAlarm_A/B()`:** disables the alarm (ALRxE/ALRxIE), waits for ALRxWF (≤ 1000 ms), clears the old flag and enables only after a successful registration. Notifications: `OnAlarmA()`/`OnAlarmB()`.
 
 ---
 
-## 8. IRQ_en() and a single handler for all sources
-
-All three sources (WUT, Alarm A, Alarm B — TS/Timestamp is declared in `IRQ_s`, but has no public
-`Enable*` method in this file) share **one** NVIC vector (`RTC_TAMP_IRQn`) and **one** static
-handler:
+## 6. Timestamp
 
 ```cpp
-struct RtcHandler : IIRQHandler {
-    void HandleIRQ() override final {
-        if (RTC->SR & RTC_SR_WUTF)  { RTC->SCR = RTC_SCR_CWUTF;  if (_wut_cb)     _wut_cb();     }
-        if (RTC->SR & RTC_SR_ALRAF) { RTC->SCR = RTC_SCR_CALRAF; if (_alarm_a_cb) _alarm_a_cb(); }
-        if (RTC->SR & RTC_SR_ALRBF) { RTC->SCR = RTC_SCR_CALRBF; if (_alarm_b_cb) _alarm_b_cb(); }
-    }
-};
-static RtcHandler _rtc_handler;   // the single instance for the whole class — a static field
-```
+clock.EnableTimestamp(ENABLE, RTC_cl::TimestampEdge::Rising);
+// With interrupts: OnTimestamp(const Timestamp&) is called.
 
-This is the same "unconditionally check every possible flag" principle used in
-[`TIM::HandleIRQ()`](TIM.md#5-timhandleirq--база-для-всех-подклассов) — each check is cheap, and
-RTC interrupts are inherently rare (seconds/minutes), so the cost of this unconditional checking
-is negligible.
-
-`IRQ_en()` is the same auto-register/auto-unregister idiom as `USART`/`TIM` use, but it registers
-not `this` (there's no object, the class is static) but the address of the single static
-`_rtc_handler`:
-
-```cpp
-static void IRQ_en(IRQ_s irq, FunctionalState en) {
-    WriteProtection(DISABLE);
-    if (en) RTC->CR |= (uint32_t)irq; else RTC->CR &= ~(uint32_t)irq;
-    WriteProtection(ENABLE);
-
-    if (en && !NVIC_GetEnableIRQ(RTC_TAMP_IRQn)) {
-        IRQ_Registry::Register(RTC_TAMP_IRQn, &_rtc_handler);
-        EXTI->IMR1 |= EXTI_IMR1_IM19;    // RTC interrupts are routed through the EXTI19 line
-        NVIC_EnableIRQ(RTC_TAMP_IRQn);
-    } else if (!en && !(RTC->CR & all_irq_bits)) {
-        IRQ_Registry::Unregister(RTC_TAMP_IRQn);
-        NVIC_DisableIRQ(RTC_TAMP_IRQn);
-    }
+// Polling instead of the interrupt:
+clock.IRQ_en(RTC_cl::IRQ_s::TS, DISABLE);
+RTC_cl::Timestamp stamp;
+if (clock.GetTimestamp(stamp) == SysStatus::OK) {
+    uint8_t captured_hour = stamp.time.hour();
+    bool lost_edge = stamp.overflow;
 }
+clock.EnableTimestamp(DISABLE);
 ```
 
-An extra step compared to `USART`/`TIM`: on STM32G0, RTC interrupts are physically routed through
-the EXTI19 line, so the first enable also unmasks `EXTI->IMR1` — without this, the NVIC would
-never see the interrupt, even with `RTC_CR_WUTIE`/`ALRAIE`/`ALRBIE` set.
+- `EnableTimestamp()` sets TSE/TSIE and the edge, and clears stale TSF/TSOVF.
+- The **RTC_TS pin** (usually PC13), its availability in your package and alternate routing are the application's job. This is not GPIO EXTI; internal TAMP events are not configured.
+- Use **either** polling **or** the interrupt for a given capture, not both.
+
+**How a capture is read:** TSTR/TSDR/TSSSR are read **before** TSF is cleared (clearing TSF releases the capture). The interrupt passes a snapshot to `OnTimestamp()`:
+
+- the reference is valid only during the call — copy it if you need it later;
+- no need to re-read the registers in the callback.
+
+**Captured data:**
+
+- no year — `date.year()` is 0;
+- `sub_seconds` is the raw down-counter value, not milliseconds;
+- `overflow` reflects TSOVF (an edge was lost).
+
+`GetTimestamp()` returns `Busy` when there is no new capture; after a successful read it clears the capture and overflow flags.
 
 ---
 
-## 9. Calibration (CALR)
+## 7. IRQ and DeInit
 
-```cpp
-static void SetCalibration(uint16_t calm = 0, bool calp = false);
-```
+**Vectors:**
 
-Operates within a 32-second window (`2^20 = 1 048 576` RTCCLK pulses):
+| Family | Vector / EXTI line |
+| --- | --- |
+| G0 | `RTC_TAMP_IRQn`, internal EXTI19 |
+| F4/F7 | `RTC_Alarm_IRQn`/EXTI17, `RTC_WKUP_IRQn`/EXTI22, `TAMP_STAMP_IRQn`/EXTI21 |
 
-- `calp = false` → suppress `calm` pulses per window → the clock slows down by `calm × 0.9537`
-  ppm.
-- `calp = true` → add 512, suppress `calm` → net effect `(512 - calm) × 0.9537` ppm (speeds up if
-  `calm < 512`).
+On F4/F7 give all three RTC vectors the **same preemption priority** — they serve one hardware block and must not interrupt each other.
 
-Resolution ≈ 0.954 ppm/step, range ±488 ppm. Example from the doc comment: a measured period of
-999.9945 ms (the clock runs 5.5 ppm fast) → `calm = round(5.5 / 0.9537) = 6` →
-`RTC_cl::SetCalibration(6)` (without `calp`) — a compensation of −5.72 ppm, the closest available
-value to the required −5.5 ppm.
+**Registration:**
 
-`SetCalibration()` waits for `RECALPF` (recalibration pending, ≤ 2 RTCCLK cycles) before writing
-— the previous calibration must be absorbed by the hardware before a new one is applied.
+- The first enabled source registers the object (regardless of the current NVIC state).
+- Registry full → `InitError` from `IRQ_en()` or `Error` from the event-configuration call.
+- Enabling more sources does not create duplicate registrations.
+
+**Handler:** takes one snapshot of CR and event flags, handles only enabled sources, acknowledges its flags **before** calling callbacks (F4/F7: rc_w0 writes that keep other flags, including TAMP; G0: SCR). It never waits.
+
+**Rules:**
+
+- `IRQ_en(source, DISABLE)` disables the source but keeps the registration until `DeInit()`.
+- Callbacks must not call configuration methods, `IRQ_en()`, `SetUp()`/`DeInit()` or change the registry.
+- To pause all RTC interrupts, mask NVIC yourself — and mind other users of shared vectors.
+
+**`DeInit()`:**
+
+- disables its own alarms, wake-up timer, timestamp and calibration output;
+- removes only its own registrations and keeps NVIC enabled for remaining handlers (on F4/F7, EXTI21 stays on if TAMP_STAMP still has handlers; G0 TAMP uses its own internal EXTI21);
+- **keeps** the calendar, clock source, calibration and backup registers;
+- `SetUp()` may be called again afterwards.
 
 ---
 
-## 10. Usage examples
-
-### Basic setup + time/date
+## 8. Calibration and Frequency Output
 
 ```cpp
-RTC_cl::SetUp(RTC_cl::CLK_Source::LSE);
-RTC_cl::SetTime({14, 25, 0});
-RTC_cl::SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);   // May 22, 2026, Friday
-
-auto t = RTC_cl::GetTime();
-uint8_t hh = t.hour(), mm = t.min(), ss = t.sec();
+SysStatus cal = clock.SetCalibration(6, false);   // about -5.72 ppm at LSE 32768 Hz
+// Busy = RECALPF set: retry later from main (no internal wait).
+clock.EnableCOE(true, RTC_cl::CalOut::Out_512);   // RTCCLK/64 = 512 Hz at 32768 Hz
+clock.EnableCOE(true, RTC_cl::CalOut::Out_1Hz);   // ck_spre
+clock.EnableCOE(false);
 ```
 
-### WakeUp Timer — periodic wake-up every 2 seconds
+**Smooth calibration:**
+
+- CALM (0…511) removes pulses over a 32-second window; CALP adds 512 pulses.
+- At nominal LSE one step ≈ 0.954 ppm; total range ≈ ±488 ppm.
+- CALW8/CALW16 are not used.
+- Measure your oscillator first, then calibrate.
+
+**Calibration output (COE):** the RTC_CALIB pin and its routing are prepared by the application. The labels 512 Hz/1 Hz assume the matching input and calendar frequencies.
+
+**`WriteProtection()`** remains for low-level access (keys `0xCA`, `0x53` unlock; `0xFF` locks). Ordinary methods handle write protection automatically.
+
+---
+
+## 9. Migration and Verification Limits
+
+| Old API | New API |
+| --- | --- |
+| static functions | an `RTC_cl` object |
+| function-pointer arguments for WUT/Alarm | overridden callbacks in a derived class |
+| `void` configuration methods | methods return a status |
+
+- The source/calendar are **not** reset on every start-up; a source change follows the explicit backup-domain reset policy (section 2).
+- Behaviour that must be verified on your actual part: source change, LSE start-up, retained calendar after reset, alarms, wake-up, timestamp and shared TAMP operation.
+
+---
+
+## 10. Usage Examples
+
+The blocks below continue with the same `Clock` object.
 
 ```cpp
-RTC_cl::EnableWakeUpTimer(/*counter=*/1, /*clock_div=*/0b100, []{
-    // called every (counter+1) = 2 seconds from RTC_TAMP_IRQn
-});
-```
+#include "rtc.hpp"
 
-### Alarm A — a daily alarm at a fixed time
-
-```cpp
-RTC_cl::AlarmConfig cfg {
-    .hour = {7,  RTC_cl::Alarm_Masks::Care},
-    .min  = {30, RTC_cl::Alarm_Masks::Care},
-    .sec  = {0,  RTC_cl::Alarm_Masks::Care},
+class Clock : public RTC_cl {
+protected:
+    void OnWakeup() override { /* set a flag for main */ }
+    void OnAlarmA() override { /* notify the application */ }
+    void OnAlarmB() override { /* notify the application */ }
+    void OnTimestamp(const Timestamp& stamp) override {
+        // Copy stamp if you need it after the callback returns.
+    }
 };
-RTC_cl::EnableAlarm_A(ENABLE, cfg, []{ /* good morning */ });
-// later:
-RTC_cl::EnableAlarm_A(DISABLE);   // clears ALRAE without touching ALRMAR
-```
+static Clock clock;
 
-### Calibration after measuring the real period
+// LSE 32768 Hz: 32768 / (128 * 256) = 1 Hz.
+SysInitStatus status = clock.SetUp(RTC_cl::CLK_Source::LSE, 127, 255);
+// Alternative for nominal LSI 32000 Hz (instead of, not after, the call above):
+// clock.SetUp(RTC_cl::CLK_Source::LSI, 127, 249);
+```
 
 ```cpp
-RTC_cl::SetCalibration(/*calm=*/6, /*calp=*/false);  // compensating for a ~5.5 ppm drift
+if (status == SysInitStatus::InitOK) {
+    SysStatus t = clock.SetTime({14, 25, 0});
+    SysStatus d = clock.SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);
+}
+RTC_cl::RtcTime time;
+RTC_cl::RtcDate date;
+clock.GetDateTime(time, date);   // coherent pair: TR then DR
+uint8_t hours   = time.hour();
+uint8_t minutes = time.min();
+uint8_t seconds = time.sec();
+uint8_t day     = date.day();
 ```
 
+```cpp
+clock.EnableWakeUpTimer(0);   // 1 s
+clock.EnableWakeUpTimer(4);   // 5 s, replaces the previous setting
+clock.DisableWakeUpTimer();
+```
+
+```cpp
+RTC_cl::AlarmConfig alarm{
+    .hour = {14, RTC_cl::Alarm_Masks::Care},
+    .min  = {25, RTC_cl::Alarm_Masks::Care},
+    .sec  = {0,  RTC_cl::Alarm_Masks::Care}
+};
+clock.EnableAlarm_A(ENABLE, alarm);   // daily at 14:25:00
+clock.EnableAlarm_A(DISABLE);
+clock.EnableAlarm_B(ENABLE, alarm);
+```
+
+```cpp
+clock.EnableTimestamp(ENABLE, RTC_cl::TimestampEdge::Rising);
+clock.IRQ_en(RTC_cl::IRQ_s::TS, DISABLE);   // poll instead of IRQ
+RTC_cl::Timestamp stamp;
+if (clock.GetTimestamp(stamp) == SysStatus::OK) {
+    uint8_t captured_hour = stamp.time.hour();
+    bool lost_edge = stamp.overflow;
+}
+clock.EnableTimestamp(DISABLE);
+```
+
+Check every returned status.
+
 ---
 
-## 11. Edge cases
+## 11. Edge Cases
 
-- **`RSF` is not a valid indicator of "the RTC is already configured"** — use the `RTCEN` +
-  `RTCSEL` combination instead (see §3); this is already done inside `SetUp()`, but it matters
-  when writing similar code for another backup-domain peripheral.
-- **`WUTR`/`ALRMAR`/`ALRMBR` cannot be written while the corresponding Enable bit is set** —
-  `EnableWakeUpTimer()`/`EnableAlarm_A/B()` clear and wait for the needed flag (`WUTWF`/`ALRAWF`/
-  `ALRBWF`) themselves before writing; if working with the registers manually, you need to repeat
-  this yourself.
-- **`EnableAlarm_A(ENABLE)` without an explicit `cfg`** uses `kNoAlarm` (all fields `Ignore`) —
-  not the "last used" configuration; to re-enable with the same configuration you need to pass it
-  again.
-- **RTC interrupts depend on `EXTI_IMR1_IM19`** — if something outside this code (not through
-  `IRQ_en()`) accidentally clears this EXTI bit, `RTC_TAMP_IRQn` will stop firing even with
-  `WUTIE`/`ALRAIE`/`ALRBIE` set.
-- **`to_bcd()` returns `0xFF` when `v > 99`** — not a `DebugTrap`, just an explicitly invalid BCD
-  value; `SetTime`/`SetDate`/`build_alrmr` don't check for this separately, an invalid argument
-  will silently end up in the register as `0xFF`.
-- **A single static `_rtc_handler` for the whole class** — unlike `USART`/`TIM`/`SPI`, where
-  `HandleIRQ()` is a method of the peripheral object itself, here it's a dedicated singleton
-  object (see §8), because `RTC_cl` itself has no instances that could serve that role.
+| Situation | Behaviour |
+| --- | --- |
+| Clock source changed | Backup domain reset: time and backup registers lost. |
+| Same source retained after reset | Dividers are not changed, even if new ones are passed. |
+| LSI as source | Nominal frequency only — measure and choose dividers. |
+| Pair read interrupted by another RTC read | Not allowed — the shadow pair can become inconsistent. |
+| Timestamp year | Not captured (0). |
+| `OnTimestamp` reference used later | Invalid — copy the data inside the callback. |
 
 ---
 
-## See also
+## See Also
 
-- [IRQ_Registry.md](IRQ_Registry.md) — the general mechanism `IRQ_en()` (§8) is built on; here
-  what gets registered is not `this` (the class is static) but the singleton handler's address.
-- [System.md](System.md) — `SysInitStatus`, the common `DebugTrap`/`SysStatus` infrastructure.
+- [ST F4 HAL RTC: shadow, initialization and alarm API](https://github.com/STMicroelectronics/stm32f4xx-hal-driver/blob/master/Src/stm32f4xx_hal_rtc.c)
+- [ST G0 HAL RTC ex: timestamp read before clearing TSF](https://github.com/STMicroelectronics/stm32g0xx-hal-driver/blob/master/Src/stm32g0xx_hal_rtc_ex.c)
+- [RM0390: WUCKSEL and MASKSS](https://www.st.com/resource/en/reference_manual/dm00135183.pdf)
+- [System.md](System.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+- [EXTI.md](EXTI.md)
 
 ---
 
@@ -348,331 +372,387 @@ RTC_cl::SetCalibration(/*calm=*/6, /*calp=*/false);  // compensating for a ~5.5 
 
 ## Содержание
 
-1. [Зачем это нужно](#1-зачем-это-нужно)
-2. [Статический класс — почему нет инстанцирования](#2-статический-класс--почему-нет-инстанцирования)
-3. [SetUp() — источник тактирования и "не потерять время"](#3-setup--источник-тактирования-и-не-потерять-время)
-4. [Write Protection](#4-write-protection)
-5. [BCD-формат времени/даты](#5-bcd-формат-временидаты)
-6. [WakeUp Timer](#6-wakeup-timer)
-7. [Alarm A / Alarm B](#7-alarm-a--alarm-b)
-8. [IRQ_en() и единый обработчик на все источники](#8-irq_en-и-единый-обработчик-на-все-источники)
-9. [Калибровка (CALR)](#9-калибровка-calr)
+1. [Зачем это нужно и модель работы](#1-зачем-это-нужно-и-модель-работы)
+2. [SetUp и сохранённые настройки](#2-setup-и-сохранённые-настройки)
+3. [Календарь: запись и чтение](#3-календарь-запись-и-чтение)
+4. [WakeUp Timer](#4-wakeup-timer-1)
+5. [Будильники](#5-будильники)
+6. [Timestamp](#6-timestamp-1)
+7. [IRQ и освобождение](#7-irq-и-освобождение)
+8. [Калибровка и вывод частоты](#8-калибровка-и-вывод-частоты)
+9. [Миграция и проверка](#9-миграция-и-проверка)
 10. [Примеры использования](#10-примеры-использования)
 11. [Угловые случаи](#11-угловые-случаи)
+12. [См. также](#см-также)
 
 ---
 
-## 1. Зачем это нужно
+## 1. Зачем это нужно и модель работы
 
-`RTC_cl` — драйвер часов реального времени STM32G0 (единственное поддерживаемое в этом проекте
-семейство для RTC — не абстрагирован под F4/F7, в отличие от `UART`/`TIM`/`SPI`). Даёт время/дату
-с BCD-хранением в железе, три независимых источника прерываний (WakeUp Timer, Alarm A, Alarm B),
-и переживает сброс МК и Stop-режим, поскольку живёт в backup-домене (`RCC->BDCR`), тактируемом
-отдельно от основной системы (LSE/LSI, а не HSE/HSI/PLL).
+`RTC_cl` управляет часами реального времени на F4/F7/G0:
 
-Как и [`IRQ_Registry`](IRQ_Registry.md), [`USART`](UART.md#5-irq_en--регистрация-по-требованию) и
-[`TIM`](TIM.md#4-irq_en-и-общийраздельный-вектор), использует паттерн "auto-register в
-IRQ_Registry на первом включении источника, auto-unregister на последнем выключении" (`IRQ_en()`,
-см. §8) — пользователю не нужно вручную трогать `IRQ_Registry`/`NVIC` вообще.
+- календарь (время и дата);
+- периодический таймер пробуждения (WakeUp);
+- два будильника (A и B);
+- захват метки времени (timestamp) по внешнему фронту.
 
----
+События приходят через protected virtual callback (`OnWakeup`, `OnAlarmA`, `OnAlarmB`, `OnTimestamp`), которые вы переопределяете в наследнике — как в USART.
 
-## 2. Статический класс — почему нет инстанцирования
+**Правила владения:**
 
-```cpp
-class RTC_cl { /* все методы static */ };
-```
-
-В отличие от `USART`/`SPI`/`TIM` (по объекту на каждый физический экземпляр периферии), RTC на
-STM32G0 **один** на весь чип — нет смысла заводить объект, который можно было бы создать
-несколько раз. Все методы вызываются как `RTC_cl::SetUp(...)`, `RTC_cl::EnableWakeUpTimer(...)`.
-Внутреннее состояние (колбэки, обработчик) — статические поля класса, не поля экземпляра (см.
-§8).
+- После успешного `SetUp()` RTC принадлежит одному объекту. Повторный `SetUp()` — только после `DeInit()`.
+- Копирование и перемещение запрещены. Объект должен существовать, пока зарегистрированы его прерывания.
+- Настройку и `DeInit()` вызывайте из `main` при работающем SysTick (таймауты считаются по `GetTick()`; при замаскированном SysTick они не истекают).
+- Обработчики прерываний ничего не ждут и не меняют регистрации.
+- Согласование вызовов настройки и чтения календаря между `main` и прерываниями — задача приложения.
 
 ---
 
-## 3. SetUp() — источник тактирования и "не потерять время"
+## 2. SetUp и сохранённые настройки
 
 ```cpp
-static SysInitStatus SetUp(CLK_Source clk_src = CLK_Source::LSI,
-                            uint32_t prediv_a = 127, uint32_t prediv_s = 255);
-```
-
-Тактовая частота календаря:
-
-```text
-f_ck_spre = f_rtcclk / ((prediv_a + 1) * (prediv_s + 1))
-```
-
-По умолчанию (`prediv_a=127`, `prediv_s=255`) и LSE = 32768 Гц: `32768 / (128 * 256) = 1 Гц` —
-ровно один тик календаря в секунду (стандартная конфигурация, рекомендованная в Reference
-Manual — двухступенчатый делитель балансирует энергопотребление асинхронного каскада против
-точности синхронного).
-
-**Не инициализировать заново, если RTC уже тикает от нужного источника**:
-
-```cpp
-const bool already_running =
-    (RCC->BDCR & RCC_BDCR_RTCEN) &&
-    ((RCC->BDCR & RCC_BDCR_RTCSEL_Msk) == static_cast<uint32_t>(clk_src));
-if (!already_running) { /* ... установить PRER, войти в режим инициализации ... */ }
-```
-
-Ключевой нюанс, прямо описанный комментарием в коде: для этой проверки **нельзя** использовать
-флаг `RSF` (Registers Synchronized Flag, `ICSR`) — он сбрасывается при **любом** системном
-сбросе (отладчик подключился, `SYSRESETREQ`, ...), даже если сам RTC не останавливался и
-продолжает считать время. Проверка через `RTC_BDCR_RTCEN`/`RTCSEL` устойчива к этому, потому что
-оба бита живут в backup-домене, который системный сброс не трогает — так `SetUp()` можно
-безопасно вызывать повторно после программного сброса, не сбивая уже идущие часы.
-
----
-
-## 4. Write Protection
-
-```cpp
-inline static void WriteProtection(FunctionalState enable) {
-    if (enable) { RTC->WPR = 0xFF; }              // любой неверный ключ — заблокировать
-    else        { RTC->WPR = 0xCA; RTC->WPR = 0x53; } // правильная пара ключей — разблокировать
-}
-```
-
-Большинство регистров RTC защищены от случайной записи. **Каждый** публичный метод класса,
-который трогает защищённые регистры (`SetTime`, `SetDate`, `EnableWakeUpTimer`, `EnableAlarm_A/B`,
-`IRQ_en`, `SetCalibration`, `EnableCOE`), сам снимает защиту в начале и восстанавливает её в
-конце — вызывающему коду никогда не нужно думать о `WriteProtection()` напрямую.
-
----
-
-## 5. BCD-формат времени/даты
-
-RTC хранит время/дату в BCD (Binary-Coded Decimal — каждая десятичная цифра в отдельной
-4-битной группе), а не в двоичном виде — так их можно показать на семисегментном индикаторе без
-пересчёта. `SetTime()`/`SetDate()` принимают обычные десятичные `uint8_t` и сами конвертируют:
-
-```cpp
-inline static uint8_t to_bcd(uint8_t v) {
-    if (v > 99) return 0xFF;
-    uint8_t t = ((uint16_t)v * 205u) >> 11;   // быстрое деление на 10 без аппаратного DIV
-    return (t << 4) | (v - t * 10u);
-}
-```
-
-`(v * 205) >> 11` — трюк аппроксимации целочисленного деления на 10 через умножение и сдвиг
-(`205/2048 ≈ 1/10`, точен для всего диапазона `0..99`) — быстрее, чем аппаратное деление на
-Cortex-M0+ (нет single-cycle `DIV`). `SetTime_hex()`/`SetDate_hex()` — версии без конвертации,
-для случая, когда вызывающий код уже работает с "сырыми" BCD-значениями напрямую.
-
-`GetTime()`/`GetDate()` возвращают **не** декодированные декатные числа, а структуры с отдельными
-BCD-разрядами (`RtcTime{su, st, mnu, mnt, hu, ht, ...}`, `RtcDate{du, dt, mu, mt, yu, yt, wdu}`) —
-методы `.sec()`/`.min()`/`.hour()`/`.day()`/`.month()`/`.year()` собирают десятичное значение
-(`st*10 + su`) только по требованию, а не всегда, экономя пересчёт там, где нужны сырые разряды
-(например, для прямого вывода на индикатор).
-
-Запись времени/даты требует режима инициализации (аналогично записи `PRER` в `SetUp()`):
-`ICSR_INIT = 1`, дождаться `INITF`, записать регистр, снять `INIT`.
-
----
-
-## 6. WakeUp Timer
-
-```cpp
-static void EnableWakeUpTimer(uint32_t counter = 0, uint8_t clock_div = 0b100,
-                               void (*cb)(void) = nullptr);
-```
-
-Источник тактирования WUT (`WUCKSEL`, 3 бита) — 6 вариантов, от `RTCCLK/2` до `ck_spre` (1 Гц с
-дефолтными предделителями) `+65536` к счётчику. Рекомендуемый в doc-комментарии режим —
-`0b100` (`ck_spre`, т.е. обычно 1 Гц): период = `(counter + 1)` секунд — `counter=0` → 1 с,
-`counter=59` → 60 с.
-
-**`WUTR`/`WUCKSEL` защищены от записи, пока `WUTE = 1`** (RM0454 §27.5.2) — перед изменением
-нужно снять `WUTE` и дождаться `WUTWF` (~2 такта RTCCLK, около 61 мкс на 32768 Гц):
-
-```cpp
-RTC->CR &= ~RTC_CR_WUTE;
-while (!(RTC->ICSR & RTC_ICSR_WUTWF)) {}
-RTC->WUTR = counter;
-RTC->CR   = (RTC->CR & ~RTC_CR_WUCKSEL_Msk) | (clock_div << RTC_CR_WUCKSEL_Pos) | RTC_CR_WUTE;
-```
-
-Колбэк `cb` сохраняется в статическое поле `_wut_cb` **до** ожидания `WUTWF` — так что даже если
-пользователь дважды вызовет `EnableWakeUpTimer()` подряд с разными колбэками, актуальным всегда
-останется последний переданный. `IRQ_en(IRQ_s::WUT, ENABLE)` в конце — регистрация в
-`IRQ_Registry` (см. §8), выполняется автоматически, отдельно вызывать не нужно.
-
----
-
-## 7. Alarm A / Alarm B
-
-```cpp
-struct AlarmField { uint8_t val = 0; Alarm_Masks mask = Alarm_Masks::Ignore; };
-struct AlarmConfig { AlarmField day, hour, min, sec; uint32_t sub_sec_msk = 0; uint32_t sub_sec = 0; };
-
-static void EnableAlarm_A(FunctionalState en, const AlarmConfig& cfg = kNoAlarm, void (*cb)(void) = nullptr);
-static void EnableAlarm_B(FunctionalState en, const AlarmConfig& cfg = kNoAlarm, void (*cb)(void) = nullptr);
-```
-
-Каждое поле (`day`/`hour`/`min`/`sec`) сравнивается только если его `mask == Alarm_Masks::Care` —
-поля, оставленные `Ignore` (значение по умолчанию), в сравнении не участвуют, то есть
-"срабатывать в любой день, но точно в 14:25:00" получается, просто не указывая `day`:
-
-```cpp
-RTC_cl::AlarmConfig cfg {
-    .hour = {14, RTC_cl::Alarm_Masks::Care},
-    .min  = {25, RTC_cl::Alarm_Masks::Care},
-    .sec  = { 0, RTC_cl::Alarm_Masks::Care},
-};   // day оставлен Ignore — сработает каждый день в 14:25:00
-```
-
-`build_alrmr()` (свободная функция в `rtc.cpp`, не метод класса) собирает `ALRMAR`/`ALRMBR` из
-`AlarmConfig`, включая биты `MSKx` и BCD-конвертацию каждого поля через `to_bcd()`.
-`ALRMASSR`/`ALRMBSSR` (под-секундное сравнение) программируются отдельно, если `sub_sec_msk != 0`.
-
-Перед изменением `ALRMAR`/`ALRMBR`, аналогично WUT: снять `ALRAE`/`ALRBE`, дождаться
-`ALRAWF`/`ALRBWF`, затем писать. Отключение (`en == DISABLE`) просто снимает `ALRAE`/`ALRBE` и
-не трогает регистр совпадения — при следующем `en == ENABLE` без передачи нового `cfg`
-(`= kNoAlarm` по умолчанию) сработает "пустая" конфигурация (все поля `Ignore`), а не последняя
-использованная — стоит всегда передавать `cfg` явно при повторном включении.
-
----
-
-## 8. IRQ_en() и единый обработчик на все источники
-
-Все три источника (WUT, Alarm A, Alarm B — TS/Timestamp объявлен в `IRQ_s`, но не имеет
-публичного метода `Enable*` в этом файле) делят **один** вектор NVIC (`RTC_TAMP_IRQn`) и **один**
-статический обработчик:
-
-```cpp
-struct RtcHandler : IIRQHandler {
-    void HandleIRQ() override final {
-        if (RTC->SR & RTC_SR_WUTF)  { RTC->SCR = RTC_SCR_CWUTF;  if (_wut_cb)     _wut_cb();     }
-        if (RTC->SR & RTC_SR_ALRAF) { RTC->SCR = RTC_SCR_CALRAF; if (_alarm_a_cb) _alarm_a_cb(); }
-        if (RTC->SR & RTC_SR_ALRBF) { RTC->SCR = RTC_SCR_CALRBF; if (_alarm_b_cb) _alarm_b_cb(); }
+class Clock : public RTC_cl {
+protected:
+    void OnWakeup() override { /* выставить флаг для main */ }
+    void OnAlarmA() override { /* уведомить приложение */ }
+    void OnAlarmB() override { /* уведомить приложение */ }
+    void OnTimestamp(const Timestamp& stamp) override {
+        // Скопировать stamp, если данные нужны после выхода из callback.
+        // Ссылка действует только во время вызова.
     }
 };
-static RtcHandler _rtc_handler;   // единственный экземпляр на весь класс — статическое поле
+static Clock clock;
+
+// LSE, 32768 Гц: 32768 / (128 * 256) = 1 Гц.
+SysInitStatus status = clock.SetUp(RTC_cl::CLK_Source::LSE, 127, 255);
+// Альтернатива для номинального LSI 32000 Гц (вместо, а не после вызова выше):
+// clock.SetUp(RTC_cl::CLK_Source::LSI, 127, 249);
 ```
 
-Это тот же принцип "проверить все возможные флаги безусловно", что и в
-[`TIM::HandleIRQ()`](TIM.md#5-timhandleirq--база-для-всех-подклассов) — каждая проверка дешева,
-а RTC-прерывания в принципе редки (секунды/минуты), так что цена такой безусловной проверки
-несущественна.
+**Аргументы:** источник (`LSI`, `LSE` или `HSE`; `NO` отклоняется), `PREDIV_A` (0…127) и `PREDIV_S` (0…32767).
 
-`IRQ_en()` — тот же auto-register/auto-unregister идиом, что у `USART`/`TIM`, но регистрирует не
-`this` (объекта-то нет, класс статический), а адрес единственного статического `_rtc_handler`:
-
-```cpp
-static void IRQ_en(IRQ_s irq, FunctionalState en) {
-    WriteProtection(DISABLE);
-    if (en) RTC->CR |= (uint32_t)irq; else RTC->CR &= ~(uint32_t)irq;
-    WriteProtection(ENABLE);
-
-    if (en && !NVIC_GetEnableIRQ(RTC_TAMP_IRQn)) {
-        IRQ_Registry::Register(RTC_TAMP_IRQn, &_rtc_handler);
-        EXTI->IMR1 |= EXTI_IMR1_IM19;    // RTC-прерывания заведены через линию EXTI19
-        NVIC_EnableIRQ(RTC_TAMP_IRQn);
-    } else if (!en && !(RTC->CR & all_irq_bits)) {
-        IRQ_Registry::Unregister(RTC_TAMP_IRQn);
-        NVIC_DisableIRQ(RTC_TAMP_IRQn);
-    }
-}
+```text
+f_календаря = f_RTCCLK / ((PREDIV_A + 1) * (PREDIV_S + 1))
 ```
 
-Дополнительный шаг по сравнению с `USART`/`TIM`: RTC-прерывания на STM32G0 физически заведены
-через линию EXTI19, поэтому первое включение размаскирует ещё и `EXTI->IMR1` — без этого NVIC
-никогда не увидит прерывание, даже если `RTC_CR_WUTIE`/`ALRAIE`/`ALRBIE` установлены.
+| Источник | Делители для 1 Гц | Примечание |
+| --- | --- | --- |
+| LSE 32768 Гц | 127 / 255 | делители по умолчанию |
+| LSI, номинал 32000 Гц | 127 / 249 | с 127/255 получится ≈ 0,97656 Гц; реальная частота LSI зависит от экземпляра, температуры и питания |
+| HSE | выбирает приложение | HSE должен быть уже запущен; на F4/F7 приложение задаёт RTCPRE, на G0 вход — HSE/32 |
+
+LSI/LSE драйвер запускает сам и сохраняет заданную платой мощность драйвера LSE (максимальную принудительно не выбирает).
+
+**`InitError`**, если: RTC уже занят, неверен источник/делители, истёк таймаут, или сохранённая конфигурация использует несовместимый 12-часовой формат/BYPSHAD.
+
+**RTC переживает сброс, поэтому `SetUp()` различает два случая:**
+
+| Ситуация | Что происходит |
+| --- | --- |
+| RTC уже работает от **того же** источника (RTCEN/INITS установлены) | Календарь и делители **сохраняются**; shadow-регистры синхронизируются заново (RSF). Новые делители для идущих часов игнорируются. |
+| Сохранён **другой** источник | **Backup-домен сбрасывается**, применяется новый источник. |
+
+> ⚠ **Смена источника сбрасывает backup-домен:** теряются время, backup-регистры и другие настройки домена, и последующий `InitError` их не вернёт. Сброс также останавливает LSE — учитывайте других потребителей LSE/backup-домена. Это согласованная политика смены источника после перепрошивки.
+
+В обоих случаях старые события Alarm/WUT/Timestamp и их прерывания отключаются; нужные включите заново.
+
+**Пределы ожидания** (через `System::WaitBits`):
+
+| Ожидание | Предел |
+| --- | --- |
+| Готовность LSE | 5000 мс |
+| DBP, LSI, INITF, RSF, ALRAWF/ALRBWF, WUTWF | по 1000 мс |
+
+Защита записи (WPR) восстанавливается при любом выходе, включая таймаут. Занятая калибровка (RECALPF) сразу возвращает `Busy` без ожидания.
 
 ---
 
-## 9. Калибровка (CALR)
+## 3. Календарь: запись и чтение
+
+**Запись** — десятичные значения, 24-часовой формат, год 0…99 = 2000…2099:
 
 ```cpp
-static void SetCalibration(uint16_t calm = 0, bool calp = false);
+if (status == SysInitStatus::InitOK) {
+    SysStatus t = clock.SetTime({14, 25, 0});
+    SysStatus d = clock.SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);   // 26 мая 2022
+}
 ```
 
-Работает в окне 32 секунды (`2^20 = 1 048 576` импульсов RTCCLK):
+- Проверяются все диапазоны: часы, минуты, секунды, месяц, день (с учётом длины месяца и високосного года), день недели (понедельник = 1 … воскресенье = 7). Неверный ввод не записывается.
+- Результаты: `NotInit`, `Error`, `Timeout` или `OK`.
+- После записи драйвер выходит из режима INIT и синхронизирует shadow-регистры; ошибка синхронизации запись не отменяет.
+- `SetTime` и `SetDate` — две отдельные операции, а не атомарная установка пары.
 
-- `calp = false` → подавить `calm` импульсов за окно → часы замедляются на `calm × 0.9537` ppm.
-- `calp = true` → добавить 512, подавить `calm` → чистый эффект `(512 - calm) × 0.9537` ppm
-  (ускорение, если `calm < 512`).
+**Варианты в упакованном BCD:** `SetTime_hex`/`SetDate_hex` принимают BCD (`{0x14, 0x25, 0x00}` = 14:25:00) и проверяют и BCD-цифры, и календарные диапазоны. `to_bcd(0…99)` возвращает упакованный BCD, иначе `0xFF`.
 
-Разрешение ≈ 0.954 ppm/шаг, диапазон ±488 ppm. Пример из doc-комментария: измеренный период
-999.9945 мс (часы спешат на 5.5 ppm) → `calm = round(5.5 / 0.9537) = 6` →
-`RTC_cl::SetCalibration(6)` (без `calp`) — компенсация −5.72 ppm, ближайшее доступное значение к
-требуемым −5.5 ppm.
+**Чтение:**
 
-`SetCalibration()` дожидается `RECALPF` (recalibration pending, ≤ 2 такта RTCCLK) перед записью —
-предыдущая калибровка должна быть аппаратно поглощена перед подачей новой.
+```cpp
+RTC_cl::RtcTime time;
+RTC_cl::RtcDate date;
+clock.GetDateTime(time, date); // Согласованная пара: TR, затем DR.
+uint8_t hours   = time.hour();
+uint8_t minutes = time.min();
+uint8_t seconds = time.sec();
+uint8_t day     = date.day();
+```
+
+| Метод | Что читает |
+| --- | --- |
+| `GetTime()` | TR, затем DR (чтобы снять блокировку shadow) |
+| `GetDate()` | только DR |
+| `GetDateTime(time, date)` | согласованную пару TR → DR — используйте, когда нужны оба |
+
+Читайте только после успешного `SetUp()` и не прерывайте чтение пары другим чтением RTC из callback.
+
+---
+
+## 4. WakeUp Timer
+
+```cpp
+clock.EnableWakeUpTimer(0); // 1 секунда при ck_spre = 1 Гц.
+clock.EnableWakeUpTimer(4); // 5 секунд, прежняя настройка заменяется.
+clock.DisableWakeUpTimer();
+```
+
+`count` (0…65535) записывается в WUTR, поэтому период равен `(count + 1) / f_WUT`.
+
+| WUCKSEL / `clock_div` | Источник тактов |
+| --- | --- |
+| 000 | RTCCLK / 16 |
+| 001 | RTCCLK / 8 |
+| 010 | RTCCLK / 4 |
+| 011 | RTCCLK / 2 |
+| 100 | ck_spre (1 Гц календаря), 16-битный счётчик |
+| 110 | ck_spre, к счётчику добавляется 65536 |
+
+Коды 101/111 отклоняются.
+
+**`EnableWakeUpTimer()`:** отключает WUTE/WUTIE, ждёт WUTWF (≤ 1000 мс), записывает параметры, сбрасывает старые флаги, затем регистрирует и включает событие. При таймауте или ошибке регистрации таймер остаётся выключенным. Возвращает `SysStatus`.
+
+`DisableWakeUpTimer()` не ждёт. `OnWakeup()` вызывается после сброса флага.
+
+---
+
+## 5. Будильники
+
+```cpp
+RTC_cl::AlarmConfig alarm{
+    .hour = {14, RTC_cl::Alarm_Masks::Care},
+    .min  = {25, RTC_cl::Alarm_Masks::Care},
+    .sec  = {0,  RTC_cl::Alarm_Masks::Care}
+};
+clock.EnableAlarm_A(ENABLE, alarm); // Ежедневно в 14:25:00.
+clock.EnableAlarm_A(DISABLE);
+// Alarm B имеет такой же интерфейс:
+clock.EnableAlarm_B(ENABLE, alarm);
+```
+
+**Поля `AlarmConfig`:**
+
+- `Ignore` — поле не сравнивается; `Care` — сравнивается с заданным десятичным значением.
+- `day` — число месяца (1…31), **не** день недели.
+- Часы 0…23, минуты/секунды 0…59.
+- `sub_sec` 0…32767 и `sub_sec_msk` (MASKSS) 0…15: 0 — подсекунды игнорируются, 1 — сравнивается младший бит, 15 — все 15 бит. Цель выбирайте с учётом делителей PRER.
+
+> Конфигурация по умолчанию (все поля `Ignore`) — это **не** выключенный будильник: она срабатывает каждую секунду.
+
+**`EnableAlarm_A/B()`:** выключает будильник (ALRxE/ALRxIE), ждёт ALRxWF (≤ 1000 мс), сбрасывает старый флаг и включает только после успешной регистрации. Уведомления: `OnAlarmA()`/`OnAlarmB()`.
+
+---
+
+## 6. Timestamp
+
+```cpp
+clock.EnableTimestamp(ENABLE, RTC_cl::TimestampEdge::Rising);
+// В прерывании вызывается OnTimestamp(const Timestamp&).
+// Для опроса вместо прерывания:
+clock.IRQ_en(RTC_cl::IRQ_s::TS, DISABLE);
+RTC_cl::Timestamp stamp;
+if (clock.GetTimestamp(stamp) == SysStatus::OK) {
+    uint8_t captured_hour = stamp.time.hour();
+    bool lost_edge = stamp.overflow;
+}
+clock.EnableTimestamp(DISABLE);
+```
+
+- `EnableTimestamp()` включает TSE/TSIE, выбирает фронт и сбрасывает старые TSF/TSOVF.
+- **Вывод RTC_TS** (обычно PC13), его наличие в корпусе и альтернативную маршрутизацию готовит приложение. Это не GPIO EXTI; внутренние события TAMP не настраиваются.
+- Для одного захвата используйте **либо** опрос, **либо** прерывание, не оба сразу.
+
+**Как читается захват:** TSTR/TSDR/TSSSR читаются **до** сброса TSF (сброс TSF удаляет аппаратный захват). Прерывание передаёт снимок в `OnTimestamp()`:
+
+- ссылка действительна только во время вызова — скопируйте данные, если они нужны позже;
+- повторно читать регистры из callback не нужно.
+
+**Что содержит захват:**
+
+- года нет — `date.year()` равен 0;
+- `sub_seconds` — значение нисходящего счётчика, а не миллисекунды;
+- `overflow` отражает TSOVF (фронт был потерян).
+
+`GetTimestamp()` возвращает `Busy`, если нового захвата нет; после успешного чтения сбрасывает флаги захвата и переполнения.
+
+---
+
+## 7. IRQ и освобождение
+
+**Векторы:**
+
+| Семейство | Вектор / линия EXTI |
+| --- | --- |
+| G0 | `RTC_TAMP_IRQn`, внутренняя EXTI19 |
+| F4/F7 | `RTC_Alarm_IRQn`/EXTI17, `RTC_WKUP_IRQn`/EXTI22, `TAMP_STAMP_IRQn`/EXTI21 |
+
+На F4/F7 дайте всем трём векторам RTC **одинаковый приоритет вытеснения** — они обслуживают один аппаратный блок и не должны прерывать друг друга.
+
+**Регистрация:**
+
+- Первое включение любого источника регистрирует объект (независимо от текущего состояния NVIC).
+- Реестр заполнен → `InitError` из `IRQ_en()` или `Error` из функции настройки события.
+- Включение следующих источников дубликатов не создаёт.
+
+**Обработчик:** делает один снимок CR и флагов событий, обрабатывает только включённые источники и сбрасывает свои флаги **до** вызова callback (F4/F7: запись rc_w0 с сохранением остальных флагов, включая TAMP; G0: SCR). Ожиданий в нём нет.
+
+**Правила:**
+
+- `IRQ_en(источник, DISABLE)` выключает источник, но регистрация сохраняется до `DeInit()`.
+- Callback не должны вызывать методы настройки, `IRQ_en()`, `SetUp()`/`DeInit()` и менять реестр.
+- Чтобы приостановить все прерывания RTC, маскируйте NVIC сами — с учётом других пользователей общих векторов.
+
+**`DeInit()`:**
+
+- выключает свои будильники, таймер пробуждения, timestamp и вывод калибровки;
+- удаляет только свои регистрации и сохраняет NVIC для оставшихся обработчиков (на F4/F7 EXTI21 остаётся включённой, если на TAMP_STAMP есть другие обработчики; TAMP на G0 использует отдельную внутреннюю EXTI21);
+- **сохраняет** календарь, источник, калибровку и backup-регистры;
+- после него можно снова вызвать `SetUp()`.
+
+---
+
+## 8. Калибровка и вывод частоты
+
+```cpp
+SysStatus cal = clock.SetCalibration(6, false); // Около -5,72 ppm при LSE 32768 Гц.
+// Busy означает RECALPF = 1: повторить позже из main, ожидания внутри нет.
+clock.EnableCOE(true, RTC_cl::CalOut::Out_512); // RTCCLK/64 = 512 Гц при 32768 Гц.
+clock.EnableCOE(true, RTC_cl::CalOut::Out_1Hz); // ck_spre.
+clock.EnableCOE(false);
+```
+
+**Плавная калибровка:**
+
+- CALM (0…511) убирает импульсы в 32-секундном окне; CALP добавляет 512 импульсов.
+- При номинальном LSE один шаг ≈ 0,954 ppm, весь диапазон ≈ ±488 ppm.
+- CALW8/CALW16 не используются.
+- Сначала измерьте генератор, затем калибруйте.
+
+**Вывод калибровки (COE):** вывод RTC_CALIB и его маршрутизацию готовит приложение. Подписи 512 Гц/1 Гц верны при соответствующих частотах входа и календаря.
+
+**`WriteProtection()`** оставлен для низкоуровневого доступа (ключи `0xCA`, `0x53` снимают защиту, `0xFF` возвращает). Обычные методы управляют защитой сами.
+
+---
+
+## 9. Миграция и проверка
+
+| Старый API | Новый API |
+| --- | --- |
+| статические функции | объект `RTC_cl` |
+| аргументы-функции для WUT/Alarm | переопределённые callback в наследнике |
+| методы настройки без результата | методы возвращают статус |
+
+- Источник и календарь **не** сбрасываются при каждом запуске; смена источника следует явной политике сброса backup-домена (раздел 2). Без `DeInit()` объект не перенастраивается.
+- На используемом МК нужно проверить: смену источника, запуск LSE, сохранение календаря после сброса, будильники, пробуждение, timestamp и совместную работу с TAMP.
 
 ---
 
 ## 10. Примеры использования
 
-### Базовая настройка + время/дата
+Блоки ниже продолжают работу с одним и тем же объектом `Clock`.
 
 ```cpp
-RTC_cl::SetUp(RTC_cl::CLK_Source::LSE);
-RTC_cl::SetTime({14, 25, 0});
-RTC_cl::SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);   // 22 мая 2026, пятница
+#include "rtc.hpp"
 
-auto t = RTC_cl::GetTime();
-uint8_t hh = t.hour(), mm = t.min(), ss = t.sec();
-```
-
-### WakeUp Timer — периодическое пробуждение раз в 2 секунды
-
-```cpp
-RTC_cl::EnableWakeUpTimer(/*counter=*/1, /*clock_div=*/0b100, []{
-    // вызывается каждые (counter+1) = 2 секунды из RTC_TAMP_IRQn
-});
-```
-
-### Alarm A — ежедневный будильник в фиксированное время
-
-```cpp
-RTC_cl::AlarmConfig cfg {
-    .hour = {7,  RTC_cl::Alarm_Masks::Care},
-    .min  = {30, RTC_cl::Alarm_Masks::Care},
-    .sec  = {0,  RTC_cl::Alarm_Masks::Care},
+class Clock : public RTC_cl {
+protected:
+    void OnWakeup() override { /* выставить флаг для main */ }
+    void OnAlarmA() override { /* уведомить приложение */ }
+    void OnAlarmB() override { /* уведомить приложение */ }
+    void OnTimestamp(const Timestamp& stamp) override {
+        // Скопировать stamp, если данные нужны после выхода из callback.
+    }
 };
-RTC_cl::EnableAlarm_A(ENABLE, cfg, []{ /* доброе утро */ });
-// позже:
-RTC_cl::EnableAlarm_A(DISABLE);   // снимает ALRAE, не трогая ALRMAR
-```
+static Clock clock;
 
-### Калибровка после измерения реального периода
+// LSE, 32768 Гц: 32768 / (128 * 256) = 1 Гц.
+SysInitStatus status = clock.SetUp(RTC_cl::CLK_Source::LSE, 127, 255);
+// Альтернатива для номинального LSI 32000 Гц (вместо, а не после вызова выше):
+// clock.SetUp(RTC_cl::CLK_Source::LSI, 127, 249);
+```
 
 ```cpp
-RTC_cl::SetCalibration(/*calm=*/6, /*calp=*/false);  // компенсация ухода на ~5.5 ppm
+if (status == SysInitStatus::InitOK) {
+    SysStatus t = clock.SetTime({14, 25, 0});
+    SysStatus d = clock.SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);
+}
+RTC_cl::RtcTime time;
+RTC_cl::RtcDate date;
+clock.GetDateTime(time, date); // Согласованная пара: TR, затем DR.
+uint8_t hours   = time.hour();
+uint8_t minutes = time.min();
+uint8_t seconds = time.sec();
+uint8_t day     = date.day();
 ```
+
+```cpp
+clock.EnableWakeUpTimer(0); // 1 с
+clock.EnableWakeUpTimer(4); // 5 с, прежняя настройка заменяется
+clock.DisableWakeUpTimer();
+```
+
+```cpp
+RTC_cl::AlarmConfig alarm{
+    .hour = {14, RTC_cl::Alarm_Masks::Care},
+    .min  = {25, RTC_cl::Alarm_Masks::Care},
+    .sec  = {0,  RTC_cl::Alarm_Masks::Care}
+};
+clock.EnableAlarm_A(ENABLE, alarm); // Ежедневно в 14:25:00.
+clock.EnableAlarm_A(DISABLE);
+clock.EnableAlarm_B(ENABLE, alarm);
+```
+
+```cpp
+clock.EnableTimestamp(ENABLE, RTC_cl::TimestampEdge::Rising);
+clock.IRQ_en(RTC_cl::IRQ_s::TS, DISABLE); // опрос вместо прерывания
+RTC_cl::Timestamp stamp;
+if (clock.GetTimestamp(stamp) == SysStatus::OK) {
+    uint8_t captured_hour = stamp.time.hour();
+    bool lost_edge = stamp.overflow;
+}
+clock.EnableTimestamp(DISABLE);
+```
+
+Проверяйте каждый возвращаемый статус.
 
 ---
 
 ## 11. Угловые случаи
 
-- **`RSF` не годится как признак "RTC уже настроен"** — используйте комбинацию `RTCEN` +
-  `RTCSEL` (см. §3); это уже сделано внутри `SetUp()`, но важно при написании похожего кода
-  для другой периферии backup-домена.
-- **`WUTR`/`ALRMAR`/`ALRMBR` нельзя писать, пока включён соответствующий Enable-бит** —
-  `EnableWakeUpTimer()`/`EnableAlarm_A/B()` сами снимают и ждут нужный флаг (`WUTWF`/`ALRAWF`/
-  `ALRBWF`) перед записью; при ручной работе с регистрами это нужно повторить самостоятельно.
-- **`EnableAlarm_A(ENABLE)` без явного `cfg`** использует `kNoAlarm` (все поля `Ignore`) — не
-  "последнюю использованную" конфигурацию; для повторного включения с той же конфигурацией нужно
-  передать её снова.
-- **RTC-прерывания завязаны на `EXTI_IMR1_IM19`** — если кто-то извне (не через `IRQ_en()`)
-  случайно снимет этот бит EXTI, `RTC_TAMP_IRQn` перестанет срабатывать даже при установленных
-  `WUTIE`/`ALRAIE`/`ALRBIE`.
-- **`to_bcd()` возвращает `0xFF` при `v > 99`** — не `DebugTrap`, просто явно невалидное BCD-
-  значение; `SetTime`/`SetDate`/`build_alrmr` не проверяют это отдельно, невалидный аргумент
-  молча попадёт в регистр как `0xFF`.
-- **Единственный статический `_rtc_handler` на весь класс** — в отличие от `USART`/`TIM`/`SPI`,
-  где `HandleIRQ()` — метод самого объекта периферии, здесь это выделенный singleton-объект
-  (см. §8), потому что у самого `RTC_cl` нет экземпляров, которые могли бы им быть.
+| Ситуация | Поведение |
+| --- | --- |
+| Сменился источник тактирования | Сброс backup-домена: время и backup-регистры теряются. |
+| После сброса сохранён тот же источник | Делители не меняются, даже если переданы новые. |
+| Источник LSI | Частота только номинальная — измерьте и подберите делители. |
+| Чтение пары прервано другим чтением RTC | Нельзя — пара shadow-регистров может рассогласоваться. |
+| Год в timestamp | Не захватывается (0). |
+| Ссылка из `OnTimestamp` используется позже | Недействительна — копируйте данные внутри callback. |
 
 ---
 
 ## См. также
 
-- [IRQ_Registry.md](IRQ_Registry.md) — общий механизм, на котором построен `IRQ_en()` (§8);
-  здесь регистрируется не `this` (класс статический), а адрес singleton-обработчика.
-- [System.md](System.md) — `SysInitStatus`, общая инфраструктура `DebugTrap`/`SysStatus`.
+- [ST F4 HAL RTC: shadow, инициализация и API будильников](https://github.com/STMicroelectronics/stm32f4xx-hal-driver/blob/master/Src/stm32f4xx_hal_rtc.c)
+- [ST G0 HAL RTC ex: чтение timestamp до сброса TSF](https://github.com/STMicroelectronics/stm32g0xx-hal-driver/blob/master/Src/stm32g0xx_hal_rtc_ex.c)
+- [RM0390: WUCKSEL и MASKSS](https://www.st.com/resource/en/reference_manual/dm00135183.pdf)
+- [System.md](System.md)
+- [IRQ_Registry.md](IRQ_Registry.md)
+- [EXTI.md](EXTI.md)

@@ -1,483 +1,191 @@
 /**
- * @file    rtc.hpp
- * @brief   RTC driver for STM32G0.
+ * @file rtc.hpp
+ * @brief Calendar RTC for STM32F4/F7/G0, callbacks through inheritance.
  *
- * Fully static class — no instances are created or needed.
- * All methods are called as RTC_cl::SetUp(...), RTC_cl::EnableWakeUpTimer(...).
+ * One object owns RTC after SetUp. Repeat setup is an error until DeInit.
+ * Configuration runs in main with a working SysTick. IRQ callbacks must not
+ * wait or change the registry. Object lifetime covers all its registrations.
+ * On F4/F7, keep all RTC vectors at the same preemption priority.
+ * DeInit releases events/IRQs but keeps the calendar running.
  *
- * Interrupt architecture
- * ----------------------
- * The private singleton WutHandler implements IIRQHandler and is registered
- * in IRQ_Registry on the first call to IRQ_en(..., ENABLE).  The user does
- * not need to manually register a handler or touch NVIC — it is all automatic.
- *
- * WutHandler::HandleIRQ():
- *   1. Clears the CWUTF flag in RTC->SCR.
- *   2. Calls the user-supplied callback (if set).
- *
- * Typical usage
- * -------------
- * @code
- *   RTC_cl::SetUp(RTC_cl::CLK_Source::LSE);
- *
- *   RTC_cl::SetTime({14, 25, 00});
- *   RTC_cl::SetDate({22, 05, 26}, RTC_cl::WeekDay::Friday);
- *
- *   // Wake every 2 seconds (ck_spre = 1 Hz, period = counter + 1):
- *   RTC_cl::EnableWakeUpTimer(1, 0b100, []{ ... });
- * @endcode
+ * Example (after System/RCC initialization):
+ *   class Clock : public RTC_cl {
+ *   protected:
+ *       void OnWakeup() override {} // Notify main here.
+ *       void OnTimestamp(const Timestamp& stamp) override {} // Copy if needed.
+ *   };
+ *   static Clock clock;
+ *   clock.SetUp(RTC_cl::CLK_Source::LSE, 127, 255);
+ *   clock.SetTime({14, 25, 0});
+ *   clock.SetDate({22, 5, 26}, RTC_cl::WeekDay::Friday);
+ *   clock.EnableWakeUpTimer(1); // Every two seconds with 1 Hz calendar.
  */
-
 #ifndef RTC_HPP_
 #define RTC_HPP_
 
 #include "system.hpp"
 #include "irq_registry.hpp"
 
-class RTC_cl
+#if !defined(STM32F4) && !defined(STM32F7) && !defined(STM32G0)
+#error "RTC supports STM32F4/F7/G0 only"
+#endif
+
+class RTC_cl : public IIRQHandler
 {
 public:
-	/**
-	 * @brief RTC clock source selection (RTCSEL bits in RCC->BDCR).
-	 *
-	 * LSE (32.768 kHz crystal) — most accurate, requires external crystal.
-	 * LSI (~32 kHz RC oscillator) — no external component, less accurate.
-	 * HSE/128 — rarely used.
-	 */
+	/// LSE/LSI are started by SetUp. HSE and its RTC divider are caller prepared.
 	enum class CLK_Source {
-		NO  = 0b00 << RCC_BDCR_RTCSEL_Pos,
-		LSE = 0b01 << RCC_BDCR_RTCSEL_Pos,
-		LSI = 0b10 << RCC_BDCR_RTCSEL_Pos,
-		HSE = 0b11 << RCC_BDCR_RTCSEL_Pos
+		NO = 0, LSE = 1u << RCC_BDCR_RTCSEL_Pos,
+		LSI = 2u << RCC_BDCR_RTCSEL_Pos, HSE = 3u << RCC_BDCR_RTCSEL_Pos
 	};
+	enum class WeekDay { Monday = 1, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday };
+	enum class IRQ_s { WUT = RTC_CR_WUTIE, ALR_A = RTC_CR_ALRAIE,
+		ALR_B = RTC_CR_ALRBIE, TS = RTC_CR_TSIE };
+	enum class CalOut { Out_512 = 0, Out_1Hz = RTC_CR_COSEL };
+	enum class TimestampEdge { Rising = 0, Falling = RTC_CR_TSEDGE };
 
-	/** @brief Day of week (WDU field in RTC->DR, 1 = Monday .. 7 = Sunday). */
-	enum class WeekDay {
-		Monday    = 1,
-		Tuesday   = 2,
-		Wednesday = 3,
-		Thursday  = 4,
-		Friday    = 5,
-		Saturday  = 6,
-		Sunday    = 7
-	};
-
-	/**
-	 * @brief RTC interrupt sources (map directly to WUTIE/ALRAIE/ALRBIE/TSIE bits in CR).
-	 *
-	 * Values are cast to uint32_t and OR-ed into / cleared from RTC->CR.
-	 */
-	enum class IRQ_s {
-		WUT   = RTC_CR_WUTIE,   ///< WakeUp Timer
-		ALR_A = RTC_CR_ALRAIE,  ///< Alarm A
-		ALR_B = RTC_CR_ALRBIE,  ///< Alarm B
-		TS    = RTC_CR_TSIE     ///< Timestamp
-	};
-
-	enum class CalOut {
-		Out_512	= 0,
-		Out_1Hz	= RTC_CR_COSEL
-	};
-
-	/** @brief Time in decimal (converted to BCD internally by to_bcd). */
-	struct Time { uint8_t hours; uint8_t minutes; uint8_t seconds; };
-
-	/** @brief Date in decimal. Year is two-digit: 26 = 2026. */
-	struct Date { uint8_t day; uint8_t month; uint8_t year; };
-
-	/** @brief Raw BCD digits read from RTC->TR. Use .sec()/.min()/.hour() for decoded values. */
+	struct Time { uint8_t hours, minutes, seconds; }; ///< Decimal, 24-hour format.
+	struct Date { uint8_t day, month, year; }; ///< Decimal, years 2000..2099.
 	struct RtcTime {
-		uint8_t su, st;		// seconds: units / tens
-		uint8_t mnu, mnt;	// minutes
-		uint8_t hu, ht;		// hours
-		uint8_t pad[2];		// padding to u32
-
-		uint8_t sec()  const { return st  * 10 + su;  }
-		uint8_t min()  const { return mnt * 10 + mnu; }
-		uint8_t hour() const { return ht  * 10 + hu;  }
+		uint8_t su, st, mnu, mnt, hu, ht, pad[2];
+		uint8_t sec() const { return st * 10 + su; }
+		uint8_t min() const { return mnt * 10 + mnu; }
+		uint8_t hour() const { return ht * 10 + hu; }
 	};
-
-	/** @brief Raw BCD digits read from RTC->DR. Use .day()/.month()/.year() for decoded values. */
 	struct RtcDate {
-		uint8_t du, dt;		// day
-		uint8_t mu, mt;		// month
-		uint8_t yu, yt;		// year
-		uint8_t wdu;		// weekday (1=Mon..7=Sun)
-		uint8_t pad;		// padding to u32
-
-		uint8_t day()   const { return dt * 10 + du; }
+		uint8_t du, dt, mu, mt, yu, yt, wdu, pad;
+		uint8_t day() const { return dt * 10 + du; }
 		uint8_t month() const { return mt * 10 + mu; }
-		uint8_t year()  const { return yt * 10 + yu; }
+		uint8_t year() const { return yt * 10 + yu; }
 	};
-
-	enum class Alarm_Masks{
-		Care = 0,
-		Ignore = 1
+	struct Timestamp {
+		RtcTime time;
+		RtcDate date; ///< Timestamp hardware has no year: year() returns zero.
+		uint32_t sub_seconds; ///< Downcounter value, not milliseconds.
+		bool overflow; ///< Another edge arrived before the previous capture was consumed.
 	};
-
-	/** @brief One alarm field: decimal value + whether the RTC should match it. */
-	struct AlarmField {
-		uint8_t     val  = 0;
-		Alarm_Masks mask = Alarm_Masks::Ignore;
-	};
-
+	enum class Alarm_Masks { Care = 0, Ignore = 1 };
+	struct AlarmField { uint8_t val = 0; Alarm_Masks mask = Alarm_Masks::Ignore; };
 	/**
-	 * @brief Full alarm configuration passed to EnableAlarm_A / EnableAlarm_B.
-	 *
-	 * Fields left at their defaults (mask = Ignore) are not compared by the RTC.
-	 * Example — trigger at 14:25:00, any day:
-	 * @code
-	 *   RTC_cl::AlarmConfig cfg {
-	 *       .hour = {14, RTC_cl::Alarm_Masks::Care},
-	 *       .min  = {25, RTC_cl::Alarm_Masks::Care},
-	 *       .sec  = { 0, RTC_cl::Alarm_Masks::Care},
-	 *   };
-	 * @endcode
+	 * Day is day-of-month. Fields with Ignore are not compared.
+	 * MASKSS=0 ignores subseconds, 1..15 compares that number of low bits,
+	 * 15 compares all 15 subsecond bits.
+	 * Example: AlarmConfig alarm{.hour={14, Alarm_Masks::Care},
+	 *     .min={25, Alarm_Masks::Care}, .sec={0, Alarm_Masks::Care}};
+	 * clock.EnableAlarm_A(ENABLE, alarm); // Daily at 14:25:00.
 	 */
 	struct AlarmConfig {
-		AlarmField day;
-		AlarmField hour;
-		AlarmField min;
-		AlarmField sec;
-		uint32_t   sub_sec_msk = 0; ///< MASKSS field: number of sub-second bits to ignore (0 = compare all).
-		uint32_t   sub_sec     = 0; ///< Sub-second target value (SS field).
+		AlarmField day, hour, min, sec;
+		uint32_t sub_sec_msk = 0;
+		uint32_t sub_sec = 0;
 	};
-
-	/** Default config: all fields ignored — used as default argument for EnableAlarm_A/B. */
 	static const AlarmConfig kNoAlarm;
 
-	// -----------------------------------------------------------------------
-	// Initialisation
-	// -----------------------------------------------------------------------
+	RTC_cl() = default;
+	RTC_cl(const RTC_cl&) = delete;
+	RTC_cl& operator=(const RTC_cl&) = delete;
+	RTC_cl(RTC_cl&&) = delete;
+	RTC_cl& operator=(RTC_cl&&) = delete;
 
 	/**
-	 * @brief Enables RTC clocking, starts the selected oscillator, and
-	 *        programs the prescaler dividers.
-	 *
-	 * Initialisation is skipped if the RTC is already synchronised
-	 * (ICSR::RSF == 0), so SetUp() may be called again after returning
-	 * from Stop mode without losing the current time.
-	 *
-	 * Calendar tick frequency:
-	 *   f_ck_spre = f_rtcclk / ((prediv_a + 1) * (prediv_s + 1))
-	 * With defaults prediv_a = 127, prediv_s = 255:
-	 *   32768 / (128 * 256) = 1 Hz — one calendar tick per second.
-	 *
-	 * @param clk_src  Clock source (LSE recommended for accuracy).
-	 * @param prediv_a Asynchronous prescaler (7-bit, range 0..127).
-	 * @param prediv_s Synchronous prescaler  (15-bit, range 0..32767).
+	 * Same retained source preserves time and dividers; shadows are synchronized.
+	 * Changing an already selected source resets the backup domain, losing time,
+	 * backup registers and other backup-domain configuration. NO is rejected.
+	 * LSE wait: 5000 ms; all other waits: 1000 ms, using System::WaitBits.
+	 * Calendar frequency = RTCCLK / ((prediv_a+1)*(prediv_s+1)).
+	 * Defaults 127/255 suit LSE 32768 Hz. For nominal LSI 32000 Hz use 127/249.
+	 * LSI tolerance remains: measure/calibrate it when clock accuracy matters.
 	 */
-	static SysInitStatus SetUp(CLK_Source clk_src = CLK_Source::LSI,
-							   uint32_t prediv_a  = 127,
-							   uint32_t prediv_s  = 255);
+	SysInitStatus SetUp(CLK_Source source = CLK_Source::LSI,
+		uint32_t prediv_a = 127, uint32_t prediv_s = 255);
+	/// Main only: stop owned events/IRQs; keep calendar/source/backup data.
+	void DeInit();
 
-	// -----------------------------------------------------------------------
-	// Write protection
-	// -----------------------------------------------------------------------
+	/** Decimal setters, main only. Invalid fields leave calendar untouched.
+	 * Returns NotInit, Error, Timeout or OK. Setters enter INIT then sync shadows.
+	 */
+	SysStatus SetTime(const Time& time);
+	SysStatus SetDate(const Date& date, WeekDay weekday = WeekDay::Monday);
+	/// Compatibility input: packed BCD, e.g. hours=0x14 means 14:00.
+	SysStatus SetTime_hex(const Time& time);
+	SysStatus SetDate_hex(const Date& date, WeekDay weekday = WeekDay::Monday);
+	/// Coherent snapshot: TR then DR, releasing the shadow lock.
+	void GetDateTime(RtcTime& time, RtcDate& date) const;
+	/// Independent snapshots; GetTime also reads DR to release the shadow lock.
+	RtcTime GetTime() const;
+	RtcDate GetDate() const;
 
 	/**
-	 * @brief Locks or unlocks the RTC register write protection.
-	 *
-	 * Most RTC registers are write-protected against spurious writes.
-	 * Unlock sequence: write 0xCA then 0x53 to WPR.
-	 * Lock:            write any incorrect key (0xFF).
-	 *
-	 * Every method in this class removes the protection before modifying
-	 * registers and restores it immediately after.
+	 * Arm WakeUp + IRQ. counter 0..65535, normally period=counter+1 ticks.
+	 * WUCKSEL: 000=/16, 001=/8, 010=/4, 011=/2, 100=ck_spre,
+	 * 110=ck_spre with 65536 added to counter. Codes 101/111 are rejected.
+	 * With a 1 Hz calendar, EnableWakeUpTimer(1, 0b100) gives two seconds.
+	 * Rearm disables WUTE/WUTIE, waits WUTWF, clears stale WUTF, then arms.
 	 */
-	inline static void WriteProtection(FunctionalState enable) {
-		if (enable) { RTC->WPR = 0xFF; }
-		else        { RTC->WPR = 0xCA; RTC->WPR = 0x53; }
-	}
+	SysStatus EnableWakeUpTimer(uint32_t counter = 0, uint8_t clock_div = 0b100);
+	SysStatus DisableWakeUpTimer(); ///< Stop without waiting; main only.
+	/// Arm/disarm alarm, clear stale flag, bound the write-ready wait.
+	SysStatus EnableAlarm_A(FunctionalState enable, const AlarmConfig& config = kNoAlarm);
+	SysStatus EnableAlarm_B(FunctionalState enable, const AlarmConfig& config = kNoAlarm);
 
-	// -----------------------------------------------------------------------
-	// Time and date
-	// -----------------------------------------------------------------------
+	/** Timestamp on currently selected RTC_TS input (normally PC13).
+	 * Application prepares physical input and any alternate TS routing.
+	 * IRQ enabled automatically; IRQ_en(TS, DISABLE) selects polling instead.
+	 * Captured values are read before clearing TSF; OnTimestamp receives the
+	 * snapshot after acknowledgement, so callbacks cannot read TSTR/TSDR again.
+	 */
+	SysStatus EnableTimestamp(FunctionalState enable, TimestampEdge edge = TimestampEdge::Rising);
+	/// Poll capture: Busy if no TSF; read before clearing TSF/TSOVF.
+	SysStatus GetTimestamp(Timestamp& stamp);
 
 	/**
-	 * @brief Sets the current time.
-	 *
-	 * Writing TR requires initialisation mode (ICSR::INIT = 1, wait for INITF).
-	 * All fields are converted from decimal to BCD via to_bcd().
+	 * Main only: register this object on first enable, retain until DeInit.
+	 * Disable masks only this source. Returns InitError if not initialized,
+	 * source invalid or registry full. RTC manages its own internal EXTI routes;
+	 * these do not use the external GPIO EXTI_Line driver.
 	 */
-	inline static void SetTime(const Time& t) {
-		WriteProtection(DISABLE);
-		RTC->ICSR = RTC_ICSR_INIT;
-		while (!(RTC->ICSR & RTC_ICSR_INITF));
-		RTC->TR = to_bcd(t.hours)   << RTC_TR_HU_Pos  |
-				  to_bcd(t.minutes) << RTC_TR_MNU_Pos |
-				  to_bcd(t.seconds) << RTC_TR_SU_Pos;
-		RTC->ICSR &= ~RTC_ICSR_INIT;
-		WriteProtection(ENABLE);
-	}
-
-	inline static void SetTime_hex(const Time& t) {
-		WriteProtection(DISABLE);
-		RTC->ICSR = RTC_ICSR_INIT;
-		while (!(RTC->ICSR & RTC_ICSR_INITF));
-		RTC->TR = t.hours   << RTC_TR_HU_Pos  |
-				  t.minutes << RTC_TR_MNU_Pos |
-				  t.seconds << RTC_TR_SU_Pos;
-		RTC->ICSR &= ~RTC_ICSR_INIT;
-		WriteProtection(ENABLE);
-	}
+	SysInitStatus IRQ_en(IRQ_s source, FunctionalState enable);
+	void HandleIRQ() override final;
 
 	/**
-	 * @brief Sets the current date and day of week.
-	 *
-	 * Writing DR requires initialisation mode (ICSR::INIT = 1, wait for INITF).
-	 * Year is two-digit decimal: pass 26 for 2026.
+	 * Smooth calibration, 32-second window: calm 0..511 suppressed pulses;
+	 * calp adds 512 pulses. Step about 0.954 ppm at 32768 Hz.
+	 * Busy immediately while RECALPF=1, without waiting.
+	 * Example: SetCalibration(6) slows nominal LSE by about 5.72 ppm.
 	 */
-	inline static void SetDate(const Date& d, WeekDay wd = WeekDay::Monday) {
-		WriteProtection(DISABLE);
-		RTC->ICSR = RTC_ICSR_INIT;
-		while (!(RTC->ICSR & RTC_ICSR_INITF));
-		RTC->DR = to_bcd(d.day)   << RTC_DR_DU_Pos  |
-				  to_bcd(d.month) << RTC_DR_MU_Pos  |
-				  to_bcd(d.year)  << RTC_DR_YU_Pos  |
-				  static_cast<uint32_t>(wd) << RTC_DR_WDU_Pos;
-		RTC->ICSR &= ~RTC_ICSR_INIT;
-		WriteProtection(ENABLE);
+	SysStatus SetCalibration(uint16_t calm = 0, bool calp = false);
+	/// Output RTCCLK/64 or ck_spre on RTC_CALIB; caller prepares pin routing.
+	SysStatus EnableCOE(bool enable, CalOut output = CalOut::Out_512);
+
+	/// WPR keys; all configuration methods unlock/relock internally.
+	static void WriteProtection(FunctionalState enable) {
+		if (enable) RTC->WPR = 0xFF;
+		else { RTC->WPR = 0xCA; RTC->WPR = 0x53; }
+	}
+	/// Decimal 0..99 to packed BCD; 0xFF for out-of-range input.
+	static uint8_t to_bcd(uint8_t value) {
+		if (value > 99) return 0xFF;
+		const uint8_t tens = (static_cast<uint16_t>(value) * 205u) >> 11;
+		return (tens << 4) | (value - tens * 10u);
 	}
 
-	inline static void SetDate_hex(const Date& d, WeekDay wd = WeekDay::Monday) {
-		WriteProtection(DISABLE);
-		RTC->ICSR = RTC_ICSR_INIT;
-		while (!(RTC->ICSR & RTC_ICSR_INITF));
-		RTC->DR = d.day   << RTC_DR_DU_Pos  |
-				  d.month << RTC_DR_MU_Pos  |
-				  d.year  << RTC_DR_YU_Pos  |
-				  static_cast<uint32_t>(wd) << RTC_DR_WDU_Pos;
-		RTC->ICSR &= ~RTC_ICSR_INIT;
-		WriteProtection(ENABLE);
-	}
-
-	inline static RtcTime GetTime() {
-		uint32_t tr = RTC->TR;
-		return {
-			.su  = uint8_t((tr & RTC_TR_SU)  >> RTC_TR_SU_Pos),
-			.st  = uint8_t((tr & RTC_TR_ST)  >> RTC_TR_ST_Pos),
-			.mnu = uint8_t((tr & RTC_TR_MNU) >> RTC_TR_MNU_Pos),
-			.mnt = uint8_t((tr & RTC_TR_MNT) >> RTC_TR_MNT_Pos),
-			.hu  = uint8_t((tr & RTC_TR_HU)  >> RTC_TR_HU_Pos),
-			.ht  = uint8_t((tr & RTC_TR_HT)  >> RTC_TR_HT_Pos),
-			.pad = {}, 
-		};
-	}
-
-	inline static RtcDate GetDate() {
-		uint32_t dr = RTC->DR;
-		return {
-			.du  = uint8_t((dr & RTC_DR_DU)  >> RTC_DR_DU_Pos),
-			.dt  = uint8_t((dr & RTC_DR_DT)  >> RTC_DR_DT_Pos),
-			.mu  = uint8_t((dr & RTC_DR_MU)  >> RTC_DR_MU_Pos),
-			.mt  = uint8_t((dr & RTC_DR_MT)  >> RTC_DR_MT_Pos),
-			.yu  = uint8_t((dr & RTC_DR_YU)  >> RTC_DR_YU_Pos),
-			.yt  = uint8_t((dr & RTC_DR_YT)  >> RTC_DR_YT_Pos),
-			.wdu = uint8_t((dr & RTC_DR_WDU) >> RTC_DR_WDU_Pos),
-			.pad = 0
-		};
-	}
-
-	// -----------------------------------------------------------------------
-	// WakeUp Timer
-	// -----------------------------------------------------------------------
-
-	/**
-	 * @brief Configures and starts the WakeUp Timer and registers a callback.
-	 *
-	 * Generates a periodic interrupt at the chosen rate.  Automatically enables
-	 * the WUT interrupt (WUTIE in CR) via IRQ_en(), which registers in
-	 * IRQ_Registry and unmasks NVIC on the first call.
-	 *
-	 * Clock source selection (clock_div = WUCKSEL[2:0]):
-	 *   0b000 = RTCCLK / 2
-	 *   0b001 = RTCCLK / 4
-	 *   0b010 = RTCCLK / 8
-	 *   0b011 = RTCCLK / 16
-	 *   0b100 = ck_spre (1 Hz with default prescalers)  <- recommended
-	 *   0b101 = ck_spre with 65536 added to WUTR
-	 *
-	 * Period with clock_div = 0b100:  T = (counter + 1) seconds.
-	 *   counter = 0  ->  1 s
-	 *   counter = 1  ->  2 s
-	 *   counter = 59 -> 60 s
-	 *
-	 * @param counter   WakeUp counter value written to WUTR (0..65535).
-	 * @param clock_div WUT clock source (WUCKSEL, 3 bits).
-	 * @param cb        Callback invoked from the interrupt after flag clearing.
-	 *                  Pass nullptr to enable the timer without a callback.
-	 */
-	inline static void EnableWakeUpTimer(uint32_t counter   = 0,
-										 uint8_t  clock_div = 0b100,
-										 void (*cb)(void) = nullptr) {
-		_wut_cb = cb;
-		WriteProtection(DISABLE);
-
-		// RM0454 §27.5.2: WUTR/WUCKSEL are write-protected while WUTE=1.
-		// Must clear WUTE and wait for WUTWF=1 (~2 RTCCLK ≈ 61 µs) before writing.
-		RTC->CR &= ~RTC_CR_WUTE;
-		while (!(RTC->ICSR & RTC_ICSR_WUTWF)) {}
-
-		RTC->WUTR = counter;
-		RTC->CR   = (RTC->CR & ~RTC_CR_WUCKSEL_Msk)
-		          | ((clock_div & 0x7u) << RTC_CR_WUCKSEL_Pos)
-		          | RTC_CR_WUTE;
-
-		WriteProtection(ENABLE);
-		IRQ_en(IRQ_s::WUT, ENABLE);
-	}
-
-	/**
-	 * @brief Configures and enables / disables Alarm A.
-	 *
-	 * When enabled, writes ALRMAR from @p cfg and sets the user callback.
-	 * The alarm interrupt (ALRAIE) is managed via IRQ_en().
-	 *
-	 * @param en   ENABLE to arm the alarm, DISABLE to disarm it.
-	 * @param cfg  Match fields — only those with mask = Care are compared.
-	 * @param cb   Callback invoked from the interrupt after flag clearing.
-	 */
-	static void EnableAlarm_A(FunctionalState en,
-							   const AlarmConfig& cfg = kNoAlarm,
-							   void (*cb)(void) = nullptr);
-
-	/**
-	 * @brief Configures and enables / disables Alarm B.
-	 *
-	 * Identical to EnableAlarm_A but targets ALRMBR and the ALRBIE interrupt.
-	 */
-	static void EnableAlarm_B(FunctionalState en,
-							   const AlarmConfig& cfg = kNoAlarm,
-							   void (*cb)(void) = nullptr);
-
-	// -----------------------------------------------------------------------
-	// Interrupt control
-	// -----------------------------------------------------------------------
-
-	/**
-	 * @brief Enables or disables an RTC interrupt source.
-	 *
-	 * On first enable (NVIC not yet active):
-	 *   - registers WutHandler in IRQ_Registry
-	 *   - unmasks the RTC EXTI line
-	 *   - enables NVIC
-	 *
-	 * On last disable (all sources cleared):
-	 *   - unregisters from IRQ_Registry
-	 *   - disables NVIC
-	 *
-	 * Write protection is managed internally.
-	 *
-	 * @param irq Interrupt source (see IRQ_s).
-	 * @param en  ENABLE / DISABLE.
-	 */
-	static void IRQ_en(IRQ_s irq, FunctionalState en){
-		WriteProtection(DISABLE);
-		if (en) RTC->CR |=  static_cast<uint32_t>(irq);
-		else    RTC->CR &= ~static_cast<uint32_t>(irq);
-		WriteProtection(ENABLE);
-
-		constexpr uint32_t all_irq_bits = RTC_CR_WUTIE | RTC_CR_ALRAIE | RTC_CR_ALRBIE | RTC_CR_TSIE;
-		if (en && !NVIC_GetEnableIRQ(RTC_TAMP_IRQn)) {
-			IRQ_Registry::Register(RTC_TAMP_IRQn, &_rtc_handler);
-			EXTI->IMR1 |= EXTI_IMR1_IM19;
-			NVIC_EnableIRQ(RTC_TAMP_IRQn);
-		} else if (!en && !(RTC->CR & all_irq_bits)) {
-			IRQ_Registry::Unregister(RTC_TAMP_IRQn);
-			NVIC_DisableIRQ(RTC_TAMP_IRQn);
-		}
-	};
-	// -----------------------------------------------------------------------
-	// Smooth digital calibration (RTC->CALR)
-	// -----------------------------------------------------------------------
-
-	/**
-	 * @brief Programs the RTC smooth calibration register (CALR).
-	 *
-	 * Works in a 32-second window (2²⁰ = 1 048 576 RTCCLK pulses):
-	 *   calp=false → suppress @p calm pulses  → clock slows by calm × 0.9537 ppm
-	 *   calp=true  → add 512, suppress @p calm → net: (512 − calm) × 0.9537 ppm faster
-	 *
-	 * Resolution: ~0.954 ppm / step.  Range: ±488 ppm.
-	 *
-	 * Typical usage — measured period 999.9945 ms (clock 5.5 ppm fast):
-	 * @code
-	 *   // CALM = round(5.5 / 0.9537) = 6  →  correction −5.72 ppm
-	 *   RTC_cl::SetCalibration(6);
-	 * @endcode
-	 *
-	 * @param calm  Pulses to suppress per 32 s window (0 – 511).
-	 * @param calp  Add 512 extra pulses (true = shift clock positive / faster).
-	 */
-	static void SetCalibration(uint16_t calm = 0, bool calp = false);
-
-	// -----------------------------------------------------------------------
-	// Calibration output
-	// -----------------------------------------------------------------------
-
-	/**
-	 * @brief Enables or disables the calibration clock output on RTC_CALIB pin.
-	 *
-	 * Useful for measuring oscillator accuracy with an oscilloscope.
-	 * Outputs ck_spre (1 Hz) or RTCCLK/64 depending on the COSEL bit.
-	 */
-	static void EnableCOE(bool en, CalOut out = CalOut::Out_512) {
-		WriteProtection(DISABLE);
-		if (en) {
-			RTC->CR &= ~RTC_CR_COSEL;
-			RTC->CR |=  static_cast<uint32_t>(out);
-			RTC->CR |=  RTC_CR_COE;
-		}
-		else    RTC->CR &= ~RTC_CR_COE;
-		WriteProtection(ENABLE);
-	}
-
-	// -----------------------------------------------------------------------
-	// BCD conversion (public — used by build_alrmr in rtc.cpp)
-	// -----------------------------------------------------------------------
-
-	/** @brief Decimal (0..99) to packed BCD. Returns 0xFF for out-of-range input. */
-	inline static uint8_t to_bcd(uint8_t v) {
-		if (v > 99) return 0xFF;
-		uint8_t t = ((uint16_t)v * 205u) >> 11;
-		return (t << 4) | (v - t * 10u);
-	}
+protected:
+	/// IRQ notifications: no waits, registry changes or configuration here.
+	virtual void OnWakeup() {}
+	virtual void OnAlarmA() {}
+	virtual void OnAlarmB() {}
+	virtual void OnTimestamp(const Timestamp&) {}
 
 private:
-
-	// -----------------------------------------------------------------------
-	// WakeUp IRQ handler (private singleton)
-	// -----------------------------------------------------------------------
-
-	static void (*_wut_cb)(void);     ///< User callback set by EnableWakeUpTimer.
-	static void (*_alarm_a_cb)(void); ///< User callback set by EnableAlarm_A.
-	static void (*_alarm_b_cb)(void); ///< User callback set by EnableAlarm_B.
-
-	/**
-	 * @brief Private IIRQHandler singleton for all RTC interrupts.
-	 *
-	 * Registered in IRQ_Registry automatically by IRQ_en() on the first enable.
-	 * Dispatches to the per-source user callbacks after clearing each flag.
-	 */
-	struct RtcHandler : IIRQHandler {
-		void HandleIRQ() override final {
-			if (RTC->SR & RTC_SR_WUTF) {
-				RTC->SCR = RTC_SCR_CWUTF;
-				if (RTC_cl::_wut_cb) RTC_cl::_wut_cb();
-			}
-			if (RTC->SR & RTC_SR_ALRAF) {
-				RTC->SCR = RTC_SCR_CALRAF;
-				if (RTC_cl::_alarm_a_cb) RTC_cl::_alarm_a_cb();
-			}
-			if (RTC->SR & RTC_SR_ALRBF) {
-				RTC->SCR = RTC_SCR_CALRBF;
-				if (RTC_cl::_alarm_b_cb) RTC_cl::_alarm_b_cb();
-			}
-		}
-	};
-	static RtcHandler _rtc_handler;
-
+	static RTC_cl* _owner;
+	uint8_t _registered = 0; ///< Own registrations, independent of NVIC state.
+	bool EnterInit(); ///< Unlock WPR, enter INIT; on failure exit INIT and relock.
+	bool ExitInit(); ///< Exit INIT, sync shadows, lock WPR.
+	static bool Sync();
+	static void ClearFlags(uint32_t flags); ///< ALRA/B/WUT/TS/TSOV normalized bits 0..4.
+	static Timestamp ReadTimestamp(uint32_t flags);
+	static RtcTime DecodeTime(uint32_t value);
+	static RtcDate DecodeDate(uint32_t value);
+	SysStatus Alarm(bool alarm_b, FunctionalState enable, const AlarmConfig& config);
 };
-
 #endif // RTC_HPP_

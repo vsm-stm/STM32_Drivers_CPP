@@ -9,37 +9,62 @@
 ## Table of Contents
 
 1. [Why This Is Needed](#1-why-this-is-needed)
-2. [Stream (F4/F7) vs Channel+DMAMUX (G0)](#2-stream-f4f7-vs-channeldmamux-g0)
-3. [Register Abstraction](#3-register-abstraction)
-4. [Static Descriptor Table and Protection from Double Initialization](#4-static-descriptor-table-and-protection-from-double-initialization)
-5. [Req:: — Named Request Tables](#5-req--named-request-tables)
-6. [SetUp() — Step by Step](#6-setup--step-by-step)
-7. [Flags: One Register for Multiple Channels](#7-flags-one-register-for-multiple-channels)
-8. [Integration with Peripheral Drivers](#8-integration-with-peripheral-drivers)
-9. [Usage Examples](#9-usage-examples)
-10. [Edge Cases](#10-edge-cases)
+2. [Constant Initialization and Constructor Diagnostics](#2-constant-initialization-and-constructor-diagnostics)
+3. [Stream (F4/F7) vs Channel+DMAMUX (G0)](#3-stream-f4f7-vs-channeldmamux-g0)
+4. [Register Abstraction](#4-register-abstraction)
+5. [Static Descriptor Table and Protection from Double Initialization](#5-static-descriptor-table-and-protection-from-double-initialization)
+6. [_N::DMA — Named Request Tables](#6-_ndma--named-request-tables)
+7. [SetUp() — Step by Step](#7-setup--step-by-step)
+8. [Flags: One Register for Multiple Channels](#8-flags-one-register-for-multiple-channels)
+9. [Integration with Peripheral Drivers](#9-integration-with-peripheral-drivers)
+10. [Integration Details](#10-integration-details)
+11. [Usage Examples](#11-usage-examples)
+12. [Edge Cases](#12-edge-cases)
+13. [See Also](#see-also)
 
 ---
 
 ## 1. Why This Is Needed
 
-`DMA_Sx` is one class per one DMA stream (F4/F7) or DMA channel (G0), hiding the fact that this is
-physically **different hardware** across different families (see §2) behind one and the same API. Like
-`USART`/`TIM`/`SPI`, it uses the pattern "a static table of peripheral facts + lookup by
-pointer" — here the table (`dma_streams[]`, dma.cpp) is built not from a constant value, but by
-**pointer arithmetic** (`GetStreamIndex()`, §4), because there are too many streams/channels
-(16 on F4/F7) to search linearly with acceptable predictability compared to directly computing the
-index.
+`DMA_Sx` is one object per DMA **stream** (F4/F7) or DMA **channel** (G0). The hardware differs a lot between families (section 3); `DMA_Sx` hides that behind one API.
 
-`DMA_Sx` is usually not used by itself, but as the "engine" taken by [`USART`](UART.md),
-[`SPI`](SPI.md) or [`TIM_PWM`](TIM.md#62-tim_pwm) — these drivers call `SetUp()`/
-`Register()`/`Enable_IRQ()` on the `DMA_Sx*` passed to them from within their own `AttachDMA()`.
+**Usually you do not create `DMA_Sx` yourself.** It is the "engine" inside [USART](UART.md), [SPI](SPI.md), [I2C](I2C.md), [ADC](ADC.md) and [TIM](TIM.md#8-independent-pwm-dma). Those drivers own their DMA objects, call `SetUp()`, register the interrupt and enable it:
+
+| Driver | Where the DMA is chosen | Where it is configured |
+| --- | --- | --- |
+| USART, SPI, I2C, ADC | constructor (named route on F4/F7, physical channel on G0) | `SetUp()` |
+| TIM | constructor, together with each channel pin | `SetUpPWM()` |
+
+Standalone use (memory-to-memory, custom peripherals) is possible too — see section 11.
+
+**Interrupt enable** (after a successful `SetUp()` and handler registration):
+
+- `Enable_IRQ(irq, enable_nvic = true)` enables the DMA interrupt source and, by default, the NVIC line. With `false`, only the source is enabled; NVIC enable/pending state is left as is.
+- `Disable_IRQ()` disables only the source.
+- Neither clears flags nor starts a transfer.
+
+**`DMA_USE_ATOMIC`** (in `dma.hpp`, default `0`): `1` switches CR/CCR and RCC read-modify-write to ST `ATOMIC_*` macros. Rebuild DMA and its users after changing it. Individual register updates become atomic; acquisition, buffer ownership and multi-step configuration still need external serialization.
 
 ---
 
-## 2. Stream (F4/F7) vs Channel+DMAMUX (G0)
+## 2. Constant Initialization and Constructor Diagnostics
 
-```
+Declare fixed objects at file scope with `constinit` (or as `static constinit` inside a function). A standalone `DMA_Sx` takes either a numeric stream/channel base address or a named peripheral route. Peripheral drivers own their embedded DMA objects — do not create a second one for the same resource.
+
+What happens with a wrong binding:
+
+| Declaration | Result |
+| --- | --- |
+| `constinit` object | **Compilation error** with the reason text in the message. |
+| Object without `constinit` | Compiles; at start-up the constructor stops in `System::DebugTrap(reason)`. |
+
+Every check calls `STM32_CONFIG_ERROR("reason")`: at compile time a GCC error containing the reason, at run time `System::DebugTrap(text)`. `constinit` is required by the usage contract but not enforced. `SetUp()` still checks resource ownership and transfer parameters. Details: [Initialization.md](Initialization.md).
+
+---
+
+## 3. Stream (F4/F7) vs Channel+DMAMUX (G0)
+
+```text
 F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMAMUX1
 ┌─────────────────────────────┐                    ┌─────────────────────────────┐
 │ CR: CHSEL[2:0] hard-wired    │                    │ CCR: direction/size/inc      │
@@ -51,26 +76,24 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
 └─────────────────────────────┘                    └─────────────┬───────────────┘
                                                                   │ DMAMUX1_ChannelN->CCR = req_id
      "Which stream serves USART1_TX?"                            ▼
-     — fixed in silicon, look it up in Req::                ┌─────────────────────┐
-       (see §5) or in RM0090 Table 42                        │ DMAMUX1 — a software │
+     — fixed in silicon, look it up in _N::DMA                ┌─────────────────────┐
+       (see §6) or in RM0090 Table 42                        │ DMAMUX1 — a software │
                                                               │ router: ANY channel  │
                                                               │ → ANY peripheral     │
                                                               └─────────────────────┘
 ```
 
-On F4/F7 the "stream ↔ peripheral" pairing is part of the silicon (for example, `USART1_TX` is **always**
-`DMA2_Stream7` or `DMA2_Stream5`, never anything else); `DMA_Sx::Req::Usart1::TX`/`::TX_alt` in the
-`Req::` table (§5) simply name these fixed pairs. On G0, `DMAMUX1` is a separate hardware
-block between DMA1 and the peripheral: **any** of the 5 `DMA1_Channel1..5` channels can be routed to
-**any** peripheral by writing the request ID into `DMAMUX1_ChannelN->CCR`; the choice of channel is
-entirely up to the calling code, not the silicon.
+| | F4/F7 | G0 |
+| --- | --- | --- |
+| Unit | stream (8 per controller, 16 total) | channel: 5 or 7 on DMA1, plus 5 on DMA2 where present |
+| Who connects it to a peripheral | silicon: each stream has a fixed list of requests, selected by CHSEL | DMAMUX1: any channel can take any request ID |
+| What you choose | one of the predefined routes, e.g. `USART::_3::DMA::TX_DMA1_Stream3` or `TX_DMA1_Stream4` — the name shows the occupied resource | any free channel, e.g. `DMA1_Channel4_BASE`; the request ID comes from the peripheral |
 
 ---
 
-## 3. Register Abstraction
+## 4. Register Abstraction
 
-Just as in [`UART`](UART.md)/[`SPI`](SPI.md), the difference in register names is hidden behind five
-private inline accessors plus a set of `constexpr` masks:
+As in [UART](UART.md)/[SPI](SPI.md), the register name differences are hidden behind small private accessors and `constexpr` masks:
 
 ```cpp
 volatile uint32_t& _CR();    // ->CR   (F4/F7, DMA_Stream_TypeDef) | ->CCR  (G0, DMA_Channel_TypeDef)
@@ -79,230 +102,289 @@ volatile uint32_t& _PAR();   // ->PAR                               | ->CPAR
 volatile uint32_t& _MAR();   // ->M0AR                              | ->CMAR
 ```
 
-plus `CR_EN`/`CR_MINC`/`CR_PINC`/`CR_CIRC` (the bit name is the same in meaning, but the CMSIS
-macro differs: `DMA_SxCR_EN` vs `DMA_CCR_EN`) and `FLAG_TC`/`FLAG_ALL` (the position of the TC flag
-within the flag group of one stream/channel — see §7). The entire public API (`SetMemAddr`, `SetCount`,
-`ClearFlags`, `GetTC_Flag`, `Enable_IRQ`, `Stream_EN`, ...) is written once on top of these accessors
-and works identically on F4/F7/G0.
+Plus masks with family-neutral names:
+
+- `CR_EN`/`CR_MINC`/`CR_PINC`/`CR_CIRC` — same meaning, different CMSIS macros (`DMA_SxCR_EN` vs `DMA_CCR_EN`);
+- `FLAG_TC`/`FLAG_ALL` — positions inside one stream's/channel's flag group (section 8).
+
+The whole public API (`SetMemAddr`, `SetCount`, `ClearFlags`, `GetTC_Flag`, `Enable_IRQ`, `Stream_EN`, …) is written once on top of these and behaves identically on F4/F7/G0.
 
 ---
 
-## 4. Static Descriptor Table and Protection from Double Initialization
+## 5. Static Descriptor Table and Protection from Double Initialization
 
-```cpp
-struct dma_sets_typedef {
-    DMA_TypeDef*        ctrl;      // DMA1 or DMA2
-    volatile uint32_t*  isr;       // flag register (LISR/HISR or ISR)
-    volatile uint32_t*  ifcr;      // flag-clear register (LIFCR/HIFCR or IFCR)
-    uint8_t             if_offset; // bit offset of this stream within the flag group
-    IRQn_Type           irqn;      // NVIC vector
-    bool                used;      // SetUp() has already been called — protects against re-initialization
-};
-```
+**Descriptors.** Each hardware stream/channel has a descriptor: controller, flag registers + bit offset, IRQ number.
 
-16 entries on F4/F7 (`DMA1`/`DMA2` × 8 streams each), 5 on G0 (`DMA1_Channel1..5`). The row
-index for a specific `_stream` is **not stored**, but computed on the fly via
-`GetStreamIndex()` — pointer arithmetic relative to the base address of the first stream/channel:
+- `dma_streams` — a `static const` table in **Flash**.
+- `dma_used` — a separate zero-initialized "occupied" array in **RAM** with the same indices.
+- The object's `_info` points to its const descriptor. No extra per-object index is stored.
 
-```cpp
-// F4/F7:
-if (base >= dma1_base && base <= dma1_end) return (base - dma1_base) / 0x18;       // register stride of one stream
-if (base >= dma2_base && base <= dma2_end) return 8 + (base - dma2_base) / 0x18;   // DMA2 continues indexing from 8
+**Index lookup.** `GetStreamIndex()` computes the index from the controller's address range and the exact register stride taken from CMSIS base addresses. An address pointing *inside* a register block is rejected. G0 DMA2 uses descriptor/DMAMUX indices 7…11 but its own ISR/IFCR.
 
-// G0:
-if (base >= ch1_base && base < ch1_base + kStreamCount * 0x14) return (base - ch1_base) / 0x14;
-```
+**Ownership:**
 
-`SetUp()` finds the needed entry via `GetStreamIndex()` and checks the `used` flag — **each
-`DMA_Sx` object can be configured (`SetUp()`) only once**; calling it again on a stream/channel that is
-already in use returns `InitError` instead of silently re-initializing it on top of someone else's
-configuration. An important consequence for G0: if two different `DMA_Sx` objects accidentally point to
-the same `DMA1_ChannelN` (for example, the code was copied and the channel was forgotten to be changed) —
-the second `SetUp()` fails with `InitError`, rather than silently breaking the first one.
+- A successful `SetUp()` marks the resource occupied by this object.
+- A second `SetUp()` — by the same or another object on the same resource — returns `InitError` until the owner calls `Release()`.
+- Finishing a transfer keeps ownership.
+- `SetUp()`/`Release()` run in the main loop; access is serialized by the caller.
 
 ---
 
-## 5. Req:: — Named Request Tables
+## 6. _N::DMA — Named Request Tables
+
+The value type is shared by all drivers:
 
 ```cpp
 struct DMAReq {
-#if F4/F7:  DMA_Stream_TypeDef* stream; uint32_t ch; // CHSEL — both fields are required
-#elif G0:   uint32_t ch;                             // only the DMAMUX1 request ID
-};
-
-struct Req {
-    struct Usart1 { static constexpr DMAReq TX = {...}; static constexpr DMAReq RX = {...}; };
-    // ... Spi1, Tim3, Adc1, ...
+#if defined(STM32F4) || defined(STM32F7)
+    uintptr_t stream;   // DMAx_Streamy_BASE
+    uint32_t  ch;       // CHSEL (0..7)
+#elif defined(STM32G0)
+    uint32_t  ch;       // DMAMUX1 request ID
+#endif
+    uintptr_t   periph_base;  // owning peripheral (0 = consumer validates its own route)
+    DMA_Sx::DIR direction;    // To_Per / From_Per
 };
 ```
 
-`Req::` is not about selecting registers (that's what `_CR()`/`_NDTR()`/... do), but about
-**which number to write into CHSEL (F4/F7) or into DMAMUX1 (G0)** so the stream/channel listens to
-exactly the right peripheral. The struct names are deliberately `CamelCase` (`Usart1`, not `USART1`) so
-as not to conflict with the CMSIS macros `USART1`/`SPI1`/... (those are `#define`d as pointers to the
-peripheral's registers, not identifiers). On F4/F7, where one peripheral can have more than one
-hardware-valid stream, the second option is called `::TX_alt`/`::RX_alt` (for example,
-`Req::Usart1::TX` = `DMA2_Stream7`, `Req::Usart1::TX_alt` = `DMA2_Stream5`).
-
----
-
-## 6. SetUp() — Step by Step
+The **named routes live with each peripheral**, in its `*_defs.hpp`, next to its pins:
 
 ```cpp
-SysInitStatus SetUp(const StreamSettings& settings);
+struct USART::_1 {
+    struct DMA {
+#if defined(STM32F4) || defined(STM32F7)
+        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream7 = {DMA2_Stream7_BASE, 4U, USART1_BASE, DMA_Sx::DIR::To_Per};
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = {DMA2_Stream2_BASE, 4U, USART1_BASE, DMA_Sx::DIR::From_Per};
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream5 = {DMA2_Stream5_BASE, 4U, USART1_BASE, DMA_Sx::DIR::From_Per};
+#elif defined(STM32G0)
+        static constexpr DMA_Sx::DMAReq TX = {51U, USART1_BASE, DMA_Sx::DIR::To_Per};
+        static constexpr DMA_Sx::DMAReq RX = {50U, USART1_BASE, DMA_Sx::DIR::From_Per};
+#endif
+    };
+    // instance, TX/RX pins ...
+};
 ```
 
-1. `GetStreamIndex(_stream)` → the `dma_streams[]` table; an unknown pointer or `used == true`
-   → immediate `InitError`.
-2. Enable the DMA controller clock (`RCC->AHB1ENR` on F4/F7 — `DMA1EN`/`DMA2EN` depending on
-   which controller the stream belongs to; `RCC->AHBENR |= DMA1EN` on G0 — the same bit also enables
-   `DMAMUX1` at the same time).
-3. Clear `EN` and **wait** until the hardware resets it itself (`while (_CR() & CR_EN) {}`) — DMA
-   does not allow changing most `CR`/`CCR` fields while the stream is active; trying to configure it
-   "on the fly" without this wait would result in a register write where part of it is ignored by the
-   hardware.
-4. `ClearFlags()` — clear the flags from the previous use of this stream (if it was already
-   active earlier in the program).
-5. Determine the **effective channel/request**: if the object was constructed with a `DMAReq`
-   (`_has_preset == true`) — it is used, otherwise `settings.channel` is. So a constructor called with
-   `Req::Usart1::TX` always "wins" over a value accidentally left in `StreamSettings::channel`.
-6. Assemble `CR`/`CCR` — direction, element size (the same for memory and peripheral — there is no
-   separate "resize" case in this driver), `MINC`/`PINC`/`CIRC`. On G0, `DMAMUX1_ChannelN->CCR = eff_ch`
-   is written separately (access to DMAMUX uses the same index `idx` as the channel itself — they are
-   physically aligned 1:1).
-7. Write `_CR()`, `_PAR()`, `_MAR()`, `_NDTR()` from `settings` (the addresses/count can be left as
-   zero here and set later via `SetMemAddr()`/`SetPerAddr()`/`SetCount()` — typical for peripheral
-   drivers that configure the channel once in `AttachDMA()` and pass the address/length on every
-   `Send_DMA()`).
+- These tables answer **which number goes into CHSEL (F4/F7) or DMAMUX1 (G0)** so the stream/channel listens to the right peripheral. Register selection is the accessors' job (section 4).
+- F4/F7 names include controller and stream (`RX_DMA2_Stream2`, `RX_DMA2_Stream5`), so the occupied resource is visible.
+- G0 keeps plain `TX`/`RX`: the physical channel is chosen separately in the constructor.
+- The old `DMA_Sx::Req::Usart1`-style tables were moved into the peripherals; include the peripheral's header to use its routes.
 
 ---
 
-## 7. Flags: One Register for Multiple Channels
+## 7. SetUp() — Step by Step
 
-On both F4/F7 (`LISR`/`HISR`) and G0 (`ISR`), the flags of **several** streams/channels are
-packed into one register in groups of a few bits each — hence the `if_offset` field in the descriptor
-table:
+1. **Resolve and claim.** Find the exact hardware resource; reject it if already owned.
+2. **Validate.** Take the constructor's request, or `settings.channel` when the constructor gave none. Check the effective CHSEL/request ID, direction, data size, address alignment and count (0…65535).
+   - `Mem_To_Mem` is supported **only on G0** and cannot be circular; F4/F7 return `InitError` before touching hardware.
+   - Whether the request is valid for this peripheral on this device is checked by the peripheral driver.
+3. **Clock.** Enable the DMA controller clock (on G0 this also clocks DMAMUX1).
+4. **Stop.** `Stream_EN(DISABLE)`: clear EN and wait for EN = 0 (no timeout). Clear this resource's flags.
+5. **Program.** Write configuration, addresses and count. On G0 the descriptor index selects the DMAMUX1 channel; memory-to-memory uses no request.
+6. **Return `InitOK`** with DMA disabled. Zero addresses/count are allowed for deferred preparation — set them before starting.
+
+Rejected settings claim nothing and change no registers. Element size is the same for both ports. Address/count setters require a successful setup and EN = 0; check their return values.
+
+---
+
+## 8. Flags: One Register for Multiple Channels
+
+Both families pack the flags of **several** streams/channels into one register (F4/F7: `LISR`/`HISR`; G0: `ISR`). Each stream/channel has a small group of bits at offset `if_offset`:
 
 ```cpp
 inline void ClearFlags() { *_info->ifcr = FLAG_ALL << _info->if_offset; }
 inline bool GetTC_Flag() { return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0; }
+inline bool GetHT_Flag() const { return (*_info->isr & (FLAG_HT << _info->if_offset)) != 0; }
+inline void ClearHT_Flag() { *_info->ifcr = FLAG_HT << _info->if_offset; }
+inline void ClearTC_Flag() { *_info->ifcr = FLAG_TC << _info->if_offset; }
 ```
 
-On F4/F7 the group occupies 6 bits, but the offsets go `0, 6, 16, 22` (not `0, 6, 12, 18` — bits
-15:12 inside `LISR`/`HISR` are reserved by hardware), so the offsets in the `dma_streams[]` table are
-written explicitly for each stream rather than computed by a formula. On G0 the group is 4 bits,
-`if_offset = (channel_number - 1) * 4`, more evenly.
+- `GetHT_Flag()` reads the half-transfer flag whether or not the HT interrupt is enabled.
+- `ClearHT_Flag()`/`ClearTC_Flag()` clear only that flag; `ClearFlags()` clears all flags of this resource. Other streams' flags are never touched.
+- Each clear is one write to the clear register (no read-modify-write).
+- All require a successful `SetUp()`. Enabling interrupt sources and handling errors is the consumer's job.
+- ADC uses these together with `GetIRQFlags()` in its DMA handler: HT is enabled via `ADC_N::IRQ_en`, and circular HT/TC invalidate the matching buffer half (the whole buffer if HT is off). See [ADC.md](ADC.md).
 
-**A shared vector for several streams/channels** — on G0, `DMA1_Channel2_3_IRQn` serves both
-channels 2 and 3, and `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` serves channels 4, 5 and the DMAMUX overrun all at
-once (this is exactly why [`IRQ_Registry`](IRQ_Registry.md) supports several handlers on one IRQ line,
-`IRQ_MAX_SHARED = 3` for G0 — see [IRQ_Registry.md §9.3](IRQ_Registry.md#93-dmamux1-overrun-g0-специфика)).
-`GetTC_Flag()` of each `DMA_Sx` object checks **its own** `if_offset` within the shared `ISR`, so sharing
-one vector between several channels is safe — `Dispatch()` will call `HandleIRQ()` on both registered
-objects, but each will see only its own bit.
+**Offsets:**
+
+| Family | Bits per group | Offsets |
+| --- | --- | --- |
+| F4/F7 | 6 | `0, 6, 16, 22` per register — bits 15:12 are reserved, so offsets are listed explicitly in `dma_streams[]` |
+| G0 | 4 | `(channel_number - 1) * 4` |
+
+**Shared vectors on G0:**
+
+- Channel2/3 share `DMA1_Channel2_3_IRQn`.
+- The other vector serves Channel4/5, or Channel4…7, or Channel4…7 plus DMA2 Channel1…5 (device-dependent), plus DMAMUX overrun.
+- [IRQ_Registry](IRQ_Registry.md) allows several handlers per vector; the default capacity is 3 — raise it in the settings header if more consumers share a line.
+- Sharing is safe: `Dispatch()` calls every registered handler, and each `DMA_Sx` checks only **its own** `if_offset`.
 
 ---
 
-## 8. Integration with Peripheral Drivers
+## 9. Integration with Peripheral Drivers
 
-The common `AttachDMA()` pattern is identical in [`UART`](UART.md#8-dma-интеграция) and
-[`SPI`](SPI.md#7-dma-интеграция) (and partially in [`TIM_PWM`](TIM.md#62-tim_pwm)):
+### Nonblocking stop used by USART
 
-1. Find `tx_req`/`rx_req` in the peripheral's own table (`uart_dma_req_table`,
-   `spi_dma_req_table`) by the pointer to its registers (`USARTx`/`SPIx`).
-2. Fill in `DMA_Sx::StreamSettings` (direction, data register address, `Byte` width,
-   `minc = true`) and call `dma->SetUp(cfg)` — the driver code itself does **not** touch `_CR()`/`_NDTR()`
-   directly, only through the public `DMA_Sx` API.
-3. Register **the peripheral object itself** (`this` — `USART*`/`SPI*`), rather than a separate
-   DMA-specific handler, via `IRQ_Registry::Register(dma->GetIRQn(), this)` — the peripheral itself knows
-   how to distinguish, inside its own `HandleIRQ()`, DMA TC from its own status flags
-   (`_dma_tx->GetTC_Flag()`/`_dma_rx->GetTC_Flag()` are checked first, before reading the peripheral's
-   own `SR`/`ISR`).
-4. If TX and RX share the same NVIC vector — registration for the second channel is skipped
-   (the check `tx->GetIRQn() != rx->GetIRQn()`), so as not to needlessly occupy a second slot of the same
-   `_table` row.
+| Method | Behaviour | Where to call |
+| --- | --- | --- |
+| `RequestStop()` | clears EN once and returns immediately | interrupt or main |
+| `IsEnabled()` | reads EN once | anywhere |
+| `Stream_EN(DISABLE)` | clears EN and **waits** for EN = 0 | main loop only, never in an interrupt |
 
-`DMA_Sx` by itself contains no logic about "whose TC this is" — that semantics is added by the
-peripheral driver on top of `GetTC_Flag()`/`ClearFlags()`.
+Both `RequestStop()` and `IsEnabled()` require a successful `SetUp()` and do not clear status flags.
+
+- **F4/F7:** a software stop produces TC; USART finishes the stopped RX packet in its DMA RX handler after that event.
+- **G0:** an abort in the middle of a transfer does not guarantee an accurate CNDTR. USART therefore uses a simple IDLE stop: disable DMAR, disable DMA without waiting, report the packet in the USART interrupt. The last request must already be serviced; failed packets are discarded without using CNDTR. This is not a recovery API for arbitrary aborts.
+
+### How peripheral drivers use DMA_Sx
+
+[UART](UART.md), [SPI](SPI.md), [ADC](ADC.md) and [I2C](I2C.md) configure their constructor-bound DMA in `SetUp()`; [TIM](TIM.md#8-independent-pwm-dma) configures channel-bound DMA in `SetUpPWM()`. Common steps:
+
+1. The constructor receives a named F4/F7 route (or G0 channel) and checks owner/direction at compile time. No duplicate DMA tables remain in USART/SPI/ADC/I2C; TIM keeps its channel route map.
+2. The driver fills `DMA_Sx::StreamSettings` (direction, data-register address, width, `minc = true`) and calls `dma.SetUp(cfg)`. Drivers never touch `_CR()`/`_NDTR()` directly — only the public `DMA_Sx` API.
+3. The driver registers its own handlers: USART/SPI/I2C register separate DMA TX and DMA RX handlers (distinct from the peripheral handler); TIM registers one handler per channel DMA.
+4. When TX and RX DMA share an NVIC vector, that still takes two registry slots; each handler checks only its own flags.
+
+`DMA_Sx` has no idea "whose TC this is" — that meaning is added by the peripheral driver on top of `GetTC_Flag()`/`GetIRQFlags()`/`ClearFlags()`.
 
 ---
 
-## 9. Usage Examples
+## 10. Integration Details
 
-### G0 — Explicit Channel Selection + the Req:: Table
+### UART integration: request inspection and errors
+
+**`CanUseRequest(DMAReq req) const`** — checks a route against the constructor's stream and preset, without touching registers or ownership:
+
+- F4/F7: same stream required; an existing preset must equal `req.ch`.
+- G0: any channel; its hardware existence is checked by `SetUp()`.
+- Without a constructor preset, the consumer passes the matched `req.ch` to `SetUp()`.
+
+**`GetErrorFlags() const`** — normalized error bits (0 before setup): F4/F7 TEIF and DMEIF (direct mode), G0 TEIF. FIFO error (FEIF) is excluded; `ClearFlags()` still clears everything. Read it **before** `ClearFlags()`. UART converts it into its `DmaTx`/`DmaRx` error bits; it enables TC/TE and, on F4/F7, DME (FIFO mode is not used).
+
+**`GetIRQFlags()`** — reads HT, TC and supported errors in **one** ISR access; decode with the public `DMA_Sx::FLAG_HT`, `FLAG_TC`, `FLAG_ERRORS`. FEIF excluded. It neither clears flags nor stops DMA, and returns 0 before `SetUp()`. USART/SPI/ADC/TIM/I2C use it in their DMA handlers. A TC caused by a stop requested after the snapshot is handled in the next DMA interrupt.
+
+### Explicit route names
+
+All F4/F7 routes include controller and stream: `USART::_3::DMA::TX_DMA1_Stream3`, `SPI::_1::DMA::RX_DMA2_Stream0`, `ADC_N::_1::DMA::RX_DMA2_Stream4`.
+
+- They replace the old `TX`/`RX` and `TX_alt`/`RX_alt` names — update application declarations.
+- Stream addresses and CHSEL values are unchanged. `DMAReq` stores the integer `DMAx_Streamy_BASE`; `DMA_Sx` turns it into a pointer.
+- G0 keeps `TX`/`RX`: the constructor already takes an explicit channel.
+- USART1 DMA2_Stream5 / CH4 is named `RX_DMA2_Stream5` (it serves RX). Uart7/Uart8 and G0 Usart3…6 routes exist where those peripherals do.
+
+### SPI stop
+
+SPI binds DMA in the constructor; SPI, DMA TX and DMA RX handlers are registered separately. On NSS release it only disables sources and requests a stop — no waiting in interrupts. F4/F7 collect the stop TC in the DMA interrupt. G0 slave RX requires the last request to be serviced before the NSS stop; `Process()` reads the count. Errors discard the packet.
+
+### Independent TIM channels
+
+- TIM accepts up to four `{pin, dma}` bindings. `SetUpPWM()` acquires each channel's DMA and registers a separate handler, even on shared vectors.
+- Each PWM DMA uses the TIMx_CHx request with CCDS = 1 and its own CCxDE gate — no TIMx_UP fan-out.
+- 16-bit timers use `uint16_t`/Half_Word; 32-bit TIM2/TIM5 use `uint32_t`/Word.
+- System cleans the TX buffer from the cache on F7.
+- Each DMA handler reads only its own flags, stops without waiting, publishes per-channel OK/Error and calls its callback; other channels keep running. TC means "buffer sent", not "last PWM period finished on the pin".
+- The caller masks the affected TIM/DMA interrupts around main-side DIER changes and prevents these handlers from preempting each other. `DeInit()` releases DMA and registrations from `main`.
+- `SetUpPWM()` enables NVIC during initialization; `SendDMA()` re-arms TE/DME via `Enable_IRQ(..., false)`, keeping the caller's NVIC mask. See [TIM.md](TIM.md).
+
+---
+
+## 11. Usage Examples
+
+### G0 — Standalone DMA_Sx with explicit channel and request
 
 ```cpp
-DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
-// ch2/ch3 or ch4/ch5 share a vector — different pairs were chosen so as not to overlap with another peripheral
+constinit DMA_Sx dma_tx(DMA1_Channel4_BASE, USART::_1::DMA::TX);
+constinit DMA_Sx dma_rx(DMA1_Channel5_BASE, USART::_1::DMA::RX);
+// Ch2/Ch3 and Ch4/Ch5 share vectors — pick pairs that do not collide with other peripherals.
 ```
 
-### F4/F7 — via the Req:: Table (the Stream Is Already Baked into DMAReq)
+### F4/F7 — via the peripheral DMA definitions (the Stream Is Already Baked into DMAReq)
 
 ```cpp
-DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX);       // DMA2_Stream7, CHSEL=4
-DMA_Sx dma_tx_alt(DMA_Sx::Req::Usart1::TX_alt); // DMA2_Stream5, CHSEL=4 — same request, different stream
+constinit DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream2);       // CHSEL = 4
+// Alternative route for the same request (not at the same time):
+// constinit DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream5);    // CHSEL = 4
 ```
 
-### Standalone Memory-to-Memory Transfer, No Peripheral
+### G0 — Standalone Memory-to-Memory Transfer, No Peripheral
+
+G0 only — F4/F7 return `InitError` for `Mem_To_Mem` (FIFO-based memory-to-memory is not implemented).
 
 ```cpp
+static constinit DMA_Sx copier(DMA1_Channel3_BASE, /*request, ignored for mem2mem*/ 0u);
+
 DMA_Sx::StreamSettings cfg;
-cfg.direction   = DMA_Sx::DIR::Mem_To_Mem;
-cfg.data_size   = DMA_Sx::SIZE::Word;
-cfg.minc        = true;
-cfg.pinc        = true;
-DMA_Sx copier(DMA1_Channel3, /*raw request, ignored in mem2mem*/ 0u);
-copier.SetUp(cfg);
-copier.SetPerAddr(reinterpret_cast<uint32_t>(src));
-copier.SetMemAddr(reinterpret_cast<uint32_t>(dst));
-copier.SetCount(len);
-copier.Stream_EN(ENABLE);
-while (!copier.GetTC_Flag()) {}
+cfg.direction = DMA_Sx::DIR::Mem_To_Mem;
+cfg.data_size = DMA_Sx::SIZE::Word;
+cfg.minc      = true;
+cfg.pinc      = true;
+
+if (copier.SetUp(cfg) == SysInitStatus::InitOK
+    && copier.SetPerAddr(reinterpret_cast<uint32_t>(src)) == SysStatus::OK
+    && copier.SetMemAddr(reinterpret_cast<uint32_t>(dst)) == SysStatus::OK
+    && copier.SetCount(len) == SysStatus::OK) {
+    copier.Stream_EN(ENABLE);
+    while (!copier.GetTC_Flag()) {}
+}
 ```
 
 ### Through a Peripheral Driver (the Typical Case — See UART.md/SPI.md)
 
 ```cpp
-USART a(USART3, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9);
-DMA_Sx dma_tx(DMA_Sx::Req::Usart3::TX);
-a.SetUp();
-a.AttachDMA(&dma_tx, nullptr);   // SetUp() and IRQ_Registry::Register() — inside AttachDMA()
-a.Send_DMA(buf, len);
+constinit USART a(USART::_3::instance, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9,
+                  USART::_3::DMA::TX_DMA1_Stream3);
+
+if (a.SetUp() == SysInitStatus::InitOK)   // configures DMA and registers its handler
+    a.Send_DMA(buf, len);
 ```
 
 ---
 
-## 10. Edge Cases
+## 12. Edge Cases
 
-- **`SetUp()` can be called exactly once per object** — calling it again on the same
-  physical stream/channel (even from a different `DMA_Sx` object) returns `InitError` because of the
-  `used` flag in the shared `dma_streams[]` table.
-- **`AttachDMA()` must be called AFTER the peripheral's `SetUp()`** — DMA is configured based on
-  the already-known address of the peripheral's data register (`TDR`/`RDR`/`DR`), which does not
-  depend on the peripheral's `SetUp()`, but the binding itself goes through a request table that looks up
-  `USARTx`/`SPIx` — without it, `AttachDMA()` doesn't find the entry and silently fails to configure the
-  DMA (see the code in [UART.md §8](UART.md#8-dma-интеграция)).
-- **`settings.channel` is ignored if the object was created with a `DMAReq`** — the effective
-  request is always taken from the constructor (`_has_preset`), not from `StreamSettings`, even if both
-  are set and do not match.
-- **On F4/F7, `settings.channel > 7` causes `InitError`** immediately in `SetUp()` (CHSEL is a
-  3-bit field); on G0 there is no such check (the DMAMUX1 request ID is wider, up to 63).
-- **Shared vectors on G0** (`DMA1_Channel2_3_IRQn`, `DMA1_Ch4_5_DMAMUX1_OVR_IRQn`) require
-  careful selection of the channel pair for two independent peripherals that must not interfere with
-  each other's response time — see the warning at the very beginning of `dma.hpp` (the "Notes" section of
-  the file's doc comment).
+- **Count.** `SetUp()` allows zero addresses/count without starting. `SetCount()` accepts 1…65535 **elements** (not necessarily bytes).
+- **Address setters** require non-zero addresses aligned to the port width. They return `NotInit` if the object owns no resource, `Busy` while EN = 1, `Error` for invalid arguments; rejected values leave registers unchanged.
+- **Request priority.** The constructor's request wins over `settings.channel`. The value must fit CHSEL (0…7) or the device's DMAREQ_ID field. Reserved IDs and routes are checked by the peripheral driver.
+- **Stopping.** `Stream_EN(DISABLE)` waits for EN = 0 without SysTick or timeout — main loop only. Interrupt code uses `RequestStop()` and waits for the hardware completion event.
+- **Before enabling**, the caller prepares valid transfer arguments. MINC/PINC/CIRC may change only on a stopped channel.
+- **G0 shared vectors** depend on the device (section 8). Size `IRQ_MAX_SHARED` for the real number of independent consumers.
+
+### Release and handover
+
+`Release()`:
+
+- returns `OK` after stopping and resetting the owned resource, clearing its flags and releasing ownership; `NotInit` if the object owns nothing;
+- F4/F7: also resets M1AR/FIFO; G0: clears its DMAMUX channel configuration and overrun flag;
+- keeps the constructor's stream/request selection;
+- leaves shared NVIC lines and controller clocks enabled.
+
+Afterwards another object may claim the hardware with a different request. **Before** releasing, the peripheral owner disables its DMA requests and unregisters its handler.
+
+### Cache maintenance
+
+| Moment | Call (sizes in bytes) |
+| --- | --- |
+| before TX | `System::CacheClean` |
+| before RX | `System::CacheCleanInvalidate` |
+| after confirmed RX completion/stop | `System::CacheInvalidate` |
+
+- Peripheral drivers do this themselves and determine the actually received range before handing data to the application. Direct `DMA_Sx` users must make these calls; `DMA_Sx` keeps no cache/buffer state.
+- On F7 ranges wholly inside configured non-cacheable regions are skipped. Cached RX buffers must own every 32-byte line they touch, including padding. The CPU must not access the DMA-owned part during a transfer.
+- On F4/G0 the helpers are empty inline functions. See [System.md](System.md).
 
 ---
 
 ## See Also
 
-- [IRQ_Registry.md](IRQ_Registry.md) — peripheral drivers register themselves (not `DMA_Sx`) as
-  the handler for the DMA TC interrupt; see §9.2 there for shared vectors `DMA1_Channel2_3_IRQn`.
-- [UART.md](UART.md#8-dma-интеграция), [SPI.md](SPI.md#7-dma-интеграция),
-  [TIM.md](TIM.md#62-tim_pwm) — three drivers that use `DMA_Sx` through the same `AttachDMA()`
-  pattern.
-- [System.md](System.md) — `SysStatus`/`SysInitStatus`, used by the public `DMA_Sx` API.
+- [IRQ_Registry.md](IRQ_Registry.md) — peripheral drivers (not `DMA_Sx`) register themselves as DMA interrupt handlers, including on shared vectors such as `DMA1_Channel2_3_IRQn`.
+- [UART.md](UART.md#6-dma-кеш-и-ошибки), [SPI.md](SPI.md#8-dma-и-кеш), [TIM.md](TIM.md#8-независимые-pwm-dma) — DMA consumers: USART and SPI bind DMA in the constructor and configure it in `SetUp()`; TIM configures channel DMA in `SetUpPWM()`.
+- [System.md](System.md) — `SysStatus`/`SysInitStatus`, cache helpers.
+- [Initialization.md](Initialization.md)
+- [UART.md](UART.md)
+- [SPI.md](SPI.md)
+- [ADC.md](ADC.md)
+- [I2C.md](I2C.md)
+- [TIM.md](TIM.md)
 
 ---
 
@@ -310,38 +392,65 @@ a.Send_DMA(buf, len);
 
 ## Содержание
 
-1. [Зачем это нужно](#1-зачем-это-нужно)
-2. [Stream (F4/F7) vs Channel+DMAMUX (G0)](#2-stream-f4f7-vs-channeldmamux-g0)
-3. [Регистровая абстракция](#3-регистровая-абстракция)
-4. [Статическая таблица дескрипторов и защита от двойной инициализации](#4-статическая-таблица-дескрипторов-и-защита-от-двойной-инициализации)
-5. [Req:: — именованные таблицы запросов](#5-req--именованные-таблицы-запросов)
-6. [SetUp() — пошагово](#6-setup--пошагово)
-7. [Флаги: один регистр на несколько каналов](#7-флаги-один-регистр-на-несколько-каналов)
-8. [Интеграция с периферийными драйверами](#8-интеграция-с-периферийными-драйверами)
-9. [Примеры использования](#9-примеры-использования)
-10. [Угловые случаи](#10-угловые-случаи)
+1. [Постоянная инициализация и диагностика конструктора](#1-постоянная-инициализация-и-диагностика-конструктора)
+2. [Зачем это нужно](#2-зачем-это-нужно)
+3. [Stream (F4/F7) vs Channel+DMAMUX (G0)](#3-stream-f4f7-vs-channeldmamux-g0-1)
+4. [Регистровая абстракция](#4-регистровая-абстракция)
+5. [Статическая таблица дескрипторов и защита от двойной инициализации](#5-статическая-таблица-дескрипторов-и-защита-от-двойной-инициализации)
+6. [_N::DMA — именованные таблицы запросов](#6-_ndma--именованные-таблицы-запросов)
+7. [SetUp() — пошагово](#7-setup--пошагово)
+8. [Флаги: один регистр на несколько каналов](#8-флаги-один-регистр-на-несколько-каналов)
+9. [Интеграция с периферийными драйверами](#9-интеграция-с-периферийными-драйверами)
+10. [Подробности интеграции](#10-подробности-интеграции)
+11. [Примеры использования](#11-примеры-использования)
+12. [Угловые случаи](#12-угловые-случаи)
+13. [См. также](#см-также)
 
 ---
 
-## 1. Зачем это нужно
+## 1. Постоянная инициализация и диагностика конструктора
 
-`DMA_Sx` — один класс на один DMA-стрим (F4/F7) или DMA-канал (G0), скрывающий то, что это
-физически **разное железо** на разных семействах (см. §2), за одним и тем же API. Как и
-`USART`/`TIM`/`SPI`, использует паттерн "статическая таблица фактов о периферии + поиск по
-указателю" — здесь таблица (`dma_streams[]`, dma.cpp) построена не по значению-константе, а
-**арифметикой указателей** (`GetStreamIndex()`, §4), потому что стримов/каналов слишком много
-(16 на F4/F7), чтобы искать линейно с приемлемой предсказуемостью по сравнению с прямым расчётом
-индекса.
+Объявляйте постоянные объекты глобально с `constinit` (или как `static constinit` внутри функции). Самостоятельный `DMA_Sx` принимает числовой базовый адрес потока/канала либо именованный маршрут периферии. Драйверы периферии сами содержат свои DMA — не создавайте второй объект для того же ресурса.
 
-`DMA_Sx` обычно используется не сам по себе, а как "мотор", который берёт [`USART`](UART.md),
-[`SPI`](SPI.md) или [`TIM_PWM`](TIM.md#62-tim_pwm) — эти драйверы вызывают `SetUp()`/
-`Register()`/`Enable_IRQ()` на переданном `DMA_Sx*` изнутри своих `AttachDMA()`.
+Что происходит при неверной привязке:
+
+| Объявление | Результат |
+| --- | --- |
+| Объект с `constinit` | **Ошибка компиляции**, текст причины — в сообщении. |
+| Объект без `constinit` | Собирается; при старте конструктор останавливается в `System::DebugTrap(причина)`. |
+
+Каждая проверка вызывает `STM32_CONFIG_ERROR("причина")`: при компиляции — ошибка GCC с текстом причины, во время работы — `System::DebugTrap(text)`. `constinit` обязателен по правилам использования, но не проверяется. `SetUp()` по-прежнему проверяет занятость ресурса и параметры передачи. Подробнее: [Initialization.md](Initialization.md).
 
 ---
 
-## 2. Stream (F4/F7) vs Channel+DMAMUX (G0)
+## 2. Зачем это нужно
 
-```
+`DMA_Sx` — один объект на **поток** DMA (F4/F7) или **канал** DMA (G0). Аппаратура семейств сильно различается (раздел 3); `DMA_Sx` прячет это за единым API.
+
+**Обычно `DMA_Sx` не создают вручную.** Это «двигатель» внутри [USART](UART.md), [SPI](SPI.md), [I2C](I2C.md), [ADC](ADC.md) и [TIM](TIM.md#8-independent-pwm-dma). Эти драйверы владеют своими DMA, вызывают `SetUp()`, регистрируют прерывание и включают его:
+
+| Драйвер | Где выбирается DMA | Где настраивается |
+| --- | --- | --- |
+| USART, SPI, I2C, ADC | конструктор (именованный маршрут на F4/F7, физический канал на G0) | `SetUp()` |
+| TIM | конструктор, вместе с выводом каждого канала | `SetUpPWM()` |
+
+Самостоятельное использование (память→память, своя периферия) тоже возможно — см. раздел 11.
+
+Индекс ресурса `GetStreamIndex()` (раздел 5) вычисляет по диапазону адресов контроллера и шагу регистров, отклоняя адреса между началами потоков/каналов.
+
+**Включение прерывания** (после успешного `SetUp()` и регистрации обработчика):
+
+- `Enable_IRQ(irq, enable_nvic = true)` включает источник прерывания DMA и по умолчанию линию NVIC. С `false` включается только источник; разрешение и флаг ожидания NVIC не меняются.
+- `Disable_IRQ()` выключает только источник.
+- Ни один из методов не сбрасывает флаги и не запускает передачу.
+
+**`DMA_USE_ATOMIC`** (в `dma.hpp`, по умолчанию `0`): `1` переключает «прочитать-изменить-записать» CR/CCR и RCC на макросы ST `ATOMIC_*`. После изменения пересоберите DMA и его потребителей. Атомарными становятся отдельные изменения регистров; захват ресурса, владение буфером и многошаговая настройка по-прежнему требуют внешнего согласования.
+
+---
+
+## 3. Stream (F4/F7) vs Channel+DMAMUX (G0)
+
+```text
 F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMAMUX1
 ┌─────────────────────────────┐                    ┌─────────────────────────────┐
 │ CR: CHSEL[2:0] жёстко        │                    │ CCR: направление/размер/inc  │
@@ -352,27 +461,25 @@ F4/F7: DMA_Stream_TypeDef                          G0: DMA_Channel_TypeDef + DMA
 │ LIFCR/HIFCR (сброс, 2 рег.)  │                    │ IFCR (сброс, один регистр)   │
 └─────────────────────────────┘                    └─────────────┬───────────────┘
                                                                   │ DMAMUX1_ChannelN->CCR = req_id
-     "Какой стрим обслуживает USART1_TX?"                        ▼
-     — фиксировано в кремнии, смотреть в Req::             ┌─────────────────────┐
-       (см. §5) или в RM0090 Table 42                       │ DMAMUX1 — программный │
+     "Какой поток обслуживает USART1_TX?"                        ▼
+     — фиксировано в кремнии, смотреть в _N::DMA             ┌─────────────────────┐
+       (см. §6) или в RM0090 Table 42                       │ DMAMUX1 — программный │
                                                              │ маршрутизатор: ЛЮБОЙ  │
                                                              │ канал → ЛЮБАЯ периферия│
                                                              └─────────────────────┘
 ```
 
-На F4/F7 связка "стрим ↔ периферия" — часть кремния (например, `USART1_TX` **всегда**
-`DMA2_Stream7` или `DMA2_Stream5`, никак иначе); `DMA_Sx::Req::Usart1::TX`/`::TX_alt` в таблице
-`Req::` (§5) просто называют эти зафиксированные пары. На G0 `DMAMUX1` — отдельный аппаратный
-блок между DMA1 и периферией: **любой** из 5 каналов `DMA1_Channel1..5` можно направить на
-**любую** периферию, записав ID запроса в `DMAMUX1_ChannelN->CCR`; выбор канала — целиком на
-усмотрение вызывающего кода, а не кремния.
+| | F4/F7 | G0 |
+| --- | --- | --- |
+| Единица | поток (8 на контроллер, всего 16) | канал: 5 или 7 у DMA1, плюс 5 у DMA2, если он есть |
+| Кто связывает с периферией | кремний: у каждого потока фиксированный список запросов, выбор через CHSEL | DMAMUX1: любой канал может взять любой номер запроса |
+| Что выбираете вы | один из готовых маршрутов, например `USART::_3::DMA::TX_DMA1_Stream3` или `TX_DMA1_Stream4` — имя показывает занятый ресурс | любой свободный канал, например `DMA1_Channel4_BASE`; номер запроса подставляет периферия |
 
 ---
 
-## 3. Регистровая абстракция
+## 4. Регистровая абстракция
 
-Как и в [`UART`](UART.md)/[`SPI`](SPI.md), разница в именах регистров спрятана в пяти приватных
-инлайн-акцессорах плюс наборе `constexpr`-масок:
+Как и в [UART](UART.md)/[SPI](SPI.md), различия имён регистров спрятаны за небольшими приватными функциями доступа и `constexpr`-масками:
 
 ```cpp
 volatile uint32_t& _CR();    // ->CR   (F4/F7, DMA_Stream_TypeDef) | ->CCR  (G0, DMA_Channel_TypeDef)
@@ -381,227 +488,286 @@ volatile uint32_t& _PAR();   // ->PAR                               | ->CPAR
 volatile uint32_t& _MAR();   // ->M0AR                              | ->CMAR
 ```
 
-плюс `CR_EN`/`CR_MINC`/`CR_PINC`/`CR_CIRC` (имя бита одно и то же по смыслу, но разный макрос
-CMSIS: `DMA_SxCR_EN` vs `DMA_CCR_EN`) и `FLAG_TC`/`FLAG_ALL` (позиция флага TC внутри группы
-флагов одного стрима/канала — см. §7). Весь публичный API (`SetMemAddr`, `SetCount`, `ClearFlags`,
-`GetTC_Flag`, `Enable_IRQ`, `Stream_EN`, ...) написан один раз поверх этих акцессоров и работает
-одинаково на F4/F7/G0.
+Плюс маски с общими для семейств именами:
+
+- `CR_EN`/`CR_MINC`/`CR_PINC`/`CR_CIRC` — одинаковый смысл, разные макросы CMSIS (`DMA_SxCR_EN` и `DMA_CCR_EN`);
+- `FLAG_TC`/`FLAG_ALL` — позиции внутри группы флагов одного потока/канала (раздел 8).
+
+Весь публичный API (`SetMemAddr`, `SetCount`, `ClearFlags`, `GetTC_Flag`, `Enable_IRQ`, `Stream_EN`, …) написан один раз поверх них и работает одинаково на F4/F7/G0.
 
 ---
 
-## 4. Статическая таблица дескрипторов и защита от двойной инициализации
+## 5. Статическая таблица дескрипторов и защита от двойной инициализации
 
-```cpp
-struct dma_sets_typedef {
-    DMA_TypeDef*        ctrl;      // DMA1 или DMA2
-    volatile uint32_t*  isr;       // регистр флагов (LISR/HISR либо ISR)
-    volatile uint32_t*  ifcr;      // регистр сброса флагов (LIFCR/HIFCR либо IFCR)
-    uint8_t             if_offset; // смещение бит этого стрима внутри группы флагов
-    IRQn_Type           irqn;      // вектор NVIC
-    bool                used;      // SetUp() уже вызывался — защита от повторной инициализации
-};
-```
+**Дескрипторы.** У каждого аппаратного потока/канала есть дескриптор: контроллер, регистры флагов и смещение битов, номер IRQ.
 
-16 записей на F4/F7 (`DMA1`/`DMA2` × 8 стримов каждый), 5 на G0 (`DMA1_Channel1..5`). Индекс
-строки для конкретного `_stream` **не хранится**, а вычисляется на лету через
-`GetStreamIndex()` — арифметика указателей относительно базового адреса первого стрима/канала:
+- `dma_streams` — таблица `static const` во **Flash**.
+- `dma_used` — отдельный обнуляемый массив занятости в **RAM** с теми же индексами.
+- `_info` объекта указывает на константный дескриптор. Дополнительный индекс в объекте не хранится.
 
-```cpp
-// F4/F7:
-if (base >= dma1_base && base <= dma1_end) return (base - dma1_base) / 0x18;       // шаг регистров одного стрима
-if (base >= dma2_base && base <= dma2_end) return 8 + (base - dma2_base) / 0x18;   // DMA2 продолжает индексацию с 8
+**Поиск индекса.** `GetStreamIndex()` вычисляет индекс по диапазону адресов контроллера и точному шагу регистров из базовых адресов CMSIS. Адрес, указывающий *внутрь* блока регистров, отклоняется. DMA2 на G0 использует индексы дескрипторов/DMAMUX 7…11, но свои ISR/IFCR.
 
-// G0:
-if (base >= ch1_base && base < ch1_base + kStreamCount * 0x14) return (base - ch1_base) / 0x14;
-```
+**Владение:**
 
-`SetUp()` находит нужную запись через `GetStreamIndex()` и проверяет флаг `used` — **каждый
-`DMA_Sx`-объект можно настроить (`SetUp()`) только один раз**; повторный вызов на уже
-использованном стриме/канале возвращает `InitError`, не переинициализируя его тихо поверх чужой
-настройки. Важное следствие для G0: если два разных `DMA_Sx`-объекта случайно указывают на один
-и тот же `DMA1_ChannelN` (например, скопировали код и забыли поменять канал) — второй `SetUp()`
-провалится с `InitError`, а не молча сломает первый.
+- Успешный `SetUp()` помечает ресурс занятым этим объектом.
+- Повторный `SetUp()` — этим или другим объектом на том же ресурсе — возвращает `InitError` до `Release()` владельца.
+- Завершение передачи владение не снимает.
+- `SetUp()`/`Release()` выполняются в основном цикле; согласование доступа — за вызывающим кодом.
 
 ---
 
-## 5. Req:: — именованные таблицы запросов
+## 6. _N::DMA — именованные таблицы запросов
+
+Тип значения общий для всех драйверов:
 
 ```cpp
 struct DMAReq {
-#if F4/F7:  DMA_Stream_TypeDef* stream; uint32_t ch; // CHSEL — оба поля обязательны
-#elif G0:   uint32_t ch;                             // только DMAMUX1 request ID
-};
-
-struct Req {
-    struct Usart1 { static constexpr DMAReq TX = {...}; static constexpr DMAReq RX = {...}; };
-    // ... Spi1, Tim3, Adc1, ...
+#if defined(STM32F4) || defined(STM32F7)
+    uintptr_t stream;   // DMAx_Streamy_BASE
+    uint32_t  ch;       // CHSEL (0..7)
+#elif defined(STM32G0)
+    uint32_t  ch;       // номер запроса DMAMUX1
+#endif
+    uintptr_t   periph_base;  // периферия-владелец (0 = маршрут проверяет сам потребитель)
+    DMA_Sx::DIR direction;    // To_Per / From_Per
 };
 ```
 
-`Req::` — не про выбор регистров (это делает `_CR()`/`_NDTR()`/...), а про то, **какое число
-записать в CHSEL (F4/F7) или в DMAMUX1 (G0)**, чтобы стрим/канал слушал именно нужную периферию.
-Имена структур — `CamelCase` (`Usart1`, не `USART1`) специально, чтобы не конфликтовать с
-CMSIS-макросами `USART1`/`SPI1`/... (те `#define`'ятся как указатели на регистры периферии, а не
-идентификаторы). На F4/F7, где для одной периферии может быть больше одного аппаратно валидного
-стрима, второй вариант называется `::TX_alt`/`::RX_alt` (например,
-`Req::Usart1::TX` = `DMA2_Stream7`, `Req::Usart1::TX_alt` = `DMA2_Stream5`).
-
----
-
-## 6. SetUp() — пошагово
+**Именованные маршруты находятся у каждой периферии**, в её `*_defs.hpp`, рядом с выводами:
 
 ```cpp
-SysInitStatus SetUp(const StreamSettings& settings);
+struct USART::_1 {
+    struct DMA {
+#if defined(STM32F4) || defined(STM32F7)
+        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream7 = {DMA2_Stream7_BASE, 4U, USART1_BASE, DMA_Sx::DIR::To_Per};
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = {DMA2_Stream2_BASE, 4U, USART1_BASE, DMA_Sx::DIR::From_Per};
+        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream5 = {DMA2_Stream5_BASE, 4U, USART1_BASE, DMA_Sx::DIR::From_Per};
+#elif defined(STM32G0)
+        static constexpr DMA_Sx::DMAReq TX = {51U, USART1_BASE, DMA_Sx::DIR::To_Per};
+        static constexpr DMA_Sx::DMAReq RX = {50U, USART1_BASE, DMA_Sx::DIR::From_Per};
+#endif
+    };
+    // instance, выводы TX/RX ...
+};
 ```
 
-1. `GetStreamIndex(_stream)` → таблица `dma_streams[]`; неизвестный указатель или `used == true`
-   → `InitError` немедленно.
-2. Включить тактирование контроллера DMA (`RCC->AHB1ENR` на F4/F7 — `DMA1EN`/`DMA2EN` в
-   зависимости от того, какому контроллеру принадлежит стрим; `RCC->AHBENR |= DMA1EN` на G0 —
-   этот же бит заодно включает и `DMAMUX1`).
-3. Снять `EN` и **дождаться**, пока хардвер сам его сбросит (`while (_CR() & CR_EN) {}`) — DMA
-   не позволяет менять большинство полей `CR`/`CCR`, пока стрим активен; попытка настроить его
-   "на лету" без этого ожидания привела бы к записи в регистр, часть которой хардвер
-   проигнорирует.
-4. `ClearFlags()` — снять флаги предыдущего использования этого стрима (если он уже был
-   активен раньше в программе).
-5. Определить **эффективный канал/запрос**: если объект был сконструирован с `DMAReq`
-   (`_has_preset == true`) — используется он, иначе — `settings.channel`. Так конструктор,
-   вызванный с `Req::Usart1::TX`, всегда "побеждает" значение, случайно оставленное в
-   `StreamSettings::channel`.
-6. Собрать `CR`/`CCR` — направление, размер элемента (одинаковый для памяти и периферии — нет
-   отдельного случая "переразмерить" в этом драйвере), `MINC`/`PINC`/`CIRC`. На G0 отдельно
-   пишется `DMAMUX1_ChannelN->CCR = eff_ch` (доступ к DMAMUX идёт по тому же индексу `idx`, что
-   и сам канал — они физически выровнены 1:1).
-7. Записать `_CR()`, `_PAR()`, `_MAR()`, `_NDTR()` из `settings` (адреса/счётчик можно оставить
-   нулями здесь и задать позже через `SetMemAddr()`/`SetPerAddr()`/`SetCount()` — типично для
-   периферийных драйверов, которые конфигурируют канал один раз в `AttachDMA()`, а адрес/длину
-   передают на каждый `Send_DMA()`).
+- Эти таблицы отвечают на вопрос, **какое число записать в CHSEL (F4/F7) или в DMAMUX1 (G0)**, чтобы поток/канал слушал нужную периферию. Выбор регистров — задача функций доступа (раздел 4).
+- Имена F4/F7 содержат контроллер и поток (`RX_DMA2_Stream2`, `RX_DMA2_Stream5`), поэтому занятый ресурс виден сразу.
+- На G0 остаются `TX`/`RX`: физический канал задаётся отдельно в конструкторе.
+- Старые таблицы вида `DMA_Sx::Req::Usart1` перенесены в периферию; чтобы использовать маршруты, подключите заголовок соответствующей периферии.
 
 ---
 
-## 7. Флаги: один регистр на несколько каналов
+## 7. SetUp() — пошагово
 
-И на F4/F7 (`LISR`/`HISR`), и на G0 (`ISR`) флаги **нескольких** стримов/каналов упакованы в
-один регистр группами по несколько бит — отсюда поле `if_offset` в таблице дескрипторов:
+1. **Найти и занять.** Определить точный аппаратный ресурс; если он уже занят — отказ.
+2. **Проверить.** Взять запрос из конструктора, либо `settings.channel`, если в конструкторе его нет. Проверить итоговый CHSEL/номер запроса, направление, размер данных, выравнивание адресов и счётчик (0…65535).
+   - `Mem_To_Mem` поддерживается **только на G0** и без кольцевого режима; F4/F7 возвращают `InitError` до изменения регистров.
+   - Допустимость запроса для данной периферии на данном МК проверяет драйвер периферии.
+3. **Тактирование.** Включить тактирование контроллера DMA (на G0 это включает и DMAMUX1).
+4. **Остановка.** `Stream_EN(DISABLE)`: снять EN и ждать EN = 0 (без таймаута). Сбросить флаги этого ресурса.
+5. **Запись.** Записать конфигурацию, адреса и счётчик. На G0 индекс дескриптора выбирает канал DMAMUX1; режим память→память запрос не использует.
+6. **Вернуть `InitOK`** с выключенным DMA. Нулевые адреса/счётчик допустимы для отложенной подготовки — задайте их перед запуском.
+
+Отклонённые настройки ничего не занимают и не меняют регистры. Размер элемента одинаков для обоих портов. Методы адресов/счётчика требуют успешной настройки и EN = 0; проверяйте возвращаемые статусы.
+
+---
+
+## 8. Флаги: один регистр на несколько каналов
+
+Оба семейства упаковывают флаги **нескольких** потоков/каналов в один регистр (F4/F7: `LISR`/`HISR`; G0: `ISR`). У каждого потока/канала своя небольшая группа бит со смещением `if_offset`:
 
 ```cpp
 inline void ClearFlags() { *_info->ifcr = FLAG_ALL << _info->if_offset; }
 inline bool GetTC_Flag() { return (*_info->isr & (FLAG_TC << _info->if_offset)) != 0; }
+inline bool GetHT_Flag() const { return (*_info->isr & (FLAG_HT << _info->if_offset)) != 0; }
+inline void ClearHT_Flag() { *_info->ifcr = FLAG_HT << _info->if_offset; }
+inline void ClearTC_Flag() { *_info->ifcr = FLAG_TC << _info->if_offset; }
 ```
 
-На F4/F7 группа занимает 6 бит, но смещения идут `0, 6, 16, 22` (не `0, 6, 12, 18` — биты 15:12
-внутри `LISR`/`HISR` зарезервированы аппаратно), поэтому смещения в таблице `dma_streams[]`
-прописаны явно для каждого стрима, а не вычисляются формулой. На G0 группа — 4 бита,
-`if_offset = (channel_number - 1) * 4`, ровнее.
+- `GetHT_Flag()` читает флаг половины передачи независимо от того, включено ли прерывание HT.
+- `ClearHT_Flag()`/`ClearTC_Flag()` сбрасывают только свой флаг; `ClearFlags()` — все флаги этого ресурса. Флаги других потоков не затрагиваются.
+- Каждый сброс — одна запись в регистр сброса (без «прочитать-изменить-записать»).
+- Все методы требуют успешного `SetUp()`. Включение источников прерываний и обработка ошибок — задача потребителя.
+- ADC использует их вместе с `GetIRQFlags()` в своём обработчике DMA: HT включается через `ADC_N::IRQ_en`, кольцевые HT/TC инвалидируют соответствующую половину буфера (весь буфер, если HT выключен). См. [ADC.md](ADC.md).
 
-**Общий вектор на несколько стримов/каналов** — на G0 `DMA1_Channel2_3_IRQn` обслуживает оба
-канала 2 и 3, а `DMA1_Ch4_5_DMAMUX1_OVR_IRQn` — каналы 4, 5 и переполнение DMAMUX разом (это и
-есть повод, почему [`IRQ_Registry`](IRQ_Registry.md) поддерживает несколько обработчиков на одной
-IRQ-линии, `IRQ_MAX_SHARED = 3` для G0 — см. [IRQ_Registry.md §9.3](IRQ_Registry.md#93-dmamux1-overrun-g0-специфика)).
-`GetTC_Flag()` каждого `DMA_Sx`-объекта проверяет **свой** `if_offset` внутри общего `ISR`, так
-что делить один вектор между несколькими каналами безопасно — `Dispatch()` вызовет `HandleIRQ()`
-у обоих зарегистрированных объектов, но каждый увидит только свой бит.
+**Смещения:**
+
+| Семейство | Бит в группе | Смещения |
+| --- | --- | --- |
+| F4/F7 | 6 | `0, 6, 16, 22` в каждом регистре — биты 15:12 зарезервированы, поэтому смещения явно прописаны в `dma_streams[]` |
+| G0 | 4 | `(номер_канала - 1) * 4` |
+
+**Общие векторы на G0:**
+
+- Channel2/3 делят `DMA1_Channel2_3_IRQn`.
+- Другой вектор обслуживает Channel4/5, или Channel4…7, или Channel4…7 вместе с DMA2 Channel1…5 (зависит от МК), а также переполнение DMAMUX.
+- [IRQ_Registry](IRQ_Registry.md) допускает несколько обработчиков на вектор; вместимость по умолчанию — 3, при большем числе потребителей одной линии увеличьте её в заголовке настроек.
+- Это безопасно: `Dispatch()` вызывает все зарегистрированные обработчики, а каждый `DMA_Sx` проверяет только **свой** `if_offset`.
 
 ---
 
-## 8. Интеграция с периферийными драйверами
+## 9. Интеграция с периферийными драйверами
 
-Общий паттерн `AttachDMA()` — одинаков в [`UART`](UART.md#8-dma-интеграция) и
-[`SPI`](SPI.md#7-dma-интеграция) (и частично в [`TIM_PWM`](TIM.md#62-tim_pwm)):
+### Неблокирующая остановка (используется USART)
 
-1. Найти `tx_req`/`rx_req` в собственной таблице периферии (`uart_dma_req_table`,
-   `spi_dma_req_table`) по указателю на регистры (`USARTx`/`SPIx`).
-2. Заполнить `DMA_Sx::StreamSettings` (направление, адрес регистра данных, ширина `Byte`,
-   `minc = true`) и вызвать `dma->SetUp(cfg)` — **не** сам код драйвера трогает `_CR()`/`_NDTR()`
-   напрямую, только через публичный API `DMA_Sx`.
-3. Зарегистрировать **сам периферийный объект** (`this` — `USART*`/`SPI*`), а не отдельный
-   DMA-специфичный обработчик, через `IRQ_Registry::Register(dma->GetIRQn(), this)` — периферия
-   сама умеет отличить в своём `HandleIRQ()` DMA TC от собственных статусных флагов
-   (`_dma_tx->GetTC_Flag()`/`_dma_rx->GetTC_Flag()` проверяются первыми, до чтения `SR`/`ISR`
-   самой периферии).
-4. Если TX и RX делят один и тот же вектор NVIC — регистрация для второго канала пропускается
-   (проверка `tx->GetIRQn() != rx->GetIRQn()`), чтобы не занимать второй слот той же строки
-   `_table` без необходимости.
+| Метод | Поведение | Где вызывать |
+| --- | --- | --- |
+| `RequestStop()` | один раз сбрасывает EN и сразу возвращается | прерывание или main |
+| `IsEnabled()` | однократно читает EN | где угодно |
+| `Stream_EN(DISABLE)` | сбрасывает EN и **ждёт** EN = 0 | только основной цикл, никогда в прерывании |
 
-`DMA_Sx` сам по себе не содержит логики "чей это TC" — эту семантику добавляет уже периферийный
-драйвер поверх `GetTC_Flag()`/`ClearFlags()`.
+`RequestStop()` и `IsEnabled()` требуют успешного `SetUp()` и флаги состояния не сбрасывают.
+
+- **F4/F7:** программная остановка порождает TC; USART завершает остановленный RX-пакет в обработчике DMA RX после этого события.
+- **G0:** остановка посреди переноса не гарантирует точный CNDTR. Поэтому USART использует простую остановку по IDLE: отключить DMAR, выключить DMA без ожидания, сообщить о пакете в прерывании USART. Последний запрос должен быть уже обслужен; ошибочные пакеты отбрасываются без использования CNDTR. Это не API восстановления после произвольной остановки.
+
+### Как драйверы периферии используют DMA_Sx
+
+[UART](UART.md), [SPI](SPI.md), [ADC](ADC.md) и [I2C](I2C.md) настраивают DMA из конструктора в `SetUp()`; [TIM](TIM.md#8-independent-pwm-dma) настраивает DMA каналов в `SetUpPWM()`. Общие шаги:
+
+1. Конструктор получает именованный маршрут F4/F7 (или канал G0) и проверяет владельца/направление при компиляции. Дублирующих таблиц DMA в USART/SPI/ADC/I2C больше нет; TIM сохраняет свою карту маршрутов каналов.
+2. Драйвер заполняет `DMA_Sx::StreamSettings` (направление, адрес регистра данных, ширина, `minc = true`) и вызывает `dma.SetUp(cfg)`. Драйвер никогда не трогает `_CR()`/`_NDTR()` напрямую — только публичный API `DMA_Sx`.
+3. Драйвер регистрирует свои обработчики: USART/SPI/I2C — отдельные обработчики DMA TX и DMA RX (отличные от обработчика периферии); TIM — по одному на DMA каждого канала, прерывание таймера флаги DMA не опрашивает.
+4. Если TX и RX DMA делят вектор NVIC, это всё равно два места в реестре; каждый обработчик проверяет только свои флаги.
+
+`DMA_Sx` не знает, «чей это TC» — этот смысл добавляет драйвер периферии поверх `GetTC_Flag()`/`GetIRQFlags()`/`ClearFlags()`.
 
 ---
 
-## 9. Примеры использования
+## 10. Подробности интеграции
 
-### G0 — явный выбор канала + таблица Req::
+### Интеграция UART
+
+**`CanUseRequest(DMAReq req) const`** — проверяет маршрут относительно потока и preset из конструктора, не трогая регистры и владение:
+
+- F4/F7: нужен тот же поток; существующий preset должен совпадать с `req.ch`.
+- G0: подходит любой канал; его существование проверяет `SetUp()`.
+- Если preset не задан, потребитель передаёт подходящий `req.ch` в `SetUp()`.
+
+**`GetErrorFlags() const`** — нормализованные биты ошибок (0 до настройки): F4/F7 — TEIF и DMEIF (direct mode), G0 — TEIF. Ошибка FIFO (FEIF) исключена; `ClearFlags()` по-прежнему сбрасывает всё. Читайте **до** `ClearFlags()`. UART превращает это в свои биты ошибок `DmaTx`/`DmaRx`; он включает TC/TE и на F4/F7 — DME (режим FIFO не используется).
+
+**`GetIRQFlags()`** — за **одно** чтение ISR возвращает HT, TC и поддерживаемые ошибки; разбор — публичными `DMA_Sx::FLAG_HT`, `FLAG_TC`, `FLAG_ERRORS` (позиции приведены к первой группе). FEIF исключён. Флаги не сбрасываются, DMA не останавливается; до `SetUp()` возвращается 0. USART/SPI/ADC/TIM/I2C используют этот единый снимок; ADC берёт из него и HT без повторного чтения ISR. TC от остановки, запрошенной после снимка, обрабатывается следующим прерыванием DMA.
+
+### Явные имена маршрутов — 15.10.2026
+
+Все маршруты F4/F7 содержат контроллер и поток: `USART::_3::DMA::TX_DMA1_Stream3`, `SPI::_1::DMA::RX_DMA2_Stream0`, `ADC_N::_1::DMA::RX_DMA2_Stream4`.
+
+- Они заменили старые имена `TX`/`RX` и `TX_alt`/`RX_alt` — обновите объявления в приложении.
+- Адреса потоков и значения CHSEL не изменились. `DMAReq` хранит целочисленный `DMAx_Streamy_BASE`; указатель формирует `DMA_Sx`.
+- На G0 имена `TX`/`RX` сохранены: канал явно задаётся в конструкторе.
+- Маршрут USART1 DMA2_Stream5 / CH4 называется `RX_DMA2_Stream5` (он обслуживает RX). Маршруты Uart7/Uart8 и G0 Usart3…6 есть там, где есть эта периферия.
+
+### Остановка SPI
+
+SPI получает DMA в конструкторе; обработчики SPI, DMA TX и DMA RX регистрируются отдельно. При снятии NSS драйвер только отключает источники и запрашивает остановку — без ожиданий в прерываниях. F4/F7 фиксируют TC остановки в прерывании DMA. Для slave RX на G0 последний запрос должен быть обслужен до остановки по NSS; `Process()` читает счётчик. При ошибке пакет отбрасывается.
+
+### Независимые каналы TIM
+
+- TIM принимает до четырёх привязок `{вывод, dma}`. `SetUpPWM()` захватывает DMA каждого канала и регистрирует отдельный обработчик, даже на общем векторе.
+- DMA каждого PWM-канала использует запрос TIMx_CHx с CCDS = 1 и свой бит CCxDE — без размножения TIMx_UP.
+- 16-битные таймеры — `uint16_t`/Half_Word; 32-битные TIM2/TIM5 — `uint32_t`/Word.
+- На F7 System очищает TX-буфер в кеше.
+- Каждый обработчик DMA читает только свои флаги, останавливает поток без ожидания, публикует статус OK/Error своего канала и вызывает его callback; остальные каналы продолжают работу. TC означает «буфер отправлен», а не «последний период PWM закончился на выводе».
+- Изменения DIER из `main` вызывающий код окружает маскированием затронутых прерываний TIM/DMA; обработчики одного объекта не должны вытеснять друг друга. `DeInit()` освобождает DMA и регистрации из `main`.
+- `SetUpPWM()` включает NVIC при инициализации; `SendDMA()` снова разрешает TE/DME через `Enable_IRQ(..., false)`, сохраняя маску NVIC вызывающего кода. См. [TIM.md](TIM.md).
+
+---
+
+## 11. Примеры использования
+
+### G0 — отдельный DMA_Sx с явным каналом и запросом
 
 ```cpp
-DMA_Sx dma_tx(DMA1_Channel4, DMA_Sx::Req::Usart1::TX);
-DMA_Sx dma_rx(DMA1_Channel5, DMA_Sx::Req::Usart1::RX);
-// ch2/ch3 или ch4/ch5 делят вектор — выбраны разные пары, чтобы не пересекаться с другой периферией
+constinit DMA_Sx dma_tx(DMA1_Channel4_BASE, USART::_1::DMA::TX);
+constinit DMA_Sx dma_rx(DMA1_Channel5_BASE, USART::_1::DMA::RX);
+// Ch2/Ch3 и Ch4/Ch5 делят векторы — выбирайте пары, не пересекающиеся с другой периферией.
 ```
 
-### F4/F7 — через таблицу Req:: (стрим уже зашит в DMAReq)
+### F4/F7 — через определения _N::DMA (стрим уже зашит в DMAReq)
 
 ```cpp
-DMA_Sx dma_tx(DMA_Sx::Req::Usart1::TX);       // DMA2_Stream7, CHSEL=4
-DMA_Sx dma_tx_alt(DMA_Sx::Req::Usart1::TX_alt); // DMA2_Stream5, CHSEL=4 — тот же запрос, другой стрим
+constinit DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream2);       // CHSEL = 4
+// Альтернативный маршрут того же запроса (не одновременно):
+// constinit DMA_Sx dma_rx(USART::_1::DMA::RX_DMA2_Stream5);    // CHSEL = 4
 ```
 
-### Автономный (standalone) перенос память→память, без периферии
+### G0 — автономный перенос память→память, без периферии
+
+Только G0 — на F4/F7 `Mem_To_Mem` возвращает `InitError` (перенос память→память через FIFO не реализован).
 
 ```cpp
+static constinit DMA_Sx copier(DMA1_Channel3_BASE, /*запрос, игнорируется для mem2mem*/ 0u);
+
 DMA_Sx::StreamSettings cfg;
-cfg.direction   = DMA_Sx::DIR::Mem_To_Mem;
-cfg.data_size   = DMA_Sx::SIZE::Word;
-cfg.minc        = true;
-cfg.pinc        = true;
-DMA_Sx copier(DMA1_Channel3, /*raw request, игнорируется в mem2mem*/ 0u);
-copier.SetUp(cfg);
-copier.SetPerAddr(reinterpret_cast<uint32_t>(src));
-copier.SetMemAddr(reinterpret_cast<uint32_t>(dst));
-copier.SetCount(len);
-copier.Stream_EN(ENABLE);
-while (!copier.GetTC_Flag()) {}
+cfg.direction = DMA_Sx::DIR::Mem_To_Mem;
+cfg.data_size = DMA_Sx::SIZE::Word;
+cfg.minc      = true;
+cfg.pinc      = true;
+
+if (copier.SetUp(cfg) == SysInitStatus::InitOK
+    && copier.SetPerAddr(reinterpret_cast<uint32_t>(src)) == SysStatus::OK
+    && copier.SetMemAddr(reinterpret_cast<uint32_t>(dst)) == SysStatus::OK
+    && copier.SetCount(len) == SysStatus::OK) {
+    copier.Stream_EN(ENABLE);
+    while (!copier.GetTC_Flag()) {}
+}
 ```
 
 ### Через периферийный драйвер (типичный случай — см. UART.md/SPI.md)
 
 ```cpp
-USART a(USART3, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9);
-DMA_Sx dma_tx(DMA_Sx::Req::Usart3::TX);
-a.SetUp();
-a.AttachDMA(&dma_tx, nullptr);   // SetUp() и IRQ_Registry::Register() — внутри AttachDMA()
-a.Send_DMA(buf, len);
+constinit USART a(USART::_3::instance, 115200, USART::_3::TX::PD8, USART::_3::RX::PD9,
+                  USART::_3::DMA::TX_DMA1_Stream3);
+
+if (a.SetUp() == SysInitStatus::InitOK)   // настраивает DMA и регистрирует его обработчик
+    a.Send_DMA(buf, len);
 ```
 
 ---
 
-## 10. Угловые случаи
+## 12. Угловые случаи
 
-- **`SetUp()` можно вызвать ровно один раз на объект** — повторный вызов на том же
-  физическом стриме/канале (даже с другого `DMA_Sx`-объекта) вернёт `InitError` из-за флага
-  `used` в общей таблице `dma_streams[]`.
-- **`AttachDMA()` должен вызываться ПОСЛЕ `SetUp()` периферии** — DMA настраивается на основе
-  уже известного адреса регистра данных периферии (`TDR`/`RDR`/`DR`), которые не зависят от
-  `SetUp()` периферии, но сама привязка идёт через таблицу запросов, которая ищет `USARTx`/
-  `SPIx` — без него `AttachDMA()` не находит запись и тихо не настраивает DMA (см. код в
-  [UART.md §8](UART.md#8-dma-интеграция)).
-- **`settings.channel` игнорируется, если объект создан с `DMAReq`** — эффективный запрос
-  всегда берётся из конструктора (`_has_preset`), а не из `StreamSettings`, даже если оба
-  заданы и не совпадают.
-- **На F4/F7 `settings.channel > 7` — `InitError`** сразу в `SetUp()` (CHSEL — 3-битное поле);
-  на G0 такой проверки нет (DMAMUX1 request ID шире, до 63).
-- **Расшаренные вектора на G0** (`DMA1_Channel2_3_IRQn`, `DMA1_Ch4_5_DMAMUX1_OVR_IRQn`) требуют
-  осторожного выбора пары каналов для двух независимых периферий, которые не должны мешать друг
-  другу по времени реакции — см. предупреждение в самом начале `dma.hpp` (раздел "Notes" в
-  doc-комментарии файла).
+- **Счётчик.** `SetUp()` допускает нулевые адреса/счётчик без запуска. `SetCount()` принимает 1…65535 **элементов** (не обязательно байт).
+- **Методы адресов** требуют ненулевых адресов, выровненных по ширине порта. Возвращают `NotInit`, если объект ничем не владеет, `Busy` при EN = 1, `Error` при неверных аргументах; при отказе регистры не меняются.
+- **Приоритет запроса.** Запрос из конструктора важнее `settings.channel`. Значение должно помещаться в CHSEL (0…7) или в поле DMAREQ_ID данного МК. Зарезервированные номера и маршруты проверяет драйвер периферии.
+- **Остановка.** `Stream_EN(DISABLE)` ждёт EN = 0 без SysTick и таймаута — только основной цикл. Код прерываний использует `RequestStop()` и ждёт аппаратного события завершения.
+- **Перед включением** вызывающий код готовит корректные аргументы передачи. MINC/PINC/CIRC меняются только у остановленного канала.
+- **Общие векторы G0** зависят от модели (раздел 8). Задайте `IRQ_MAX_SHARED` по реальному числу независимых потребителей.
+
+### Освобождение и передача ресурса
+
+`Release()`:
+
+- возвращает `OK` после остановки и сброса своего ресурса, очистки флагов и снятия занятости; `NotInit`, если объект ничем не владеет;
+- на F4/F7 также сбрасывает M1AR/FIFO; на G0 — конфигурацию своего канала DMAMUX и флаг переполнения;
+- сохраняет выбор потока/запроса из конструктора;
+- оставляет включёнными общие линии NVIC и тактирование контроллера.
+
+После этого другой объект может занять ресурс с другим запросом. **До** освобождения владелец-периферия отключает свои DMA-запросы и удаляет свой обработчик.
+
+### Обслуживание кеша
+
+| Момент | Вызов (размер в байтах) |
+| --- | --- |
+| перед TX | `System::CacheClean` |
+| перед RX | `System::CacheCleanInvalidate` |
+| после подтверждённого завершения/остановки RX | `System::CacheInvalidate` |
+
+- Драйверы периферии делают это сами и определяют фактически принятый диапазон до передачи данных приложению. При прямом использовании `DMA_Sx` вызовы делает пользователь; `DMA_Sx` не хранит состояние кеша/буфера.
+- На F7 диапазоны целиком внутри настроенных некешируемых областей пропускаются. Кешируемый RX-буфер должен владеть всеми 32-байтными линиями, которые задевает, включая выравнивающие байты. Процессор не обращается к части буфера, принадлежащей DMA, во время передачи.
+- На F4/G0 функции пустые и определены inline. Подробнее — [System.md](System.md).
 
 ---
 
 ## См. также
 
-- [IRQ_Registry.md](IRQ_Registry.md) — периферийные драйверы регистрируют себя (не `DMA_Sx`) как
-  обработчик DMA TC-прерывания; см. §9.2 там про разделяемые векторы `DMA1_Channel2_3_IRQn`.
-- [UART.md](UART.md#8-dma-интеграция), [SPI.md](SPI.md#7-dma-интеграция),
-  [TIM.md](TIM.md#62-tim_pwm) — три драйвера, использующих `DMA_Sx` через одинаковый паттерн
-  `AttachDMA()`.
-- [System.md](System.md) — `SysStatus`/`SysInitStatus`, используемые публичным API `DMA_Sx`.
+- [IRQ_Registry.md](IRQ_Registry.md) — обработчиками прерываний DMA регистрируются драйверы периферии (а не `DMA_Sx`), в том числе на общих векторах вроде `DMA1_Channel2_3_IRQn`.
+- [UART.md](UART.md#6-dma-кеш-и-ошибки), [SPI.md](SPI.md#8-dma-и-кеш), [TIM.md](TIM.md#8-независимые-pwm-dma) — потребители DMA: USART и SPI привязывают DMA в конструкторе и настраивают в `SetUp()`; TIM настраивает DMA каналов в `SetUpPWM()`.
+- [System.md](System.md) — `SysStatus`/`SysInitStatus`, функции кеша.
+- [Initialization.md](Initialization.md)
+- [UART.md](UART.md)
+- [SPI.md](SPI.md)
+- [ADC.md](ADC.md)
+- [I2C.md](I2C.md)
+- [TIM.md](TIM.md)

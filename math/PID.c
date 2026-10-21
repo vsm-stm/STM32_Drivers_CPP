@@ -1,24 +1,36 @@
+/**
+ * @file PID.c
+ * @brief Trapezoidal integral, error derivative and quality accumulation.
+ * Contracts/examples are in PID.h. No run-time finite checks, output clamp,
+ * sample-time generation or synchronization are performed here.
+ */
 #include <PID.h>
 
 float PID(pid* p)
 {
-	if(0 == p->dT) return 0;
-
-	float tmp_I;
+	if(p->dT == 0.0f) return 0.0f;
 
 	if((p->e > p->e_lim) || (p->e < -p->e_lim))
 	{
-//		if(((p->ki*p->I) < p->max_ki_I)
-//		&&((p->ki*p->I) > -(p->max_ki_I)))
-		tmp_I = p->I + ((p->e+p->e_old)/2)*p->dT;
-//		p->I += ((p->e+p->e_old)/2)*p->dT;
-		if(fabs(p->ki) * tmp_I < p->max_ki_I)
+		if(p->ki != 0.0f)
+		{
+			// Clamp the proposed integral to an exact contribution limit,
+			// retaining I in integral units for subsequent samples.
+			float tmp_I = p->I + (p->e + p->e_old) * 0.5f * p->dT;
+			if(fabsf(p->ki * tmp_I) > p->max_ki_I)
+				tmp_I = (tmp_I > 0.0f ? p->max_ki_I : -p->max_ki_I)
+					/ fabsf(p->ki);
 			p->I = tmp_I;
+		}
 
 		p->D = (p->e - p->e_old)/p->dT;
-
-		p->e_old = p->e;
 	}
+	else
+	{
+		p->D = 0.0f;
+	}
+	// Refresh history inside the dead zone too, avoiding a stale-error slope.
+	p->e_old = p->e;
 
 	return (p->kp*p->e + p->ki*p->I + p->kd*p->D);
 }
@@ -30,23 +42,26 @@ void zero_PID_I_D(pid* p)
 	p->e_old = 0;
 }
 
-void PID_get_quality(con_quality_t* qual, float u, float y, float dt, uint32_t get) // get: 0 - zero, 1 - get rpm, 2 - get pos;
+void PID_get_quality(con_quality_t* qual, float u, float y, float dt, uint32_t get)
 {
 	if(get)
 	{
-		if(y > qual->max_y)
+		if((u < 0.0f && y < qual->max_y)
+		|| (u >= 0.0f && y > qual->max_y))
 			qual->max_y = y;
 
-		if(0 != u)
-			qual->sigma = (qual->max_y - u)/u;
+		qual->sigma = u != 0.0f ? (qual->max_y - u) / u : 0.0f;
 
-		if((y > u*1.05)
-		|| (y < u*0.95)
+		// Mode 1 sums time outside the band; mode 2 sums all sample time.
+		// This intentionally retains the existing accumulated-duration meaning.
+		const float tolerance = fabsf(u) * 0.05f;
+		if((y > u + tolerance)
+		|| (y < u - tolerance)
 		|| (get == 2))
 			qual->t_time+= dt;
 
 		if(get == 1)
-			qual->e = ((y - u)/u)*100;
+			qual->e = u != 0.0f ? ((y - u) / u) * 100.0f : y - u;
 		else
 		if(get == 2)
 			qual->e = (y - u);
@@ -57,5 +72,6 @@ void PID_get_quality(con_quality_t* qual, float u, float y, float dt, uint32_t g
 		qual->max_y = 0;
 		qual->sigma = 0;
 		qual->t_time = 0;
+		qual->e = 0;
 	}
 }
