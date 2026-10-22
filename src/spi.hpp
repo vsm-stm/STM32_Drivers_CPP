@@ -13,13 +13,29 @@
  * Pins and chip select
  * --------------------
  * Named SPI::_N pins carry their AF and peripheral base. The constructor checks
- * peripheral ownership at run time; PIN performs its own compile-time numeric
- * checks for GPIOx_BASE declarations. SCK is required; MOSI/MISO may be PIN{} when
+ * peripheral ownership at compile time with constinit; PIN also checks numeric
+ * GPIO parameters. SCK is required; MOSI/MISO may be PIN{} when
  * the application's operation does not use that direction externally.
- * SS remains optional in the constructor for software-NSS master: a supplied pin
- * is driven low/high around one operation. Without it, the application selects
- * devices and may keep its own CS active across several operations. Hard NSS
- * requires the matching SS pin. Slave uses hardware NSS only.
+ * SS remains optional in the constructor for software-NSS master. Every transfer
+ * also accepts a final PIN* ss=nullptr: a non-null pin overrides the constructor
+ * SS for that operation; nullptr keeps the constructor SS (or no automatic CS).
+ * The selected pin goes low immediately before SPE and high after completion,
+ * error/timeout or DeInit cancellation. For IRQ/DMA, Process() releases it after
+ * physical completion, not DMA TC. The application configures each external pin
+ * as a high output and keeps it alive until the operation ends. With no automatic
+ * CS, the application may hold its own CS across several operations. Hard NSS
+ * requires the matching constructor pin. Slave uses hardware NSS only; both
+ * hardware-NSS master and slave ignore the per-transfer software CS parameter.
+ *
+ * Transfer start contract
+ * -----------------------
+ * Polling, IRQ and DMA have separate start paths; Send/Receive/SendReceive share
+ * the start path for their selected method. A new call requires status OK and
+ * non-null required buffers; DMA methods also require the requested DMA direction.
+ * The caller supplies 1..65535 frames, aligned buffers matching the SetUp frame
+ * width, valid minc and an operation compatible with the fixed pins/direction.
+ * These arguments and the fixed configuration are not revalidated at each start.
+ * After a transfer Error/Timeout, recover through DeInit() followed by SetUp().
  *
  * Completion and callbacks
  * ------------------------
@@ -186,7 +202,7 @@ public:
     /**
      * @brief Store pins and hardware; no register access until SetUp().
      * @param instance SPI::_N::instance for the selected hardware block.
-     * @param direction Fixed TX, RX or TXRX; incompatible transfer methods return Error.
+     * @param direction Fixed TX, RX or TXRX; caller uses compatible transfer methods.
      * @param sck Named SPI::_N::SCK pin.
      * @param mosi Optional named MOSI; defaults to PIN{} if externally unused.
      * @param miso Named MISO, or PIN{} if externally unused.
@@ -279,10 +295,11 @@ public:
     /// Low-level SPE controls; do not use to interrupt an owned active operation.
     void Enable() { if (SPIx) SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE); }
     void Disable() { if (SPIx) SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE); }
-    /// Optional active-low software master CS. Hard NSS and absent CS are untouched.
+    /// Active-low software master CS: current operation's pin, or constructor SS.
+    /// Hard NSS, slave mode and absent CS are untouched.
     void SlaveSelect(FunctionalState en) {
         if (SPIx && Master_slave == Master_sel::Master
-            && nss_ctrl == NSS_ctrl::Software && _ss.IsValid()) _ss.SetLevel(!en);
+            && nss_ctrl == NSS_ctrl::Software && _active_ss->IsValid()) _active_ss->SetLevel(!en);
     }
     /// Raw request gates; normal transfers manage them in start/stop order.
     void DMA_TX(FunctionalState en) {
@@ -303,51 +320,70 @@ public:
      * @name Blocking transfers
      * @param len Frames (1..65535), not bytes for uint16_t buffers.
      * @param timeout One GetTick budget in ms for the entire operation.
+     * @param ss Optional software master CS for this operation; nullptr uses the
+     *           constructor SS. The application configures it as output/high and
+     *           keeps the PIN alive until completion. Asserted just before SPE,
+     *           released after completion/error/timeout or DeInit cancellation.
+     *           Ignored with hardware NSS or in slave mode.
      * @return NotInit before setup, Busy during another operation, Error for
-     * null/zero arguments, width/alignment mismatch, missing data pins or hardware
-     * errors; Timeout after cleanup; OK after physical master completion or slave NSS.
+     * missing required buffers or hardware errors; Timeout after cleanup; OK
+     * after physical master completion or slave NSS. Calls require status OK;
+     * otherwise the current status is returned. The caller guarantees len=1..65535,
+     * buffer width/alignment and compatibility with the fixed pins/direction.
+     * These arguments are not checked. After a transfer Error/Timeout, use
+     * DeInit()/SetUp() before starting again.
      * TXRX Send discards RX; TX-only has no RX. Master Receive sends dummy frames.
      * A slave buffer is capacity; NSS ends a shorter packet and excess RX is
      * discarded with IsTruncated() set. The user's EXTI must still call NssReleased().
      * No OnComplete notification for blocking calls. Hardware errors call OnError().
      * RX data on Error/Timeout must be discarded.
      */
-    SysStatus Send(uint8_t* data, uint32_t len, uint32_t timeout = 100)
-    { return Poll(data, nullptr, len, Data_frame_format::Byte, timeout); }
-    SysStatus Receive(uint8_t* data, uint32_t len, uint32_t timeout = 100)
-    { return Poll(nullptr, data, len, Data_frame_format::Byte, timeout); }
-    SysStatus Send_Receive(uint8_t* tx, uint8_t* rx, uint32_t len, uint32_t timeout = 100)
-    { return tx && rx ? Poll(tx, rx, len, Data_frame_format::Byte, timeout) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
-    SysStatus Send(uint16_t* data, uint32_t len, uint32_t timeout = 100)
-    { return Poll(data, nullptr, len, Data_frame_format::Half_Word, timeout); }
-    SysStatus Receive(uint16_t* data, uint32_t len, uint32_t timeout = 100)
-    { return Poll(nullptr, data, len, Data_frame_format::Half_Word, timeout); }
-    SysStatus Send_Receive(uint16_t* tx, uint16_t* rx, uint32_t len, uint32_t timeout = 100)
-    { return tx && rx ? Poll(tx, rx, len, Data_frame_format::Half_Word, timeout) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
+    SysStatus Send(uint8_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+    { return data ? StartPolling(data, nullptr, len, timeout, ss) : SysStatus::Error; }
+    SysStatus Receive(uint8_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+    { return data ? StartPolling(nullptr, data, len, timeout, ss) : SysStatus::Error; }
+    SysStatus Send_Receive(uint8_t* tx, uint8_t* rx, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+    { return tx && rx ? StartPolling(tx, rx, len, timeout, ss) : SysStatus::Error; }
+    SysStatus Send(uint16_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+    { return data ? StartPolling(data, nullptr, len, timeout, ss) : SysStatus::Error; }
+    SysStatus Receive(uint16_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+    { return data ? StartPolling(nullptr, data, len, timeout, ss) : SysStatus::Error; }
+    SysStatus Send_Receive(uint16_t* tx, uint16_t* rx, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+    { return tx && rx ? StartPolling(tx, rx, len, timeout, ss) : SysStatus::Error; }
 
     /**
      * @name IRQ transfers
-     * Same buffer/width/count rules as blocking calls. OK means started.
+     * Same buffer/width/count and optional final ss rules as blocking calls.
+     * OK means started. The selected PIN remains alive until Process() finishes
+     * or DeInit() cancels; both release this operation's software CS.
      * Keep buffers alive and TX unchanged until Process() finishes.
      * RX is serviced in RX/TXRX, including discard for TXRX Send and slave truncation.
      * Software CS stays asserted until Process(), never released by a byte IRQ.
      */
-    SysStatus Send_IRQ(uint8_t* data, uint32_t len)
-    { return Start(data, nullptr, len, Data_frame_format::Byte, Mode::Irq); }
-    SysStatus Receive_IRQ(uint8_t* data, uint32_t len)
-    { return Start(nullptr, data, len, Data_frame_format::Byte, Mode::Irq); }
-    SysStatus SendReceive_IRQ(uint8_t* tx, uint8_t* rx, uint32_t len)
-    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Byte, Mode::Irq) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
-    SysStatus Send_IRQ(uint16_t* data, uint32_t len)
-    { return Start(data, nullptr, len, Data_frame_format::Half_Word, Mode::Irq); }
-    SysStatus Receive_IRQ(uint16_t* data, uint32_t len)
-    { return Start(nullptr, data, len, Data_frame_format::Half_Word, Mode::Irq); }
-    SysStatus SendReceive_IRQ(uint16_t* tx, uint16_t* rx, uint32_t len)
-    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Half_Word, Mode::Irq) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
+    SysStatus Send_IRQ(uint8_t* data, uint32_t len, PIN* ss = nullptr)
+    { return data ? StartIRQ(data, nullptr, len, ss) : SysStatus::Error; }
+    SysStatus Receive_IRQ(uint8_t* data, uint32_t len, PIN* ss = nullptr)
+    { return data ? StartIRQ(nullptr, data, len, ss) : SysStatus::Error; }
+    SysStatus SendReceive_IRQ(uint8_t* tx, uint8_t* rx, uint32_t len, PIN* ss = nullptr)
+    { return tx && rx ? StartIRQ(tx, rx, len, ss) : SysStatus::Error; }
+    SysStatus Send_IRQ(uint16_t* data, uint32_t len, PIN* ss = nullptr)
+    { return data ? StartIRQ(data, nullptr, len, ss) : SysStatus::Error; }
+    SysStatus Receive_IRQ(uint16_t* data, uint32_t len, PIN* ss = nullptr)
+    { return data ? StartIRQ(nullptr, data, len, ss) : SysStatus::Error; }
+    SysStatus SendReceive_IRQ(uint16_t* tx, uint16_t* rx, uint32_t len, PIN* ss = nullptr)
+    { return tx && rx ? StartIRQ(tx, rx, len, ss) : SysStatus::Error; }
 
     /**
      * @name DMA transfers
-     * OK means started. Count is 1..65535 frames; cache byte count is len*frame size.
+     * Send_DMA(data, len, ss) uses MINC=ENABLE; the full overload takes minc
+     * before ss. Receive/SendReceive_DMA take ss after len. Lifetime and automatic
+     * release are the same as IRQ.
+     * OK means started. Requires status OK and non-null required buffers, as
+     * for IRQ/polling. Count is 1..65535 frames; cache bytes = len*frame size.
+     * The caller guarantees count, width/alignment, pins/direction and valid minc.
+     * Only the presence of the requested DMA direction is checked additionally.
+     * DMA preparation updates address/count/MINC without NVIC access or waits.
+     * DMA IRQ sources are configured once by SetUpDMA().
      * Send_DMA requires TX DMA; Receive_DMA requires RX DMA; SendReceive_DMA both.
      * Direction::TX uses only TX DMA. Direction::RX master uses RX DMA plus TX IRQ
      * for dummy clocks; slave RX uses only RX DMA. It never needs a second DMA.
@@ -358,18 +394,24 @@ public:
      * or change TX before Process() finishes. TX/RX overlapping buffer ownership
      * and DMA reachability are the caller's responsibility.
      */
-    SysStatus Send_DMA(uint8_t* data, uint32_t len, FunctionalState minc = ENABLE)
-    { return Start(data, nullptr, len, Data_frame_format::Byte, Mode::Dma, minc); }
-    SysStatus Receive_DMA(uint8_t* data, uint32_t len)
-    { return Start(nullptr, data, len, Data_frame_format::Byte, Mode::Dma); }
-    SysStatus SendReceive_DMA(uint8_t* tx, uint8_t* rx, uint32_t len)
-    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Byte, Mode::Dma) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
-    SysStatus Send_DMA(uint16_t* data, uint32_t len, FunctionalState minc = ENABLE)
-    { return Start(data, nullptr, len, Data_frame_format::Half_Word, Mode::Dma, minc); }
-    SysStatus Receive_DMA(uint16_t* data, uint32_t len)
-    { return Start(nullptr, data, len, Data_frame_format::Half_Word, Mode::Dma); }
-    SysStatus SendReceive_DMA(uint16_t* tx, uint16_t* rx, uint32_t len)
-    { return tx && rx ? Start(tx, rx, len, Data_frame_format::Half_Word, Mode::Dma) : (SPIx ? SysStatus::Error : SysStatus::NotInit); }
+    SysStatus Send_DMA(uint8_t* data, uint32_t len, FunctionalState minc = ENABLE, PIN* ss = nullptr)
+    { return data ? StartDMA(data, nullptr, len, minc, ss) : SysStatus::Error; }
+    /// Select this operation's software CS with memory increment enabled.
+    SysStatus Send_DMA(uint8_t* data, uint32_t len, PIN* ss)
+    { return Send_DMA(data, len, ENABLE, ss); }
+    SysStatus Receive_DMA(uint8_t* data, uint32_t len, PIN* ss = nullptr)
+    { return data ? StartDMA(nullptr, data, len, ENABLE, ss) : SysStatus::Error; }
+    SysStatus SendReceive_DMA(uint8_t* tx, uint8_t* rx, uint32_t len, PIN* ss = nullptr)
+    { return tx && rx ? StartDMA(tx, rx, len, ENABLE, ss) : SysStatus::Error; }
+    SysStatus Send_DMA(uint16_t* data, uint32_t len, FunctionalState minc = ENABLE, PIN* ss = nullptr)
+    { return data ? StartDMA(data, nullptr, len, minc, ss) : SysStatus::Error; }
+    /// Select this operation's software CS with memory increment enabled.
+    SysStatus Send_DMA(uint16_t* data, uint32_t len, PIN* ss)
+    { return Send_DMA(data, len, ENABLE, ss); }
+    SysStatus Receive_DMA(uint16_t* data, uint32_t len, PIN* ss = nullptr)
+    { return data ? StartDMA(nullptr, data, len, ENABLE, ss) : SysStatus::Error; }
+    SysStatus SendReceive_DMA(uint16_t* tx, uint16_t* rx, uint32_t len, PIN* ss = nullptr)
+    { return tx && rx ? StartDMA(tx, rx, len, ENABLE, ss) : SysStatus::Error; }
 
     /**
      * @brief Complete an async operation from main without waiting for hardware.
@@ -426,7 +468,14 @@ private:
     static constexpr uint32_t DMA_MASK = SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN;
     // Motorola SPI without hardware CRC; TI frame errors are not applicable.
     static constexpr uint32_t SPI_ERRORS = SPI_SR_OVR | SPI_SR_MODF;
+    // DMA source bits (not ISR flags); configure once and mask together on error.
+    static constexpr uint32_t DMA_ERROR_IRQ_MASK = static_cast<uint32_t>(DMA_Sx::IRQ::TE)
+#if defined(STM32F4) || defined(STM32F7)
+        | static_cast<uint32_t>(DMA_Sx::IRQ::DME)
+#endif
+        ;
 
+    PIN* _active_ss = &_ss; ///< Current software CS; constructor SS while idle.
     const uint8_t* _tx_data = nullptr;
     uint8_t* _rx_data = nullptr;
     uint16_t _capacity = 0;
@@ -479,10 +528,28 @@ private:
     void StopTransfer();
     SysInitStatus SetUpDMA();
     void Finish(SysStatus result, uint32_t errors = 0);
-    SysStatus Start(const void* tx, void* rx, uint32_t len, Data_frame_format frame_format,
-                    Mode mode, FunctionalState minc = ENABLE);
-    SysStatus Poll(const void* tx, void* rx, uint32_t len,
-                   Data_frame_format frame_format, uint32_t timeout);
+    // Start requires OK: SPI/requests are stopped, errors and pending DMA are zero.
+    // Only buffers, counters and per-packet state need preparation.
+    inline void PrepareTransfer(const void* tx, void* rx, uint32_t len, Mode mode, PIN* ss) {
+        _active_ss = ss ? ss : &_ss;
+        _tx_data = static_cast<const uint8_t*>(tx);
+        _rx_data = static_cast<uint8_t*>(rx);
+        _capacity = static_cast<uint16_t>(len);
+        _tx_remaining = _direction == Direction::RX && Master_slave == Master_sel::Slave ? 0 : _capacity;
+        _rx_remaining = _direction == Direction::TX ? 0 : _capacity;
+        _truncated = false;
+        _nss_ended = false;
+        _mode = mode;
+        _status = SysStatus::Busy;
+    }
+    // Request gates are set by the IRQ/DMA path; polling needs none.
+    inline void EnableTransfer() {
+        SlaveSelect(ENABLE);
+        SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE);
+    }
+    SysStatus StartPolling(const void* tx, void* rx, uint32_t len, uint32_t timeout, PIN* ss);
+    SysStatus StartIRQ(const void* tx, void* rx, uint32_t len, PIN* ss);
+    SysStatus StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState minc, PIN* ss);
     void HandleIRQ() override final;
 
 protected:
@@ -502,6 +569,7 @@ protected:
     virtual void OnTxEmpty();
     virtual void OnRxByte(uint8_t frame);
     virtual void OnRxWord(uint16_t frame);
+    /// DMA IRQ already updated the count; base resumes slave dummy TX/discard RX.
     virtual void OnDmaTxComplete();
     virtual void OnDmaRxComplete();
     /// Notification after physical completion; Process()/main context, not a TXE IRQ.

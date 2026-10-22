@@ -312,7 +312,8 @@ System::CacheInvalidate(rx_buffer, received_bytes);  // after DMA has stopped
 ```
 
 - Peripheral drivers choose address, byte count and timing themselves; direct DMA users call these explicitly. DMA keeps no cache state.
-- F7: skipped when the range lies wholly in a project DMA area or the D-cache is off; otherwise CMSIS handles the intersecting 32-byte lines.
+- F7: skipped when the whole range lies in DTCM, in a project DMA area, or the D-cache is off; otherwise CMSIS handles the intersecting 32-byte lines.
+- DTCM bounds are the selected device's CMSIS `[RAMDTCM_BASE, SRAM1_BASE)` range: 64 or 128 KB. This exclusion needs no dedicated MPU region. The whole range is checked without adding address and size; a range crossing the DTCM boundary is not skipped by this rule.
 - F4/G0/L0: inline no-ops. Zero size or `nullptr` does nothing.
 - Use valid ranges that fit CMSIS's signed byte count (including rounding). Call after `System::Init()`.
 
@@ -752,7 +753,8 @@ System::CacheInvalidate(rx_buffer, received_bytes);  // после остано�
 ```
 
 - Драйверы периферии сами выбирают адрес, размер и момент вызова; при прямом использовании DMA вызовы делает пользователь. DMA не хранит состояние кеша.
-- F7: пропускаются, если диапазон целиком в DMA-области проекта или D-cache выключен; иначе CMSIS обрабатывает пересекающиеся 32-байтные линии.
+- F7: пропускаются, если диапазон целиком в DTCM, в DMA-области проекта или D-cache выключен; иначе CMSIS обрабатывает пересекающиеся 32-байтные линии.
+- DTCM определяется по адресам CMSIS `[RAMDTCM_BASE, SRAM1_BASE)` для выбранного МК: 64 или 128 КБ. Отдельный MPU-регион для этого исключения не требуется. Проверяется весь диапазон без сложения адреса с размером; диапазон, пересекающий границу DTCM, не пропускается по этому правилу.
 - F4/G0/L0: пустые inline-функции. Нулевой размер или `nullptr` ничего не делает.
 - Диапазон должен быть корректным и помещаться в знаковый размер CMSIS (с учётом округления). Вызывайте после `System::Init()`.
 
