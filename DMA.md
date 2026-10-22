@@ -272,6 +272,19 @@ All F4/F7 routes include controller and stream: `USART::_3::DMA::TX_DMA1_Stream3
 - G0 keeps `TX`/`RX`: the constructor already takes an explicit channel.
 - USART1 DMA2_Stream5 / CH4 is named `RX_DMA2_Stream5` (it serves RX). Uart7/Uart8 and G0 Usart3…6 routes exist where those peripherals do.
 
+### SPI transfer preparation
+
+`PrepareTransfer(uint32_t addr, uint32_t count, FunctionalState minc, uint32_t irq_mask)`
+is an inline low-level operation for an **owned, stopped** DMA with peripheral
+requests disabled. The caller guarantees a valid aligned memory address,
+1..65535 elements, valid MINC and IRQ source bits (OR of `DMA_Sx::IRQ` values).
+There are no argument, ownership or EN checks. It writes the memory address and
+count, updates MINC and the supplied IRQ bits in one control-register operation,
+and clears flags for this resource. Other control bits are preserved. It neither
+accesses NVIC nor starts/waits for DMA or maintains cache. SPI uses it after its
+status/buffer/DMA checks, passing `irq_mask=0`: SPI keeps the IRQ sources
+configured once in `SetUpDMA()`. The checked individual setters remain available.
+
 ### SPI stop
 
 SPI binds DMA in the constructor; SPI, DMA TX and DMA RX handlers are registered separately. On NSS release it only disables sources and requests a stop — no waiting in interrupts. F4/F7 collect the stop TC in the DMA interrupt. G0 slave RX requires the last request to be serviced before the NSS stop; `Process()` reads the count. Errors discard the packet.
@@ -657,6 +670,20 @@ inline void ClearTC_Flag() { *_info->ifcr = FLAG_TC << _info->if_offset; }
 - Адреса потоков и значения CHSEL не изменились. `DMAReq` хранит целочисленный `DMAx_Streamy_BASE`; указатель формирует `DMA_Sx`.
 - На G0 имена `TX`/`RX` сохранены: канал явно задаётся в конструкторе.
 - Маршрут USART1 DMA2_Stream5 / CH4 называется `RX_DMA2_Stream5` (он обслуживает RX). Маршруты Uart7/Uart8 и G0 Usart3…6 есть там, где есть эта периферия.
+
+### Подготовка передачи SPI
+
+`PrepareTransfer(uint32_t addr, uint32_t count, FunctionalState minc, uint32_t irq_mask)` —
+inline-операция для **захваченного, остановленного** DMA при отключённых запросах
+периферии. Вызывающий код гарантирует корректный выровненный адрес памяти,
+1..65535 элементов, корректные MINC и маску источников IRQ (OR значений
+`DMA_Sx::IRQ`). Проверок аргументов, владения и EN нет. Метод записывает адрес
+памяти и счётчик, обновляет MINC и переданные биты IRQ одним изменением
+управляющего регистра и очищает флаги своего ресурса. Остальные биты управления
+сохраняются. Метод не обращается к NVIC, не запускает DMA, не ждёт и не
+обслуживает кеш. SPI использует его после проверки статуса/буферов/наличия DMA;
+при этом `irq_mask=0`, поскольку SPI настраивает источники IRQ один раз в
+`SetUpDMA()`. Отдельные методы записи с проверками остаются доступны.
 
 ### Остановка SPI
 

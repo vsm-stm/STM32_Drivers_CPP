@@ -79,7 +79,7 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX,
 | `RX` | full duplex, RXONLY cleared; master clocks with dummy frames from the TX interrupt, slave only receives | `Receive` |
 | `TXRX` | full duplex | `Send` (RX discarded), `Receive` (dummy TX), `SendReceive` |
 
-A method that does not fit the fixed direction returns `Error`.
+The caller selects a method compatible with the fixed direction and connected data pins; transfer starts do not check this again.
 
 **`SetUp()`** — clock, mode and frame settings (or the `Init_struct_Typedef` overload):
 
@@ -106,10 +106,43 @@ Check for `InitOK` before starting. `InitError` on: invalid enum values, missing
 
 | Configuration | Who drives chip select |
 | --- | --- |
-| Master, software NSS, CS pin passed | the driver: high after setup, low at start, high only after final completion/error/timeout |
-| Master, software NSS, no CS pin | the application (all CS GPIOs) |
+| Master, software NSS, per-call `PIN* ss` supplied | the driver selects this pin for one operation; the application configures it output/high beforehand |
+| Master, software NSS, `ss=nullptr`, constructor CS supplied | the driver uses the constructor CS: high after setup, low before SPE, high after final completion/error/timeout |
+| Master, software NSS, no per-call or constructor CS | the application (all CS GPIOs) |
 | Master, hardware NSS | hardware: SSM cleared, SSOE set; NSS follows SPI enable |
 | Slave | hardware NSS required (SSM/SSOE cleared); the application configures EXTI on that pin to detect packet end |
+
+**CS selected per operation.** Every 8/16-bit transfer overload accepts a final
+`PIN* ss = nullptr`. For blocking methods it follows `timeout`; for `Send_DMA`
+it follows `minc`; for IRQ and the other DMA methods it follows `len`.
+`Send_DMA(data, len, ss)` is also available for both buffer widths and uses
+`MINC=ENABLE`; use the full overload to pass `DISABLE`.
+A non-null pointer overrides the constructor SS for this operation. `nullptr`
+keeps the existing constructor default; with no constructor SS it keeps manual CS.
+Only software-NSS master uses this parameter; hardware NSS and slave ignore it.
+
+After buffer/status/DMA checks and preparation, the driver asserts the selected
+CS immediately before enabling SPI. It releases that same pin after physical
+completion, error/timeout, or cancellation through `DeInit()`. IRQ/DMA completion
+still requires `Process()` from main; DMA TC does not release CS. Failed starts
+(null buffers, non-OK status, missing DMA) do not change any CS or the active pin.
+The application sets up external CS pins as outputs initially high. The selected
+`PIN` must remain alive until completion or until `DeInit()` returns. SPI keeps
+one active pointer (4 bytes on the supported MCUs), then restores the constructor
+default before completion/error notifications. SPI settings remain shared.
+
+For example, using the two configured pins from the shared-bus example below:
+
+```cpp
+SysStatus first = bus.Send(command, 1, 100, &flash_cs);
+if (first == SysStatus::OK) {
+    SysStatus second = bus.Receive(response, 3, 100, &adc_cs);
+    // Inspect second; both operations release their selected CS before returning.
+}
+// With DMA configured: bus.Send_DMA(tx_buffer, frame_count, &flash_cs).
+// With IRQ: bus.Receive_IRQ(rx_buffer, frame_count, &adc_cs).
+// Keep async buffers/PIN alive and call Process() until the operation completes.
+```
 
 **Shared bus:** use one SPI object and application-owned CS pins, so CS can stay low across several operations (command + response). Release CS on errors too.
 
@@ -168,16 +201,34 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
 // Call Process() from main; use the buffer only after it returns OK.
 ```
 
+**Separate start paths.** Blocking, IRQ and DMA methods call `StartPolling`,
+`StartIRQ` and `StartDMA` respectively. Within each family, Send/Receive/SendReceive
+share one start function; there is no common start that dispatches on a mode.
+Small inline helpers prepare common state and enable SPI. Preparation has no
+register accesses or FIFO drain: `OK` means the previous transfer already stopped
+SPI/requests, cleared pending DMA and left no errors. Only buffers, counters,
+packet flags and the transfer method are assigned. IRQ/DMA starts set their SPI
+request/IRQ gates once; polling does not access CR2 during start. Manual low-level
+control must preserve this idle state before using a transfer method.
+
+**Caller contract.** Every call checks the required buffer pointers and status;
+DMA calls additionally check that the required TX/RX DMA exists. The caller
+supplies `len` in 1..65535, valid buffer storage and alignment, a buffer type matching
+`SetUp(Byte / Half_Word)`, valid `minc`, and an operation supported by the fixed
+direction/pins. These are preconditions, not runtime checks or promised `Error`
+results. Buffer lifetime and F7 cache-line ownership requirements still apply.
+
 **Status codes:**
 
 | Result | When |
 | --- | --- |
 | `NotInit` | `SetUp()` has not succeeded |
 | `Busy` | another operation is running |
-| `Error` | null/zero arguments, more than 65535 frames, frame width or alignment mismatch, missing data pin or required DMA |
+| `Error` | a required buffer is null, required DMA is missing, or a hardware error occurred |
 | `Timeout` | blocking call exceeded its budget |
 
-- After `Error`/`Timeout` (and cleanup) a new transfer may start.
+- A new transfer requires object status `OK`. With valid buffers, any other current status is returned without starting.
+- Missing-buffer/DMA rejections leave the existing object status and hardware unchanged. After a completed transfer leaves status `Error`/`Timeout`, recover through `DeInit()` followed by `SetUp()`.
 - A blocking call has **one** timeout for the whole call and needs a running System tick.
 - Asynchronous calls have no internal deadline — the application enforces one and can cancel with `DeInit()`.
 
@@ -291,6 +342,14 @@ if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus
 - At compile time (`constinit`): wrong request, TX and RX on the same resource, DMA not matching the direction.
 - In `SetUp()`: busy resources, hardware setup or registry failure → `InitError`; only resources acquired by this call are released.
 - `SetUp()` configures ownership, data width (= frame size), direction and the DR address.
+- Each DMA start uses `DMA_Sx::PrepareTransfer(addr, count, minc, 0)` to write
+  the address/count, update MINC and clear flags. TC/TE/DME sources stay configured
+  from `SetUpDMA()` and are not enabled again on each start. This low-level path
+  has no repeated argument/state checks and never accesses NVIC. SPI request/IRQ
+  gates are set together; RX DMA is armed before TX.
+- Cache maintenance remains before DMA starts. With application-controlled CS
+  asserted before the call, this preparation remains inside the CS-to-clock gap;
+  this API does not promise a fixed startup time.
 
 **Interrupts:** SPI, DMA TX and DMA RX have separate handlers. Even if TX and RX share one NVIC vector, they take **two** registry slots; each handler checks only its own DMA.
 
@@ -349,6 +408,13 @@ bus.SendReceive_DMA(tx, rx, 64);      // 64 frames = 128 cache-maintained RX byt
 
 **Snapshots:** error/RX/TX checks share one CR2/SR snapshot per entry. F4 reads the first RX frame without re-reading SR; F7/G0 refresh SR for further FIFO frames. The DR/SR sequence clearing OVR and the final wire-status check in `Process()` remain. Each DMA handler uses one `GetIRQFlags()` snapshot for TC and errors.
 
+RX/TX frame processing reads its remaining counter once and writes the new
+value once. On normal DMA TC, the handler records zero remaining without reading
+NDTR/CNDTR or repeating the assignment in the base callback. A shortened slave
+packet still reads the stopped count after NSS (in the DMA IRQ on F4/F7, in
+`Process()` on G0). Error paths discard the data and do not use the count.
+Cache operations and their argument evaluation are compiled only for F7.
+
 **Errors** are reported once through `OnError(uint32_t mask)` with bits `Overrun`, `ModeFault`, `DmaTx`, `DmaRx`.
 
 - CRCERR/FRE and the `Crc`/`Frame` enum entries were removed — hardware CRC and TI mode are not used.
@@ -360,7 +426,8 @@ bus.SendReceive_DMA(tx, rx, 64);      // 64 frames = 128 cache-maintained RX byt
 
 | Callback | Type | Override rule |
 | --- | --- | --- |
-| `OnTxEmpty`, `OnRxByte`, `OnRxWord`, `OnDmaTxComplete`, `OnDmaRxComplete` | part of standard processing | call the base implementation to keep storage/count/truncation |
+| `OnTxEmpty`, `OnRxByte`, `OnRxWord` | frame processing | call the base to keep storage/count/truncation |
+| `OnDmaTxComplete`, `OnDmaRxComplete` | slave continuation after DMA | the handler has already updated the count; call the base to keep dummy TX/discard RX servicing |
 | `OnComplete`, `OnError` | notifications | empty by default |
 
 Byte/word callbacks also run during blocking polling or the final FIFO drain, in the calling/`main` context.
@@ -516,7 +583,7 @@ More examples: shared bus (section 4), RX-only DMA (section 5), slave (section 7
 | `RX` | full duplex, RXONLY сброшен; master тактирует пустыми кадрами из TX-прерывания, slave только принимает | `Receive` |
 | `TXRX` | full duplex | `Send` (RX отбрасывается), `Receive` (пустые TX), `SendReceive` |
 
-Метод, не подходящий закреплённому направлению, возвращает `Error`.
+Вызывающий код выбирает метод, совместимый с закреплённым направлением и подключёнными выводами данных; при запуске это повторно не проверяется.
 
 **`SetUp()`** — тактирование, режим и формат кадра (или перегрузка с `Init_struct_Typedef`):
 
@@ -548,12 +615,47 @@ SysStatus result = bus.Send_Receive(tx, rx, 2); // Два кадра, не дв�
 
 | Конфигурация | Кто управляет chip-select |
 | --- | --- |
-| Master, программный NSS, вывод CS передан | драйвер: высокий уровень после настройки, низкий при старте, высокий только после окончательного завершения/ошибки/таймаута |
-| Master, программный NSS, без вывода CS | приложение (все CS-выводы) |
+| Master, программный NSS, `PIN* ss` передан в вызов | драйвер выбирает этот вывод на один обмен; приложение заранее настраивает его как выход с высоким уровнем |
+| Master, программный NSS, `ss=nullptr`, CS передан в конструктор | драйвер использует CS конструктора: высокий после настройки, низкий перед SPE, высокий после завершения/ошибки/таймаута |
+| Master, программный NSS, CS не передан ни в вызов, ни в конструктор | приложение (все CS-выводы) |
 | Master, аппаратный NSS | аппаратура: SSM сброшен, SSOE установлен; NSS следует за включением SPI |
 | Slave | нужен аппаратный NSS (SSM/SSOE сброшены); приложение настраивает EXTI на этом выводе для определения конца пакета |
 
 Программный NSS в режиме slave не поддерживается.
+
+**Выбор CS на один обмен.** У всех 8/16-битных перегрузок передачи последний
+параметр — `PIN* ss = nullptr`. В блокирующих методах он идёт после `timeout`,
+в `Send_DMA` — после `minc`, в IRQ и остальных DMA-методах — после `len`.
+Для обеих ширин буфера также есть `Send_DMA(data, len, ss)` с `MINC=ENABLE`;
+для передачи `DISABLE` используется полная перегрузка.
+Переданный указатель заменяет SS конструктора на один обмен. `nullptr`
+сохраняет прежний выбор: SS конструктора, а при его отсутствии — ручное управление.
+Этот параметр используется только в master с программным NSS; аппаратный NSS
+и slave его игнорируют.
+
+После проверок буферов/статуса/DMA и подготовки драйвер активирует выбранный
+CS непосредственно перед включением SPI. Этот же вывод снимается после
+физического завершения, ошибки/таймаута или отмены через `DeInit()`. Для IRQ/DMA
+по-прежнему нужен `Process()` из main; DMA TC не снимает CS. Отказ запуска
+(нет буфера, статус не OK, нет нужного DMA) не меняет CS и активный указатель.
+Приложение заранее настраивает внешние CS как выходы с высоким уровнем.
+Выбранный `PIN` должен жить до завершения обмена либо возврата из `DeInit()`.
+SPI хранит один активный указатель (4 байта на поддерживаемых МК), затем
+восстанавливает SS конструктора до уведомлений о завершении/ошибке.
+Настройки SPI остаются общими для всех устройств.
+
+Например, для заранее настроенных выводов `flash_cs` и `adc_cs`:
+
+```cpp
+SysStatus first = bus.Send(command, 1, 100, &flash_cs);
+if (first == SysStatus::OK) {
+    SysStatus second = bus.Receive(response, 3, 100, &adc_cs);
+    // Проверить second; оба вызова снимают выбранный CS до возврата.
+}
+// С настроенным DMA: bus.Send_DMA(tx_buffer, frame_count, &flash_cs).
+// Через IRQ: bus.Receive_IRQ(rx_buffer, frame_count, &adc_cs).
+// Асинхронные буферы/PIN живут до завершения; из main вызывается Process().
+```
 
 **Общая шина:** используйте один объект SPI и выводы CS приложения — тогда CS может оставаться активным между командой и ответом. При ошибке тоже снимайте CS.
 
@@ -605,16 +707,36 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
 // Вызывать Process() из main; использовать буфер только после OK.
 ```
 
+**Раздельные пути запуска.** Блокирующие методы, IRQ и DMA вызывают соответственно
+`StartPolling`, `StartIRQ` и `StartDMA`. Внутри каждой группы Send/Receive/SendReceive
+используют одну функцию запуска; общего старта с выбором по режиму нет.
+Небольшие inline-функции готовят общее состояние и включают SPI. Подготовка не
+обращается к регистрам и не вычитывает FIFO: при `OK` предыдущий обмен уже
+остановил SPI/запросы, завершил ожидающие DMA и не оставил ошибок. Записываются
+только буферы, счётчики, признаки пакета и способ обмена. IRQ/DMA-запуск один раз
+устанавливает свои источники SPI; polling при запуске не обращается к CR2.
+При ручном низкоуровневом управлении это состояние покоя нужно сохранить перед
+вызовом метода обмена.
+
+**Ответственность вызывающего кода.** Каждый вызов проверяет обязательные указатели
+буферов и статус; DMA-вызовы дополнительно проверяют наличие нужного TX/RX DMA.
+Вызывающий код обеспечивает `len` в 1..65535, достаточный размер и выравнивание
+буферов, соответствие типа буфера `SetUp(Byte / Half_Word)`, корректный `minc`
+и совместимость операции с закреплёнными направлением/выводами. Это условия
+использования, а не проверки во время работы с гарантированным возвратом `Error`.
+Требования к времени жизни буферов и владению кеш-линиями F7 сохраняются.
+
 **Коды статуса:**
 
 | Результат | Когда |
 | --- | --- |
 | `NotInit` | `SetUp()` не выполнен успешно |
 | `Busy` | идёт другая операция |
-| `Error` | нулевые аргументы, больше 65535 кадров, несоответствие ширины кадра или выравнивания, нет вывода данных или нужного DMA |
+| `Error` | нет обязательного буфера, нужного DMA или произошла аппаратная ошибка |
 | `Timeout` | блокирующий вызов превысил отведённое время |
 
-- После `Error`/`Timeout` (и очистки) можно начать новый обмен.
+- Новый обмен требует статуса объекта `OK`. При корректных буферах любой другой текущий статус возвращается без запуска.
+- Отказ из-за отсутствующего буфера/DMA не меняет статус объекта и аппаратуру. После завершения обмена со статусом `Error`/`Timeout` восстановление выполняется через `DeInit()` и затем `SetUp()`.
 - У блокирующего вызова **один** таймаут на весь вызов; нужен работающий `GetTick()`.
 - У асинхронных вызовов внутреннего срока нет — приложение контролирует время само и может отменить обмен через `DeInit()`.
 
@@ -718,6 +840,14 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
 - При компиляции (`constinit`): неверный запрос, один ресурс для TX и RX, DMA несовместимого направления.
 - В `SetUp()`: занятый DMA, ошибка настройки или регистрации → `InitError`; освобождается только захваченное этим вызовом.
 - Ширина данных DMA соответствует размеру кадра.
+- Каждый DMA-запуск использует `DMA_Sx::PrepareTransfer(addr, count, minc, 0)`:
+  записываются адрес/счётчик, обновляется MINC, очищаются флаги. Источники
+  TC/TE/DME остаются настроенными в `SetUpDMA()` и повторно не включаются.
+  Проверок аргументов/состояния и обращений к NVIC в этой операции нет.
+  Источники SPI устанавливаются вместе; RX DMA включается перед TX.
+- Обслуживание кеша остаётся перед запуском DMA. Если приложение активировало
+  CS до вызова, подготовка по-прежнему входит в паузу CS → начало тактирования;
+  фиксированное время запуска этот API не гарантирует.
 
 **Прерывания:** SPI, DMA TX и DMA RX регистрируются отдельно. Даже при общем векторе TX/RX нужны **два** места в реестре; каждый обработчик проверяет только свой DMA.
 
@@ -769,6 +899,13 @@ bus.SendReceive_DMA(tx, rx, 64);   // 64 кадра = 128 байт RX с обс�
 - `IRQ_en()` меняет только биты источников в CR2, не реестр и не NVIC. Источники обмена включаются только на время активной операции.
 - `DeInit()` удаляет только свои записи; общие обработчики и NVIC сохраняются.
 
+При обработке RX/TX-кадра счётчик остатка читается и обновляется по одному
+разу. При обычном DMA TC обработчик записывает нулевой остаток без чтения
+NDTR/CNDTR и без повторного присваивания в базовом callback. Для короткого
+slave-пакета чтение остановленного счётчика после NSS сохраняется: в DMA IRQ
+на F4/F7, в `Process()` на G0. При ошибке данные отбрасываются, счётчик не
+используется. Cache-операции и вычисление их аргументов компилируются только для F7.
+
 **Ошибки** сообщаются одним вызовом `OnError(uint32_t mask)` с битами `Overrun`, `ModeFault`, `DmaTx`, `DmaRx`.
 
 - CRCERR/FRE и элементы enum `Crc`/`Frame` удалены — аппаратный CRC и режим TI не используются.
@@ -780,7 +917,8 @@ bus.SendReceive_DMA(tx, rx, 64);   // 64 кадра = 128 байт RX с обс�
 
 | Callback | Тип | Правило переопределения |
 | --- | --- | --- |
-| `OnTxEmpty`, `OnRxByte`, `OnRxWord`, `OnDmaTxComplete`, `OnDmaRxComplete` | часть стандартной обработки | вызывайте базовую реализацию, чтобы сохранить запись/счётчик/усечение |
+| `OnTxEmpty`, `OnRxByte`, `OnRxWord` | обработка кадров | вызывайте базовую реализацию для записи/счётчиков/усечения |
+| `OnDmaTxComplete`, `OnDmaRxComplete` | продолжение slave после DMA | счётчик уже обновлён обработчиком; вызывайте базовую реализацию для пустых TX/отбрасывания лишних RX |
 | `OnComplete`, `OnError` | уведомления | по умолчанию пустые |
 
 Покадровые callback могут выполняться также из блокирующего вызова или при дочитывании FIFO в `main`. Менять реестр и привязки из callback запрещено.

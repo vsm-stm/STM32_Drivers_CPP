@@ -430,6 +430,25 @@ public:
 	}
 
 	/**
+	 * @brief Prepare an owned, stopped DMA with one control-register update.
+	 * @param addr Aligned memory address; caller guarantees DMA accessibility.
+	 * @param n Element count in 1..65535.
+	 * @param minc ENABLE increments memory; DISABLE repeats one element.
+	 * @param irq_mask IRQ source bits to enable (bitwise OR of IRQ values).
+	 * @pre Successful SetUp, EN=0 and peripheral requests disabled. The caller
+	 *      guarantees all arguments; this low-level path performs no checks.
+	 * Writes memory address/count, updates MINC and the supplied IRQ bits together,
+	 * and clears this resource's flags. Other control bits are preserved. Does not
+	 * touch NVIC, start DMA, wait or perform cache maintenance.
+	 */
+	inline void PrepareTransfer(uint32_t addr, uint32_t n, FunctionalState minc, uint32_t irq_mask) {
+		_MAR() = addr;
+		_NDTR() = n;
+		DMA_MODIFY_REG(_CR(), CR_MINC, (minc == ENABLE ? CR_MINC : 0U) | irq_mask);
+		ClearFlags();
+	}
+
+	/**
 	 * @brief Read the current remaining hardware element count.
 	 * @pre Successful SetUp. To derive a final packet length, stop DMA and wait
 	 *      for EN=0 first; an active transfer can change this value immediately.

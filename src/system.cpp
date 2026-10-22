@@ -327,15 +327,19 @@ uint32_t System::SWOTrace(const uint8_t *ptr, uint32_t len)
 // ---------------------------------------------------------------------------
 
 #if defined(STM32F7)
+// DTCM bypasses D-cache; its device-specific range ends at SRAM1_BASE on F7.
 // Project DMA regions use the same linker records as InitDMARegions().
-// Only full containment within one configured region bypasses maintenance;
+// Only full containment in DTCM or one configured region bypasses maintenance;
 // a mixed/cross-region range takes the conservative CMSIS line operation.
 // This is not a run-time MPU attribute decoder.
 static bool CacheMaintenanceNeeded(const void* addr, uint32_t size)
 {
-	if (!addr || !size || !(SCB->CCR & SCB_CCR_DC_Msk)) return false;
+	if (!addr || !size) return false;
+	const uintptr_t base = reinterpret_cast<uintptr_t>(addr);
+	if (base >= RAMDTCM_BASE && base < SRAM1_BASE && size <= SRAM1_BASE - base)
+		return false;
+	if (!(SCB->CCR & SCB_CCR_DC_Msk)) return false;
 	if (__stm32_dma_regions_start__ && __stm32_dma_regions_end__) {
-		const uintptr_t base = reinterpret_cast<uintptr_t>(addr);
 		for (const uint32_t* p = __stm32_dma_regions_start__;
 			 p != __stm32_dma_regions_end__; p += 3) {
 			if (base >= p[1] && base - p[1] < p[2]
