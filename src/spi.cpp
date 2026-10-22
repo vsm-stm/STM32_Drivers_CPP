@@ -94,95 +94,67 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
     return SysInitStatus::InitOK;
 }
 
-// Shared setup, with no SPI traffic until descriptors, cache and DMA are ready.
-SysStatus SPI::Start(const void* tx, void* rx, uint32_t len, Data_frame_format frame_format,
-                     Mode mode, FunctionalState minc)
+// Each public transfer family has its own start path. Buffer presence is checked
+// by the public wrappers; fixed configuration and buffer layout are caller contracts.
+SysStatus SPI::StartIRQ(const void* tx, void* rx, uint32_t len)
 {
-    if (!SPIx) return SysStatus::NotInit;
-    if ((!tx && !rx) || !len || len > 65535U || frame_format != _frame_format
-        || (frame_format == Data_frame_format::Half_Word
-            && ((reinterpret_cast<uintptr_t>(tx) | reinterpret_cast<uintptr_t>(rx)) & 1U))
-        || (minc != ENABLE && minc != DISABLE))
-        return SysStatus::Error;
-    if (_status == SysStatus::Busy) return SysStatus::Busy;
-    if ((_direction == Direction::TX && rx) || (_direction == Direction::RX && tx))
-        return SysStatus::Error;
-    if ((tx && !(Master_slave == Master_sel::Master ? _mosi.IsValid() : _miso.IsValid()))
-        || (rx && !(Master_slave == Master_sel::Master ? _miso.IsValid() : _mosi.IsValid())))
-        return SysStatus::Error;
-    if (mode == Mode::Dma && ((tx && !_dma_tx.HasSelection()) || (rx && !_dma_rx.HasSelection())))
-        return SysStatus::Error;
-
-    SPI_CLEAR_BIT(SPIx->CR2, (IRQ_MASK | DMA_MASK));
-    SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE);
-    while (SPIx->SR & SPI_SR_RXNE) (void)ReadFrame();
-    (void)SPIx->SR; // DR then SR clears old OVR.
-
-    if (mode == Mode::Dma) {
-        const uint32_t frame_bytes = frame_format == Data_frame_format::Byte ? 1U : 2U;
-        if (_dma_tx.HasSelection()) {
-            _dma_tx.MINC(tx ? minc : DISABLE);
-            if (_dma_tx.SetMemAddr(reinterpret_cast<uint32_t>(tx ? tx : &spi_dummy_word)) != SysStatus::OK
-                || _dma_tx.SetCount(len) != SysStatus::OK) return SysStatus::Error;
-            _dma_tx.ClearFlags();
-            _dma_tx.Enable_IRQ(DMA_Sx::IRQ::TE);
-#if defined(STM32F4) || defined(STM32F7)
-            _dma_tx.Enable_IRQ(DMA_Sx::IRQ::DME);
-#endif
-        }
-        if (_dma_rx.HasSelection()) {
-            _dma_rx.MINC(rx ? ENABLE : DISABLE);
-            if (_dma_rx.SetMemAddr(reinterpret_cast<uint32_t>(rx ? rx : &spi_discard_word)) != SysStatus::OK
-                || _dma_rx.SetCount(len) != SysStatus::OK) return SysStatus::Error;
-            _dma_rx.ClearFlags();
-            _dma_rx.Enable_IRQ(DMA_Sx::IRQ::TE);
-#if defined(STM32F4) || defined(STM32F7)
-            _dma_rx.Enable_IRQ(DMA_Sx::IRQ::DME);
-#endif
-        }
-        if (tx) System::CacheClean(tx, minc == ENABLE ? len * frame_bytes : frame_bytes);
-        if (rx) System::CacheCleanInvalidate(rx, len * frame_bytes);
-        // spi_dummy_word is immutable Flash. spi_discard_word is never read by CPU:
-        // neither needs CPU/DMA cache ownership handover.
-    }
-    _tx_data = static_cast<const uint8_t*>(tx);
-    _rx_data = static_cast<uint8_t*>(rx);
-    _capacity = static_cast<uint16_t>(len);
-    _tx_remaining = _direction == Direction::RX && Master_slave == Master_sel::Slave ? 0 : _capacity;
-    _rx_remaining = _direction == Direction::TX ? 0 : _capacity;
-    _dma_pending = 0;
-    _errors = 0;
-    _truncated = false;
-    _nss_ended = false;
-    _mode = mode;
-    _status = SysStatus::Busy;
-
-    // RX is armed before any master-generated clock. Directions without DMA
-    // use SPI IRQ; Send still drains RX and Receive still supplies dummy TX.
-    if (mode == Mode::Dma) {
-        if (_dma_rx.HasSelection()) {
-            _dma_pending = _dma_pending | SPI_CR2_RXDMAEN;
-            _dma_rx.Stream_EN(ENABLE); DMA_RX(ENABLE);
-        } else if (_rx_remaining) IRQ_en(IRQ::RXNE, ENABLE);
-        if (_dma_tx.HasSelection()) {
-            _dma_pending = _dma_pending | SPI_CR2_TXDMAEN;
-            _dma_tx.Stream_EN(ENABLE); DMA_TX(ENABLE);
-        } else if (_tx_remaining) IRQ_en(IRQ::TXE, ENABLE);
-    } else if (mode == Mode::Irq) {
-        if (_rx_remaining) IRQ_en(IRQ::RXNE, ENABLE);
-        if (_tx_remaining) IRQ_en(IRQ::TXE, ENABLE);
-    }
-    if (mode != Mode::Polling) IRQ_en(IRQ::ERR, ENABLE);
-    SlaveSelect(ENABLE);
-    SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE);
+    const SysStatus status = _status;
+    if (status != SysStatus::OK) return status;
+    PrepareTransfer(tx, rx, len, Mode::Irq);
+    uint32_t sources = SPI_CR2_ERRIE;
+    if (_rx_remaining) sources |= SPI_CR2_RXNEIE;
+    if (_tx_remaining) sources |= SPI_CR2_TXEIE;
+    EnableTransfer(sources);
     return SysStatus::OK;
 }
 
-SysStatus SPI::Poll(const void* tx, void* rx, uint32_t len,
-                    Data_frame_format frame_format, uint32_t timeout)
+SysStatus SPI::StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState minc)
 {
-    const SysStatus started = Start(tx, rx, len, frame_format, Mode::Polling);
-    if (started != SysStatus::OK) return started;
+    const SysStatus status = _status;
+    if (status != SysStatus::OK) return status;
+    const bool tx_dma = _dma_tx.HasSelection();
+    const bool rx_dma = _dma_rx.HasSelection();
+    if ((tx && !tx_dma) || (rx && !rx_dma)) return SysStatus::Error;
+
+    PrepareTransfer(tx, rx, len, Mode::Dma);
+    constexpr uint32_t dma_irqs = static_cast<uint32_t>(DMA_Sx::IRQ::TC)
+        | static_cast<uint32_t>(DMA_Sx::IRQ::TE)
+#if defined(STM32F4) || defined(STM32F7)
+        | static_cast<uint32_t>(DMA_Sx::IRQ::DME)
+#endif
+        ;
+    if (tx_dma)
+        _dma_tx.PrepareTransfer(reinterpret_cast<uint32_t>(tx ? tx : &spi_dummy_word),
+            len, tx ? minc : DISABLE, dma_irqs);
+    if (rx_dma)
+        _dma_rx.PrepareTransfer(reinterpret_cast<uint32_t>(rx ? rx : &spi_discard_word),
+            len, rx ? ENABLE : DISABLE, dma_irqs);
+
+    const uint32_t frame_bytes = _frame_format == Data_frame_format::Byte ? 1U : 2U;
+    if (tx) System::CacheClean(tx, minc == ENABLE ? len * frame_bytes : frame_bytes);
+    if (rx) System::CacheCleanInvalidate(rx, len * frame_bytes);
+    // Flash dummy and CPU-unread discard storage need no cache handover.
+
+    uint32_t sources = SPI_CR2_ERRIE;
+    if (rx_dma) sources |= SPI_CR2_RXDMAEN;
+    else if (_rx_remaining) sources |= SPI_CR2_RXNEIE;
+    if (tx_dma) sources |= SPI_CR2_TXDMAEN;
+    else if (_tx_remaining) sources |= SPI_CR2_TXEIE;
+    _dma_pending = sources & DMA_MASK;
+    // Both DMA engines are prepared before SPI requests can produce any traffic.
+    // RX is enabled first; missing directions retain the agreed SPI IRQ fallback.
+    if (rx_dma) _dma_rx.Stream_EN(ENABLE);
+    if (tx_dma) _dma_tx.Stream_EN(ENABLE);
+    EnableTransfer(sources);
+    return SysStatus::OK;
+}
+
+SysStatus SPI::StartPolling(const void* tx, void* rx, uint32_t len, uint32_t timeout)
+{
+    const SysStatus status = _status;
+    if (status != SysStatus::OK) return status;
+    PrepareTransfer(tx, rx, len, Mode::Polling);
+    EnableTransfer(0U);
     const uint32_t tick = System::GetTick();
     while (_status == SysStatus::Busy) {
         if (!_nss_ended && !_errors) {

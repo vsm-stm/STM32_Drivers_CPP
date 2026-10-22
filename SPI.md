@@ -79,7 +79,7 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX,
 | `RX` | full duplex, RXONLY cleared; master clocks with dummy frames from the TX interrupt, slave only receives | `Receive` |
 | `TXRX` | full duplex | `Send` (RX discarded), `Receive` (dummy TX), `SendReceive` |
 
-A method that does not fit the fixed direction returns `Error`.
+The caller selects a method compatible with the fixed direction and connected data pins; transfer starts do not check this again.
 
 **`SetUp()`** — clock, mode and frame settings (or the `Init_struct_Typedef` overload):
 
@@ -168,16 +168,29 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
 // Call Process() from main; use the buffer only after it returns OK.
 ```
 
+**Separate start paths.** Blocking, IRQ and DMA methods call `StartPolling`,
+`StartIRQ` and `StartDMA` respectively. Within each family, Send/Receive/SendReceive
+share one start function; there is no common start that dispatches on a mode.
+Small inline helpers prepare common state and commit SPI request/IRQ gates.
+
+**Caller contract.** Every call checks the required buffer pointers and status;
+DMA calls additionally check that the required TX/RX DMA exists. The caller
+supplies `len` in 1..65535, valid buffer storage and alignment, a buffer type matching
+`SetUp(Byte / Half_Word)`, valid `minc`, and an operation supported by the fixed
+direction/pins. These are preconditions, not runtime checks or promised `Error`
+results. Buffer lifetime and F7 cache-line ownership requirements still apply.
+
 **Status codes:**
 
 | Result | When |
 | --- | --- |
 | `NotInit` | `SetUp()` has not succeeded |
 | `Busy` | another operation is running |
-| `Error` | null/zero arguments, more than 65535 frames, frame width or alignment mismatch, missing data pin or required DMA |
+| `Error` | a required buffer is null, required DMA is missing, or a hardware error occurred |
 | `Timeout` | blocking call exceeded its budget |
 
-- After `Error`/`Timeout` (and cleanup) a new transfer may start.
+- A new transfer requires object status `OK`. With valid buffers, any other current status is returned without starting.
+- Missing-buffer/DMA rejections leave the existing object status and hardware unchanged. After a completed transfer leaves status `Error`/`Timeout`, recover through `DeInit()` followed by `SetUp()`.
 - A blocking call has **one** timeout for the whole call and needs a running System tick.
 - Asynchronous calls have no internal deadline — the application enforces one and can cancel with `DeInit()`.
 
@@ -291,6 +304,13 @@ if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus
 - At compile time (`constinit`): wrong request, TX and RX on the same resource, DMA not matching the direction.
 - In `SetUp()`: busy resources, hardware setup or registry failure → `InitError`; only resources acquired by this call are released.
 - `SetUp()` configures ownership, data width (= frame size), direction and the DR address.
+- Each DMA start uses `DMA_Sx::PrepareTransfer(addr, count, minc, irq_mask)` to
+  write the address/count, update MINC and IRQ sources together and clear flags.
+  This low-level path has no repeated argument/state checks and never accesses
+  NVIC. SPI request/IRQ gates are committed together; RX DMA is armed before TX.
+- Cache maintenance remains before DMA starts. With application-controlled CS
+  asserted before the call, this preparation remains inside the CS-to-clock gap;
+  this API does not promise a fixed startup time.
 
 **Interrupts:** SPI, DMA TX and DMA RX have separate handlers. Even if TX and RX share one NVIC vector, they take **two** registry slots; each handler checks only its own DMA.
 
@@ -516,7 +536,7 @@ More examples: shared bus (section 4), RX-only DMA (section 5), slave (section 7
 | `RX` | full duplex, RXONLY сброшен; master тактирует пустыми кадрами из TX-прерывания, slave только принимает | `Receive` |
 | `TXRX` | full duplex | `Send` (RX отбрасывается), `Receive` (пустые TX), `SendReceive` |
 
-Метод, не подходящий закреплённому направлению, возвращает `Error`.
+Вызывающий код выбирает метод, совместимый с закреплённым направлением и подключёнными выводами данных; при запуске это повторно не проверяется.
 
 **`SetUp()`** — тактирование, режим и формат кадра (или перегрузка с `Init_struct_Typedef`):
 
@@ -605,16 +625,30 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
 // Вызывать Process() из main; использовать буфер только после OK.
 ```
 
+**Раздельные пути запуска.** Блокирующие методы, IRQ и DMA вызывают соответственно
+`StartPolling`, `StartIRQ` и `StartDMA`. Внутри каждой группы Send/Receive/SendReceive
+используют одну функцию запуска; общего старта с выбором по режиму нет.
+Небольшие inline-функции готовят общее состояние и устанавливают источники SPI.
+
+**Ответственность вызывающего кода.** Каждый вызов проверяет обязательные указатели
+буферов и статус; DMA-вызовы дополнительно проверяют наличие нужного TX/RX DMA.
+Вызывающий код обеспечивает `len` в 1..65535, достаточный размер и выравнивание
+буферов, соответствие типа буфера `SetUp(Byte / Half_Word)`, корректный `minc`
+и совместимость операции с закреплёнными направлением/выводами. Это условия
+использования, а не проверки во время работы с гарантированным возвратом `Error`.
+Требования к времени жизни буферов и владению кеш-линиями F7 сохраняются.
+
 **Коды статуса:**
 
 | Результат | Когда |
 | --- | --- |
 | `NotInit` | `SetUp()` не выполнен успешно |
 | `Busy` | идёт другая операция |
-| `Error` | нулевые аргументы, больше 65535 кадров, несоответствие ширины кадра или выравнивания, нет вывода данных или нужного DMA |
+| `Error` | нет обязательного буфера, нужного DMA или произошла аппаратная ошибка |
 | `Timeout` | блокирующий вызов превысил отведённое время |
 
-- После `Error`/`Timeout` (и очистки) можно начать новый обмен.
+- Новый обмен требует статуса объекта `OK`. При корректных буферах любой другой текущий статус возвращается без запуска.
+- Отказ из-за отсутствующего буфера/DMA не меняет статус объекта и аппаратуру. После завершения обмена со статусом `Error`/`Timeout` восстановление выполняется через `DeInit()` и затем `SetUp()`.
 - У блокирующего вызова **один** таймаут на весь вызов; нужен работающий `GetTick()`.
 - У асинхронных вызовов внутреннего срока нет — приложение контролирует время само и может отменить обмен через `DeInit()`.
 
@@ -718,6 +752,13 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
 - При компиляции (`constinit`): неверный запрос, один ресурс для TX и RX, DMA несовместимого направления.
 - В `SetUp()`: занятый DMA, ошибка настройки или регистрации → `InitError`; освобождается только захваченное этим вызовом.
 - Ширина данных DMA соответствует размеру кадра.
+- Каждый DMA-запуск использует `DMA_Sx::PrepareTransfer(addr, count, minc, irq_mask)`:
+  адрес/счётчик записываются, MINC и источники IRQ обновляются вместе, флаги
+  очищаются. Повторных проверок аргументов/состояния и обращений к NVIC нет.
+  Источники SPI устанавливаются вместе; RX DMA включается перед TX.
+- Обслуживание кеша остаётся перед запуском DMA. Если приложение активировало
+  CS до вызова, подготовка по-прежнему входит в паузу CS → начало тактирования;
+  фиксированное время запуска этот API не гарантирует.
 
 **Прерывания:** SPI, DMA TX и DMA RX регистрируются отдельно. Даже при общем векторе TX/RX нужны **два** места в реестре; каждый обработчик проверяет только свой DMA.
 
