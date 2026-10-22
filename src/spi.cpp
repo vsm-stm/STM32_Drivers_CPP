@@ -96,11 +96,11 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
 
 // Each public transfer family has its own start path. Buffer presence is checked
 // by the public wrappers; fixed configuration and buffer layout are caller contracts.
-SysStatus SPI::StartIRQ(const void* tx, void* rx, uint32_t len)
+SysStatus SPI::StartIRQ(const void* tx, void* rx, uint32_t len, PIN* ss)
 {
     const SysStatus status = _status;
     if (status != SysStatus::OK) return status;
-    PrepareTransfer(tx, rx, len, Mode::Irq);
+    PrepareTransfer(tx, rx, len, Mode::Irq, ss);
     uint32_t sources = SPI_CR2_ERRIE;
     if (_rx_remaining) sources |= SPI_CR2_RXNEIE;
     if (_tx_remaining) sources |= SPI_CR2_TXEIE;
@@ -109,7 +109,7 @@ SysStatus SPI::StartIRQ(const void* tx, void* rx, uint32_t len)
     return SysStatus::OK;
 }
 
-SysStatus SPI::StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState minc)
+SysStatus SPI::StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState minc, PIN* ss)
 {
     const SysStatus status = _status;
     if (status != SysStatus::OK) return status;
@@ -117,7 +117,7 @@ SysStatus SPI::StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState 
     const bool rx_dma = _dma_rx.HasSelection();
     if ((tx && !tx_dma) || (rx && !rx_dma)) return SysStatus::Error;
 
-    PrepareTransfer(tx, rx, len, Mode::Dma);
+    PrepareTransfer(tx, rx, len, Mode::Dma, ss);
     if (tx_dma)
         _dma_tx.PrepareTransfer(reinterpret_cast<uint32_t>(tx ? tx : &spi_dummy_word),
             len, tx ? minc : DISABLE, 0U);
@@ -148,11 +148,11 @@ SysStatus SPI::StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState 
     return SysStatus::OK;
 }
 
-SysStatus SPI::StartPolling(const void* tx, void* rx, uint32_t len, uint32_t timeout)
+SysStatus SPI::StartPolling(const void* tx, void* rx, uint32_t len, uint32_t timeout, PIN* ss)
 {
     const SysStatus status = _status;
     if (status != SysStatus::OK) return status;
-    PrepareTransfer(tx, rx, len, Mode::Polling);
+    PrepareTransfer(tx, rx, len, Mode::Polling, ss);
     EnableTransfer();
     const uint32_t tick = System::GetTick();
     while (_status == SysStatus::Busy) {
@@ -346,6 +346,7 @@ void SPI::Finish(SysStatus result, uint32_t errors)
         SPIx->CR2 = cr2;
     }
     SlaveSelect(DISABLE);
+    _active_ss = &_ss; // Restore the constructor default before notifications/reuse.
     const bool notify = _mode != Mode::Polling;
     __DMB();
     _status = result;
@@ -520,6 +521,7 @@ void SPI::DeInit()
         SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE);
     }
     SlaveSelect(DISABLE);
+    _active_ss = &_ss; // Restore the constructor default before notifications/reuse.
     const IRQn_Type no_irq = static_cast<IRQn_Type>(-1);
     const IRQn_Type irqs[3] = {_instance.irq, _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : no_irq,
                             _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : no_irq};

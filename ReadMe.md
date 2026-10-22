@@ -238,7 +238,7 @@ System::Delay_us(10);      // 10 µs via DWT
 
 F7 projects can reserve non-cacheable DMA buffers via the base's `dma_regions` setting (`name`, `size`, `memory`: SRAM1/SRAM2, `mpu_region`). Addresses are automatic; startup zeroes the buffers; `System::Init()` programs their MPU attributes before enabling the D-cache. Place buffers in `.dma.<name>`. See [System.md](System.md).
 
-Cache helpers for cacheable buffers: `System::CacheClean`, `CacheInvalidate`, `CacheCleanInvalidate` (address + byte count). F7 skips ranges inside configured non-cacheable areas; on F4/G0/L0 they are empty. Peripheral drivers call them at the right moments; direct DMA users call them themselves. RX buffers must own every 32-byte cache line they touch.
+Cache helpers for cacheable buffers: `System::CacheClean`, `CacheInvalidate`, `CacheCleanInvalidate` (address + byte count). F7 skips ranges wholly inside DTCM or configured non-cacheable areas; on F4/G0/L0 they are empty. Peripheral drivers call them at the right moments; direct DMA users call them themselves. RX buffers must own every 32-byte cache line they touch.
 
 ### Bus frequency variables
 
@@ -655,7 +655,13 @@ if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
 }
 ```
 
-For several devices omit CS in the constructor and drive the CS pins in the application. Hardware NSS needs its matching pin; slave mode always uses hardware NSS.
+For several devices pass the selected pin as the final `PIN* ss` argument:
+`spi.Send(tx, len, 100, &device_cs)` or `spi.Send_DMA(tx, len, ENABLE, &device_cs)`.
+Configure each pin output/high in the application and keep it alive until completion.
+The driver asserts it just before SPE and releases it after completion/error/cancellation;
+IRQ/DMA require `Process()`. `nullptr` uses the constructor SS; if absent, CS stays
+under application control. Hardware NSS needs its matching pin; slave mode always
+uses hardware NSS. The per-call software CS is ignored in both hardware-NSS modes.
 
 ### 16-bit frames
 
@@ -1170,7 +1176,7 @@ System::Delay_us(10);      // 10 мкс через DWT
 
 В проектах F7 настройка базы `dma_regions` резервирует некешируемые DMA-буферы (`name`, `size`, `memory`: SRAM1/SRAM2, `mpu_region`). Адреса вычисляются автоматически; startup обнуляет буферы; `System::Init()` задаёт их атрибуты MPU до включения D-cache. Буферы размещаются в `.dma.<name>`. См. [System.md](System.md).
 
-Функции кеша для кешируемых буферов: `System::CacheClean`, `CacheInvalidate`, `CacheCleanInvalidate` (адрес + размер в байтах). На F7 диапазоны внутри настроенных некешируемых областей пропускаются; на F4/G0/L0 функции пустые. Драйверы периферии вызывают их сами в нужные моменты; при прямом использовании DMA — пользователь. RX-буфер должен владеть всеми 32-байтными линиями кеша, которые задевает.
+Функции кеша для кешируемых буферов: `System::CacheClean`, `CacheInvalidate`, `CacheCleanInvalidate` (адрес + размер в байтах). На F7 диапазоны целиком внутри DTCM или настроенных некешируемых областей пропускаются; на F4/G0/L0 функции пустые. Драйверы периферии вызывают их сами в нужные моменты; при прямом использовании DMA — пользователь. RX-буфер должен владеть всеми 32-байтными линиями кеша, которые задевает.
 
 ### Переменные частот шин
 
@@ -1587,7 +1593,14 @@ if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
 }
 ```
 
-Для нескольких устройств не передавайте CS в конструктор и управляйте выводами CS в приложении. Аппаратный NSS требует своего вывода; режим slave всегда использует аппаратный NSS.
+Для нескольких устройств передавайте выбранный вывод последним параметром `PIN* ss`:
+`spi.Send(tx, len, 100, &device_cs)` или `spi.Send_DMA(tx, len, ENABLE, &device_cs)`.
+Приложение настраивает каждый вывод как выход с высоким уровнем и сохраняет PIN
+до завершения обмена. Драйвер активирует его перед SPE и снимает после завершения,
+ошибки или отмены; IRQ/DMA требуют `Process()`. `nullptr` выбирает SS конструктора,
+а при его отсутствии сохраняет ручное управление. Аппаратный NSS требует своего
+вывода; slave всегда использует аппаратный NSS. В обоих режимах аппаратного NSS
+программный CS из параметра игнорируется.
 
 ### 16-битные кадры
 

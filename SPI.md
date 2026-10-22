@@ -106,10 +106,41 @@ Check for `InitOK` before starting. `InitError` on: invalid enum values, missing
 
 | Configuration | Who drives chip select |
 | --- | --- |
-| Master, software NSS, CS pin passed | the driver: high after setup, low at start, high only after final completion/error/timeout |
-| Master, software NSS, no CS pin | the application (all CS GPIOs) |
+| Master, software NSS, per-call `PIN* ss` supplied | the driver selects this pin for one operation; the application configures it output/high beforehand |
+| Master, software NSS, `ss=nullptr`, constructor CS supplied | the driver uses the constructor CS: high after setup, low before SPE, high after final completion/error/timeout |
+| Master, software NSS, no per-call or constructor CS | the application (all CS GPIOs) |
 | Master, hardware NSS | hardware: SSM cleared, SSOE set; NSS follows SPI enable |
 | Slave | hardware NSS required (SSM/SSOE cleared); the application configures EXTI on that pin to detect packet end |
+
+**CS selected per operation.** Every 8/16-bit transfer overload accepts a final
+`PIN* ss = nullptr`. For blocking methods it follows `timeout`; for `Send_DMA`
+it follows `minc`; for IRQ and the other DMA methods it follows `len`.
+A non-null pointer overrides the constructor SS for this operation. `nullptr`
+keeps the existing constructor default; with no constructor SS it keeps manual CS.
+Only software-NSS master uses this parameter; hardware NSS and slave ignore it.
+
+After buffer/status/DMA checks and preparation, the driver asserts the selected
+CS immediately before enabling SPI. It releases that same pin after physical
+completion, error/timeout, or cancellation through `DeInit()`. IRQ/DMA completion
+still requires `Process()` from main; DMA TC does not release CS. Failed starts
+(null buffers, non-OK status, missing DMA) do not change any CS or the active pin.
+The application sets up external CS pins as outputs initially high. The selected
+`PIN` must remain alive until completion or until `DeInit()` returns. SPI keeps
+one active pointer (4 bytes on the supported MCUs), then restores the constructor
+default before completion/error notifications. SPI settings remain shared.
+
+For example, using the two configured pins from the shared-bus example below:
+
+```cpp
+SysStatus first = bus.Send(command, 1, 100, &flash_cs);
+if (first == SysStatus::OK) {
+    SysStatus second = bus.Receive(response, 3, 100, &adc_cs);
+    // Inspect second; both operations release their selected CS before returning.
+}
+// With DMA configured: bus.Send_DMA(tx_buffer, frame_count, ENABLE, &flash_cs).
+// With IRQ: bus.Receive_IRQ(rx_buffer, frame_count, &adc_cs).
+// Keep async buffers/PIN alive and call Process() until the operation completes.
+```
 
 **Shared bus:** use one SPI object and application-owned CS pins, so CS can stay low across several operations (command + response). Release CS on errors too.
 
@@ -582,12 +613,45 @@ SysStatus result = bus.Send_Receive(tx, rx, 2); // Два кадра, не дв�
 
 | Конфигурация | Кто управляет chip-select |
 | --- | --- |
-| Master, программный NSS, вывод CS передан | драйвер: высокий уровень после настройки, низкий при старте, высокий только после окончательного завершения/ошибки/таймаута |
-| Master, программный NSS, без вывода CS | приложение (все CS-выводы) |
+| Master, программный NSS, `PIN* ss` передан в вызов | драйвер выбирает этот вывод на один обмен; приложение заранее настраивает его как выход с высоким уровнем |
+| Master, программный NSS, `ss=nullptr`, CS передан в конструктор | драйвер использует CS конструктора: высокий после настройки, низкий перед SPE, высокий после завершения/ошибки/таймаута |
+| Master, программный NSS, CS не передан ни в вызов, ни в конструктор | приложение (все CS-выводы) |
 | Master, аппаратный NSS | аппаратура: SSM сброшен, SSOE установлен; NSS следует за включением SPI |
 | Slave | нужен аппаратный NSS (SSM/SSOE сброшены); приложение настраивает EXTI на этом выводе для определения конца пакета |
 
 Программный NSS в режиме slave не поддерживается.
+
+**Выбор CS на один обмен.** У всех 8/16-битных перегрузок передачи последний
+параметр — `PIN* ss = nullptr`. В блокирующих методах он идёт после `timeout`,
+в `Send_DMA` — после `minc`, в IRQ и остальных DMA-методах — после `len`.
+Переданный указатель заменяет SS конструктора на один обмен. `nullptr`
+сохраняет прежний выбор: SS конструктора, а при его отсутствии — ручное управление.
+Этот параметр используется только в master с программным NSS; аппаратный NSS
+и slave его игнорируют.
+
+После проверок буферов/статуса/DMA и подготовки драйвер активирует выбранный
+CS непосредственно перед включением SPI. Этот же вывод снимается после
+физического завершения, ошибки/таймаута или отмены через `DeInit()`. Для IRQ/DMA
+по-прежнему нужен `Process()` из main; DMA TC не снимает CS. Отказ запуска
+(нет буфера, статус не OK, нет нужного DMA) не меняет CS и активный указатель.
+Приложение заранее настраивает внешние CS как выходы с высоким уровнем.
+Выбранный `PIN` должен жить до завершения обмена либо возврата из `DeInit()`.
+SPI хранит один активный указатель (4 байта на поддерживаемых МК), затем
+восстанавливает SS конструктора до уведомлений о завершении/ошибке.
+Настройки SPI остаются общими для всех устройств.
+
+Например, для заранее настроенных выводов `flash_cs` и `adc_cs`:
+
+```cpp
+SysStatus first = bus.Send(command, 1, 100, &flash_cs);
+if (first == SysStatus::OK) {
+    SysStatus second = bus.Receive(response, 3, 100, &adc_cs);
+    // Проверить second; оба вызова снимают выбранный CS до возврата.
+}
+// С настроенным DMA: bus.Send_DMA(tx_buffer, frame_count, ENABLE, &flash_cs).
+// Через IRQ: bus.Receive_IRQ(rx_buffer, frame_count, &adc_cs).
+// Асинхронные буферы/PIN живут до завершения; из main вызывается Process().
+```
 
 **Общая шина:** используйте один объект SPI и выводы CS приложения — тогда CS может оставаться активным между командой и ответом. При ошибке тоже снимайте CS.
 
