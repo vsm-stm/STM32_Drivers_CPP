@@ -282,7 +282,8 @@ There are no argument, ownership or EN checks. It writes the memory address and
 count, updates MINC and the supplied IRQ bits in one control-register operation,
 and clears flags for this resource. Other control bits are preserved. It neither
 accesses NVIC nor starts/waits for DMA or maintains cache. SPI uses it after its
-status/buffer/DMA checks; the checked individual setters remain available.
+status/buffer/DMA checks, passing `irq_mask=0`: SPI keeps the IRQ sources
+configured once in `SetUpDMA()`. The checked individual setters remain available.
 
 ### SPI stop
 
@@ -681,7 +682,8 @@ inline-операция для **захваченного, остановлен�
 управляющего регистра и очищает флаги своего ресурса. Остальные биты управления
 сохраняются. Метод не обращается к NVIC, не запускает DMA, не ждёт и не
 обслуживает кеш. SPI использует его после проверки статуса/буферов/наличия DMA;
-отдельные методы записи с проверками остаются доступны.
+при этом `irq_mask=0`, поскольку SPI настраивает источники IRQ один раз в
+`SetUpDMA()`. Отдельные методы записи с проверками остаются доступны.
 
 ### Остановка SPI
 

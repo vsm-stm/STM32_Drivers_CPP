@@ -171,7 +171,12 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
 **Separate start paths.** Blocking, IRQ and DMA methods call `StartPolling`,
 `StartIRQ` and `StartDMA` respectively. Within each family, Send/Receive/SendReceive
 share one start function; there is no common start that dispatches on a mode.
-Small inline helpers prepare common state and commit SPI request/IRQ gates.
+Small inline helpers prepare common state and enable SPI. Preparation has no
+register accesses or FIFO drain: `OK` means the previous transfer already stopped
+SPI/requests, cleared pending DMA and left no errors. Only buffers, counters,
+packet flags and the transfer method are assigned. IRQ/DMA starts set their SPI
+request/IRQ gates once; polling does not access CR2 during start. Manual low-level
+control must preserve this idle state before using a transfer method.
 
 **Caller contract.** Every call checks the required buffer pointers and status;
 DMA calls additionally check that the required TX/RX DMA exists. The caller
@@ -304,10 +309,11 @@ if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus
 - At compile time (`constinit`): wrong request, TX and RX on the same resource, DMA not matching the direction.
 - In `SetUp()`: busy resources, hardware setup or registry failure → `InitError`; only resources acquired by this call are released.
 - `SetUp()` configures ownership, data width (= frame size), direction and the DR address.
-- Each DMA start uses `DMA_Sx::PrepareTransfer(addr, count, minc, irq_mask)` to
-  write the address/count, update MINC and IRQ sources together and clear flags.
-  This low-level path has no repeated argument/state checks and never accesses
-  NVIC. SPI request/IRQ gates are committed together; RX DMA is armed before TX.
+- Each DMA start uses `DMA_Sx::PrepareTransfer(addr, count, minc, 0)` to write
+  the address/count, update MINC and clear flags. TC/TE/DME sources stay configured
+  from `SetUpDMA()` and are not enabled again on each start. This low-level path
+  has no repeated argument/state checks and never accesses NVIC. SPI request/IRQ
+  gates are set together; RX DMA is armed before TX.
 - Cache maintenance remains before DMA starts. With application-controlled CS
   asserted before the call, this preparation remains inside the CS-to-clock gap;
   this API does not promise a fixed startup time.
@@ -369,6 +375,13 @@ bus.SendReceive_DMA(tx, rx, 64);      // 64 frames = 128 cache-maintained RX byt
 
 **Snapshots:** error/RX/TX checks share one CR2/SR snapshot per entry. F4 reads the first RX frame without re-reading SR; F7/G0 refresh SR for further FIFO frames. The DR/SR sequence clearing OVR and the final wire-status check in `Process()` remain. Each DMA handler uses one `GetIRQFlags()` snapshot for TC and errors.
 
+RX/TX frame processing reads its remaining counter once and writes the new
+value once. On normal DMA TC, the handler records zero remaining without reading
+NDTR/CNDTR or repeating the assignment in the base callback. A shortened slave
+packet still reads the stopped count after NSS (in the DMA IRQ on F4/F7, in
+`Process()` on G0). Error paths discard the data and do not use the count.
+Cache operations and their argument evaluation are compiled only for F7.
+
 **Errors** are reported once through `OnError(uint32_t mask)` with bits `Overrun`, `ModeFault`, `DmaTx`, `DmaRx`.
 
 - CRCERR/FRE and the `Crc`/`Frame` enum entries were removed — hardware CRC and TI mode are not used.
@@ -380,7 +393,8 @@ bus.SendReceive_DMA(tx, rx, 64);      // 64 frames = 128 cache-maintained RX byt
 
 | Callback | Type | Override rule |
 | --- | --- | --- |
-| `OnTxEmpty`, `OnRxByte`, `OnRxWord`, `OnDmaTxComplete`, `OnDmaRxComplete` | part of standard processing | call the base implementation to keep storage/count/truncation |
+| `OnTxEmpty`, `OnRxByte`, `OnRxWord` | frame processing | call the base to keep storage/count/truncation |
+| `OnDmaTxComplete`, `OnDmaRxComplete` | slave continuation after DMA | the handler has already updated the count; call the base to keep dummy TX/discard RX servicing |
 | `OnComplete`, `OnError` | notifications | empty by default |
 
 Byte/word callbacks also run during blocking polling or the final FIFO drain, in the calling/`main` context.
@@ -628,7 +642,13 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::RX, SPI::_1::SCK::PA5,
 **Раздельные пути запуска.** Блокирующие методы, IRQ и DMA вызывают соответственно
 `StartPolling`, `StartIRQ` и `StartDMA`. Внутри каждой группы Send/Receive/SendReceive
 используют одну функцию запуска; общего старта с выбором по режиму нет.
-Небольшие inline-функции готовят общее состояние и устанавливают источники SPI.
+Небольшие inline-функции готовят общее состояние и включают SPI. Подготовка не
+обращается к регистрам и не вычитывает FIFO: при `OK` предыдущий обмен уже
+остановил SPI/запросы, завершил ожидающие DMA и не оставил ошибок. Записываются
+только буферы, счётчики, признаки пакета и способ обмена. IRQ/DMA-запуск один раз
+устанавливает свои источники SPI; polling при запуске не обращается к CR2.
+При ручном низкоуровневом управлении это состояние покоя нужно сохранить перед
+вызовом метода обмена.
 
 **Ответственность вызывающего кода.** Каждый вызов проверяет обязательные указатели
 буферов и статус; DMA-вызовы дополнительно проверяют наличие нужного TX/RX DMA.
@@ -752,9 +772,10 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
 - При компиляции (`constinit`): неверный запрос, один ресурс для TX и RX, DMA несовместимого направления.
 - В `SetUp()`: занятый DMA, ошибка настройки или регистрации → `InitError`; освобождается только захваченное этим вызовом.
 - Ширина данных DMA соответствует размеру кадра.
-- Каждый DMA-запуск использует `DMA_Sx::PrepareTransfer(addr, count, minc, irq_mask)`:
-  адрес/счётчик записываются, MINC и источники IRQ обновляются вместе, флаги
-  очищаются. Повторных проверок аргументов/состояния и обращений к NVIC нет.
+- Каждый DMA-запуск использует `DMA_Sx::PrepareTransfer(addr, count, minc, 0)`:
+  записываются адрес/счётчик, обновляется MINC, очищаются флаги. Источники
+  TC/TE/DME остаются настроенными в `SetUpDMA()` и повторно не включаются.
+  Проверок аргументов/состояния и обращений к NVIC в этой операции нет.
   Источники SPI устанавливаются вместе; RX DMA включается перед TX.
 - Обслуживание кеша остаётся перед запуском DMA. Если приложение активировало
   CS до вызова, подготовка по-прежнему входит в паузу CS → начало тактирования;
@@ -810,6 +831,13 @@ bus.SendReceive_DMA(tx, rx, 64);   // 64 кадра = 128 байт RX с обс�
 - `IRQ_en()` меняет только биты источников в CR2, не реестр и не NVIC. Источники обмена включаются только на время активной операции.
 - `DeInit()` удаляет только свои записи; общие обработчики и NVIC сохраняются.
 
+При обработке RX/TX-кадра счётчик остатка читается и обновляется по одному
+разу. При обычном DMA TC обработчик записывает нулевой остаток без чтения
+NDTR/CNDTR и без повторного присваивания в базовом callback. Для короткого
+slave-пакета чтение остановленного счётчика после NSS сохраняется: в DMA IRQ
+на F4/F7, в `Process()` на G0. При ошибке данные отбрасываются, счётчик не
+используется. Cache-операции и вычисление их аргументов компилируются только для F7.
+
 **Ошибки** сообщаются одним вызовом `OnError(uint32_t mask)` с битами `Overrun`, `ModeFault`, `DmaTx`, `DmaRx`.
 
 - CRCERR/FRE и элементы enum `Crc`/`Frame` удалены — аппаратный CRC и режим TI не используются.
@@ -821,7 +849,8 @@ bus.SendReceive_DMA(tx, rx, 64);   // 64 кадра = 128 байт RX с обс�
 
 | Callback | Тип | Правило переопределения |
 | --- | --- | --- |
-| `OnTxEmpty`, `OnRxByte`, `OnRxWord`, `OnDmaTxComplete`, `OnDmaRxComplete` | часть стандартной обработки | вызывайте базовую реализацию, чтобы сохранить запись/счётчик/усечение |
+| `OnTxEmpty`, `OnRxByte`, `OnRxWord` | обработка кадров | вызывайте базовую реализацию для записи/счётчиков/усечения |
+| `OnDmaTxComplete`, `OnDmaRxComplete` | продолжение slave после DMA | счётчик уже обновлён обработчиком; вызывайте базовую реализацию для пустых TX/отбрасывания лишних RX |
 | `OnComplete`, `OnError` | уведомления | по умолчанию пустые |
 
 Покадровые callback могут выполняться также из блокирующего вызова или при дочитывании FIFO в `main`. Менять реестр и привязки из callback запрещено.

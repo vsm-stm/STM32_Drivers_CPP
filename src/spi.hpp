@@ -365,7 +365,8 @@ public:
      * for IRQ/polling. Count is 1..65535 frames; cache bytes = len*frame size.
      * The caller guarantees count, width/alignment, pins/direction and valid minc.
      * Only the presence of the requested DMA direction is checked additionally.
-     * DMA preparation restores MINC/IRQ sources without NVIC access or waits.
+     * DMA preparation updates address/count/MINC without NVIC access or waits.
+     * DMA IRQ sources are configured once by SetUpDMA().
      * Send_DMA requires TX DMA; Receive_DMA requires RX DMA; SendReceive_DMA both.
      * Direction::TX uses only TX DMA. Direction::RX master uses RX DMA plus TX IRQ
      * for dummy clocks; slave RX uses only RX DMA. It never needs a second DMA.
@@ -444,6 +445,12 @@ private:
     static constexpr uint32_t DMA_MASK = SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN;
     // Motorola SPI without hardware CRC; TI frame errors are not applicable.
     static constexpr uint32_t SPI_ERRORS = SPI_SR_OVR | SPI_SR_MODF;
+    // DMA source bits (not ISR flags); configure once and mask together on error.
+    static constexpr uint32_t DMA_ERROR_IRQ_MASK = static_cast<uint32_t>(DMA_Sx::IRQ::TE)
+#if defined(STM32F4) || defined(STM32F7)
+        | static_cast<uint32_t>(DMA_Sx::IRQ::DME)
+#endif
+        ;
 
     const uint8_t* _tx_data = nullptr;
     uint8_t* _rx_data = nullptr;
@@ -497,27 +504,21 @@ private:
     void StopTransfer();
     SysInitStatus SetUpDMA();
     void Finish(SysStatus result, uint32_t errors = 0);
-    // Common preparation only: no transfer-method dispatch or argument checks.
+    // Start requires OK: SPI/requests are stopped, errors and pending DMA are zero.
+    // Only buffers, counters and per-packet state need preparation.
     inline void PrepareTransfer(const void* tx, void* rx, uint32_t len, Mode mode) {
-        SPI_CLEAR_BIT(SPIx->CR2, IRQ_MASK | DMA_MASK);
-        SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE);
-        while (SPIx->SR & SPI_SR_RXNE) (void)ReadFrame();
-        (void)SPIx->SR; // DR then SR clears old OVR.
         _tx_data = static_cast<const uint8_t*>(tx);
         _rx_data = static_cast<uint8_t*>(rx);
         _capacity = static_cast<uint16_t>(len);
         _tx_remaining = _direction == Direction::RX && Master_slave == Master_sel::Slave ? 0 : _capacity;
         _rx_remaining = _direction == Direction::TX ? 0 : _capacity;
-        _dma_pending = 0;
-        _errors = 0;
         _truncated = false;
         _nss_ended = false;
         _mode = mode;
         _status = SysStatus::Busy;
     }
-    // Commit all SPI request/IRQ gates together, preserving frame/NSS settings.
-    inline void EnableTransfer(uint32_t sources) {
-        SPI_MODIFY_REG(SPIx->CR2, IRQ_MASK | DMA_MASK, sources);
+    // Request gates are set by the IRQ/DMA path; polling needs none.
+    inline void EnableTransfer() {
         SlaveSelect(ENABLE);
         SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE);
     }
@@ -543,6 +544,7 @@ protected:
     virtual void OnTxEmpty();
     virtual void OnRxByte(uint8_t frame);
     virtual void OnRxWord(uint16_t frame);
+    /// DMA IRQ already updated the count; base resumes slave dummy TX/discard RX.
     virtual void OnDmaTxComplete();
     virtual void OnDmaRxComplete();
     /// Notification after physical completion; Process()/main context, not a TXE IRQ.
