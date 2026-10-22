@@ -375,8 +375,9 @@ public:
 
     /**
      * @name DMA transfers
-     * The optional final ss follows minc in Send_DMA; Receive/SendReceive_DMA
-     * take it after len. Lifetime and automatic release are the same as IRQ.
+     * Send_DMA(data, len, ss) uses MINC=ENABLE; the full overload takes minc
+     * before ss. Receive/SendReceive_DMA take ss after len. Lifetime and automatic
+     * release are the same as IRQ.
      * OK means started. Requires status OK and non-null required buffers, as
      * for IRQ/polling. Count is 1..65535 frames; cache bytes = len*frame size.
      * The caller guarantees count, width/alignment, pins/direction and valid minc.
@@ -395,12 +396,18 @@ public:
      */
     SysStatus Send_DMA(uint8_t* data, uint32_t len, FunctionalState minc = ENABLE, PIN* ss = nullptr)
     { return data ? StartDMA(data, nullptr, len, minc, ss) : SysStatus::Error; }
+    /// Select this operation's software CS with memory increment enabled.
+    SysStatus Send_DMA(uint8_t* data, uint32_t len, PIN* ss)
+    { return Send_DMA(data, len, ENABLE, ss); }
     SysStatus Receive_DMA(uint8_t* data, uint32_t len, PIN* ss = nullptr)
     { return data ? StartDMA(nullptr, data, len, ENABLE, ss) : SysStatus::Error; }
     SysStatus SendReceive_DMA(uint8_t* tx, uint8_t* rx, uint32_t len, PIN* ss = nullptr)
     { return tx && rx ? StartDMA(tx, rx, len, ENABLE, ss) : SysStatus::Error; }
     SysStatus Send_DMA(uint16_t* data, uint32_t len, FunctionalState minc = ENABLE, PIN* ss = nullptr)
     { return data ? StartDMA(data, nullptr, len, minc, ss) : SysStatus::Error; }
+    /// Select this operation's software CS with memory increment enabled.
+    SysStatus Send_DMA(uint16_t* data, uint32_t len, PIN* ss)
+    { return Send_DMA(data, len, ENABLE, ss); }
     SysStatus Receive_DMA(uint16_t* data, uint32_t len, PIN* ss = nullptr)
     { return data ? StartDMA(nullptr, data, len, ENABLE, ss) : SysStatus::Error; }
     SysStatus SendReceive_DMA(uint16_t* tx, uint16_t* rx, uint32_t len, PIN* ss = nullptr)

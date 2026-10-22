@@ -115,6 +115,8 @@ Check for `InitOK` before starting. `InitError` on: invalid enum values, missing
 **CS selected per operation.** Every 8/16-bit transfer overload accepts a final
 `PIN* ss = nullptr`. For blocking methods it follows `timeout`; for `Send_DMA`
 it follows `minc`; for IRQ and the other DMA methods it follows `len`.
+`Send_DMA(data, len, ss)` is also available for both buffer widths and uses
+`MINC=ENABLE`; use the full overload to pass `DISABLE`.
 A non-null pointer overrides the constructor SS for this operation. `nullptr`
 keeps the existing constructor default; with no constructor SS it keeps manual CS.
 Only software-NSS master uses this parameter; hardware NSS and slave ignore it.
@@ -137,7 +139,7 @@ if (first == SysStatus::OK) {
     SysStatus second = bus.Receive(response, 3, 100, &adc_cs);
     // Inspect second; both operations release their selected CS before returning.
 }
-// With DMA configured: bus.Send_DMA(tx_buffer, frame_count, ENABLE, &flash_cs).
+// With DMA configured: bus.Send_DMA(tx_buffer, frame_count, &flash_cs).
 // With IRQ: bus.Receive_IRQ(rx_buffer, frame_count, &adc_cs).
 // Keep async buffers/PIN alive and call Process() until the operation completes.
 ```
@@ -624,6 +626,8 @@ SysStatus result = bus.Send_Receive(tx, rx, 2); // Два кадра, не дв�
 **Выбор CS на один обмен.** У всех 8/16-битных перегрузок передачи последний
 параметр — `PIN* ss = nullptr`. В блокирующих методах он идёт после `timeout`,
 в `Send_DMA` — после `minc`, в IRQ и остальных DMA-методах — после `len`.
+Для обеих ширин буфера также есть `Send_DMA(data, len, ss)` с `MINC=ENABLE`;
+для передачи `DISABLE` используется полная перегрузка.
 Переданный указатель заменяет SS конструктора на один обмен. `nullptr`
 сохраняет прежний выбор: SS конструктора, а при его отсутствии — ручное управление.
 Этот параметр используется только в master с программным NSS; аппаратный NSS
@@ -648,7 +652,7 @@ if (first == SysStatus::OK) {
     SysStatus second = bus.Receive(response, 3, 100, &adc_cs);
     // Проверить second; оба вызова снимают выбранный CS до возврата.
 }
-// С настроенным DMA: bus.Send_DMA(tx_buffer, frame_count, ENABLE, &flash_cs).
+// С настроенным DMA: bus.Send_DMA(tx_buffer, frame_count, &flash_cs).
 // Через IRQ: bus.Receive_IRQ(rx_buffer, frame_count, &adc_cs).
 // Асинхронные буферы/PIN живут до завершения; из main вызывается Process().
 ```
