@@ -638,6 +638,8 @@ uart.SetBaud(9600);   // after TC; check SysStatus
 
 - SPI1–SPI6 on F4/F7 and SPI1–SPI3 on G0, where present in CMSIS.
 - `Direction::TX`/`RX`/`TXRX` and optional DMA are fixed in the constructor; clock/mode/frame settings go to `SetUp()`.
+- Polling, IRQ and DMA have separate start paths. Starts check required buffers and status `OK`; DMA also checks the required DMA selection. Count (1..65535), buffer width/alignment and operation/pin compatibility are caller preconditions.
+- After a transfer leaves status `Error`/`Timeout`, use `DeInit()` and `SetUp()` to recover. Missing-buffer/DMA rejections do not change object status. DMA preparation does not access NVIC.
 - `TX` uses transmit-only hardware and one TX DMA. `RX` master uses full duplex: RX DMA plus the TX interrupt for `0xFF`/`0xFFFF` dummy clocks.
 
 ### Basic usage (blocking mode)
@@ -1568,6 +1570,8 @@ uart.SetBaud(9600);   // после TC; проверить SysStatus
 
 - SPI1–SPI6 на F4/F7 и SPI1–SPI3 на G0, если они есть в CMSIS.
 - `Direction::TX`/`RX`/`TXRX` и необязательные DMA фиксируются в конструкторе; частота, режим и формат кадра задаются в `SetUp()`.
+- Polling, IRQ и DMA запускаются раздельно. Проверяются обязательные буферы и статус `OK`; для DMA — ещё наличие нужного DMA. Длину (1..65535), ширину/выравнивание буфера и совместимость операции с выводами обеспечивает вызывающий код.
+- После обмена со статусом `Error`/`Timeout` восстановление — через `DeInit()` и `SetUp()`. Отказ из-за отсутствующего буфера/DMA не меняет статус объекта. Подготовка DMA не обращается к NVIC.
 - `TX` использует аппаратную передачу без приёма и один TX DMA. `RX` в режиме master работает как full duplex: RX DMA плюс TX-прерывание для пустых кадров `0xFF`/`0xFFFF`.
 
 ### Базовое использование (блокирующий режим)
