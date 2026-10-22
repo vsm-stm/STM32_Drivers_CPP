@@ -656,7 +656,7 @@ if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
 ```
 
 For several devices pass the selected pin as the final `PIN* ss` argument:
-`spi.Send(tx, len, 100, &device_cs)` or `spi.Send_DMA(tx, len, ENABLE, &device_cs)`.
+`spi.Send(tx, len, 100, &device_cs)` or `spi.Send_DMA(tx, len, &device_cs)`.
 Configure each pin output/high in the application and keep it alive until completion.
 The driver asserts it just before SPE and releases it after completion/error/cancellation;
 IRQ/DMA require `Process()`. `nullptr` uses the constructor SS; if absent, CS stays
@@ -1594,7 +1594,7 @@ if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
 ```
 
 Для нескольких устройств передавайте выбранный вывод последним параметром `PIN* ss`:
-`spi.Send(tx, len, 100, &device_cs)` или `spi.Send_DMA(tx, len, ENABLE, &device_cs)`.
+`spi.Send(tx, len, 100, &device_cs)` или `spi.Send_DMA(tx, len, &device_cs)`.
 Приложение настраивает каждый вывод как выход с высоким уровнем и сохраняет PIN
 до завершения обмена. Драйвер активирует его перед SPE и снимает после завершения,
 ошибки или отмены; IRQ/DMA требуют `Process()`. `nullptr` выбирает SS конструктора,
