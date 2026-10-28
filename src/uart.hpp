@@ -7,6 +7,13 @@
  * - Send_IRQ()/Receive_IRQ(): asynchronous byte/FIFO interrupt transfers.
  * - Send_DMA()/Receive_DMA(): asynchronous transfers using constructor-bound DMA.
  *
+ * Transfer starts check current status, buffer/length and required DMA selection.
+ * Use only directions configured by constructor pins; TE/RE are not rechecked.
+ * DMA address/count are prepared once, with error sources restored in the same
+ * control update and no NVIC access. Error/Timeout allow a new operation.
+ * OnIdle and DMA-complete callbacks only notify after packet/buffer completion;
+ * they no longer perform cleanup and do not need a base call.
+ *
  * Initialization and IRQ ownership
  * -------------------------------
  * Initialize System/RCC before SetUp(). PCLK is the default; on F7/G0 the
@@ -56,8 +63,8 @@
  *
  * F7 cache and DMA
  * ----------------
- * UART calls System cache helpers at buffer handover. They are empty on F4/G0;
- * on F7 they skip a range wholly inside one configured non-cacheable DMA region.
+ * UART calls System cache helpers at buffer handover on F7 only. They skip
+ * DTCM and ranges wholly inside a configured non-cacheable DMA region.
  * A cacheable RX allocation owns all touched 32-byte lines, including padding.
  * CPU must not access these lines while RX DMA is Busy. Packet length itself
  * does not have to be a multiple of 32. Buffers must also be accessible to DMA.
@@ -487,7 +494,7 @@ public:
 	 * @param timeout Maximum wait budget in milliseconds for the whole call,
 	 *                not a separate timeout for each byte. Uses System::GetTick().
 	 * @return OK when all bytes are queued; NotInit before SetUp(); Error for
-	 *         null/zero length or unconfigured TX; Busy if TX is active; Timeout
+	 *         null/zero length; Busy if TX is active; Timeout
 	 *         if a required TXE wait exhausts the budget.
 	 *
 	 * OK permits source buffer reuse, but does not guarantee the final stop bit
@@ -503,7 +510,7 @@ public:
 	 * @param len Nonzero number of bytes to read; IDLE does not end this method.
 	 * @param timeout Milliseconds for the whole call; requires a running System tick.
 	 * @return OK after len bytes; NotInit before SetUp(); Error for null/zero
-	 *         length, unconfigured RX or a hardware receive error; Busy if RX
+	 *         length or a hardware receive error; Busy if RX
 	 *         is active; Timeout when a required RX wait exhausts the budget.
 	 *
 	 * Clears previous ready/count/overflow state and discards stale UART input
@@ -517,7 +524,7 @@ public:
 	 * @param data Source buffer; keep alive and unchanged until TX leaves Busy.
 	 * @param len Number of bytes, 1..65535.
 	 * @return OK when started (not completed); NotInit before SetUp(); Error
-	 *         for an invalid buffer/length or unconfigured TX; Busy if TX is active.
+	 *         for an invalid buffer/length; Busy if TX is active.
 	 *
 	 * OnTxEmpty() feeds the buffer and disables its source when all bytes are
 	 * queued. Then GetTxStatus() is OK and the buffer can be reused. Physical
@@ -528,8 +535,8 @@ public:
 	 * @brief Start one IRQ-received packet ending at IDLE or buffer capacity.
 	 * @param data Writable buffer, kept alive until RX is no longer Busy.
 	 * @param len Capacity, 1..65535 bytes.
-	 * @return OK on start; NotInit before SetUp(); Error for invalid buffer/length
-	 *         or unconfigured RX; Busy if another RX operation is active.
+	 * @return OK on start; NotInit before SetUp(); Error for invalid buffer/length;
+	 *         Busy if another RX operation is active.
 	 *
 	 * Starts with fresh ready/count/overflow state and discards stale input/errors.
 	 * Enables byte/FIFO RX, IDLE and receive error sources. Completion disables
@@ -544,13 +551,13 @@ public:
 	 * @param data DMA-accessible source, kept alive and unchanged until TX completes.
 	 * @param len Number of bytes, 1..65535.
 	 * @return OK on start; NotInit before UART setup; Error for missing TX DMA,
-	 *         invalid buffer/length or unconfigured TX; Busy if TX is active.
-	 *         DMA address/count preparation failures are returned to the caller.
+	 *         invalid buffer/length; Busy if TX is active.
+	 *         The caller uses the constructor-configured TX direction.
 	 *
 	 * System::CacheClean() publishes source bytes before DMA starts; on F4/G0
-	 * it is empty, while F7 skips maintenance for a configured non-cacheable range.
-	 * OnDmaTxComplete() stops/acknowledges DMA and sets TX OK. The source buffer
-	 * is then reusable, but physical UART TC remains a separate event.
+	 * it is compiled out; F7 skips DTCM and configured non-cacheable ranges.
+	 * The DMA handler stops/acknowledges DMA and sets TX OK before notifying
+	 * OnDmaTxComplete(). The source buffer is reusable; physical TC is separate.
 	 * A DMA error stops TX, sets Error and calls OnError() with Error::DmaTx.
 	 */
 	SysStatus Send_DMA(uint8_t* data, uint32_t len);
@@ -559,8 +566,8 @@ public:
 	 * @param data DMA-accessible writable allocation, alive until RX completes.
 	 * @param len Packet capacity, 1..65535 bytes; not restricted to multiples of 32.
 	 * @return OK on start; NotInit before UART setup; Error for missing RX DMA,
-	 *         invalid buffer/length or unconfigured RX; Busy if RX is active.
-	 *         DMA address/count preparation failures are returned unchanged.
+	 *         invalid buffer/length; Busy if RX is active.
+	 *         The caller uses the constructor-configured RX direction.
 	 *
 	 * Clears previous ready/count/overflow state and stale UART input/errors.
 	 * Calls System::CacheCleanInvalidate() before starting DMA. On completion:
@@ -575,8 +582,8 @@ public:
 	 * F7 cacheable RX storage must own every touched 32-byte cache line, including
 	 * padding. Do not share these lines with unrelated data or access them from
 	 * CPU while Busy. System skips cache maintenance for a range wholly within
-	 * one configured non-cacheable DMA region; buffer ownership still applies.
-	 * F4/G0 cache helpers are empty.
+	 * DTCM or one configured non-cacheable DMA region; ownership still applies.
+	 * F4/G0 compile out cache operations and their argument evaluation.
 	 *
 	 * Example after successful SetUp() with constructor-bound RX DMA:
 	 * @code
@@ -736,6 +743,35 @@ private:
 	DMA_Sx _dma_tx; ///< Owned TX resource; null hardware selection when absent.
 	DMA_Sx _dma_rx; ///< Owned RX resource; no external DMA object or rebinding.
 	SysInitStatus SetUpDMA(); ///< Configure constructor-bound DMA during SetUp().
+	static constexpr uint32_t DMA_ERROR_IRQ_MASK = static_cast<uint32_t>(DMA_Sx::IRQ::TE)
+#if defined(STM32F4) || defined(STM32F7)
+		| static_cast<uint32_t>(DMA_Sx::IRQ::DME)
+#endif
+		;
+
+	// RE remains enabled between packets: discard stale input before a new receive.
+	inline void ClearRxFlags() {
+#if defined(STM32F4)
+		(void)USARTx->SR;
+		(void)USARTx->DR;
+#else
+		USARTx->ICR = USART_ICR_IDLECF | UART_ERRORS;
+		USARTx->RQR = USART_RQR_RXFRQ;
+#endif
+	}
+	inline void PrepareRx(uint8_t* data, uint32_t len) {
+		ClearDataReceivedFlag();
+		data_overflow_count = 0;
+		rx_data = {data, static_cast<uint16_t>(len)};
+		ClearRxFlags();
+	}
+	inline void StopRx() {
+		UART_CLEAR_BIT(USARTx->CR1, CR1_RX_IRQ);
+		UART_CLEAR_BIT(USARTx->CR3, CR3_RX_IRQ | USART_CR3_DMAR);
+	}
+	bool FinishRx(uint32_t errors); // Publish once, after hardware/buffer cleanup.
+	bool FinishRxIRQ();            // Stopped IRQ reception: acknowledge/drain tail.
+	bool FinishRxDMA();            // Confirmed DMA stop: count/cache/tail handover.
 	/// Maximum ready words serviced in one direction per IRQ entry.
 	uint32_t FifoDepth() const {
 #if defined(STM32G0)
@@ -744,7 +780,7 @@ private:
 		return 1U;
 #endif
 	}
-	volatile bool _rx_dma_idle = false; ///< IDLE requested a DMA stop; TC finishes RX.
+	volatile bool _rx_dma_idle = false; ///< IDLE/error requested a stop; DMA IRQ finishes RX.
 	volatile uint32_t _rx_errors = 0; ///< UART errors retained until DMA has stopped.
 
 	// Separate registry objects keep the existing IIRQHandler registry unchanged.
@@ -783,10 +819,12 @@ protected:
 	 * not from USART IRQ. Without DMA it runs from USART IRQ as before.
 	 * On G0, IDLE completion runs from USART IRQ, capacity from DMA RX IRQ.
 	 *
-	 * OnRxByte/OnTxEmpty/OnIdle/OnDmaTxComplete/OnDmaRxComplete perform the standard
-	 * buffer/state handling. Call their base implementation before adding logic
-	 * if that handling is required. OnTC and OnError are notifications with empty
-	 * defaults. Never change the IRQ registry or call SetUp/DeInit here.
+	 * OnRxByte and OnTxEmpty perform byte-buffer handling: call the base to keep
+	 * that processing. RX completion is published once by the interrupt handler
+	 * after the byte callback returns. OnIdle, OnDmaTxComplete, OnDmaRxComplete,
+	 * OnTC and OnError are notifications with empty defaults: state, count and
+	 * buffer ownership are final before they run. Calling their base is unnecessary.
+	 * Never change the IRQ registry or call SetUp/DeInit here.
 	 *
 	 * Example: caller-owned notification of physical completion and errors:
 	 * @code
@@ -799,8 +837,8 @@ protected:
 	 *       void OnTC() override { wire_complete = true; }
 	 *       void OnError(uint32_t errors) override { last_error = errors; }
 	 *       void OnIdle() override {
-	 *           USART::OnIdle(); // Stop/count/cache and publish the packet first.
-	 *           // Main can consume the packet using the standard ready/count API.
+	 *           // The packet is already ready; main can use ready/count.
+	 *           // Only add the application's bounded notification here.
 	 *       }
 	 *   };
 	 *
@@ -819,18 +857,19 @@ protected:
 	 */
 	/**
 	 * @brief Store one IRQ-received byte, advance the cursor and update count.
-	 * At capacity, disable receive sources and publish the completed packet.
 	 * If no room remains, discard the byte and update software overflow.
+	 * The handler completes a full packet after this callback returns, so IDLE
+	 * tail reads and normal RX publish ready/count only once.
 	 */
 	virtual void OnRxByte(uint8_t byte);
 	/// Feed UART/FIFO from TX IRQ buffer; at exhaustion disable its source and set TX OK.
 	virtual void OnTxEmpty();
 	/**
-	 * @brief End the active packet on IDLE and acknowledge the hardware flag.
-	 * With DMA on F4/F7: runs after TC has confirmed the requested stop; read
-	 * the final count and invalidate written data without waiting in IRQ.
-	 * G0: disable DMAR/DMA without waiting, then count only an error-free packet.
-	 * Preserve a fitting pending UART/FIFO tail, then publish ready or OnError().
+	 * @brief Notify successful packet completion caused by IDLE; empty by default.
+	 * RX is already stopped and OK, count/ready and cache handover are complete.
+	 * F4/F7 DMA: called from DMA RX IRQ after stop TC. G0 DMA and IRQ reception:
+	 * called from USART IRQ. No base call or hardware cleanup is needed here.
+	 * Failed packets call OnError instead; capacity events do not call OnIdle.
 	 */
 	virtual void OnIdle();
 	/**
@@ -839,12 +878,12 @@ protected:
 	 * completion tracking/RS-485 DE. Enable with IRQ_en(IRQ::TC, ENABLE).
 	 */
 	virtual void OnTC();
-	/// Stop/acknowledge TX DMA, disable DMAT and set TX OK; UART may still be shifting.
+	/// Notify TX DMA completion after DMAT/flags cleanup and TX OK; UART may still shift.
 	virtual void OnDmaTxComplete();
 	/**
-	 * @brief Finish RX at DMA capacity using the same buffer handover as IDLE.
-	 * Default implementation calls USART::OnIdle() explicitly; it does not call
-	 * a subclass's OnIdle() override. Override this callback for capacity events.
+	 * @brief Notify successful RX completion at DMA capacity; empty by default.
+	 * RX is already stopped and OK, count/ready and cache handover are complete.
+	 * Does not call OnIdle. No base call is required; override for capacity events.
 	 */
 	virtual void OnDmaRxComplete();
 	/**

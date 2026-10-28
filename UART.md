@@ -141,10 +141,19 @@ SysInitStatus status = link.SetUp();
 | Result | When |
 | --- | --- |
 | `NotInit` | before `SetUp()` |
-| `Error` | null pointer, zero or too large length, direction not configured |
+| `Error` | null pointer, zero/too large length or missing required DMA |
 | `Busy` | an operation is already running in that direction |
 
 TX and RX run independently. After `Error` or `Timeout` a new operation may be started.
+
+Start validates direction status, buffer/length once, and the required DMA
+selection for DMA methods. `NotInit`/`Busy` are returned directly from the status;
+there is no second register-pointer or TE/RE check. The caller selects a direction
+configured by the constructor pins and preserves that hardware configuration.
+DMA starts use the existing low-level `PrepareTransfer()` instead of separate
+checked address/count setters. TE/DME sources are restored in the same control
+update for retry after errors; start never changes or checks NVIC. UART sources
+are enabled together with one update per control register.
 
 **What TX "OK" means:**
 
@@ -238,8 +247,8 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 | CPU → RX DMA | `CacheCleanInvalidate(buffer, capacity)` |
 | RX DMA → CPU | stop first, then `CacheInvalidate(buffer, actual DMA count)` |
 
-- On F4/G0 these functions are empty.
-- On F7 System skips them when the D-cache is off or the whole range lies inside one configured non-cacheable `dma_regions` area (the range check itself still runs).
+- On F4/G0 cache operations and their argument evaluation are compiled out.
+- On F7 System skips them when D-cache is off or the whole range lies in DTCM or one configured non-cacheable `dma_regions` area (the range check itself still runs).
 - There is one UART implementation — no buffer-specific `#ifdef`.
 
 **Cacheable RX buffers on F7** must own every 32-byte line they touch, including padding. No unrelated object may share those lines, and the CPU must not touch them while DMA owns the buffer. Packet lengths need not be multiples of 32 — e.g. 64 bytes of aligned storage can receive up to 37 bytes:
@@ -265,16 +274,32 @@ Cost grows with the number of touched lines, dirty write-backs and barriers; no 
 
 **Callbacks** (protected virtual):
 
+`OnIdle()` only notifies a successful IDLE-ended packet. RX is already stopped,
+its tail/count/cache handling is complete and status/ready are published.
+`OnDmaRxComplete()` similarly notifies capacity completion without calling
+`OnIdle()`. `OnDmaTxComplete()` runs after DMA cleanup and TX OK. Existing calls
+to these empty base methods remain valid but do no processing. Error packets
+call `OnError()` instead; their contents must be discarded. No new state flags,
+`Process()` method or waiting loops are involved.
+
+IRQ reception and stopped-DMA reception have separate completion paths, with
+one common result publication. Byte callbacks only move bytes; packet readiness
+is published once after they return. An IDLE tail filling the buffer therefore
+does not stop/publish it a second time. On F4/F7 DMA IDLE, UART RX sources/DMAR
+are disabled once (one CR1 and one CR3 update), then the DMA IRQ performs only
+buffer handover. Normal DMA capacity uses the known full length without reading
+NDTR/CNDTR; an IDLE stop reads the final remaining count.
+
 | Callback | Type | Override rule |
 | --- | --- | --- |
-| `OnRxByte`, `OnTxEmpty`, `OnIdle`, `OnDmaTxComplete`, `OnDmaRxComplete` | part of standard handling | call the base implementation to keep buffer/completion logic |
-| `OnTC`, `OnError` | notifications | empty by default |
+| `OnRxByte`, `OnTxEmpty` | byte-buffer handling | call the base to keep storage/cursor/count handling |
+| `OnIdle`, `OnDmaTxComplete`, `OnDmaRxComplete`, `OnTC`, `OnError` | notifications after standard processing | empty by default; no base call required |
 
 No `Register`/`Unregister`, `SetUp()` or `DeInit()` from callbacks.
 
 **Inside the USART interrupt:** source and DMA-gate checks use one initial snapshot of status/CR1/CR3. F4/F7 read the single RX byte without re-checking RXNE. TCIE and TC are re-read after TX handling, because callbacks may enable TCIE and writing DR/TDR clears TC.
 
-**Work per interrupt entry is bounded:** at most the hardware FIFO depth per direction — 8 words on G0 with FIFO enabled, otherwise one byte. On IDLE the normal RX draining is skipped and `OnIdle` handles the tail with the same bound. The handler never waits for future bytes; remaining data is serviced by later interrupts. Hardware oversampling does not multiply CPU interrupts.
+**Work per interrupt entry is bounded:** at most the hardware FIFO depth per direction — 8 words on G0 with FIFO enabled, otherwise one byte. On IDLE the normal RX draining is skipped; the IRQ/DMA completion path handles the tail with the same bound before notifying `OnIdle`. The handler never waits for future bytes; remaining data is serviced by later interrupts. Hardware oversampling does not multiply CPU interrupts.
 
 **FIFO (G0 only):** allowed only for instances listed in `IS_UART_FIFO_INSTANCE`. Threshold codes 0…5; `FIFO_TH::all` = 5 (RX full / TX empty). F4/F7 accept only `FIFO::NO`. Oversampling stays ×16 (no ×8 option).
 
@@ -487,10 +512,19 @@ SysInitStatus status = link.SetUp();
 | Результат | Когда |
 | --- | --- |
 | `NotInit` | до `SetUp()` |
-| `Error` | нулевой указатель, нулевая или слишком большая длина, направление не настроено |
+| `Error` | нулевой указатель, нулевая/слишком большая длина или нет нужного DMA |
 | `Busy` | в этом направлении уже идёт операция |
 
 После `Error`/`Timeout` можно запускать новую операцию. Блокирующим методам нужен работающий `System::GetTick()`. Блокирующий `Receive` читает ровно `len` байт и не выставляет флаг готовности асинхронного пакета.
+
+При запуске один раз проверяются статус направления, буфер/длина и наличие
+нужного DMA для DMA-методов. `NotInit`/`Busy` возвращаются прямо из статуса;
+повторной проверки указателя регистров и TE/RE нет. Вызывающий код использует
+направление, настроенное выводами конструктора, и сохраняет эту конфигурацию.
+DMA-запуск использует существующий `PrepareTransfer()` вместо отдельных методов
+адреса/счётчика с проверками. Источники TE/DME восстанавливаются той же операцией
+для повторного запуска после ошибки; NVIC при запуске не проверяется и не меняется.
+Источники UART включаются вместе, одним изменением каждого управляющего регистра.
 
 **Что означает «OK» при передаче:**
 
@@ -561,8 +595,8 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 | CPU → RX DMA | `CacheCleanInvalidate(buffer, capacity)` |
 | RX DMA → CPU | сначала остановка, затем `CacheInvalidate(buffer, фактическое число байт)` |
 
-- На F4/G0 эти функции пустые.
-- На F7 System пропускает их, если D-cache выключен или весь диапазон лежит внутри одной некешируемой области `dma_regions` (проверка диапазона всё равно выполняется).
+- На F4/G0 cache-операции и вычисление их аргументов исключены при компиляции.
+- На F7 System пропускает их, если D-cache выключен или весь диапазон лежит в DTCM либо одной некешируемой области `dma_regions` (проверка диапазона всё равно выполняется).
 - Отдельной реализации UART для разных буферов нет.
 
 **Кешируемый RX-буфер на F7** должен владеть всеми 32-байтными линиями, которые он задевает, включая выравнивающие байты. Пока работает DMA, процессор к этим линиям не обращается. Длина пакета может быть некратной 32, если выделенная память включает запас:
@@ -584,10 +618,26 @@ uart.Receive_DMA(packet, 37);   // до 37 байт в 64-байтном выр�
 
 **Callback** (protected virtual):
 
+`OnIdle()` только уведомляет об успешном завершении пакета по IDLE. Приём уже
+остановлен, хвост/счётчик/кеш обработаны, статус и ready опубликованы.
+`OnDmaRxComplete()` аналогично уведомляет о заполнении буфера, не вызывая
+`OnIdle()`. `OnDmaTxComplete()` выполняется после очистки DMA и установки TX OK.
+Старые вызовы этих пустых базовых методов допустимы, но обработки не выполняют.
+Ошибочный пакет вызывает `OnError()`; содержимое такого буфера использовать
+нельзя. Новых флагов состояния, `Process()` или циклов ожидания нет.
+
+Приём через IRQ и остановленный DMA завершаются разными функциями с одной общей
+публикацией результата. Байтовые callbacks только перемещают байты; готовность
+пакета публикуется один раз после их возврата. Заполнение буфера хвостом IDLE
+не вызывает повторного отключения и публикации. При DMA IDLE на F4/F7 источники
+UART RX/DMAR отключаются один раз (по одному изменению CR1 и CR3), затем DMA IRQ
+выполняет только передачу буфера процессору. При обычном DMA TC длина уже равна
+вместимости, NDTR/CNDTR не читается; после IDLE читается итоговый остаток.
+
 | Callback | Тип | Правило переопределения |
 | --- | --- | --- |
-| `OnRxByte`, `OnTxEmpty`, `OnIdle`, `OnDmaTxComplete`, `OnDmaRxComplete` | часть стандартной обработки | вызывайте базовую реализацию, чтобы сохранить логику буфера/завершения |
-| `OnTC`, `OnError` | уведомления | по умолчанию пустые |
+| `OnRxByte`, `OnTxEmpty` | обработка байтового буфера | вызывайте базовую реализацию для записи/указателей/счётчиков |
+| `OnIdle`, `OnDmaTxComplete`, `OnDmaRxComplete`, `OnTC`, `OnError` | уведомления после штатной обработки | по умолчанию пустые; вызов базовой реализации не нужен |
 
 Из callback нельзя менять реестр и вызывать `SetUp()`/`DeInit()`.
 
@@ -595,7 +645,7 @@ uart.Receive_DMA(packet, 37);   // до 37 байт в 64-байтном выр�
 
 **FIFO (только G0):** проверяется по возможностям конкретного USART. Код `FIFO_TH::all` исправлен на 5 (RX — полный FIFO, TX — пустой). Oversampling остаётся ×16, режим ×8 не добавлен.
 
-**Работа за один вход в прерывание ограничена** глубиной FIFO в каждом направлении: 8 слов на G0 с включённым FIFO, иначе один байт. При IDLE обычное чтение RX пропускается, хвост обрабатывает `OnIdle` с тем же пределом. Новые байты не ожидаются: остаток обслуживается следующими прерываниями; после IDLE поступления относятся к следующему пакету.
+**Работа за один вход в прерывание ограничена** глубиной FIFO в каждом направлении: 8 слов на G0 с включённым FIFO, иначе один байт. При IDLE обычное чтение RX пропускается; хвост с тем же пределом обрабатывает путь завершения IRQ/DMA до уведомления `OnIdle`. Новые байты не ожидаются: остаток обслуживается следующими прерываниями; после IDLE поступления относятся к следующему пакету.
 
 **Формат кадра** выбирается один раз: `SetUp(fifo, tx_threshold, rx_threshold, FrameFormat::E8_1 / O8_1 / N8_2 / N8_1)`. Во всех вариантах 8 бит данных; чётность занимает девятый аппаратный бит слова. Старый `SetParity()` по-прежнему игнорирует аргумент — используйте `FrameFormat`.
 

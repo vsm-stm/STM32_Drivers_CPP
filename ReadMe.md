@@ -616,13 +616,18 @@ uart.IRQ_en(USART::IRQ::TXE, DISABLE);   // disable the TXE source
 class MyUART : public USART {
     using USART::USART;   // inherit the constructor
     void OnRxByte(uint8_t b) override { USART::OnRxByte(b); ring_buf.push(b); }
-    void OnIdle() override { USART::OnIdle(); process_packet(); }
+    void OnIdle() override { process_packet(); } // Packet is already ready.
 };
 
 constinit MyUART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
-Call the base implementation from overrides of `OnRxByte`/`OnTxEmpty`/`OnIdle`/`OnDma*Complete`.
+Call the base implementation from `OnRxByte`/`OnTxEmpty` overrides for byte handling.
+`OnIdle` and `OnDma*Complete` are empty notifications: completion, ready/count and
+DMA/cache cleanup have already happened; no base call is required. Transfer starts
+check buffer/length/status and required DMA once; TE/RE compatibility is the caller's
+responsibility. Retry after Error/Timeout remains supported, without NVIC operations
+at start. UART RX sources/DMAR are disabled once before DMA stop confirmation.
 
 ### Changing baud between transfers
 
@@ -1554,13 +1559,18 @@ uart.IRQ_en(USART::IRQ::TXE, DISABLE);   // выключить источник 
 class MyUART : public USART {
     using USART::USART;   // наследуем конструктор
     void OnRxByte(uint8_t b) override { USART::OnRxByte(b); ring_buf.push(b); }
-    void OnIdle() override { USART::OnIdle(); process_packet(); }
+    void OnIdle() override { process_packet(); } // Пакет уже готов.
 };
 
 constinit MyUART uart(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7);
 ```
 
-В переопределениях `OnRxByte`/`OnTxEmpty`/`OnIdle`/`OnDma*Complete` вызывайте базовую реализацию.
+В `OnRxByte`/`OnTxEmpty` вызывайте базовую реализацию для обработки байтов.
+`OnIdle` и `OnDma*Complete` — пустые уведомления: завершение, ready/count и
+очистка DMA/кеша уже выполнены; базовый вызов не нужен. При запуске один раз
+проверяются буфер/длина/статус и нужный DMA; совместимость с TE/RE обеспечивает
+вызывающий код. Повторный запуск после Error/Timeout сохранён, без обращений к NVIC
+при старте. Источники UART RX/DMAR отключаются один раз до подтверждения остановки DMA.
 
 ### Изменение baudrate между обменами
 
