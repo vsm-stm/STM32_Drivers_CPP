@@ -69,7 +69,7 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX,
 
 - SCK is required. A data pin may be omitted (`PIN{}`) if that direction is not used externally.
 - Named AF pins are checked for peripheral ownership at compile time.
-- After CS come the optional `DMAReq` for TX and RX.
+- After CS come the optional `DMAReq` for TX and RX, then the shared `System::CachePolicy` (default `Cacheable`).
 
 **What the direction means:**
 
@@ -371,6 +371,18 @@ if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus
 
 ## 9. F7 cache and buffer handover
 
+**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
+
+F7 example (supply only non-cacheable buffers to this object):
+
+```cpp
+using S = SPI::_1;
+constinit SPI bus(S::instance, SPI::Direction::TXRX,
+    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, {},
+    S::DMA::TX_DMA2_Stream3, S::DMA::RX_DMA2_Stream0,
+    System::CachePolicy::NonCacheable);
+```
+
 | Moment | Cache operation (through System) |
 | --- | --- |
 | before TX | `CacheClean` (only the repeated frame with `minc = DISABLE`) |
@@ -381,7 +393,7 @@ if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus
 Byte length = frame count × frame width.
 
 - Cacheable RX buffers on F7 must own complete 32-byte lines, including padding. Do not read or write them while `Busy`.
-- Ranges entirely inside a configured non-cacheable DMA region are skipped by System; on F4/G0 the helpers are empty. No separate SPI build option is needed.
+- With `NonCacheable`, SPI skips all cache calls without checking DTCM, MPU, linker records or D-cache state. With default `Cacheable`, System calls CMSIS directly. F4/G0 compile these calls out.
 - For `TXRX` DMA dummy feeding the all-ones source is a constant in Flash; the separate discard word is never touched by the CPU, so it needs no cache handover.
 - For simultaneous TX/RX use **different** buffers — receiving into a TX buffer DMA has not yet read corrupts the transmission.
 
@@ -572,7 +584,7 @@ More examples: shared bus (section 4), RX-only DMA (section 5), slave (section 7
 
 - SCK обязателен. Вывод данных можно опустить (`PIN{}`), если это направление снаружи не используется.
 - Принадлежность именованных выводов периферии проверяется при компиляции.
-- После CS идут необязательные `DMAReq` для TX и RX.
+- После CS идут необязательные `DMAReq` для TX и RX, затем общая `System::CachePolicy` (по умолчанию `Cacheable`).
 - В master с программным NSS переданный CS автоматически управляется драйвером; без него chip-select управляет приложение. Аппаратный NSS требует соответствующий вывод. Slave всегда использует аппаратный NSS.
 
 **Что означает направление:**
@@ -867,6 +879,18 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
 
 **Кеш** (через System; на F4/G0 функции пустые):
 
+**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
+
+Пример F7 (этому объекту передаются только некешируемые буферы):
+
+```cpp
+using S = SPI::_1;
+constinit SPI bus(S::instance, SPI::Direction::TXRX,
+    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, {},
+    S::DMA::TX_DMA2_Stream3, S::DMA::RX_DMA2_Stream0,
+    System::CachePolicy::NonCacheable);
+```
+
 | Момент | Операция |
 | --- | --- |
 | перед TX | `CacheClean` (при `minc = DISABLE` — только повторяемый кадр) |
@@ -877,7 +901,7 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
 Размер в байтах = число кадров × ширина кадра.
 
 - Процессор не обращается к активным RX-линиям кеша и не меняет TX-буфер во время обмена.
-- Некешируемые области проекта System пропускает.
+- При `NonCacheable` SPI пропускает все вызовы кеша без проверки DTCM, MPU, таблицы линкера или состояния D-cache. При `Cacheable` System напрямую вызывает CMSIS. На F4/G0 эти вызовы исключены при компиляции.
 - Для одновременного TX/RX используйте **разные** буферы: приём в ещё не прочитанные DMA исходные данные портит передачу.
 - Источник пустых кадров для `TXRX` — неизменяемая константа во Flash; слово для отбрасываемых данных процессор не читает и не меняет.
 

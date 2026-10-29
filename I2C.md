@@ -198,6 +198,17 @@ protected:
 
 ## 7. Cache and Noncacheable DMA Memory
 
+**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
+
+F7 example (supply only non-cacheable buffers to this object):
+
+```cpp
+using I = I2C::_1;
+constinit I2C bus(I::instance, I::SCL::PB8, I::SDA::PB9,
+    I::DMA::TX_DMA1_Stream6, I::DMA::RX_DMA1_Stream0,
+    System::CachePolicy::NonCacheable);
+```
+
 Relevant on F7 (data cache); on F4/G0 the cache helpers are empty.
 
 | Direction | Before DMA | After success |
@@ -207,7 +218,7 @@ Relevant on F7 (data cache); on F4/G0 the cache helpers are empty.
 
 - The application owns **every 32-byte cache line** the buffer touches, including padding. `len` does not have to be a multiple of 32.
 - After an error the RX buffer is not invalidated and must not be read as partial data.
-- Ranges entirely inside a configured noncacheable DMA region are skipped by System automatically.
+- Only the constructor's `NonCacheable` policy skips cache calls. There is no automatic address/region detection.
 - Project/MPU settings do not switch I2C implementations.
 
 ---
@@ -398,7 +409,7 @@ if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK) return;
 auto init = bus.SetUp<clocks, I2C::SPEED::FAST>();
 ```
 
-- Без DMA последние два аргумента опускаются.
+- Без DMA аргументы TX/RX DMA опускаются; политика кеша по умолчанию — `Cacheable`.
 - На F4/F7 именованный `DMAReq` уже содержит поток/канал (CHSEL), периферию и направление; несовместимая привязка при `constinit` — ошибка компиляции.
 - На G0 приложение выбирает физический канал, источник DMAMUX драйвер берёт из I2Cx и направления.
 - Один ресурс DMA нельзя одновременно закрепить за TX и RX или за другим потребителем.
@@ -545,6 +556,17 @@ protected:
 
 ## 7. Кеш и некешируемая DMA-память
 
+**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
+
+Пример F7 (этому объекту передаются только некешируемые буферы):
+
+```cpp
+using I = I2C::_1;
+constinit I2C bus(I::instance, I::SCL::PB8, I::SDA::PB9,
+    I::DMA::TX_DMA1_Stream6, I::DMA::RX_DMA1_Stream0,
+    System::CachePolicy::NonCacheable);
+```
+
 Актуально для F7 (кеш данных); на F4/G0 методы кеша пустые.
 
 | Направление | Перед DMA | После успеха |
@@ -554,7 +576,7 @@ protected:
 
 - Приложение владеет **всеми 32-байтными кеш-линиями**, которые задевает буфер, включая выравнивающие байты. `len` не обязана быть кратной 32.
 - После ошибки RX-буфер не инвалидируется и не считается пригодным для чтения частичных данных.
-- Диапазон, целиком лежащий в настроенной некешируемой DMA-области, System пропускает автоматически.
+- Вызовы кеша пропускаются только по политике `NonCacheable`, заданной конструктором. Автоматического определения адреса/области нет.
 - Настройки проекта/MPU не переключают реализацию I2C.
 
 ---

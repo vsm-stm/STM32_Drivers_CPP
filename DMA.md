@@ -382,7 +382,7 @@ Afterwards another object may claim the hardware with a different request. **Bef
 | after confirmed RX completion/stop | `System::CacheInvalidate` |
 
 - Peripheral drivers do this themselves and determine the actually received range before handing data to the application. Direct `DMA_Sx` users must make these calls; `DMA_Sx` keeps no cache/buffer state.
-- On F7 ranges wholly inside configured non-cacheable regions are skipped. Cached RX buffers must own every 32-byte line they touch, including padding. The CPU must not access the DMA-owned part during a transfer.
+- Peripheral constructors default to `System::CachePolicy::Cacheable`, which accepts any valid DMA buffer. `NonCacheable` skips cache calls for the whole peripheral (TX/RX together; all TIM channels); the caller must then use only DTCM/non-cacheable MPU buffers. There is no automatic range detection. Direct `DMA_Sx` users omit cache calls themselves when using non-cacheable memory. Cached RX buffers must own every 32-byte line they touch, including padding. The CPU must not access the DMA-owned part during a transfer.
 - On F4/G0 the helpers are empty inline functions. See [System.md](System.md).
 
 ---
@@ -782,7 +782,7 @@ if (a.SetUp() == SysInitStatus::InitOK)   // настраивает DMA и ре�
 | после подтверждённого завершения/остановки RX | `System::CacheInvalidate` |
 
 - Драйверы периферии делают это сами и определяют фактически принятый диапазон до передачи данных приложению. При прямом использовании `DMA_Sx` вызовы делает пользователь; `DMA_Sx` не хранит состояние кеша/буфера.
-- На F7 диапазоны целиком внутри настроенных некешируемых областей пропускаются. Кешируемый RX-буфер должен владеть всеми 32-байтными линиями, которые задевает, включая выравнивающие байты. Процессор не обращается к части буфера, принадлежащей DMA, во время передачи.
+- В конструкторах периферии по умолчанию `System::CachePolicy::Cacheable`: допускается любой корректный DMA-буфер. `NonCacheable` пропускает вызовы кеша для всей периферии (TX/RX вместе; все каналы TIM); пользователь тогда обязан передавать только DTCM/некешируемые буферы MPU. Автоматического определения области нет. При прямой работе с `DMA_Sx` пользователь сам пропускает вызовы кеша для некешируемой памяти. Кешируемый RX-буфер должен владеть всеми затронутыми 32-байтными линиями, включая выравнивающие байты. Процессор не обращается к части буфера, принадлежащей DMA, во время передачи.
 - На F4/G0 функции пустые и определены inline. Подробнее — [System.md](System.md).
 
 ---

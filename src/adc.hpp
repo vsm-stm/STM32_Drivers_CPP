@@ -145,11 +145,14 @@ public:
 	 * Start arms ADC/DMA before starting this TIM; Stop stops it. Bindings survive
 	 * DeInit. Continuous plus any trigger is rejected during constant initialization.
 	 * DMA is owned internally: F4/F7 named Req; G0 physical channel, fixed ADC request.
+	 * cache_policy defaults to Cacheable (any buffer); NonCacheable skips cache
+	 * calls for every DMA buffer/half. Caller guarantees DTCM/non-cacheable MPU RAM.
 	 * ADC_USE_ATOMIC: ordinary (0, default) or ST atomic (1) control updates.
 	 */
 	constexpr explicit ADC_N(const Instance& instance, Conversion conversion,
-		DMAReq dma = {}, TIM* timer = nullptr, Trigger source = Trigger::None)
-		: _instance(instance), _conversion(conversion),
+		DMAReq dma = {}, TIM* timer = nullptr, Trigger source = Trigger::None,
+		System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
+		: _instance(instance), _cache_policy(cache_policy), _conversion(conversion),
 #if defined(STM32G0)
 		  _dma(dma, instance.dma_request),
 #else
@@ -320,6 +323,7 @@ protected:
 
 private:
 	const Instance& _instance;
+	const System::CachePolicy _cache_policy; ///< Fixed policy for every DMA buffer/half.
 	ADC_TypeDef* ADCx = nullptr; ///< Register cache and setup state.
 	const Conversion _conversion;
 	DMA_Sx _dma; ///< Empty constructor selection means capture without DMA.

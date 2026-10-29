@@ -327,44 +327,22 @@ uint32_t System::SWOTrace(const uint8_t *ptr, uint32_t len)
 // ---------------------------------------------------------------------------
 
 #if defined(STM32F7)
-// DTCM bypasses D-cache; its device-specific range ends at SRAM1_BASE on F7.
-// Project DMA regions use the same linker records as InitDMARegions().
-// Only full containment in DTCM or one configured region bypasses maintenance;
-// a mixed/cross-region range takes the conservative CMSIS line operation.
-// This is not a run-time MPU attribute decoder.
-static bool CacheMaintenanceNeeded(const void* addr, uint32_t size)
-{
-	if (!addr || !size) return false;
-	const uintptr_t base = reinterpret_cast<uintptr_t>(addr);
-	if (base >= RAMDTCM_BASE && base < SRAM1_BASE && size <= SRAM1_BASE - base)
-		return false;
-	if (!(SCB->CCR & SCB_CCR_DC_Msk)) return false;
-	if (__stm32_dma_regions_start__ && __stm32_dma_regions_end__) {
-		for (const uint32_t* p = __stm32_dma_regions_start__;
-			 p != __stm32_dma_regions_end__; p += 3) {
-			if (base >= p[1] && base - p[1] < p[2]
-			 && size <= p[2] - (base - p[1])) return false;
-		}
-	}
-	return true;
-}
-
 // CMSIS handles 32-byte line coverage itself; do not round the byte count again.
 void System::CacheClean(const void* addr, uint32_t size)
 {
-	if (CacheMaintenanceNeeded(addr, size))
+	if (addr && size)
 		SCB_CleanDCache_by_Addr(const_cast<void*>(addr), static_cast<int32_t>(size));
 }
 
 void System::CacheInvalidate(void* addr, uint32_t size)
 {
-	if (CacheMaintenanceNeeded(addr, size))
+	if (addr && size)
 		SCB_InvalidateDCache_by_Addr(addr, static_cast<int32_t>(size));
 }
 
 void System::CacheCleanInvalidate(void* addr, uint32_t size)
 {
-	if (CacheMaintenanceNeeded(addr, size))
+	if (addr && size)
 		SCB_CleanInvalidateDCache_by_Addr(addr, static_cast<int32_t>(size));
 }
 

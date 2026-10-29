@@ -126,9 +126,11 @@ SysStatus SPI::StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState 
             len, rx ? ENABLE : DISABLE, 0U);
 
 #if defined(STM32F7)
-    const uint32_t frame_bytes = _frame_format == Data_frame_format::Byte ? 1U : 2U;
-    if (tx) System::CacheClean(tx, minc == ENABLE ? len * frame_bytes : frame_bytes);
-    if (rx) System::CacheCleanInvalidate(rx, len * frame_bytes);
+    if (_cache_policy == System::CachePolicy::Cacheable) {
+        const uint32_t frame_bytes = _frame_format == Data_frame_format::Byte ? 1U : 2U;
+        if (tx) System::CacheClean(tx, minc == ENABLE ? len * frame_bytes : frame_bytes);
+        if (rx) System::CacheCleanInvalidate(rx, len * frame_bytes);
+    }
     // Flash dummy and CPU-unread discard storage need no cache handover.
 #endif
     // DMA IRQ sources remain configured by SetUpDMA throughout successful reuse.
@@ -321,7 +323,8 @@ void SPI::Finish(SysStatus result, uint32_t errors)
     if (!_errors && !_nss_ended) StopTransfer();
     errors |= _errors;
 #if defined(STM32F7)
-    if (_mode == Mode::Dma && _dma_rx.HasSelection() && _rx_data)
+    if (_cache_policy == System::CachePolicy::Cacheable
+        && _mode == Mode::Dma && _dma_rx.HasSelection() && _rx_data)
         System::CacheInvalidate(_rx_data, (result == SysStatus::OK && !errors ? _capacity - _rx_remaining : _capacity)
                 * (_frame_format == Data_frame_format::Byte ? 1U : 2U));
 #endif
@@ -512,7 +515,8 @@ void SPI::DeInit()
             && !(_dma_rx.GetIRQFlags() & (DMA_Sx::FLAG_TC | DMA_LISR_TEIF0))) {}
 #endif
 #if defined(STM32F7)
-        if (_mode == Mode::Dma && _dma_rx.HasSelection() && _rx_data)
+        if (_cache_policy == System::CachePolicy::Cacheable
+            && _mode == Mode::Dma && _dma_rx.HasSelection() && _rx_data)
             System::CacheInvalidate(_rx_data, _capacity
                 * (_frame_format == Data_frame_format::Byte ? 1U : 2U));
 #endif

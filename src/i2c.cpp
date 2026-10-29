@@ -223,8 +223,12 @@ SysStatus I2C::Begin(Mode mode, uint8_t addr, uint16_t reg, uint8_t reg_len,
 	if (mode == Mode::Dma) {
 		// F7 D-cache: the DMA must see what the CPU wrote, and no dirty line
 		// may be written over what the DMA will write (AN4839)
-		if (read) System::CacheCleanInvalidate(buf, len);
-		else      System::CacheClean(buf, len);
+#if defined(STM32F7)
+		if (_cache_policy == System::CachePolicy::Cacheable) {
+			if (read) System::CacheCleanInvalidate(buf, len);
+			else      System::CacheClean(buf, len);
+		}
+#endif
 		if (dma.SetMemAddr(reinterpret_cast<uint32_t>(buf)) != SysStatus::OK
 			|| dma.SetCount(len) != SysStatus::OK) return SysStatus::Error;
 		dma.ClearFlags();
@@ -566,7 +570,10 @@ void I2C::Complete(bool notify)
         __DMB();
         if (_err == ERR::None && dma.GetCount() != 0) _err = ERR::DmaError;
         dma.ClearFlags();
-        if (_read && _err == ERR::None) System::CacheInvalidate(_buf, _len);
+#if defined(STM32F7)
+        if (_cache_policy == System::CachePolicy::Cacheable && _read && _err == ERR::None)
+            System::CacheInvalidate(_buf, _len);
+#endif
     }
     const ERR error = _err;
     const bool callback = notify && _mode != Mode::Poll;

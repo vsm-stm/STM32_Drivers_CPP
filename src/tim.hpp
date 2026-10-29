@@ -194,6 +194,8 @@ public:
      * no hardware or registry resources of either TIM are acquired here.
      * SetUpQuadrature initializes/reserves that counter; generator DeInit
      * releases it. Do not configure/use it independently during this interval.
+     * cache_policy defaults to Cacheable (any buffer), shared by all channels.
+     * NonCacheable skips cache calls; caller guarantees DTCM/non-cacheable MPU RAM.
      * TIM_USE_ATOMIC selects ordinary (0, default) or ST atomic (1) control updates.
      *
      * @code
@@ -203,8 +205,9 @@ public:
      * @endcode
      */
     constexpr explicit TIM(const Instance& instance, ChannelConfig c0 = {}, ChannelConfig c1 = {},
-                 ChannelConfig c2 = {}, ChannelConfig c3 = {}, TIM* counter = nullptr)
-        : _instance(instance), _counter(counter),
+                 ChannelConfig c2 = {}, ChannelConfig c3 = {}, TIM* counter = nullptr,
+                 System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
+        : _instance(instance), _cache_policy(cache_policy), _counter(counter),
           _channels{{instance.periph, ChannelBinding(0, c0, c1, c2, c3)},
                     {instance.periph, ChannelBinding(1, c0, c1, c2, c3)},
                     {instance.periph, ChannelBinding(2, c0, c1, c2, c3)},
@@ -446,7 +449,8 @@ public:
      * uint16_t/Half_Word for 16-bit timers, uint32_t/Word for 32-bit TIM2/TIM5.
      * The overload must match hardware counter width. Buffer and contents stay
      * unchanged until GetDMAStatus leaves Busy. F7 cleans the source through
-     * System; project non-cacheable regions are skipped, F4/G0 helpers are empty.
+     * System with Cacheable policy; NonCacheable skips it for every channel.
+     * No memory-range detection; F4/G0 compile out cache calls.
      * Every channel uses TIMx_CHx, CCDS=1 and its own CCxDE request gate.
      * TC means DMA consumed the buffer, not that the final PWM period ended:
      * CCR preload is applied by a later Update. Keep this distinction when
@@ -480,6 +484,7 @@ public:
 
 private:
     const Instance& _instance;
+    const System::CachePolicy _cache_policy; ///< One policy for all channel DMA buffers.
 	TIM_TypeDef* TIMx = nullptr; ///< Register cache and setup state.
     TIM* const _counter;
     static constexpr ChannelConfig ChannelBinding(uint32_t ch, ChannelConfig c0, ChannelConfig c1,

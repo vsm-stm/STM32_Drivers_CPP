@@ -67,7 +67,7 @@ constinit TIM timer(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7})
 - Package bonding and the exact device AF route remain the application's checks.
 - Internally each channel stores only port/pin/AF and DMA; the channel number is the array index and the timer address comes from the instance. `DmaOwned(i)` is simply `_dma_status[i] != NotInit`.
 
-**Second timer** (last optional argument) — used by finite quadrature generation:
+**Second timer** (after the four channel bindings, before cache policy) — used by finite quadrature generation:
 
 ```cpp
 constinit TIM counter(TIM::_2::instance);
@@ -224,6 +224,17 @@ if (sampling.SetUp(1000) == SysInitStatus::InitOK) {
 
 ## 8. Independent PWM DMA
 
+**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for all TIM DMA channels. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
+
+F7 example (supply only non-cacheable buffers to this object):
+
+```cpp
+using T = TIM::_1;
+constinit TIM pwm(T::instance,
+    {T::CH1::PA8, T::DMA::CH1_DMA2_Stream1}, {}, {}, {}, nullptr,
+    System::CachePolicy::NonCacheable);
+```
+
 PWM DMA streams a buffer of CCR values into one channel — one value per PWM period (waveforms, LED protocols…).
 
 **Binding:** the DMA is passed in the constructor; TIM configures it in `SetUpPWM()`. The route is checked against both timer and channel at construction. If channel setup fails, only that channel's resources are released.
@@ -266,7 +277,7 @@ constinit TIM waveform(TIM::_1::instance, {TIM::_1::CH1::PA8, dma1}, {TIM::_1::C
 
 - Length 1…65535 elements; a mismatched overload → `Error` (no conversion or per-element checks).
 - Keep the data unchanged until the status leaves `Busy` (also while an error stop completes). Use DMA-accessible RAM.
-- F7: System cleans the source from the cache (`CacheClean`); non-cacheable DMA regions are skipped; no invalidate needed for TX. F4/G0 helpers are empty.
+- F7: with `Cacheable`, System cleans the source (`CacheClean`); `NonCacheable` skips it for all channels, without range detection. TX needs no invalidate. F4/G0 compile out cache calls.
 
 **Hardware limitations:** F4/F7 TIM4 has no CH4 DMA request. TIM2 CH2/CH4 share hardware request routing and cannot work independently with CCDS = 1 — that combination is rejected. Timer DMA burst mode is not used.
 
@@ -586,7 +597,7 @@ constinit TIM timer(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7})
 - Наличие вывода в корпусе и точный AF-маршрут проверяет пользователь.
 - Внутри для каждого канала хранятся только порт/вывод/AF и DMA; номер канала — индекс массива, адрес таймера берётся из instance. `DmaOwned(i)` — это просто `_dma_status[i] != NotInit`.
 
-**Второй таймер** (последний необязательный аргумент) — нужен для генерации конечной квадратуры:
+**Второй таймер** (после четырёх привязок каналов, перед политикой кеша) — нужен для генерации конечной квадратуры:
 
 ```cpp
 constinit TIM counter(TIM::_2::instance);
@@ -742,6 +753,17 @@ if (sampling.SetUp(1000) == SysInitStatus::InitOK) {
 
 ## 8. Независимые PWM DMA
 
+**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша для всех DMA-каналов TIM. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
+
+Пример F7 (этому объекту передаются только некешируемые буферы):
+
+```cpp
+using T = TIM::_1;
+constinit TIM pwm(T::instance,
+    {T::CH1::PA8, T::DMA::CH1_DMA2_Stream1}, {}, {}, {}, nullptr,
+    System::CachePolicy::NonCacheable);
+```
+
 PWM через DMA подаёт в канал буфер значений CCR — по одному на период PWM (сигналы произвольной формы, протоколы светодиодов…).
 
 **Привязка:** DMA передаётся в конструктор, TIM настраивает его в `SetUpPWM()` — самостоятельно `SetUp()` у него не вызывают. Полный маршрут TIM/CHx/DMA проверяется при конструировании. Если настройка канала не удалась, освобождаются только ресурсы этого канала.
@@ -778,7 +800,7 @@ constinit TIM waveform(TIM::_1::instance, {TIM::_1::CH1::PA8, dma1}, {TIM::_1::C
 
 - Длина 1…65535 элементов; несоответствие перегрузки → `Error` (конвертации и поэлементной проверки нет).
 - Не меняйте данные, пока статус `Busy` (в том числе пока завершается остановка после ошибки). Используйте память, доступную DMA.
-- F7: System очищает источник в кеше (`CacheClean`); некешируемые DMA-области пропускаются; инвалидация для TX не нужна. На F4/G0 функции пустые.
+- F7: при `Cacheable` System очищает источник (`CacheClean`); `NonCacheable` пропускает вызовы для всех каналов без определения области. Инвалидация для TX не нужна. На F4/G0 вызовы кеша исключены при компиляции.
 
 **Аппаратные ограничения:** у TIM4 на F4/F7 нет DMA-запроса CH4. Маршруты запросов TIM2 CH2/CH4 пересекаются и не могут работать независимо при CCDS = 1 — такое сочетание отклоняется. Burst-режим DMA таймера не используется.
 

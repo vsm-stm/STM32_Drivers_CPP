@@ -154,9 +154,12 @@ public:
 	 * G0: pass physical DMA channels; request sources follow I2Cx and direction.
 	 * Use constinit: wrong pin/route ownership or shared DMA is a compilation error.
 	 * Empty DMA selections keep blocking and IRQ methods available.
+	 * cache_policy defaults to Cacheable (any buffer), shared by TX/RX.
+	 * NonCacheable skips cache calls; caller guarantees DTCM/non-cacheable MPU RAM.
 	 */
-	constexpr explicit I2C(const Instance& instance, PIN scl, PIN sda, DMAReq dma_tx = {}, DMAReq dma_rx = {})
-		: _instance(instance), _scl(scl), _sda(sda),
+	constexpr explicit I2C(const Instance& instance, PIN scl, PIN sda, DMAReq dma_tx = {}, DMAReq dma_rx = {},
+		System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
+		: _instance(instance), _cache_policy(cache_policy), _scl(scl), _sda(sda),
 #if defined(STM32G0)
 		  _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request),
 #else
@@ -260,7 +263,8 @@ public:
 	 * TX is cleaned before DMA. RX is cleaned/invalidated before DMA and
 	 * invalidated after successful completion. On F7 the caller owns every
 	 * touched 32-byte cache line, including padding; len need not be a multiple
-	 * of 32. System skips maintenance for configured non-cacheable DMA regions.
+	 * of 32. NonCacheable skips maintenance for both directions, with no range
+	 * checks. The caller guarantees every DMA buffer is non-cacheable.
 	 * Error/aborted buffers are not valid data and must not be inspected.
 	 */
 	SysStatus Send_DMA(uint8_t addr, const uint8_t* data, uint16_t len);
@@ -393,6 +397,7 @@ private:
 	};
 
 	const Instance& _instance;
+	const System::CachePolicy _cache_policy; ///< Fixed policy shared by TX and RX.
 	I2C_TypeDef* I2Cx = nullptr; ///< Register cache and setup state.
 	PIN               _scl;
 	PIN               _sda;

@@ -84,6 +84,8 @@ protected:
 constinit Link link(Uart3::instance, 115200, Uart3::TX::PD8, Uart3::RX::PD9);
 ```
 
+**DMA buffer policy.** USART/SPI/I2C/ADC/TIM take a final `System::CachePolicy` argument, default `Cacheable` (any valid DMA buffer). `NonCacheable` skips cache calls for the whole object: TX/RX together, all TIM channels. The caller must then provide only DTCM/non-cacheable MPU buffers. It performs no address checks, memory placement or MPU setup. F4/G0 omit cache operations with either policy.
+
 ### Other modules and the TIM exception
 
 | Module | Constructor arguments |
@@ -178,7 +180,7 @@ References to the old DMA request names and the old typed G0 `DMAReq` variables 
 3. В `main` сначала успешно выполните System/RCC Init, затем `SetUp()` периферии. Конструкторы не включают тактирование и не занимают DMA/IRQ.
 4. Проверяйте результат каждого `SetUp()` и запуска обмена. Проверка привязок при сборке не гарантирует готовность аппаратуры и свободу ресурсов во время работы.
 5. Объект, второй TIM и активные буферы должны существовать всё время работы и регистрации IRQ. Повторный `SetUp()` требует `DeInit()`. Менять реестр прерываний из callback запрещено.
-6. На F7 используйте некешируемую DMA-область либо соблюдайте выравнивание, границы кеш-линий и передачу владения буфером по документации модуля. `constinit` не выбирает область памяти и не заменяет обслуживание кеша.
+6. Последний аргумент USART/SPI/I2C/ADC/TIM — `System::CachePolicy`, по умолчанию `Cacheable` (любой допустимый DMA-буфер). Для пропуска всех вызовов кеша задайте `NonCacheable`; пользователь тогда гарантирует некешируемую память всех буферов объекта (TX/RX вместе, все каналы TIM). На F7 кешируемые буферы должны соблюдать границы кеш-линий и передачу владения по документации модуля. `constinit` не выбирает память и не заменяет обслуживание кеша.
 
 Локальная область видимости допустима для объекта со статическим временем жизни:
 
@@ -220,7 +222,7 @@ constinit USART port(U::instance, 115200, U::TX::PB6, U::RX::PB7,
     DMA1_Channel1_BASE, DMA1_Channel2_BASE);
 ```
 
-На F7/G0 источник тактирования USART — последний аргумент, после обоих DMA:
+На F7/G0 источник тактирования USART идёт после обоих DMA, перед политикой кеша:
 
 ```cpp
 using U = USART::_1;
@@ -275,7 +277,7 @@ if (duplex.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
 - Без программного CS передайте `PIN{}`. MOSI/MISO тоже могут отсутствовать, если физически не используются.
 - В режиме RX master такты формируются передачей пустых байтов (dummy). При RX DMA второй DMA не нужен — dummy обслуживает TX-прерывание.
 - Для TX нельзя задавать RX DMA, для RX — TX DMA.
-- На G0 последние аргументы — `DMAx_Channely_BASE`, как у USART.
+- На G0 аргументы DMA — `DMAx_Channely_BASE`, как у USART.
 
 **Slave** создаётся тем же конструктором с аппаратным NSS (например, `S::SS::PA4`) вместо программного CS; в `SetUp()` выбираются `Slave` и `Hard`. Приложение сообщает о снятии NSS через `NssReleased`; граница пакета определяется по NSS, а не по DMA TC/BSY. Условие последнего DMA-запроса на G0, переполнение, 16-битные кадры, асинхронные вызовы и `Process`: [SPI.md](SPI.md).
 

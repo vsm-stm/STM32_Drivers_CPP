@@ -551,7 +551,9 @@ SysStatus TIM::StartDMA(Channel ch, const void* data, uint32_t len, DMA_Sx::SIZE
     if (dma->SetMemAddr(reinterpret_cast<uint32_t>(data)) != SysStatus::OK
         || dma->SetCount(len) != SysStatus::OK) return SysStatus::Error;
     dma->ClearFlags();
-    System::CacheClean(data, len * bytes);
+#if defined(STM32F7)
+    if (_cache_policy == System::CachePolicy::Cacheable) System::CacheClean(data, len * bytes);
+#endif
     _dma_error[i] = false;
     dma->Enable_IRQ(DMA_Sx::IRQ::TE, false);
 #if defined(STM32F4) || defined(STM32F7)

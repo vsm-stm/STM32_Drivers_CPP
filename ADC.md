@@ -58,7 +58,8 @@ Every check calls `STM32_CONFIG_ERROR("reason")`: at compile time a GCC error co
 ```cpp
 ADC_N(const Instance& instance, Conversion conversion,
       DMAReq dma = {}, TIM* timer = nullptr,
-      Trigger source = Trigger::None);
+      Trigger source = Trigger::None,
+      System::CachePolicy cache_policy = System::CachePolicy::Cacheable);
 SysStatus Start(uint16_t* buf = nullptr, uint32_t len = 0);
 ```
 
@@ -208,6 +209,17 @@ EXTSEL values are family-specific and listed in `enum Trigger`. TRGO2 is not sup
 
 ## 8. HT/TC and Cache Ownership
 
+**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for every ADC DMA buffer and each completed half. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
+
+F7 example (supply only non-cacheable buffers to this object):
+
+```cpp
+using A = ADC_N::_1;
+constinit ADC_N adc(A::instance, ADC_N::Conversion::Continuous,
+    A::DMA::RX_DMA2_Stream0, nullptr, ADC_N::Trigger::None,
+    System::CachePolicy::NonCacheable);
+```
+
 **Cache operations around DMA** (F7; empty on F4/G0):
 
 | Moment | Operation |
@@ -229,7 +241,7 @@ A finite capture may also use HT, but the final TC still returns all samples.
 - With HT, each half of a cacheable buffer must start on a line boundary and be a whole number of lines. Example: `alignas(32) uint16_t samples[32]` = two halves of 32 bytes.
 - A finite capture without HT may have any length.
 - The buffer must be reachable by DMA.
-- A range lying entirely in a configured non-cacheable DMA region is skipped by System — no line separation is needed there.
+- `NonCacheable` skips cache calls for all samples and halves; no cache-line separation is needed for truly non-cacheable buffers. HT still requires an even sample count.
 
 ---
 
@@ -447,7 +459,8 @@ Check every `SetUp()`/`AddChannel()`/`Start()` result.
 ```cpp
 ADC_N(const Instance& instance, Conversion conversion,
       DMAReq dma = {}, TIM* timer = nullptr,
-      Trigger source = Trigger::None);
+      Trigger source = Trigger::None,
+      System::CachePolicy cache_policy = System::CachePolicy::Cacheable);
 
 SysStatus Start(uint16_t* buf = nullptr, uint32_t len = 0);
 ```
@@ -600,6 +613,17 @@ protected:
 
 ## 8. HT/TC и кеш
 
+**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша для каждого DMA-буфера ADC и каждой завершённой половины. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
+
+Пример F7 (этому объекту передаются только некешируемые буферы):
+
+```cpp
+using A = ADC_N::_1;
+constinit ADC_N adc(A::instance, ADC_N::Conversion::Continuous,
+    A::DMA::RX_DMA2_Stream0, nullptr, ADC_N::Trigger::None,
+    System::CachePolicy::NonCacheable);
+```
+
 **Операции с кешем вокруг DMA** (F7; на F4/G0 пустые):
 
 | Момент | Операция |
@@ -621,7 +645,7 @@ protected:
 - С HT каждая половина кешируемого буфера должна начинаться на границе линии и занимать целое число линий. Пример: `alignas(32) uint16_t samples[32]` = две половины по 32 байта. Драйвер буферы не выделяет и не копирует.
 - Конечный захват без HT может иметь любую длину.
 - Буфер должен быть доступен DMA.
-- Диапазон, целиком лежащий в настроенной некешируемой DMA-области, System пропускает — разделять половины по линиям там не нужно.
+- `NonCacheable` пропускает вызовы кеша для всех отсчётов и половин; для действительно некешируемых буферов разделение по кеш-линиям не требуется. Для HT по-прежнему нужна чётная длина.
 
 ---
 

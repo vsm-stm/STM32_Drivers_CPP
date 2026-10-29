@@ -365,7 +365,10 @@ SysStatus ADC_N::Start(uint16_t* buf, uint32_t len)
 		if (_dma.SetMemAddr(reinterpret_cast<uint32_t>(buf)) != SysStatus::OK
 			|| _dma.SetCount(len) != SysStatus::OK) return SysStatus::Error;
 		_dma.ClearFlags();
-		System::CacheCleanInvalidate(buf, len * sizeof(uint16_t));
+#if defined(STM32F7)
+		if (_cache_policy == System::CachePolicy::Cacheable)
+			System::CacheCleanInvalidate(buf, len * sizeof(uint16_t));
+#endif
 		_buf = buf;
 		_buf_bytes = len * sizeof(uint16_t);
 		if (_dma_tc_irq || !IsRepeating()) {
@@ -442,7 +445,10 @@ uint32_t ADC_N::StopDMA()
 #endif
 	const uint32_t errors = flags & DMA_Sx::FLAG_ERRORS;
 	_dma.ClearFlags();
-	if (!errors && !_errors) System::CacheInvalidate(_buf, _buf_bytes);
+#if defined(STM32F7)
+	if (_cache_policy == System::CachePolicy::Cacheable && !errors && !_errors)
+		System::CacheInvalidate(_buf, _buf_bytes);
+#endif
 	_buf = nullptr;
 	_buf_bytes = 0;
 	return errors;
@@ -604,21 +610,31 @@ void ADC_N::HandleDmaIRQ()
 	__DMB(); // Observe completed DMA writes before accessing/notifying buffer data.
 	if (half) {
 		_dma.ClearHT_Flag();
-		System::CacheInvalidate(_buf, _buf_bytes / 2u);
+#if defined(STM32F7)
+		if (_cache_policy == System::CachePolicy::Cacheable)
+			System::CacheInvalidate(_buf, _buf_bytes / 2u);
+#endif
 		OnDmaHalf();
 	}
 	if (!complete) return;
 	_dma.ClearTC_Flag();
 	if (!IsRepeating()) {
 		_dma.RequestStop(); // TC already confirms finite completion; no EN wait.
-		System::CacheInvalidate(_buf, _buf_bytes);
+#if defined(STM32F7)
+		if (_cache_policy == System::CachePolicy::Cacheable) System::CacheInvalidate(_buf, _buf_bytes);
+#endif
 		_buf = nullptr;
 		_buf_bytes = 0;
 		__DMB();
 		_status = SysStatus::OK;
-	} else if (_dma_ht_irq) {
-		System::CacheInvalidate(_buf + _buf_bytes / (2u * sizeof(uint16_t)), _buf_bytes / 2u);
-	} else System::CacheInvalidate(_buf, _buf_bytes);
+	}
+#if defined(STM32F7)
+	else if (_cache_policy == System::CachePolicy::Cacheable) {
+		if (_dma_ht_irq)
+			System::CacheInvalidate(_buf + _buf_bytes / (2u * sizeof(uint16_t)), _buf_bytes / 2u);
+		else System::CacheInvalidate(_buf, _buf_bytes);
+	}
+#endif
 	OnDmaComplete();
 }
 

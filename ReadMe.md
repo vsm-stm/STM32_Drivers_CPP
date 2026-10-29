@@ -238,7 +238,7 @@ System::Delay_us(10);      // 10 µs via DWT
 
 F7 projects can reserve non-cacheable DMA buffers via the base's `dma_regions` setting (`name`, `size`, `memory`: SRAM1/SRAM2, `mpu_region`). Addresses are automatic; startup zeroes the buffers; `System::Init()` programs their MPU attributes before enabling the D-cache. Place buffers in `.dma.<name>`. See [System.md](System.md).
 
-Cache helpers for cacheable buffers: `System::CacheClean`, `CacheInvalidate`, `CacheCleanInvalidate` (address + byte count). F7 skips ranges wholly inside DTCM or configured non-cacheable areas; on F4/G0/L0 they are empty. Peripheral drivers call them at the right moments; direct DMA users call them themselves. RX buffers must own every 32-byte cache line they touch.
+Cache helpers: `System::CacheClean`, `CacheInvalidate`, `CacheCleanInvalidate` (address + byte count). F7 calls CMSIS without detecting memory regions; on F4/G0/L0 the helpers are empty. USART/SPI/I2C/ADC/TIM take a final `System::CachePolicy` constructor argument: `Cacheable` by default accepts any valid DMA buffer and performs normal maintenance; `NonCacheable` skips all cache calls for the object (TX/RX together, all TIM channels). The user must then guarantee DTCM or non-cacheable MPU memory for every buffer. The policy does not configure MPU or move buffers. Direct DMA users choose whether to call the helpers themselves. Cacheable RX buffers must own every 32-byte cache line they touch.
 
 ### Bus frequency variables
 
@@ -565,7 +565,7 @@ Several channels on one vector is fine — `IRQ_Registry` calls every registered
 - **Reading a packet:** `GetDataReceivedCount()` no longer clears anything — call `ClearDataReceivedFlag()` after consuming the packet.
 - **Errors** stop the affected operation and call `OnError(mask)`.
 - **Bounded IRQ work:** at most the FIFO depth per direction per entry (8 words on G0 with FIFO, otherwise 1 byte).
-- F7 cache maintenance goes through System and skips configured non-cacheable areas.
+- F7 cache maintenance uses System with the default `Cacheable` policy. Constructor `NonCacheable` skips it for both TX/RX; the user guarantees non-cacheable buffers.
 
 ### Basic usage
 
@@ -695,7 +695,7 @@ SysStatus state = spi.Process();   // Busy until the last frame has left the wir
 ```
 
 - **DMA TC is not the end of the transfer** — `Process()` checks the SPI itself and then does cache, CS and callbacks.
-- F7 cache handover goes through System; configured non-cacheable areas are skipped. Do not access an active RX buffer or modify TX.
+- F7 cache handover uses System with `Cacheable`; constructor `NonCacheable` skips it for both TX/RX without memory checks. Do not access an active RX buffer or modify TX.
 - `OnComplete()`/`OnError(mask)` run inside `Process()` after cleanup. `IRQ_en()` changes CR2 sources; `SetUp()` owns registration and NVIC.
 - **Slave:** `len` is capacity. The application configures a rising-edge EXTI on NSS and calls `NssReleased()` from it; `Process()` completes the packet in `main`. Extra frames → `IsTruncated()`; after the TX payload, dummy values are sent. On G0 the last RX DMA request must be serviced before the NSS stop. See [SPI.md](SPI.md) for priorities and re-arm rules.
 
@@ -1181,7 +1181,7 @@ System::Delay_us(10);      // 10 мкс через DWT
 
 В проектах F7 настройка базы `dma_regions` резервирует некешируемые DMA-буферы (`name`, `size`, `memory`: SRAM1/SRAM2, `mpu_region`). Адреса вычисляются автоматически; startup обнуляет буферы; `System::Init()` задаёт их атрибуты MPU до включения D-cache. Буферы размещаются в `.dma.<name>`. См. [System.md](System.md).
 
-Функции кеша для кешируемых буферов: `System::CacheClean`, `CacheInvalidate`, `CacheCleanInvalidate` (адрес + размер в байтах). На F7 диапазоны целиком внутри DTCM или настроенных некешируемых областей пропускаются; на F4/G0/L0 функции пустые. Драйверы периферии вызывают их сами в нужные моменты; при прямом использовании DMA — пользователь. RX-буфер должен владеть всеми 32-байтными линиями кеша, которые задевает.
+Функции кеша: `System::CacheClean`, `CacheInvalidate`, `CacheCleanInvalidate` (адрес + размер в байтах). На F7 они вызывают CMSIS без определения области памяти; на F4/G0/L0 пустые. В USART/SPI/I2C/ADC/TIM последний аргумент конструктора — `System::CachePolicy`: по умолчанию `Cacheable` допускает любой корректный DMA-буфер с обычным обслуживанием кеша; `NonCacheable` пропускает все вызовы кеша для объекта (TX/RX вместе, все каналы TIM). Пользователь тогда гарантирует DTCM или некешируемую память MPU для каждого буфера. Политика не настраивает MPU и не перемещает буферы. При прямом использовании DMA необходимость вызовов определяет пользователь. Кешируемый RX-буфер должен владеть всеми затронутыми 32-байтными кеш-линиями.
 
 ### Переменные частот шин
 
@@ -1508,7 +1508,7 @@ void HandleIRQ() override {
 - **Чтение пакета:** `GetDataReceivedCount()` больше ничего не сбрасывает — после обработки вызовите `ClearDataReceivedFlag()`. Modbus делает это явно ([Modbus.md](Modbus.md)).
 - **Ошибки** останавливают свою операцию и вызывают `OnError(mask)`.
 - **Ограниченная работа в IRQ:** не больше глубины FIFO в каждом направлении за вход (8 слов на G0 с FIFO, иначе 1 байт).
-- Кеш F7 обслуживается через System; настроенные некешируемые области пропускаются.
+- Кеш F7 обслуживается через System при политике `Cacheable` по умолчанию. `NonCacheable` в конструкторе пропускает вызовы для TX/RX; пользователь гарантирует некешируемые буферы.
 
 ### Базовое использование
 
@@ -1639,7 +1639,7 @@ SysStatus state = spi.Process();   // Busy, пока последний кадр
 ```
 
 - **DMA TC — это ещё не конец обмена**: `Process()` проверяет сам SPI, затем обслуживает кеш, CS и callback.
-- Кеш F7 обслуживается через System; настроенные некешируемые области пропускаются. Не обращайтесь к активному RX-буферу и не меняйте TX.
+- Кеш F7 обслуживается через System при `Cacheable`; `NonCacheable` в конструкторе пропускает вызовы для TX/RX без проверки памяти. Не обращайтесь к активному RX-буферу и не меняйте TX.
 - `OnComplete()`/`OnError(mask)` вызываются внутри `Process()` после очистки. `IRQ_en()` меняет источники в CR2; регистрацией и NVIC управляет `SetUp()`.
 - **Slave:** `len` — вместимость. Приложение настраивает EXTI по нарастающему фронту NSS и вызывает из него `NssReleased()`; `Process()` завершает пакет в `main`. Лишние кадры → `IsTruncated()`; после TX-данных передаются пустые кадры. На G0 последний запрос RX DMA должен быть обслужен до остановки по NSS. Приоритеты и правила повторного запуска — в [SPI.md](SPI.md).
 

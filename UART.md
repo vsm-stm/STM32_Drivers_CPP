@@ -103,7 +103,7 @@ LPUART and F4 UART9/10 are not covered. A GPIO port existing in CMSIS does not m
 
 ## 4. Kernel clock (F7/G0)
 
-The optional last constructor argument is `USART::ClockSource`:
+On F7/G0, `USART::ClockSource` follows both DMA arguments; the new shared cache policy follows the clock source:
 
 | Source | Frequency used for BRR |
 | --- | --- |
@@ -212,6 +212,17 @@ if (uart.GetDataReceivedFlag()) {
 
 ## 7. DMA and cache
 
+**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
+
+F7 example (supply only non-cacheable buffers to this object):
+
+```cpp
+using U = USART::_3;
+constinit USART port(U::instance, 115200, U::TX::PD8, U::RX::PD9,
+    U::DMA::TX_DMA1_Stream3, U::DMA::RX_DMA1_Stream1,
+    USART::ClockSource::PCLK, System::CachePolicy::NonCacheable);
+```
+
 **Binding.** Pass DMA requests right after the pins:
 
 ```text
@@ -248,7 +259,7 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 | RX DMA → CPU | stop first, then `CacheInvalidate(buffer, actual DMA count)` |
 
 - On F4/G0 cache operations and their argument evaluation are compiled out.
-- On F7 System skips them when D-cache is off or the whole range lies in DTCM or one configured non-cacheable `dma_regions` area (the range check itself still runs).
+- On F7 only `Cacheable` invokes System/CMSIS. `NonCacheable` skips the calls; no address, MPU/linker-region or D-cache enable check is performed.
 - There is one UART implementation — no buffer-specific `#ifdef`.
 
 **Cacheable RX buffers on F7** must own every 32-byte line they touch, including padding. No unrelated object may share those lines, and the CPU must not touch them while DMA owns the buffer. Packet lengths need not be multiples of 32 — e.g. 64 bytes of aligned storage can receive up to 37 bytes:
@@ -474,7 +485,7 @@ LPUART и UART9/10 на F4 не поддерживаются. Наличие п�
 
 ## 4. Источник тактирования (F7/G0)
 
-Последний необязательный аргумент конструктора — `USART::ClockSource`:
+На F7/G0 `USART::ClockSource` идёт после обоих аргументов DMA; за ним следует новая общая политика кеша:
 
 | Источник | Частота для расчёта BRR |
 | --- | --- |
@@ -565,6 +576,17 @@ DMA-запуск использует существующий `PrepareTransfer(
 
 ## 6. DMA, кеш и ошибки
 
+**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
+
+Пример F7 (этому объекту передаются только некешируемые буферы):
+
+```cpp
+using U = USART::_3;
+constinit USART port(U::instance, 115200, U::TX::PD8, U::RX::PD9,
+    U::DMA::TX_DMA1_Stream3, U::DMA::RX_DMA1_Stream1,
+    USART::ClockSource::PCLK, System::CachePolicy::NonCacheable);
+```
+
 **Переполнение.** `GetOverflow()` проверяет `data_overflow_count != 0` (отдельного флага нет). Счётчик `uint32_t` переполняется без насыщения — после перехода через ноль `GetOverflow()` вернёт `false`. `GetOverflowCount()` читает и обнуляет счётчик после остановки приёма; новый `Receive` тоже его сбрасывает.
 
 **Привязка DMA.** Описания `dma_tx` и `dma_rx` передаются после выводов, по умолчанию `{}`:
@@ -596,7 +618,7 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 | RX DMA → CPU | сначала остановка, затем `CacheInvalidate(buffer, фактическое число байт)` |
 
 - На F4/G0 cache-операции и вычисление их аргументов исключены при компиляции.
-- На F7 System пропускает их, если D-cache выключен или весь диапазон лежит в DTCM либо одной некешируемой области `dma_regions` (проверка диапазона всё равно выполняется).
+- На F7 System/CMSIS вызывается только при `Cacheable`. `NonCacheable` пропускает вызовы; адрес, регионы MPU/линкера и состояние включения D-cache не проверяются.
 - Отдельной реализации UART для разных буферов нет.
 
 **Кешируемый RX-буфер на F7** должен владеть всеми 32-байтными линиями, которые он задевает, включая выравнивающие байты. Пока работает DMA, процессор к этим линиям не обращается. Длина пакета может быть некратной 32, если выделенная память включает запас:

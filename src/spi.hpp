@@ -76,8 +76,10 @@
  * SPI_USE_ATOMIC selects ordinary (0, default) or ST atomic (1) control updates.
  * Unattached directions use SPI IRQ servicing where the operation permits it.
  * F7 RX buffers own all touched 32-byte cache lines, including padding; CPU
- * must not access them while Busy. System cache helpers skip project-defined
- * non-cacheable regions and are empty on F4/G0. DMA-accessible RAM is required.
+ * must not access them while Busy. The constructor policy defaults to Cacheable
+ * for any buffer. NonCacheable skips all TX/RX cache calls; the caller guarantees
+ * DTCM or non-cacheable MPU memory. No automatic range checks. F4/G0 omit cache
+ * operations. DMA-accessible RAM is required.
  * The SPI IRQ and DMA TX/RX IRQs have separate registered handler objects; a
  * shared DMA vector therefore needs two registry slots. No IRQ waits for hardware.
  * F4/F7 collect forced-stop completion and counts in the DMA IRQ. On G0 a slave
@@ -209,13 +211,16 @@ public:
      * @param ss Optional software CS GPIO for master; hardware NSS pin for Hard.
      * @param dma_tx Optional TX DMA, unused/forbidden for Direction::RX.
      * @param dma_rx Optional RX DMA, unused/forbidden for Direction::TX.
+     * @param cache_policy Cacheable by default (any buffer); NonCacheable skips
+     *        maintenance for both directions. Caller then guarantees non-cacheable RAM.
      * Use constinit: incompatible named pins or DMA routes are compilation errors.
      * Objects may not be copied/moved; call DeInit() before destruction.
      */
     constexpr explicit SPI(const Instance& instance, Direction direction, PIN sck, PIN mosi = PIN{},
                  PIN miso = PIN{}, PIN ss = PIN{},
-                 DMAReq dma_tx = {}, DMAReq dma_rx = {})
-        : _direction(direction),
+                 DMAReq dma_tx = {}, DMAReq dma_rx = {},
+                 System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
+        : _direction(direction), _cache_policy(cache_policy),
 #if defined(STM32G0)
           _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request),
 #else
@@ -488,6 +493,7 @@ private:
     volatile bool _truncated = false;
     volatile bool _nss_ended = false;
     const Direction _direction;
+    const System::CachePolicy _cache_policy; ///< One fixed policy for TX and RX.
     DMA_Sx _dma_tx;
     DMA_Sx _dma_rx;
     // Active directions awaiting a DMA completion/stop event; SPI CR2 bit values.

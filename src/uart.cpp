@@ -262,7 +262,7 @@ SysStatus USART::Send_DMA(uint8_t* data, uint32_t len)
 	if (!_dma_tx.HasSelection() || !data || !len || len > UINT16_MAX) return SysStatus::Error;
 	_dma_tx.PrepareTransfer(reinterpret_cast<uint32_t>(data), len, ENABLE, DMA_ERROR_IRQ_MASK);
 #if defined(STM32F7)
-	System::CacheClean(data, len);
+	if (_cache_policy == System::CachePolicy::Cacheable) System::CacheClean(data, len);
 #endif
 #if defined(STM32F4)
 	USARTx->SR = ~USART_SR_TC;
@@ -283,7 +283,7 @@ SysStatus USART::Receive_DMA(uint8_t* data, uint32_t len)
 	_dma_rx.PrepareTransfer(reinterpret_cast<uint32_t>(data), len, ENABLE, DMA_ERROR_IRQ_MASK);
 	PrepareRx(data, len);
 #if defined(STM32F7)
-	System::CacheCleanInvalidate(data, len);
+	if (_cache_policy == System::CachePolicy::Cacheable) System::CacheCleanInvalidate(data, len);
 #endif
 	rx_status = SysStatus::Busy;
 	_dma_rx.Stream_EN(ENABLE);
@@ -583,7 +583,8 @@ bool USART::FinishRxDMA()
 	if (!errors) {
 		count = _rx_dma_idle ? rx_data.size - _dma_rx.GetCount() : rx_data.size;
 #if defined(STM32F7)
-		System::CacheInvalidate(rx_data.data_ptr, count); // Before CPU tail stores.
+		if (_cache_policy == System::CachePolicy::Cacheable)
+			System::CacheInvalidate(rx_data.data_ptr, count); // Before CPU tail stores.
 #endif
 	}
 	_dma_rx.ClearFlags();
@@ -650,7 +651,7 @@ void USART::DeInit()
 	if (_dma_tx.HasSelection()) _dma_tx.Release();
 	if (_dma_rx.HasSelection()) {
 #if defined(STM32F7)
-		if (receiving_dma)
+		if (_cache_policy == System::CachePolicy::Cacheable && receiving_dma)
 			System::CacheInvalidate(rx_data.data_ptr, rx_data.size - _dma_rx.GetCount());
 #endif
 		_dma_rx.Release();

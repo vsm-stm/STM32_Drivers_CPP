@@ -245,11 +245,17 @@ public:
 	static void MPU_Init();
 #endif
 
+	/// Fixed DMA buffer policy, shared by TX/RX (all channels for TIM).
+	/// Cacheable accepts either memory type; NonCacheable trusts the caller.
+	enum class CachePolicy : uint8_t { Cacheable, NonCacheable };
+
 	/**
 	 * @brief Cache maintenance for a byte range used by a peripheral driver.
 	 * @note F7 calls the CMSIS operations for the intersecting 32-byte lines.
-	 *       A range wholly inside DTCM or a project's non-cacheable DMA area is skipped.
-	 *       F7 DTCM bounds come from CMSIS RAMDTCM_BASE and SRAM1_BASE (exclusive).
+	 *       No DTCM/MPU/linker-region lookup or D-cache enable check is performed.
+	 *       Peripheral constructors default to CachePolicy::Cacheable for all buffers;
+	 *       CachePolicy::NonCacheable skips these calls for both TX and RX.
+	 *       In that mode every DMA buffer must be non-cacheable; the caller ensures it.
 	 *       Call after Init(); retain the configured MPU attributes afterwards.
 	 *       The caller supplies a valid range fitting the CMSIS signed byte count
 	 *       including line rounding. nullptr or zero size performs no operation.
@@ -272,9 +278,9 @@ public:
 	 *   System::CacheInvalidate(buffer, received_bytes);
 	 *   // CPU may now inspect buffer[0..received_bytes).
 	 * @endcode
-	 * received_bytes comes from the peripheral's completed transfer. Automatic
-	 * non-cacheable detection uses the F7 DTCM address range and the project's
-	 * linker DMA records, not a general scan of arbitrary user MPU mappings.
+	 * received_bytes comes from the peripheral's completed transfer. Direct DMA
+	 * users decide whether these calls are needed; DTCM or non-cacheable MPU
+	 * buffers need none. The policy does not configure MPU or place a buffer.
 	 */
 #if defined(STM32F7)
 	static void CacheClean(const void* addr, uint32_t size);

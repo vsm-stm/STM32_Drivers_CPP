@@ -312,8 +312,9 @@ System::CacheInvalidate(rx_buffer, received_bytes);  // after DMA has stopped
 ```
 
 - Peripheral drivers choose address, byte count and timing themselves; direct DMA users call these explicitly. DMA keeps no cache state.
-- F7: skipped when the whole range lies in DTCM, in a project DMA area, or the D-cache is off; otherwise CMSIS handles the intersecting 32-byte lines.
-- DTCM bounds are the selected device's CMSIS `[RAMDTCM_BASE, SRAM1_BASE)` range: 64 or 128 KB. This exclusion needs no dedicated MPU region. The whole range is checked without adding address and size; a range crossing the DTCM boundary is not skipped by this rule.
+- F7: the helpers call CMSIS directly for non-null/nonempty ranges. They do not inspect DTCM addresses, MPU attributes, linker records or D-cache enable state.
+- The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX (all DMA channels for TIM). The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
+- Direct DMA users omit these calls for non-cacheable buffers. DTCM bypasses D-cache without a dedicated MPU region.
 - F4/G0/L0: inline no-ops. Zero size or `nullptr` does nothing.
 - Use valid ranges that fit CMSIS's signed byte count (including rounding). Call after `System::Init()`.
 
@@ -753,8 +754,9 @@ System::CacheInvalidate(rx_buffer, received_bytes);  // после остано�
 ```
 
 - Драйверы периферии сами выбирают адрес, размер и момент вызова; при прямом использовании DMA вызовы делает пользователь. DMA не хранит состояние кеша.
-- F7: пропускаются, если диапазон целиком в DTCM, в DMA-области проекта или D-cache выключен; иначе CMSIS обрабатывает пересекающиеся 32-байтные линии.
-- DTCM определяется по адресам CMSIS `[RAMDTCM_BASE, SRAM1_BASE)` для выбранного МК: 64 или 128 КБ. Отдельный MPU-регион для этого исключения не требуется. Проверяется весь диапазон без сложения адреса с размером; диапазон, пересекающий границу DTCM, не пропускается по этому правилу.
+- F7: для ненулевого адреса/размера функции напрямую вызывают CMSIS. Адреса DTCM, атрибуты MPU, записи линкера и состояние включения D-cache не анализируются.
+- Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX (для TIM — всех DMA-каналов). В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
+- При прямой работе с DMA для некешируемых буферов эти вызовы не нужны. DTCM обходит D-cache без отдельного региона MPU.
 - F4/G0/L0: пустые inline-функции. Нулевой размер или `nullptr` ничего не делает.
 - Диапазон должен быть корректным и помещаться в знаковый размер CMSIS (с учётом округления). Вызывайте после `System::Init()`.
 

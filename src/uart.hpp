@@ -63,8 +63,9 @@
  *
  * F7 cache and DMA
  * ----------------
- * UART calls System cache helpers at buffer handover on F7 only. They skip
- * DTCM and ranges wholly inside a configured non-cacheable DMA region.
+ * CachePolicy::Cacheable (default) calls System at buffer handover on F7 only.
+ * CachePolicy::NonCacheable skips all TX/RX cache calls, without checking addresses.
+ * The caller then guarantees every buffer is in DTCM or non-cacheable MPU memory.
  * A cacheable RX allocation owns all touched 32-byte lines, including padding.
  * CPU must not access these lines while RX DMA is Busy. Packet length itself
  * does not have to be a multiple of 32. Buffers must also be accessible to DMA.
@@ -278,13 +279,16 @@ public:
 	 * preserves these bindings. Blocking and IRQ methods remain available.
 	 */
 	/// Use constinit at static storage duration to require checked constant initialization.
+	/// Last argument: Cacheable (default, any buffer), or NonCacheable for both TX/RX.
+	/// NonCacheable trusts the caller to supply only DTCM/non-cacheable MPU buffers.
 	constexpr explicit USART(const Instance& instance, uint32_t baudrate,
 		PIN tx = {}, PIN rx = {}, DMAReq dma_tx = {}, DMAReq dma_rx = {}
 #if defined(STM32F7) || defined(STM32G0)
 		, ClockSource clock_source = ClockSource::PCLK
 #endif
+		, System::CachePolicy cache_policy = System::CachePolicy::Cacheable
 		)
-		: _instance(instance), BaudRate(baudrate), _TX(tx), _RX(rx)
+		: _instance(instance), _cache_policy(cache_policy), BaudRate(baudrate), _TX(tx), _RX(rx)
 #if defined(STM32F7) || defined(STM32G0)
 		, _clock_source(clock_source)
 #endif
@@ -325,8 +329,9 @@ public:
 #if defined(STM32F7) || defined(STM32G0)
 		, ClockSource clock_source = ClockSource::PCLK
 #endif
+		, System::CachePolicy cache_policy = System::CachePolicy::Cacheable
 		)
-		: _instance(FindInstance(usartx)), BaudRate(baudrate), _TX(tx), _RX(rx)
+		: _instance(FindInstance(usartx)), _cache_policy(cache_policy), BaudRate(baudrate), _TX(tx), _RX(rx)
 #if defined(STM32F7) || defined(STM32G0)
 		, _clock_source(clock_source)
 #endif
@@ -555,7 +560,7 @@ public:
 	 *         The caller uses the constructor-configured TX direction.
 	 *
 	 * System::CacheClean() publishes source bytes before DMA starts; on F4/G0
-	 * it is compiled out; F7 skips DTCM and configured non-cacheable ranges.
+	 * it is compiled out; NonCacheable skips it on F7 as well.
 	 * The DMA handler stops/acknowledges DMA and sets TX OK before notifying
 	 * OnDmaTxComplete(). The source buffer is reusable; physical TC is separate.
 	 * A DMA error stops TX, sets Error and calls OnError() with Error::DmaTx.
@@ -581,8 +586,8 @@ public:
 	 *
 	 * F7 cacheable RX storage must own every touched 32-byte cache line, including
 	 * padding. Do not share these lines with unrelated data or access them from
-	 * CPU while Busy. System skips cache maintenance for a range wholly within
-	 * DTCM or one configured non-cacheable DMA region; ownership still applies.
+	 * CPU while Busy. NonCacheable skips all cache maintenance for both TX/RX;
+	 * the caller guarantees non-cacheable memory. DMA buffer ownership still applies.
 	 * F4/G0 compile out cache operations and their argument evaluation.
 	 *
 	 * Example after successful SetUp() with constructor-bound RX DMA:
@@ -709,6 +714,7 @@ public:
 
 private:
 	const Instance& _instance;
+	const System::CachePolicy _cache_policy; ///< Fixed policy shared by TX and RX.
 	USART_TypeDef* USARTx = nullptr; ///< Register cache and setup state; reset on failure/DeInit.
 	uint32_t BaudRate;     ///< Requested baud retained across DeInit()/SetUp().
 
