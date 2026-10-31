@@ -459,6 +459,22 @@ struct _13 {
 };
 #endif
 
+#if defined(TIM14_BASE)
+struct _14 {
+    struct DMA {
+    };
+    static constexpr Instance instance = TIM_INFO(TIM14, APB1, TIM8_TRG_COM_TIM14_IRQn, TIM8_TRG_COM_TIM14_IRQn, false, 1, 0xFFFFu);
+
+	// TIM14 — general-purpose, single channel, AF9.
+	struct CH1 {
+		static constexpr TIM_PIN PA7  = { GPIOA_BASE,  7, 9, 0, TIM14_BASE };
+#if defined(GPIOF_BASE)
+		static constexpr TIM_PIN PF9  = { GPIOF_BASE,  9, 9, 0, TIM14_BASE };
+#endif
+	};
+};
+#endif
+
 #if defined(TIM8_BASE)
 struct _8 {
     struct DMA {
