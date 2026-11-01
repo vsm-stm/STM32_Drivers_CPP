@@ -375,6 +375,8 @@ Deliberately coarse — there is no separate "invalid argument" vs "device not f
 
 ## 9. Usage Examples
 
+- [Nonblocking main-loop timing and explicit DMA cache handover](#nonblocking-main-loop-timing-and-explicit-dma-cache-handover)
+
 ### Standard startup sequence (as in main.cpp)
 
 ```cpp
@@ -419,6 +421,37 @@ if (!System::WaitBits(RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY, 10)) {
 ```cpp
 // Enable ITM channel 0 / SWO in the debugger (F4/F7, DEBUG build).
 System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, halt
+```
+
+---
+
+### Nonblocking main-loop timing and explicit DMA cache handover
+
+Unsigned tick subtraction works through wraparound for bounded elapsed intervals. Delay_ms/Delay_us are blocking alternatives; do not use them in callbacks that must finish quickly. DWT microsecond delays apply to F4/F7, with family-specific behavior explained in section 5. For a custom raw DMA user, the cache sequence below requires exclusive ownership of every touched F7 cache line. Run BeforeDMA before arming DMA and AfterStoppedDMA only after a successful, confirmed stop. Do not duplicate maintenance around a peripheral driver that already performs its own handover. NonCacheable policy does not configure the MPU or make inaccessible RAM DMA-accessible. SWOTrace is exposed on F4/F7 only; the G0 branch returns zero without calling it.
+
+```cpp
+#include "system.hpp"
+uint32_t previous = 0;
+bool EveryTenMilliseconds() {
+    uint32_t now = System::GetTick();
+    if (now - previous < 10U) return false;
+    previous = now;
+    return true;
+}
+alignas(32) static uint8_t tx[64], rx[64];
+void BeforeDMA() {
+    System::CacheClean(tx, sizeof tx);
+    System::CacheCleanInvalidate(rx, sizeof rx);
+}
+void AfterStoppedDMA() { System::CacheInvalidate(rx, sizeof rx); }
+uint32_t Trace() {
+#if defined(STM32F4) || defined(STM32F7)
+    static const uint8_t message[] = "ready\r\n";
+    return System::SWOTrace(message, sizeof message - 1);
+#else
+    return 0; // This driver has no SWOTrace on G0.
+#endif
+}
 ```
 
 ---
@@ -817,6 +850,8 @@ enum class SysInitStatus : uint8_t { NotInit, InitOK, InitError = 0xFF };
 
 ## 9. Примеры использования
 
+- [Время в main без блокировки и явная передача кешируемого DMA-буфера](#время-в-main-без-блокировки-и-явная-передача-кешируемого-dma-буфера)
+
 ### Стандартная последовательность старта (как в main.cpp)
 
 ```cpp
@@ -861,6 +896,37 @@ if (!System::WaitBits(RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY, 10)) {
 ```cpp
 // Включить канал ITM 0 / SWO в отладчике (F4/F7, сборка DEBUG).
 System::DebugTrap("Invalid peripheral pin"); // блокирующий вывод, брейкпоинт, останов
+```
+
+---
+
+### Время в main без блокировки и явная передача кешируемого DMA-буфера
+
+Вычитание беззнаковых ticks работает через переполнение при ограниченном интервале. Delay_ms/Delay_us — блокирующие альтернативы, их не следует помещать в короткие callbacks. DWT-задержка F4/F7 и отличия семейств описаны в разделе 5. В самостоятельном raw-DMA примере ниже нужно владеть всеми затронутыми cache lines F7. BeforeDMA вызывается до запуска, AfterStoppedDMA — только после успешной подтверждённой остановки. Не дублируйте обслуживание вокруг драйвера периферии, который уже возвращает буфер. Политика NonCacheable не настраивает MPU и не делает недоступную память доступной DMA. SWOTrace предоставляется только на F4/F7; ветка G0 возвращает ноль без его вызова.
+
+```cpp
+#include "system.hpp"
+uint32_t previous = 0;
+bool EveryTenMilliseconds() {
+    uint32_t now = System::GetTick();
+    if (now - previous < 10U) return false;
+    previous = now;
+    return true;
+}
+alignas(32) static uint8_t tx[64], rx[64];
+void BeforeDMA() {
+    System::CacheClean(tx, sizeof tx);
+    System::CacheCleanInvalidate(rx, sizeof rx);
+}
+void AfterStoppedDMA() { System::CacheInvalidate(rx, sizeof rx); }
+uint32_t Trace() {
+#if defined(STM32F4) || defined(STM32F7)
+    static const uint8_t message[] = "ready\r\n";
+    return System::SWOTrace(message, sizeof message - 1);
+#else
+    return 0; // This driver has no SWOTrace on G0.
+#endif
+}
 ```
 
 ---

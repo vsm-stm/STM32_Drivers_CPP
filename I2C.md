@@ -262,6 +262,10 @@ The driver has no built-in universal recovery routine (`Recover()` was removed).
 
 ## 10. Usage Examples
 
+Additional complete scenarios below are independent configurations. Call setup functions from main after System/RCC initialization, unless the example explicitly configures RCC. Do not run examples that own the same peripheral simultaneously.
+
+- [A complete inherited IRQ register transaction](#a-complete-inherited-irq-register-transaction)
+
 Setup (same `clocks` for RCC and I2C):
 
 ```cpp
@@ -303,6 +307,41 @@ if (bus.Receive_DMA(0x68, buffer, sizeof(buffer)) == SysStatus::OK) {
 ```
 
 Check every returned status.
+
+---
+
+### A complete inherited IRQ register transaction
+
+The same template clock configuration is passed to ClockSystem and I2C. Addresses are unshifted 7-bit values. ReadReg_IRQ generates the register-address phase and repeated START itself; do not split it into independent Send_IRQ and Receive_IRQ calls. Use REG::_16BIT for a two-byte device register address. Send/Receive/WriteReg/ReadReg have blocking, IRQ and DMA families; DMA needs corresponding constructor routes. Check IsBusy and GetError before consuming the result. Abort/DeInit are main-only and must be serialized with this object's IRQs.
+
+```cpp
+#include "i2c.hpp"
+constexpr ClockSystem::Config clocks{};
+class SensorI2C : public I2C {
+public:
+    using I2C::I2C;
+    volatile bool ready = false;
+    volatile ERR failure = ERR::None;
+protected:
+    void OnComplete() override { ready = true; }
+    void OnError(ERR reason) override { failure = reason; }
+};
+constinit SensorI2C bus(I2C::_1::instance, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9);
+static uint8_t registers[4];
+void Setup() {
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK ||
+        bus.SetUp<clocks, I2C::SPEED::FAST>() != SysInitStatus::InitOK)
+        System::DebugTrap("I2C");
+}
+SysStatus Read() {
+    bus.ready = false;
+    bus.failure = I2C::ERR::None;
+    return bus.ReadReg_IRQ(0x50, 0x0100, registers, sizeof registers, I2C::REG::_16BIT);
+}
+bool Poll() {
+    return !bus.IsBusy() && bus.ready && bus.GetError() == I2C::ERR::None;
+}
+```
 
 ---
 
@@ -620,6 +659,10 @@ constinit I2C bus(I::instance, I::SCL::PB8, I::SDA::PB9,
 
 ## 10. Примеры использования
 
+Дополнительные полные сценарии ниже — независимые конфигурации. Функции настройки вызываются из main после System/RCC, если пример явно не настраивает RCC сам. Не запускайте одновременно примеры, занимающие одну периферию.
+
+- [Полная транзакция с регистром через IRQ и наследование](#полная-транзакция-с-регистром-через-irq-и-наследование)
+
 Настройка (один и тот же `clocks` для RCC и I2C):
 
 ```cpp
@@ -661,6 +704,41 @@ if (bus.Receive_DMA(0x68, buffer, sizeof(buffer)) == SysStatus::OK) {
 ```
 
 Проверяйте каждый возвращаемый статус.
+
+---
+
+### Полная транзакция с регистром через IRQ и наследование
+
+В ClockSystem и I2C передаётся одна шаблонная конфигурация частот. Адрес устройства — 7-битный без сдвига. ReadReg_IRQ сам формирует адрес регистра и repeated START; не заменяйте его двумя независимыми Send_IRQ и Receive_IRQ. Для двухбайтового адреса регистра используется REG::_16BIT. Send/Receive/WriteReg/ReadReg имеют блокирующие, IRQ- и DMA-варианты; для DMA нужны маршруты в конструкторе. Перед чтением результата проверяются IsBusy и GetError. Abort/DeInit вызываются из main с согласованием IRQ этого объекта.
+
+```cpp
+#include "i2c.hpp"
+constexpr ClockSystem::Config clocks{};
+class SensorI2C : public I2C {
+public:
+    using I2C::I2C;
+    volatile bool ready = false;
+    volatile ERR failure = ERR::None;
+protected:
+    void OnComplete() override { ready = true; }
+    void OnError(ERR reason) override { failure = reason; }
+};
+constinit SensorI2C bus(I2C::_1::instance, I2C::_1::SCL::PB8, I2C::_1::SDA::PB9);
+static uint8_t registers[4];
+void Setup() {
+    if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK ||
+        bus.SetUp<clocks, I2C::SPEED::FAST>() != SysInitStatus::InitOK)
+        System::DebugTrap("I2C");
+}
+SysStatus Read() {
+    bus.ready = false;
+    bus.failure = I2C::ERR::None;
+    return bus.ReadReg_IRQ(0x50, 0x0100, registers, sizeof registers, I2C::REG::_16BIT);
+}
+bool Poll() {
+    return !bus.IsBusy() && bus.ready && bus.GetError() == I2C::ERR::None;
+}
+```
 
 ---
 

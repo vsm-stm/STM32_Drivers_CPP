@@ -173,6 +173,10 @@ The destructor does **not** tear anything down — call `DeInit()` before destro
 
 ## 7. Usage Examples
 
+Additional complete scenarios below are independent configurations. Call setup functions from main after System/RCC initialization, unless the example explicitly configures RCC. Do not run examples that own the same peripheral simultaneously.
+
+- [Inherited edge notification and source masking](#inherited-edge-notification-and-source-masking)
+
 A complete, independent example. Check that the pin exists in your package and check every returned status.
 
 ```cpp
@@ -201,6 +205,30 @@ int main()
         }
     }
 }
+```
+
+---
+
+### Inherited edge notification and source masking
+
+EXTI_Line configures a physical GPIO line, acknowledges its own flags and calls OnInterrupt. No base callback or manual IRQ_Registry registration is needed. Edge::Both combines rising and falling edges; it does not debounce a button. IRQ_en masks only this source and preserves pending flags; unmasking can therefore deliver an older event. EXTI_Line exposes external GPIO interrupts only: no separate event-mode or software-trigger API is provided. RTC manages its internal EXTI routes in its own driver. Teardown and NVIC priority changes are main-side operations.
+
+```cpp
+#include "exti.hpp"
+class Button : public EXTI_Line {
+public:
+    using EXTI_Line::EXTI_Line;
+    volatile uint32_t edges = 0;
+protected:
+    void OnInterrupt() override { edges = edges + 1; }
+};
+constinit Button button(PIN(GPIOA_BASE, 0), EXTI_Line::Edge::Both);
+void Setup() {
+    if (button.SetUp(PIN::TYPE::INPUT_PullUp) != SysInitStatus::InitOK)
+        System::DebugTrap("EXTI");
+    NVIC_SetPriority(button.GetIRQn(), 3);
+}
+void MaskFromMain(bool masked) { button.IRQ_en(masked ? DISABLE : ENABLE); }
 ```
 
 ---
@@ -397,6 +425,10 @@ button.DeInit();        // Только из main; callback не вызывае�
 
 ## 7. Примеры использования
 
+Дополнительные полные сценарии ниже — независимые конфигурации. Функции настройки вызываются из main после System/RCC, если пример явно не настраивает RCC сам. Не запускайте одновременно примеры, занимающие одну периферию.
+
+- [Наследование и маскирование источника](#наследование-и-маскирование-источника)
+
 Полный самостоятельный пример. Проверьте, что вывод есть в вашем корпусе, и проверяйте каждый возвращаемый статус.
 
 ```cpp
@@ -425,6 +457,30 @@ int main()
         }
     }
 }
+```
+
+---
+
+### Наследование и маскирование источника
+
+EXTI_Line настраивает физическую GPIO-линию, подтверждает свои флаги и вызывает OnInterrupt. Базовый callback и ручная регистрация в IRQ_Registry не нужны. Edge::Both включает оба фронта, но не устраняет дребезг. IRQ_en маскирует только источник и сохраняет pending-флаги: после включения может прийти старое событие. EXTI_Line предоставляет только внешние GPIO-прерывания: отдельного API event-режима и программного триггера нет. Внутренними EXTI-маршрутами RTC управляет его собственный драйвер. Освобождение и смена приоритетов NVIC выполняются в main.
+
+```cpp
+#include "exti.hpp"
+class Button : public EXTI_Line {
+public:
+    using EXTI_Line::EXTI_Line;
+    volatile uint32_t edges = 0;
+protected:
+    void OnInterrupt() override { edges = edges + 1; }
+};
+constinit Button button(PIN(GPIOA_BASE, 0), EXTI_Line::Edge::Both);
+void Setup() {
+    if (button.SetUp(PIN::TYPE::INPUT_PullUp) != SysInitStatus::InitOK)
+        System::DebugTrap("EXTI");
+    NVIC_SetPriority(button.GetIRQn(), 3);
+}
+void MaskFromMain(bool masked) { button.IRQ_en(masked ? DISABLE : ENABLE); }
 ```
 
 ---

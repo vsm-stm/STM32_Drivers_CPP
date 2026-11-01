@@ -217,6 +217,7 @@ stm32_drivers_module(DAC    SOURCES src/dac.cpp)
 stm32_drivers_module(I2C    SOURCES src/i2c.cpp DEPENDS DMA)
 stm32_drivers_module(MODBUS SOURCES Interfaces/Modbus-slave.cpp                 INCLUDE Interfaces DEPENDS UART DMA)
 stm32_drivers_module(CONTAINERS INCLUDE Containers)          # headers only
+stm32_drivers_module(FILTERS    INCLUDE Filters)             # headers only
 # PID - the author's own controller (math/PID.*): variable dT, dead zone,
 # anti-windup. A simpler recurrence-based alternative is arm_pid_* in the DSP module.
 stm32_drivers_module(PID    SOURCES math/PID.c                        INCLUDE math)

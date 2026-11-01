@@ -24,7 +24,7 @@ Every module document follows the same layout as [GPIO.md](GPIO.md): English/Р�
 A C++20 library on top of CMSIS for the **STM32G0**, **STM32F4** and **STM32F7** families.
 
 - **Core** (always built): System, RCC, GPIO, Flash, IRQ_Registry.
-- **Optional modules:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, PID, DSP, CRC.
+- **Optional modules:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
 
 The library is not a standalone CMake project: it is cloned and wired in by the [stm32_cmake_base](https://github.com/vsm-stm/stm32_cmake_base) platform (see "Integration and build").
 
@@ -56,6 +56,13 @@ The library is not a standalone CMake project: it is cloned and wired in by the 
   - `get=1`: `e` is a percentage for non-zero `u` (absolute `y-u` for `u = 0`); `t_time` sums time outside the ±5 % corridor.
   - `get=2`: `e` is absolute; `t_time` sums every supplied `dt`.
   - This is accumulated time, not settling time. `max_y` tracks the maximum response for `u >= 0` and the minimum for `u < 0`, starting from zero; `sigma = (max_y - u)/u` (zero for `u = 0`).
+
+**`FILTERS` module** — header-only sample filters in the `Filters` namespace.
+Enable it with `"drivers": ["FILTERS"]`; no CMSIS-DSP dependency is required.
+All three filters select zero or first-sample startup in their constructors;
+the default is the first sample.
+The existing rolling-sum API is preserved. Selection, initialization, examples
+and numeric limits: [Filters.md](Filters.md).
 
 ## Driver API migration — 19.10.2026
 
@@ -102,9 +109,14 @@ Status from the October 2026 review: driver modules were **compiled** (debug and
 | I2C | `src/i2c.*` | builds | builds | builds |
 | MODBUS | `Interfaces/` | builds | builds | builds |
 | CONTAINERS | `Containers/` (headers) | included | — | — |
+| FILTERS | `Filters/` (headers) | header check | header check | header check |
 | PID | `math/PID.*` | ok | not tested | not tested |
 | DSP | subset of CMSIS-DSP v1.16.2 | ok | not tested | not tested |
 | CRC | `crc/crc32.*` (no tables, no hardware peripheral — portable) | ok | ok | ok |
+
+`FILTERS` was checked separately: host algorithm tests and standalone header
+examples compiled for Cortex-M4/M7/M0+. CMake module selection and include
+directory propagation were also checked; this is not a full firmware build.
 
 Behaviour and limitations of each module are in its own document (e.g. [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
@@ -116,8 +128,14 @@ Families other than F4/F7/G0 (including G4) are not supported: set `"drivers": n
 
 This file is an overview with short examples. The full description of each module — registers, timing, edge cases — is in its own file:
 
+Start with [Examples.md](Examples.md) for the complete scenario/API index and
+callback rules. In particular: [USART inheritance](UART.md#adding-application-work-through-inheritance)
+and [TIM channel IRQs without pins](TIM.md#several-channel-interrupts-without-gpio-pins).
+
 | Document | Contents |
 | --- | --- |
+| [Examples.md](Examples.md) | public API map, complete scenarios, callback context and buffer ownership |
+| [Utilities.md](Utilities.md) | containers, PID, streaming CRC32, CMSIS-DSP groups and WS2812B encoding |
 | [Initialization.md](Initialization.md) | `constinit` declarations for every module, compile-time diagnostics |
 | [System.md](System.md) | `SysStatus`/`SysInitStatus`, clock variables, `GetTick()`/`Delay_us()`, cache/MPU, `DebugTrap()` |
 | [RCC.md](RCC.md) | clock tree: HSI/HSE/PLL, bus dividers, Flash latency, compile-time validation |
@@ -133,6 +151,7 @@ This file is an overview with short examples. The full description of each modul
 | [EXTI.md](EXTI.md) | external GPIO interrupts, inherited callback, shared-vector limits |
 | [DAC.md](DAC.md) | `DAC_Module`: direct 12-bit output, statuses, channel lifetime |
 | [Flash.md](Flash.md) | `flash_base`/`flash_data`: unlock, erase, program, one-sector record journal |
+| [Filters.md](Filters.md) | rolling sum, exponential smoothing and median of three samples |
 
 ---
 
@@ -975,7 +994,7 @@ system.hpp
 C++20-библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4** и **STM32F7**.
 
 - **Ядро** (собирается всегда): System, RCC, GPIO, Flash, IRQ_Registry.
-- **Опциональные модули:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, PID, DSP, CRC.
+- **Опциональные модули:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
 
 Библиотека — не самостоятельный CMake-проект: её клонирует и подключает платформа [stm32_cmake_base](https://github.com/vsm-stm/stm32_cmake_base) (см. «Подключение и сборка»).
 
@@ -1007,6 +1026,13 @@ C++20-библиотека поверх CMSIS для семейств **STM32G0*
   - `get=1`: `e` — в процентах при ненулевой `u` (при `u = 0` — абсолютная `y-u`); `t_time` суммирует время вне коридора ±5 %.
   - `get=2`: `e` абсолютная; `t_time` суммирует каждый переданный `dt`.
   - Это накопленное время, а не время установления. `max_y` — максимум отклика при `u >= 0` и минимум при `u < 0`, с нуля после сброса; `sigma = (max_y - u)/u` (ноль при `u = 0`).
+
+**Модуль `FILTERS`** — фильтры отсчётов в пространстве имён `Filters`, полностью
+реализованные в заголовках. Подключение: `"drivers": ["FILTERS"]`; CMSIS-DSP не нужен.
+Все три фильтра позволяют выбрать в конструкторе старт с нуля или первого отсчёта;
+по умолчанию — с первого отсчёта.
+Существующий API скользящей суммы сохранён. Выбор фильтра, начальное состояние,
+примеры и численные ограничения: [Filters.md](Filters.md).
 
 ## Подключение и сборка
 
@@ -1045,9 +1071,14 @@ C++20-библиотека поверх CMSIS для семейств **STM32G0*
 | I2C | `src/i2c.*` | собирается | собирается | собирается |
 | MODBUS | `Interfaces/` | собирается | собирается | собирается |
 | CONTAINERS | `Containers/` (заголовки) | подключаются | — | — |
+| FILTERS | `Filters/` (заголовки) | проверка заголовков | проверка заголовков | проверка заголовков |
 | PID | `math/PID.*` | ок | не проверялось | не проверялось |
 | DSP | подмножество CMSIS-DSP v1.16.2 | ок | не проверялось | не проверялось |
 | CRC | `crc/crc32.*` (без таблиц и аппаратной периферии — переносимо) | ок | ок | ок |
+
+`FILTERS` проверен отдельно: тесты алгоритмов на ПК и компиляция отдельных
+примеров заголовков для Cortex-M4/M7/M0+. Проверены выбор модуля CMake и передача
+пути заголовков; полная сборка прошивки в эту проверку не входила.
 
 Поведение и ограничения каждого модуля описаны в его документе (например, [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
@@ -1059,8 +1090,14 @@ C++20-библиотека поверх CMSIS для семейств **STM32G0*
 
 Этот файл — обзор с короткими примерами. Полное описание каждого модуля — регистры, тайминги, угловые случаи — в отдельных файлах:
 
+Начните с [Examples.md](Examples.md#русский): там полный указатель сценариев/API
+и правила callbacks. Отдельно: [наследование USART](UART.md#дополнительные-действия-в-irq-через-наследование)
+и [прерывания каналов TIM без пинов](TIM.md#несколько-прерываний-по-каналам-без-gpio-пинов).
+
 | Документ | Содержание |
 | --- | --- |
+| [Examples.md](Examples.md#русский) | карта публичного API, полные сценарии, контексты callback и владение буферами |
+| [Utilities.md](Utilities.md#русский) | контейнеры, PID, потоковый CRC32, группы CMSIS-DSP и кодирование WS2812B |
 | [Initialization.md](Initialization.md) | объявления `constinit` для всех модулей, диагностика при компиляции |
 | [System.md](System.md) | `SysStatus`/`SysInitStatus`, тактовые переменные, `GetTick()`/`Delay_us()`, кеш/MPU, `DebugTrap()` |
 | [RCC.md](RCC.md) | дерево тактирования: HSI/HSE/PLL, делители шин, задержка Flash, проверка при компиляции |
@@ -1076,6 +1113,7 @@ C++20-библиотека поверх CMSIS для семейств **STM32G0*
 | [EXTI.md](EXTI.md) | внешние прерывания GPIO, callback через наследование, ограничения общих векторов |
 | [DAC.md](DAC.md) | `DAC_Module`: прямой 12-битный вывод, статусы, время жизни канала |
 | [Flash.md](Flash.md) | `flash_base`/`flash_data`: разблокировка, стирание, запись, журнал записей в одном секторе |
+| [Filters.md](Filters.md) | скользящая сумма, экспоненциальное сглаживание и медиана трёх отсчётов |
 
 ---
 

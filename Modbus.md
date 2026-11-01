@@ -162,6 +162,8 @@ Handlers never wait and never change the IRQ registry or NVIC.
 
 ## 6. Usage Examples
 
+- [A complete application parser and reply-buffer cancellation](#a-complete-application-parser-and-reply-buffer-cancellation)
+
 Setup and main loop (F4, USART3):
 
 ```cpp
@@ -207,6 +209,40 @@ if (reply) {
 
 // Changed your mind before SendData():
 SysStatus cancelled = bus.CancelTxBuffer();
+```
+
+---
+
+### A complete application parser and reply-buffer cancellation
+
+This is an illustrative custom function 0x41 echo, not a standard register-map implementation. The parser runs from Rx_Process in main; len already excludes CRC. It checks address/function/length before reserving the TX buffer. A broadcast must be handled according to the function policy without sending a reply. CRC is appended by SendData. A failed start retains the reservation; this example explicitly cancels it instead of silently leaking the buffer. Both DMA routes are mandatory, and physical TC releases DE/buffer ownership. Do not call inherited USART send functions: protected inheritance intentionally hides them.
+
+```cpp
+#include "Modbus-slave.hpp"
+#include <cstring>
+using U = USART::_1;
+#if defined(STM32G0)
+constinit ModbusRTU_Slave slave(U::instance, 19200, U::TX::PB6, U::RX::PB7,
+    PIN(GPIOB_BASE, 0), DMA1_Channel4_BASE, DMA1_Channel5_BASE);
+#else
+constinit ModbusRTU_Slave slave(U::instance, 19200, U::TX::PB6, U::RX::PB7,
+    PIN(GPIOB_BASE, 0), U::DMA::TX_DMA2_Stream7, U::DMA::RX_DMA2_Stream5);
+#endif
+void Parse(uint8_t* request, uint32_t length) {
+    if (length < 2 || length > 254 || request[0] != 0x11 || request[1] != 0x41) return;
+    uint8_t* reply = slave.GetTxBufferPtr();
+    if (!reply) return;
+    std::memcpy(reply, request, length);
+    if (slave.SendData(length) != SysStatus::OK &&
+        slave.CancelTxBuffer() != SysStatus::OK)
+        System::DebugTrap("Modbus response");
+}
+void Setup() {
+    slave.SetRxParse(Parse);
+    if (slave.SetUp(ModbusRTU_Slave::FrameFormat::E8_1) != SysInitStatus::InitOK)
+        System::DebugTrap("Modbus");
+}
+void Poll() { slave.Rx_Process(); }
 ```
 
 ---
@@ -425,6 +461,8 @@ SysStatus cancelled = bus.CancelTxBuffer();
 
 ## 6. Примеры использования
 
+- [Полный парсер приложения и отмена подготовленного ответа](#полный-парсер-приложения-и-отмена-подготовленного-ответа)
+
 Настройка и основной цикл (F4, USART3):
 
 ```cpp
@@ -470,6 +508,40 @@ if (reply) {
 
 // Передумали до SendData():
 SysStatus cancelled = bus.CancelTxBuffer();
+```
+
+---
+
+### Полный парсер приложения и отмена подготовленного ответа
+
+Это пример пользовательской echo-функции 0x41, а не готовая стандартная карта регистров. Парсер вызывается Rx_Process в main; len уже без CRC. Адрес, функция и длина проверяются до резервирования TX-буфера. Broadcast обрабатывается по правилам конкретной функции без ответа. CRC дописывает SendData. Неуспешный запуск сохраняет резервирование; здесь оно явно отменяется, чтобы не оставить буфер занятым. Оба DMA обязательны, физический TC освобождает DE/буфер. Унаследованные USART-send не вызываются: protected-наследование специально скрывает их.
+
+```cpp
+#include "Modbus-slave.hpp"
+#include <cstring>
+using U = USART::_1;
+#if defined(STM32G0)
+constinit ModbusRTU_Slave slave(U::instance, 19200, U::TX::PB6, U::RX::PB7,
+    PIN(GPIOB_BASE, 0), DMA1_Channel4_BASE, DMA1_Channel5_BASE);
+#else
+constinit ModbusRTU_Slave slave(U::instance, 19200, U::TX::PB6, U::RX::PB7,
+    PIN(GPIOB_BASE, 0), U::DMA::TX_DMA2_Stream7, U::DMA::RX_DMA2_Stream5);
+#endif
+void Parse(uint8_t* request, uint32_t length) {
+    if (length < 2 || length > 254 || request[0] != 0x11 || request[1] != 0x41) return;
+    uint8_t* reply = slave.GetTxBufferPtr();
+    if (!reply) return;
+    std::memcpy(reply, request, length);
+    if (slave.SendData(length) != SysStatus::OK &&
+        slave.CancelTxBuffer() != SysStatus::OK)
+        System::DebugTrap("Modbus response");
+}
+void Setup() {
+    slave.SetRxParse(Parse);
+    if (slave.SetUp(ModbusRTU_Slave::FrameFormat::E8_1) != SysInitStatus::InitOK)
+        System::DebugTrap("Modbus");
+}
+void Poll() { slave.Rx_Process(); }
 ```
 
 ---

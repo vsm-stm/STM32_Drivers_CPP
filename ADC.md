@@ -287,6 +287,11 @@ Trigger routes follow the official ST LL ADC headers: [F4](https://github.com/ST
 
 ## 11. Usage Examples
 
+Additional complete scenarios below are independent configurations. Call setup functions from main after System/RCC initialization, unless the example explicitly configures RCC. Do not run examples that own the same peripheral simultaneously.
+
+- [Inherited conversion callbacks without DMA](#inherited-conversion-callbacks-without-dma)
+- [Circular DMA: two independent cache-line halves](#circular-dma-two-independent-cache-line-halves)
+
 The three examples are independent — do not give the same DMA to several active objects.
 
 ### Reading without DMA
@@ -379,6 +384,76 @@ if (sampling.SetUp(1000) == SysInitStatus::InitOK          // 1 kHz trigger
 - With HT enabled, `len` must also be even.
 
 Check every `SetUp()`/`AddChannel()`/`Start()` result.
+
+---
+
+### Inherited conversion callbacks without DMA
+
+F4/F7 EOC and EOS share one source: override OnEOS. G0 also has OnEOC; do not read DR twice by enabling both callbacks for one sample. This example enables EOS/OVR and reads a single configured input. It uses no DMA and no CPU busy-wait. OnError records a mask; read status in main before another Start. For a scan, reading only one final DR does not retrieve every channel: use DMA to preserve the whole sequence.
+
+```cpp
+#include "adc.hpp"
+class Measurement : public ADC_N {
+public:
+    using ADC_N::ADC_N;
+    volatile uint16_t last = 0;
+    volatile uint32_t errors = 0;
+protected:
+    void OnEOS() override { last = GetData(); }
+    void OnError(uint32_t causes) override { errors = causes; }
+};
+constinit Measurement input(ADC_N::_1::instance, ADC_N::Conversion::Single);
+void Setup() {
+    if (input.SetUp() != SysInitStatus::InitOK) System::DebugTrap("ADC");
+#if defined(STM32G0)
+    auto result = input.AddChannel(ADC_N::IN::PA0_IN0);
+#else
+    auto result = input.AddChannel(ADC_N::_1::PA0_IN0);
+#endif
+    if (result != SysStatus::OK) System::DebugTrap("ADC channel");
+    input.IRQ_en(ADC_N::IRQ::EOS, ENABLE);
+    input.IRQ_en(ADC_N::IRQ::OVR, ENABLE);
+}
+SysStatus SampleFromMain() { return input.Start(); }
+```
+
+### Circular DMA: two independent cache-line halves
+
+Continuous+DMA is circular. Enable DMA_HT before Start to receive the first half at HT and the second at TC. Each half below is 32 bytes and owns a full F7 cache line. Callbacks publish sequence counters only. Main must finish a half before DMA wraps and writes it again; volatile counters and cache maintenance do not freeze it or solve an overrun. OnError invalidates the packet. For a timer rate, use Single+TIM trigger instead of Continuous; the ADC starts its bound timer after arming DMA. The timer and ADC trigger setup is shown in sections 7–8.
+
+```cpp
+#include "adc.hpp"
+class Stream : public ADC_N {
+public:
+    using ADC_N::ADC_N;
+    volatile uint32_t halves = 0, blocks = 0, errors = 0;
+protected:
+    void OnDmaHalf() override { halves = halves + 1; }
+    void OnDmaComplete() override { blocks = blocks + 1; }
+    void OnError(uint32_t causes) override { errors = causes; }
+};
+#if defined(STM32G0)
+constexpr ADC_N::DMAReq route = DMA1_Channel1_BASE;
+#else
+constexpr ADC_N::DMAReq route = ADC_N::_1::DMA::RX_DMA2_Stream0;
+#endif
+constinit Stream adc(ADC_N::_1::instance, ADC_N::Conversion::Continuous, route);
+alignas(32) static uint16_t samples[32];
+void Setup() {
+    if (adc.SetUp() != SysInitStatus::InitOK) System::DebugTrap("ADC DMA");
+#if defined(STM32G0)
+    auto result = adc.AddChannel(ADC_N::IN::PA0_IN0);
+#else
+    auto result = adc.AddChannel(ADC_N::_1::PA0_IN0);
+#endif
+    if (result != SysStatus::OK) System::DebugTrap("ADC sequence");
+    adc.IRQ_en(ADC_N::IRQ::DMA_HT, ENABLE);
+    adc.IRQ_en(ADC_N::IRQ::OVR, ENABLE);
+    if (adc.Start(samples, 32) != SysStatus::OK) System::DebugTrap("ADC start");
+}
+SysStatus StopFromMain() { return adc.Stop(); }
+// HT: samples[0..16); circular TC with HT enabled: samples[16..32).
+```
 
 ---
 
@@ -691,6 +766,11 @@ constinit ADC_N adc(A::instance, ADC_N::Conversion::Continuous,
 
 ## 11. Примеры использования
 
+Дополнительные полные сценарии ниже — независимые конфигурации. Функции настройки вызываются из main после System/RCC, если пример явно не настраивает RCC сам. Не запускайте одновременно примеры, занимающие одну периферию.
+
+- [Callbacks преобразования через наследование без DMA](#callbacks-преобразования-через-наследование-без-dma)
+- [Кольцевой DMA: две половины по отдельным cache lines](#кольцевой-dma-две-половины-по-отдельным-cache-lines)
+
 Три примера независимы — не отдавайте один DMA нескольким активным объектам.
 
 ### Чтение без DMA
@@ -785,6 +865,76 @@ if (sampling.SetUp(1000) == SysInitStatus::InitOK          // триггер 1 �
 - При включённом HT `len` ещё и чётная, иначе `Error`.
 
 Проверяйте результат каждого `SetUp()`/`AddChannel()`/`Start()`.
+
+---
+
+### Callbacks преобразования через наследование без DMA
+
+На F4/F7 EOC и EOS имеют общий источник: переопределяется OnEOS. У G0 есть также OnEOC; не читайте DR дважды, включая оба callback для одного результата. Здесь включены EOS/OVR и читается единственный канал, без DMA и ожидания процессором. OnError сохраняет маску; перед повторным Start в main проверяется статус. В scan чтение только последнего DR не даёт все каналы — для всей последовательности нужен DMA.
+
+```cpp
+#include "adc.hpp"
+class Measurement : public ADC_N {
+public:
+    using ADC_N::ADC_N;
+    volatile uint16_t last = 0;
+    volatile uint32_t errors = 0;
+protected:
+    void OnEOS() override { last = GetData(); }
+    void OnError(uint32_t causes) override { errors = causes; }
+};
+constinit Measurement input(ADC_N::_1::instance, ADC_N::Conversion::Single);
+void Setup() {
+    if (input.SetUp() != SysInitStatus::InitOK) System::DebugTrap("ADC");
+#if defined(STM32G0)
+    auto result = input.AddChannel(ADC_N::IN::PA0_IN0);
+#else
+    auto result = input.AddChannel(ADC_N::_1::PA0_IN0);
+#endif
+    if (result != SysStatus::OK) System::DebugTrap("ADC channel");
+    input.IRQ_en(ADC_N::IRQ::EOS, ENABLE);
+    input.IRQ_en(ADC_N::IRQ::OVR, ENABLE);
+}
+SysStatus SampleFromMain() { return input.Start(); }
+```
+
+### Кольцевой DMA: две половины по отдельным cache lines
+
+Continuous+DMA работает по кругу. DMA_HT включается до Start: HT возвращает первую половину, TC — вторую. Здесь каждая половина занимает 32 байта, то есть отдельную cache line F7. Callback публикует только счётчик событий. Main должен прочитать половину до возврата DMA к ней; volatile и обслуживание кеша не замораживают буфер и не устраняют опоздание. После OnError пакет недействителен. Для частоты от таймера используйте Single+TIM trigger вместо Continuous: ADC сам запускает привязанный таймер после подготовки DMA. Настройка связки показана в разделах 7–8.
+
+```cpp
+#include "adc.hpp"
+class Stream : public ADC_N {
+public:
+    using ADC_N::ADC_N;
+    volatile uint32_t halves = 0, blocks = 0, errors = 0;
+protected:
+    void OnDmaHalf() override { halves = halves + 1; }
+    void OnDmaComplete() override { blocks = blocks + 1; }
+    void OnError(uint32_t causes) override { errors = causes; }
+};
+#if defined(STM32G0)
+constexpr ADC_N::DMAReq route = DMA1_Channel1_BASE;
+#else
+constexpr ADC_N::DMAReq route = ADC_N::_1::DMA::RX_DMA2_Stream0;
+#endif
+constinit Stream adc(ADC_N::_1::instance, ADC_N::Conversion::Continuous, route);
+alignas(32) static uint16_t samples[32];
+void Setup() {
+    if (adc.SetUp() != SysInitStatus::InitOK) System::DebugTrap("ADC DMA");
+#if defined(STM32G0)
+    auto result = adc.AddChannel(ADC_N::IN::PA0_IN0);
+#else
+    auto result = adc.AddChannel(ADC_N::_1::PA0_IN0);
+#endif
+    if (result != SysStatus::OK) System::DebugTrap("ADC sequence");
+    adc.IRQ_en(ADC_N::IRQ::DMA_HT, ENABLE);
+    adc.IRQ_en(ADC_N::IRQ::OVR, ENABLE);
+    if (adc.Start(samples, 32) != SysStatus::OK) System::DebugTrap("ADC start");
+}
+SysStatus StopFromMain() { return adc.Stop(); }
+// HT: samples[0..16); circular TC with HT enabled: samples[16..32).
+```
 
 ---
 
