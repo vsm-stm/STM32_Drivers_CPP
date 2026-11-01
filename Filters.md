@@ -236,6 +236,8 @@ be removed, and real transitions can be delayed.
 
 ## 6. Usage Examples
 
+- [Independent channels, float inputs and restarting history](#independent-channels-float-inputs-and-restarting-history)
+
 For an integer measurement with a 16-sample rolling average:
 
 ```cpp
@@ -273,6 +275,30 @@ void OnSmoothedMeasurement(std::int32_t sample)
 Supply each ADC/DMA sample once, after the driver has completed buffer handover.
 Keep sampling reasonably uniform when using filters to suppress time-domain
 noise. Filter construction itself does not read hardware.
+
+---
+
+### Independent channels, float inputs and restarting history
+
+Use a distinct instance for every signal. This example demonstrates a fractional input, a separate integer input with float calculation, first-sample startup and explicit zero startup after reset. Reset assigns a fresh instance; there is no hidden saved startup mode. MovingAverage<4,int32_t,int64_t> and Median3<float> can be used the same way, with the sum/value access documented above. A single ADC sample can be passed directly to EMA; Median3 is only needed when isolated spikes must also be suppressed.
+
+```cpp
+#include "exponential_moving_average.hpp"
+Filters::ExponentialMovingAverage<float> temperature{0.1f};
+Filters::ExponentialMovingAverage<> voltage{0.25f};
+float ProcessTemperature(float sample) {
+    temperature.add_new_sample(sample);
+    return temperature.value;
+}
+float ProcessVoltage(int32_t sample) {
+    voltage.add_new_sample(sample);
+    return voltage.value;
+}
+void RestartFromZero() {
+    temperature = Filters::ExponentialMovingAverage<float>{0.1f, false};
+    voltage = Filters::ExponentialMovingAverage<>{0.25f, false};
+}
+```
 
 ---
 
@@ -527,6 +553,8 @@ from_zero.add_new_sample(300); // value = 200.
 
 ## 6. Примеры использования
 
+- [Независимые каналы, вход float и повторный запуск истории](#независимые-каналы-вход-float-и-повторный-запуск-истории)
+
 Для целочисленного измерения со скользящим средним по 16 отсчётам:
 
 ```cpp
@@ -564,6 +592,30 @@ void OnSmoothedMeasurement(std::int32_t sample)
 Передавайте каждый отсчёт АЦП/DMA один раз после завершения передачи буфера
 процессору. Для подавления шума во времени поддерживайте равномерный период
 выборки. Конструирование фильтра само по себе к аппаратуре не обращается.
+
+---
+
+### Независимые каналы, вход float и повторный запуск истории
+
+Для каждого сигнала нужен отдельный экземпляр. Здесь показаны дробный вход, отдельный целочисленный вход с расчётом float, старт с первого отсчёта и явный старт с нуля после сброса. Сброс присваивает новый экземпляр; скрытого сохранённого режима старта нет. MovingAverage<4,int32_t,int64_t> и Median3<float> применяются аналогично, с чтением sum/value из предыдущих разделов. Отсчёт ADC можно передавать прямо в EMA; Median3 нужен, только если требуется подавлять ещё и одиночные выбросы.
+
+```cpp
+#include "exponential_moving_average.hpp"
+Filters::ExponentialMovingAverage<float> temperature{0.1f};
+Filters::ExponentialMovingAverage<> voltage{0.25f};
+float ProcessTemperature(float sample) {
+    temperature.add_new_sample(sample);
+    return temperature.value;
+}
+float ProcessVoltage(int32_t sample) {
+    voltage.add_new_sample(sample);
+    return voltage.value;
+}
+void RestartFromZero() {
+    temperature = Filters::ExponentialMovingAverage<float>{0.1f, false};
+    voltage = Filters::ExponentialMovingAverage<>{0.25f, false};
+}
+```
 
 ---
 

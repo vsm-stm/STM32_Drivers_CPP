@@ -463,6 +463,10 @@ protected:
 
 ## 11. Usage Examples
 
+Additional complete scenarios below are independent configurations. Call setup functions from main after System/RCC initialization, unless the example explicitly configures RCC. Do not run examples that own the same peripheral simultaneously.
+
+- [Inherited callbacks, IRQ/DMA completion and per-transfer CS](#inherited-callbacks-irqdma-completion-and-per-transfer-cs)
+
 A minimal master. Check device/package availability and every returned status.
 
 ```cpp
@@ -485,6 +489,59 @@ if (bus.SendReceive_IRQ(tx, rx, 4) == SysStatus::OK) {
 ```
 
 More examples: shared bus (section 4), RX-only DMA (section 5), slave (section 7), DMA binding (section 8).
+
+---
+
+### Inherited callbacks, IRQ/DMA completion and per-transfer CS
+
+SPI completion differs from USART: OnComplete/OnError are published by Process in main. Frame callbacks can run in IRQ, polling or the final drain. SPI's DMA callbacks still need their base methods for slave continuation. Start one operation, keep buffers/CS alive, and call Process regularly; GetStatus alone does not finish it. Here StartTransfer selects IRQ or DMA and overrides the default CS for that transaction. For 16-bit frames configure Half_Word once and pass uint16_t buffers; len is a frame count. Never use Enable/Disable, DMA_TX/DMA_RX or raw IRQ_en to abort a driver-owned transaction; use the documented teardown path.
+
+```cpp
+#include "spi.hpp"
+class SensorSPI : public SPI {
+public:
+    using SPI::SPI;
+    bool completed = false;
+    uint32_t errors = 0;
+protected:
+    void OnRxByte(uint8_t frame) override { SPI::OnRxByte(frame); }
+    void OnRxWord(uint16_t frame) override { SPI::OnRxWord(frame); }
+    void OnTxEmpty() override { SPI::OnTxEmpty(); }
+    void OnDmaTxComplete() override { SPI::OnDmaTxComplete(); }
+    void OnDmaRxComplete() override { SPI::OnDmaRxComplete(); }
+    void OnComplete() override { completed = true; }
+    void OnError(uint32_t mask) override { errors = mask; }
+};
+using S = SPI::_1;
+#if defined(STM32G0)
+constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
+    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{}, DMA1_Channel2_BASE, DMA1_Channel3_BASE);
+#else
+constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
+    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{},
+    S::DMA::TX_DMA2_Stream3, S::DMA::RX_DMA2_Stream0);
+#endif
+constinit PIN cs(GPIOB_BASE, 0);
+alignas(32) static uint8_t tx[32] = {0x9F}, rx[32];
+void Setup() {
+    if (cs.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::High, PIN::LVL::HIGH)
+            != SysInitStatus::InitOK ||
+        bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) != SysInitStatus::InitOK)
+        System::DebugTrap("SPI");
+}
+SysStatus StartTransfer(bool dma) {
+    bus.completed = false;
+    bus.errors = 0;
+    return dma ? bus.SendReceive_DMA(tx, rx, 4, &cs) : bus.SendReceive_IRQ(tx, rx, 4, &cs);
+}
+void Poll() {
+    SysStatus result = bus.Process();
+    if (bus.completed && result == SysStatus::OK) {
+        // Consume rx[0..4), then permit the next transaction.
+        bus.completed = false;
+    }
+}
+```
 
 ---
 
@@ -970,6 +1027,10 @@ protected:
 
 ## 10. Примеры использования
 
+Дополнительные полные сценарии ниже — независимые конфигурации. Функции настройки вызываются из main после System/RCC, если пример явно не настраивает RCC сам. Не запускайте одновременно примеры, занимающие одну периферию.
+
+- [Наследование, завершение IRQ/DMA и CS на одну транзакцию](#наследование-завершение-irqdma-и-cs-на-одну-транзакцию)
+
 Минимальный master. Проверьте наличие блока/выводов в корпусе и каждый возвращаемый статус.
 
 ```cpp
@@ -992,6 +1053,59 @@ if (bus.SendReceive_IRQ(tx, rx, 4) == SysStatus::OK) {
 ```
 
 Другие примеры: общая шина (раздел 4), приём только через RX DMA (раздел 5), slave (раздел 7), привязка DMA (раздел 8).
+
+---
+
+### Наследование, завершение IRQ/DMA и CS на одну транзакцию
+
+Завершение SPI отличается от USART: OnComplete/OnError вызываются Process в main. Байтовые callbacks могут выполняться в IRQ, polling и при чтении хвоста. Для DMA-callback SPI по-прежнему нужен вызов базы, чтобы сохранить продолжение slave. Запускайте одну операцию, сохраняйте буферы/CS и регулярно вызывайте Process; одного GetStatus недостаточно. Здесь StartTransfer выбирает IRQ или DMA и задаёт CS на одну транзакцию. Для 16 бит сначала настройте Half_Word и передавайте uint16_t; len означает число кадров. Не обрывайте штатную транзакцию через Enable/Disable, DMA_TX/DMA_RX или raw IRQ_en — используйте документированное освобождение.
+
+```cpp
+#include "spi.hpp"
+class SensorSPI : public SPI {
+public:
+    using SPI::SPI;
+    bool completed = false;
+    uint32_t errors = 0;
+protected:
+    void OnRxByte(uint8_t frame) override { SPI::OnRxByte(frame); }
+    void OnRxWord(uint16_t frame) override { SPI::OnRxWord(frame); }
+    void OnTxEmpty() override { SPI::OnTxEmpty(); }
+    void OnDmaTxComplete() override { SPI::OnDmaTxComplete(); }
+    void OnDmaRxComplete() override { SPI::OnDmaRxComplete(); }
+    void OnComplete() override { completed = true; }
+    void OnError(uint32_t mask) override { errors = mask; }
+};
+using S = SPI::_1;
+#if defined(STM32G0)
+constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
+    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{}, DMA1_Channel2_BASE, DMA1_Channel3_BASE);
+#else
+constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
+    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{},
+    S::DMA::TX_DMA2_Stream3, S::DMA::RX_DMA2_Stream0);
+#endif
+constinit PIN cs(GPIOB_BASE, 0);
+alignas(32) static uint8_t tx[32] = {0x9F}, rx[32];
+void Setup() {
+    if (cs.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::High, PIN::LVL::HIGH)
+            != SysInitStatus::InitOK ||
+        bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) != SysInitStatus::InitOK)
+        System::DebugTrap("SPI");
+}
+SysStatus StartTransfer(bool dma) {
+    bus.completed = false;
+    bus.errors = 0;
+    return dma ? bus.SendReceive_DMA(tx, rx, 4, &cs) : bus.SendReceive_IRQ(tx, rx, 4, &cs);
+}
+void Poll() {
+    SysStatus result = bus.Process();
+    if (bus.completed && result == SysStatus::OK) {
+        // Consume rx[0..4), then permit the next transaction.
+        bus.completed = false;
+    }
+}
+```
 
 ---
 

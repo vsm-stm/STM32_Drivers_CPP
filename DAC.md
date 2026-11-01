@@ -152,6 +152,8 @@ The destructor does nothing to the hardware — call `DeInit()` before destroyin
 
 ## 6. Usage Examples
 
+- [Two independent outputs and rejected values](#two-independent-outputs-and-rejected-values)
+
 A complete example. Check that the DAC and pin exist on your device/package and check every returned status.
 
 ```cpp
@@ -167,6 +169,28 @@ int main()
         // Check written before relying on the output.
     }
 }
+```
+
+---
+
+### Two independent outputs and rejected values
+
+For devices exposing both DAC channels. CH1 uses PA4, CH2 uses PA5. Values are raw 12-bit codes: convert volts using the actual analog reference in the application. Out-of-range writes return Error and leave the previous code intact. DeInit of CH1 does not tear down CH2. This class does not implement trigger selection, DMA, waveform generation or inherited IRQ callbacks; those cannot be enabled by choosing a different example. On devices without DAC or CH2 choose only the capabilities present in the device.
+
+```cpp
+#include "dac.hpp"
+constinit DAC_Module first(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1);
+constinit DAC_Module second(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH2);
+void Setup() {
+    if (first.SetUp() != SysInitStatus::InitOK || second.SetUp() != SysInitStatus::InitOK)
+        System::DebugTrap("DAC");
+    if (first.SetValue(2048) != SysStatus::OK || second.SetValue(4095) != SysStatus::OK)
+        System::DebugTrap("DAC value");
+}
+bool CheckRejectedCode() {
+    return first.SetValue(4096) == SysStatus::Error;
+}
+void ReleaseFirst() { first.DeInit(); }
 ```
 
 ---
@@ -343,6 +367,8 @@ output.DeInit();
 
 ## 7. Примеры использования
 
+- [Два независимых выхода и отклонение неверного значения](#два-независимых-выхода-и-отклонение-неверного-значения)
+
 Полный пример. Проверьте наличие ЦАП и вывода в вашем МК/корпусе и каждый возвращаемый статус.
 
 ```cpp
@@ -358,6 +384,28 @@ int main()
         // Проверьте written, прежде чем полагаться на выход.
     }
 }
+```
+
+---
+
+### Два независимых выхода и отклонение неверного значения
+
+Для МК с двумя каналами DAC: CH1 — PA4, CH2 — PA5. Значения — 12-битные коды; перевод напряжения выполняет приложение с реальным опорным напряжением. Значение вне диапазона возвращает Error и не меняет предыдущий код. DeInit первого канала не освобождает второй. В этом классе нет настройки триггера, DMA, генератора waveform и наследуемых IRQ-callback: их нельзя включить другим примером. Если у МК нет DAC или второго канала, используйте только доступные возможности.
+
+```cpp
+#include "dac.hpp"
+constinit DAC_Module first(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH1);
+constinit DAC_Module second(DAC_Module::_1::instance, DAC_Module::CHANNEL::CH2);
+void Setup() {
+    if (first.SetUp() != SysInitStatus::InitOK || second.SetUp() != SysInitStatus::InitOK)
+        System::DebugTrap("DAC");
+    if (first.SetValue(2048) != SysStatus::OK || second.SetValue(4095) != SysStatus::OK)
+        System::DebugTrap("DAC value");
+}
+bool CheckRejectedCode() {
+    return first.SetValue(4096) == SysStatus::Error;
+}
+void ReleaseFirst() { first.DeInit(); }
 ```
 
 ---

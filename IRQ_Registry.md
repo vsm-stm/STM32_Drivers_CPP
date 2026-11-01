@@ -230,6 +230,8 @@ Cost: every interrupt adds a table walk and a virtual call per registered handle
 
 ## 11. Usage Examples
 
+- [Function registration with context and selective removal](#function-registration-with-context-and-selective-removal)
+
 A minimal custom handler:
 
 ```cpp
@@ -255,6 +257,36 @@ if (IRQ_Registry::Register(irq, &handler) == SysInitStatus::InitOK) {
 ```
 
 Registration does not configure peripheral interrupt sources or NVIC for you.
+
+---
+
+### Function registration with context and selective removal
+
+Use this for a peripheral managed directly by the application, not for a TIM/USART/ADC driver that registers itself. The example assumes TIM3's clock/base/source have been configured separately while stopped. The function acknowledges only enabled Update work. Register/Unregister do not enable/disable the peripheral source. Mask the vector while modifying the registry, preserve other handlers, and do not define another TIM3_IRQHandler when generated dispatch stubs are linked. Registering the same function on the same vector with a different ctx is still a duplicate. The IIRQHandler object alternative is shown above.
+
+```cpp
+#include "irq_registry.hpp"
+struct Context { volatile uint32_t updates = 0; } context;
+void Tick(void* pointer) {
+    if (!(TIM3->SR & TIM3->DIER & TIM_SR_UIF)) return;
+    TIM3->SR = ~TIM_SR_UIF;
+    auto& state = *static_cast<Context*>(pointer);
+    state.updates = state.updates + 1;
+}
+void Install() {
+    NVIC_DisableIRQ(TIM3_IRQn);
+    if (IRQ_Registry::Register(TIM3_IRQn, Tick, &context) != SysInitStatus::InitOK)
+        System::DebugTrap("IRQ registration");
+    NVIC_EnableIRQ(TIM3_IRQn);
+}
+void Remove() {
+    CLEAR_BIT(TIM3->DIER, TIM_DIER_UIE);
+    bool enabled = NVIC_GetEnableIRQ(TIM3_IRQn) != 0;
+    NVIC_DisableIRQ(TIM3_IRQn);
+    IRQ_Registry::Unregister(TIM3_IRQn, Tick);
+    if (enabled && IRQ_Registry::HasHandlers(TIM3_IRQn)) NVIC_EnableIRQ(TIM3_IRQn);
+}
+```
 
 ---
 
@@ -505,6 +537,8 @@ IRQ_TABLE_SIZE × IRQ_MAX_SHARED × 4 байта   (.bss, 32-битные ука
 
 ## 11. Примеры использования
 
+- [Регистрация функции с контекстом и выборочное удаление](#регистрация-функции-с-контекстом-и-выборочное-удаление)
+
 Минимальный собственный обработчик:
 
 ```cpp
@@ -530,6 +564,36 @@ if (IRQ_Registry::Register(irq, &handler) == SysInitStatus::InitOK) {
 ```
 
 Регистрация не настраивает за вас источники прерываний периферии и NVIC.
+
+---
+
+### Регистрация функции с контекстом и выборочное удаление
+
+Этот способ нужен для периферии, которой приложение управляет напрямую, а не для TIM/USART/ADC, регистрирующих себя. Предполагается, что clock/base/source TIM3 отдельно настроены при остановленном счётчике. Функция подтверждает только включённое Update-событие. Register/Unregister не управляют источником периферии. При изменении реестра маскируйте вектор, сохраняйте чужие обработчики и не определяйте второй TIM3_IRQHandler при подключённых generated dispatch stubs. Та же функция на том же векторе с другим ctx всё равно считается дубликатом. Объектный вариант IIRQHandler показан выше.
+
+```cpp
+#include "irq_registry.hpp"
+struct Context { volatile uint32_t updates = 0; } context;
+void Tick(void* pointer) {
+    if (!(TIM3->SR & TIM3->DIER & TIM_SR_UIF)) return;
+    TIM3->SR = ~TIM_SR_UIF;
+    auto& state = *static_cast<Context*>(pointer);
+    state.updates = state.updates + 1;
+}
+void Install() {
+    NVIC_DisableIRQ(TIM3_IRQn);
+    if (IRQ_Registry::Register(TIM3_IRQn, Tick, &context) != SysInitStatus::InitOK)
+        System::DebugTrap("IRQ registration");
+    NVIC_EnableIRQ(TIM3_IRQn);
+}
+void Remove() {
+    CLEAR_BIT(TIM3->DIER, TIM_DIER_UIE);
+    bool enabled = NVIC_GetEnableIRQ(TIM3_IRQn) != 0;
+    NVIC_DisableIRQ(TIM3_IRQn);
+    IRQ_Registry::Unregister(TIM3_IRQn, Tick);
+    if (enabled && IRQ_Registry::HasHandlers(TIM3_IRQn)) NVIC_EnableIRQ(TIM3_IRQn);
+}
+```
 
 ---
 

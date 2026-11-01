@@ -110,6 +110,23 @@ The old USART constructor taking `USART_TypeDef*` is kept with `[[deprecated]]`:
 
 References to the old DMA request names and the old typed G0 `DMAReq` variables still have to be updated to the new API.
 
+### From construction to a complete scenario
+
+The constructor examples fix pins/DMA/trigger ownership, but do not replace
+the complete setup/start/completion sequence. Use [Examples.md](Examples.md)
+to select a scenario and check its module's calling context and buffer lifetime.
+
+- [USART callbacks through inheritance](UART.md#adding-application-work-through-inheritance):
+  byte callbacks call the base; completion notifications do not.
+- [TIM compare without pins](TIM.md#several-channel-interrupts-without-gpio-pins):
+  bind only the timer instance, then reserve channels with SetCompareIRQ.
+- [ADC circular DMA](ADC.md#circular-dma-two-independent-cache-line-halves):
+  HT/TC boundaries and the deadline before a half is overwritten.
+- [SPI inherited callbacks and CS](SPI.md#inherited-callbacks-irqdma-completion-and-per-transfer-cs):
+  call Process in main for physical completion.
+- [Software utilities](Utilities.md): no peripheral construction is required
+  for containers, PID, CRC32, filters or CMSIS-DSP functions.
+
 ## Русский
 
 **Главное правило:** объявляйте каждый объект периферии глобально (или как `static` внутри функции) с `constinit`, а к аппаратуре обращайтесь позже — в `SetUp()`.
@@ -503,3 +520,20 @@ if (tx.IsValid() && tx.periph_base && tx.periph_base != instance.periph)
 | EXTI | Внешний вывод GPIO, фронт |
 | DAC | Номер/доступность канала |
 | Modbus | Отсутствующий TX/RX DMA; остальные привязки проверяет USART |
+
+### От конструктора к полному сценарию
+
+Примеры конструкторов фиксируют владение пинами/DMA/триггером, но не заменяют
+полный порядок setup/start/completion. В [Examples.md](Examples.md#русский)
+выберите сценарий и проверьте контекст вызова и время жизни буфера в его модуле.
+
+- [Наследование USART](UART.md#дополнительные-действия-в-irq-через-наследование):
+  байтовые callbacks вызывают базу, уведомления о завершении — нет.
+- [TIM compare без пинов](TIM.md#несколько-прерываний-по-каналам-без-gpio-пинов):
+  в конструкторе нужен только instance, каналы резервируются SetCompareIRQ.
+- [Кольцевой DMA ADC](ADC.md#кольцевой-dma-две-половины-по-отдельным-cache-lines):
+  границы HT/TC и срок до перезаписи половины.
+- [SPI: callbacks и CS](SPI.md#наследование-завершение-irqdma-и-cs-на-одну-транзакцию):
+  физическое завершение обрабатывается Process в main.
+- [Программные утилиты](Utilities.md#русский): контейнерам, PID, CRC32,
+  фильтрам и CMSIS-DSP не требуется конструктор периферии.

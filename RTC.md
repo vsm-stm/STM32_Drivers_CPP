@@ -276,6 +276,10 @@ clock.EnableCOE(false);
 
 ## 10. Usage Examples
 
+Additional complete scenarios below are independent configurations. Call setup functions from main after System/RCC initialization, unless the example explicitly configures RCC. Do not run examples that own the same peripheral simultaneously.
+
+- [Inherited WakeUp, alarm and timestamp notifications](#inherited-wakeup-alarm-and-timestamp-notifications)
+
 The blocks below continue with the same `Clock` object.
 
 ```cpp
@@ -341,6 +345,49 @@ clock.EnableTimestamp(DISABLE);
 ```
 
 Check every returned status.
+
+---
+
+### Inherited WakeUp, alarm and timestamp notifications
+
+Call System::Init first; keep the RTC object alive. This example uses nominal LSI with dividers 127/249, a two-second wakeup and a daily alarm. Precision depends on the actual oscillator. Alarm B uses EnableAlarm_B with the same AlarmConfig. OnTimestamp receives an already-copied snapshot; copy any data needed later, because the callback reference is temporary. EnableTimestamp configures RTC capture, not the package pin; configure the actual TS input separately. Use IRQ_en(TS, DISABLE) plus GetTimestamp for polling instead. Calibration and COE output do not configure their output pins. SetTime/SetDate below illustrate explicitly setting the calendar; omit them on subsequent boots when retained time must survive.
+
+```cpp
+#include "rtc.hpp"
+class Calendar : public RTC_cl {
+public:
+    volatile uint32_t wakes = 0, alarm_a = 0, alarm_b = 0, stamps = 0;
+protected:
+    void OnWakeup() override { wakes = wakes + 1; }
+    void OnAlarmA() override { alarm_a = alarm_a + 1; }
+    void OnAlarmB() override { alarm_b = alarm_b + 1; }
+    void OnTimestamp(const Timestamp& capture) override {
+        (void)capture; // Copy required fields before returning.
+        stamps = stamps + 1;
+    }
+};
+Calendar clock;
+void Setup() {
+    if (clock.SetUp(RTC_cl::CLK_Source::LSI, 127, 249) != SysInitStatus::InitOK)
+        System::DebugTrap("RTC");
+    if (clock.SetDate({1, 11, 26}, RTC_cl::WeekDay::Sunday) != SysStatus::OK ||
+        clock.SetTime({12, 0, 0}) != SysStatus::OK ||
+        clock.EnableWakeUpTimer(1, 0b100) != SysStatus::OK)
+        System::DebugTrap("RTC calendar");
+    RTC_cl::AlarmConfig alarm{};
+    alarm.hour = {14, RTC_cl::Alarm_Masks::Care};
+    alarm.min = {25, RTC_cl::Alarm_Masks::Care};
+    alarm.sec = {0, RTC_cl::Alarm_Masks::Care};
+    if (clock.EnableAlarm_A(ENABLE, alarm) != SysStatus::OK)
+        System::DebugTrap("RTC alarm");
+}
+void ReadCoherent() {
+    RTC_cl::RtcTime time;
+    RTC_cl::RtcDate date;
+    clock.GetDateTime(time, date);
+    (void)time; (void)date;
+}
+```
 
 ---
 
@@ -667,6 +714,10 @@ clock.EnableCOE(false);
 
 ## 10. Примеры использования
 
+Дополнительные полные сценарии ниже — независимые конфигурации. Функции настройки вызываются из main после System/RCC, если пример явно не настраивает RCC сам. Не запускайте одновременно примеры, занимающие одну периферию.
+
+- [WakeUp, будильники и timestamp через наследование](#wakeup-будильники-и-timestamp-через-наследование)
+
 Блоки ниже продолжают работу с одним и тем же объектом `Clock`.
 
 ```cpp
@@ -732,6 +783,49 @@ clock.EnableTimestamp(DISABLE);
 ```
 
 Проверяйте каждый возвращаемый статус.
+
+---
+
+### WakeUp, будильники и timestamp через наследование
+
+Сначала вызывается System::Init; объект живёт всё время работы. Здесь используется номинальная LSI с делителями 127/249, WakeUp через две секунды и ежедневный будильник. Точность зависит от реального генератора. Для второго будильника применяется EnableAlarm_B с тем же AlarmConfig. OnTimestamp получает готовый снимок; нужные поля копируются, ссылка callback временная. EnableTimestamp настраивает RTC, но не физический TS-пин: его подготовьте отдельно. Для polling используйте IRQ_en(TS, DISABLE) и GetTimestamp. Калибровка и COE также не настраивают выходной пин. SetTime/SetDate ниже показывают явную установку календаря; при повторном старте уберите эти вызовы, если нужно сохранить время backup-домена.
+
+```cpp
+#include "rtc.hpp"
+class Calendar : public RTC_cl {
+public:
+    volatile uint32_t wakes = 0, alarm_a = 0, alarm_b = 0, stamps = 0;
+protected:
+    void OnWakeup() override { wakes = wakes + 1; }
+    void OnAlarmA() override { alarm_a = alarm_a + 1; }
+    void OnAlarmB() override { alarm_b = alarm_b + 1; }
+    void OnTimestamp(const Timestamp& capture) override {
+        (void)capture; // Copy required fields before returning.
+        stamps = stamps + 1;
+    }
+};
+Calendar clock;
+void Setup() {
+    if (clock.SetUp(RTC_cl::CLK_Source::LSI, 127, 249) != SysInitStatus::InitOK)
+        System::DebugTrap("RTC");
+    if (clock.SetDate({1, 11, 26}, RTC_cl::WeekDay::Sunday) != SysStatus::OK ||
+        clock.SetTime({12, 0, 0}) != SysStatus::OK ||
+        clock.EnableWakeUpTimer(1, 0b100) != SysStatus::OK)
+        System::DebugTrap("RTC calendar");
+    RTC_cl::AlarmConfig alarm{};
+    alarm.hour = {14, RTC_cl::Alarm_Masks::Care};
+    alarm.min = {25, RTC_cl::Alarm_Masks::Care};
+    alarm.sec = {0, RTC_cl::Alarm_Masks::Care};
+    if (clock.EnableAlarm_A(ENABLE, alarm) != SysStatus::OK)
+        System::DebugTrap("RTC alarm");
+}
+void ReadCoherent() {
+    RTC_cl::RtcTime time;
+    RTC_cl::RtcDate date;
+    clock.GetDateTime(time, date);
+    (void)time; (void)date;
+}
+```
 
 ---
 

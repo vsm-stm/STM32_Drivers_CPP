@@ -486,6 +486,12 @@ if (pulses.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
 
 ## 12. Usage Examples
 
+Additional complete scenarios below are independent configurations. Call setup functions from main after System/RCC initialization, unless the example explicitly configures RCC. Do not run examples that own the same peripheral simultaneously.
+
+- [Several channel interrupts without GPIO pins](#several-channel-interrupts-without-gpio-pins)
+- [Capture callback and polling the same hardware register](#capture-callback-and-polling-the-same-hardware-register)
+- [One period and hardware-counted pulse burst](#one-period-and-hardware-counted-pulse-burst)
+
 A minimal PWM output. Check device/package availability and every returned status.
 
 ```cpp
@@ -501,6 +507,88 @@ if (pwm.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
 ```
 
 Other examples are in their sections: periodic IRQ (4), PWM (5), capture/compare (6), trigger (7), DMA (8), WS2812B (9), encoder, quadrature, PWM input, pulse series (11).
+
+---
+
+### Several channel interrupts without GPIO pins
+
+No channel binding, GPIO setup or PWM is needed. TIM3 must expose CH1/CH2. The Update callback runs at the period boundary; CC callbacks run at CNT=250 and CNT=750 each period. SetUp's first argument is the requested period frequency (1 kHz), not the counter tick frequency. All channels share PSC/ARR; verify GetCounterClock()/GetPeriod(). Callbacks acknowledge no flags themselves and do not register IRQs. They should only publish bounded work for main. A nullptr callback reserves a hardware compare channel without enabling its IRQ, useful for ADC CC triggers. SetCompareIRQ is a setup-once operation; SetCCR is for PWM, not for rescheduling a compare channel.
+
+```cpp
+#include "tim.hpp"
+volatile uint32_t periods = 0, channel1_events = 0, channel2_events = 0;
+void Update() { periods = periods + 1; }
+void Channel1() { channel1_events = channel1_events + 1; }
+void Channel2() { channel2_events = channel2_events + 1; }
+constinit TIM events(TIM::_3::instance); // No channel pins.
+void Setup() {
+    if (events.SetUp(1000, Update, 1000) != SysInitStatus::InitOK ||
+        events.SetCompareIRQ(TIM::Channel::CH1, 250, Channel1) != SysInitStatus::InitOK ||
+        events.SetCompareIRQ(TIM::Channel::CH2, 750, Channel2) != SysInitStatus::InitOK)
+        System::DebugTrap("TIM compare");
+    events.Start();
+}
+void StopFromMain() {
+    events.Stop();
+    events.Reset(); // CNT=0; PSC/ARR and callbacks remain configured.
+    // Serialize IRQ_en with this timer's IRQ before changing its source mask.
+    events.IRQ_en(TIM::IRQ::CC2, DISABLE);
+}
+// Start() resumes; DeInit() releases the timer and all its channel roles.
+```
+
+### Capture callback and polling the same hardware register
+
+The callback reads the captured edge timestamp, not the current CNT. This example measures a rising-edge interval modulo one period. It cannot detect several missed wraps or overcapture; the application must bound the interval and interrupt latency. With a null callback, the same GetCapture() query reads CCR without an interrupt. PWM input uses SetUpPulseMeasure instead (section 11), returning period and high width on a channel pair.
+
+```cpp
+#include "tim.hpp"
+constinit TIM capture(TIM::_3::instance, {TIM::_3::CH1::PA6});
+volatile uint32_t interval_ticks = 0;
+uint32_t previous = 0;
+bool have_previous = false;
+void Edge() {
+    uint32_t now = capture.GetCapture(TIM::Channel::CH1);
+    if (have_previous)
+        interval_ticks = now >= previous ? now - previous : capture.GetPeriod() - previous + now;
+    previous = now;
+    have_previous = true;
+}
+void Setup() {
+    if (capture.SetUp(100, nullptr, 10000) != SysInitStatus::InitOK ||
+        capture.SetUpCapture(TIM::Channel::CH1, Edge) != SysInitStatus::InitOK)
+        System::DebugTrap("TIM capture");
+    capture.Start();
+}
+```
+
+### One period and hardware-counted pulse burst
+
+OnePulse stops an ordinary timer after one Update; it is not a software pulse counter. PulseBurst uses an RCR-capable timer, reserves it as a whole and must be configured instead of SetUp. RunPulses starts/restarts the burst itself. The hardware ends the burst even without a callback. See section 11 for Encoder, finite Quadrature, ITR Counter with StopAfter/StopAt, Reset/Gated/Trigger/ExternalClock slave modes and PWM-input measurement; those are distinct setups, not functions to call on one already-owned timer.
+
+```cpp
+#include "tim.hpp"
+constinit TIM one(TIM::_3::instance);
+constinit TIM burst(TIM::_1::instance, {TIM::_1::CH1::PA8});
+volatile bool period_done = false, burst_done = false;
+void OneDone() { period_done = true; }
+void BurstDone() { burst_done = true; }
+void Setup() {
+    if (one.SetUp(100, OneDone, 1000) != SysInitStatus::InitOK ||
+        one.SetUpOnePulse() != SysInitStatus::InitOK)
+        System::DebugTrap("TIM one pulse");
+    if (burst.SetUpPulseBurst(TIM::Channel::CH1, 1000, 1000, BurstDone)
+            != SysInitStatus::InitOK)
+        System::DebugTrap("TIM burst");
+}
+void Run() {
+    period_done = false;
+    one.Reset();
+    one.Start();
+    burst_done = false;
+    if (burst.RunPulses(10) != SysStatus::OK) System::DebugTrap("TIM run");
+}
+```
 
 ---
 
@@ -1009,6 +1097,12 @@ if (pulses.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
 
 ## 12. Примеры использования
 
+Дополнительные полные сценарии ниже — независимые конфигурации. Функции настройки вызываются из main после System/RCC, если пример явно не настраивает RCC сам. Не запускайте одновременно примеры, занимающие одну периферию.
+
+- [Несколько прерываний по каналам без GPIO-пинов](#несколько-прерываний-по-каналам-без-gpio-пинов)
+- [Capture через callback и чтение аппаратного регистра](#capture-через-callback-и-чтение-аппаратного-регистра)
+- [Один период и аппаратная серия импульсов](#один-период-и-аппаратная-серия-импульсов)
+
 Минимальный выход PWM. Проверьте наличие блока/выводов в корпусе и каждый возвращаемый статус.
 
 ```cpp
@@ -1024,6 +1118,88 @@ if (pwm.SetUp(1000, nullptr, 1000) == SysInitStatus::InitOK
 ```
 
 Остальные примеры — в разделах режимов: периодическое прерывание (4), PWM (5), захват/сравнение (6), триггер (7), DMA (8), WS2812B (9), энкодер, квадратура, измерение импульса, серии импульсов (11).
+
+---
+
+### Несколько прерываний по каналам без GPIO-пинов
+
+Привязки каналов, настройка GPIO и PWM не нужны. TIM3 должен иметь CH1/CH2. Update вызывается на границе периода, callbacks каналов — при CNT=250 и CNT=750 каждого периода. Первый аргумент SetUp — частота периода (1 кГц), а не частота отсчётов счётчика. Все каналы используют общие PSC/ARR; проверяйте GetCounterClock()/GetPeriod(). Callback сам не сбрасывает флаги и не регистрирует IRQ; в нём выполняется только короткая работа для main. nullptr резервирует аппаратное сравнение без IRQ, например для CC-триггера ADC. SetCompareIRQ настраивает канал один раз; SetCCR предназначен для PWM, а не для переназначения compare.
+
+```cpp
+#include "tim.hpp"
+volatile uint32_t periods = 0, channel1_events = 0, channel2_events = 0;
+void Update() { periods = periods + 1; }
+void Channel1() { channel1_events = channel1_events + 1; }
+void Channel2() { channel2_events = channel2_events + 1; }
+constinit TIM events(TIM::_3::instance); // No channel pins.
+void Setup() {
+    if (events.SetUp(1000, Update, 1000) != SysInitStatus::InitOK ||
+        events.SetCompareIRQ(TIM::Channel::CH1, 250, Channel1) != SysInitStatus::InitOK ||
+        events.SetCompareIRQ(TIM::Channel::CH2, 750, Channel2) != SysInitStatus::InitOK)
+        System::DebugTrap("TIM compare");
+    events.Start();
+}
+void StopFromMain() {
+    events.Stop();
+    events.Reset(); // CNT=0; PSC/ARR and callbacks remain configured.
+    // Serialize IRQ_en with this timer's IRQ before changing its source mask.
+    events.IRQ_en(TIM::IRQ::CC2, DISABLE);
+}
+// Start() resumes; DeInit() releases the timer and all its channel roles.
+```
+
+### Capture через callback и чтение аппаратного регистра
+
+Callback читает время захваченного фронта, а не текущий CNT. Здесь измеряется интервал между нарастающими фронтами по модулю периода. Несколько пропущенных оборотов и overcapture такой расчёт не обнаружит: приложение ограничивает интервал и задержку IRQ. С nullptr тот же GetCapture() читает CCR без прерывания. Для периода и длительности HIGH в паре каналов используется SetUpPulseMeasure из раздела 11.
+
+```cpp
+#include "tim.hpp"
+constinit TIM capture(TIM::_3::instance, {TIM::_3::CH1::PA6});
+volatile uint32_t interval_ticks = 0;
+uint32_t previous = 0;
+bool have_previous = false;
+void Edge() {
+    uint32_t now = capture.GetCapture(TIM::Channel::CH1);
+    if (have_previous)
+        interval_ticks = now >= previous ? now - previous : capture.GetPeriod() - previous + now;
+    previous = now;
+    have_previous = true;
+}
+void Setup() {
+    if (capture.SetUp(100, nullptr, 10000) != SysInitStatus::InitOK ||
+        capture.SetUpCapture(TIM::Channel::CH1, Edge) != SysInitStatus::InitOK)
+        System::DebugTrap("TIM capture");
+    capture.Start();
+}
+```
+
+### Один период и аппаратная серия импульсов
+
+OnePulse останавливает обычный таймер после одного Update; это не программный счётчик импульсов. PulseBurst требует таймер с RCR, занимает его целиком и вызывается вместо SetUp. RunPulses сам запускает и повторно запускает серию. Аппаратура завершает серию и без callback. В разделе 11 показаны Encoder, конечная Quadrature, ITR Counter со StopAfter/StopAt, slave-режимы Reset/Gated/Trigger/ExternalClock и PWM-input: это отдельные конфигурации, их нельзя включать все на уже занятом таймере.
+
+```cpp
+#include "tim.hpp"
+constinit TIM one(TIM::_3::instance);
+constinit TIM burst(TIM::_1::instance, {TIM::_1::CH1::PA8});
+volatile bool period_done = false, burst_done = false;
+void OneDone() { period_done = true; }
+void BurstDone() { burst_done = true; }
+void Setup() {
+    if (one.SetUp(100, OneDone, 1000) != SysInitStatus::InitOK ||
+        one.SetUpOnePulse() != SysInitStatus::InitOK)
+        System::DebugTrap("TIM one pulse");
+    if (burst.SetUpPulseBurst(TIM::Channel::CH1, 1000, 1000, BurstDone)
+            != SysInitStatus::InitOK)
+        System::DebugTrap("TIM burst");
+}
+void Run() {
+    period_done = false;
+    one.Reset();
+    one.Start();
+    burst_done = false;
+    if (burst.RunPulses(10) != SysStatus::OK) System::DebugTrap("TIM run");
+}
+```
 
 ---
 

@@ -128,8 +128,14 @@ Families other than F4/F7/G0 (including G4) are not supported: set `"drivers": n
 
 This file is an overview with short examples. The full description of each module — registers, timing, edge cases — is in its own file:
 
+Start with [Examples.md](Examples.md) for the complete scenario/API index and
+callback rules. In particular: [USART inheritance](UART.md#adding-application-work-through-inheritance)
+and [TIM channel IRQs without pins](TIM.md#several-channel-interrupts-without-gpio-pins).
+
 | Document | Contents |
 | --- | --- |
+| [Examples.md](Examples.md) | public API map, complete scenarios, callback context and buffer ownership |
+| [Utilities.md](Utilities.md) | containers, PID, streaming CRC32, CMSIS-DSP groups and WS2812B encoding |
 | [Initialization.md](Initialization.md) | `constinit` declarations for every module, compile-time diagnostics |
 | [System.md](System.md) | `SysStatus`/`SysInitStatus`, clock variables, `GetTick()`/`Delay_us()`, cache/MPU, `DebugTrap()` |
 | [RCC.md](RCC.md) | clock tree: HSI/HSE/PLL, bus dividers, Flash latency, compile-time validation |
@@ -1084,8 +1090,14 @@ C++20-библиотека поверх CMSIS для семейств **STM32G0*
 
 Этот файл — обзор с короткими примерами. Полное описание каждого модуля — регистры, тайминги, угловые случаи — в отдельных файлах:
 
+Начните с [Examples.md](Examples.md#русский): там полный указатель сценариев/API
+и правила callbacks. Отдельно: [наследование USART](UART.md#дополнительные-действия-в-irq-через-наследование)
+и [прерывания каналов TIM без пинов](TIM.md#несколько-прерываний-по-каналам-без-gpio-пинов).
+
 | Документ | Содержание |
 | --- | --- |
+| [Examples.md](Examples.md#русский) | карта публичного API, полные сценарии, контексты callback и владение буферами |
+| [Utilities.md](Utilities.md#русский) | контейнеры, PID, потоковый CRC32, группы CMSIS-DSP и кодирование WS2812B |
 | [Initialization.md](Initialization.md) | объявления `constinit` для всех модулей, диагностика при компиляции |
 | [System.md](System.md) | `SysStatus`/`SysInitStatus`, тактовые переменные, `GetTick()`/`Delay_us()`, кеш/MPU, `DebugTrap()` |
 | [RCC.md](RCC.md) | дерево тактирования: HSI/HSE/PLL, делители шин, задержка Flash, проверка при компиляции |

@@ -252,6 +252,8 @@ Before touching hardware, I2C compares that nominal APB1 with `System::APB1BusCl
 
 ## 10. Usage Examples
 
+- [Direct HSI, automatic PLL and passing clocks to consumers](#direct-hsi-automatic-pll-and-passing-clocks-to-consumers)
+
 A complete minimal example (HSI, all dividers /1):
 
 ```cpp
@@ -267,6 +269,23 @@ int main()
         System::DebugTrap("RCC init");
     // An I2C bus configured later uses the same config: bus.SetUp<clocks>().
 }
+```
+
+---
+
+### Direct HSI, automatic PLL and passing clocks to consumers
+
+Choose exactly one startup function per reset, after System::Init and before peripheral setup. Both Config objects are constexpr; the PLL search and validation are not run-time calculations. Direct HSI ignores PLL coefficients. For HSE, pass the board's actual crystal frequency to CalcPLL, as in section 3. A manual Config is shown in that section for targets where an exact automatic solution is unavailable. GetAPB1Clock derives a nominal value without applying hardware; it is not a measurement and does not replace checking Init's result.
+
+```cpp
+#include "rcc.hpp"
+constexpr ClockSystem::Config hsi{};
+constexpr auto pll = ClockSystem::CalcPLL(32 * MHz, ClockSystem::PLL_ClockSource::HSI);
+SysInitStatus StartHSI() { return ClockSystem::Init<hsi>(); }
+SysInitStatus StartPLL() { return ClockSystem::Init<pll>(); }
+constexpr uint32_t apb1 = ClockSystem::GetAPB1Clock<pll>();
+static_assert(apb1 > 0);
+uint32_t ConfiguredHSE() { return ClockSystem::GetHSEClock(); }
 ```
 
 ---
@@ -516,6 +535,8 @@ auto status = bus.SetUp<clocks, I2C::SPEED::FAST>();
 
 ## 8. Примеры использования
 
+- [Прямой HSI, автоматический PLL и передача конфигурации потребителям](#прямой-hsi-автоматический-pll-и-передача-конфигурации-потребителям)
+
 Полный минимальный пример (HSI, все делители /1):
 
 ```cpp
@@ -531,6 +552,23 @@ int main()
         System::DebugTrap("RCC init");
     // I2C, настраиваемый позже, использует ту же конфигурацию: bus.SetUp<clocks>().
 }
+```
+
+---
+
+### Прямой HSI, автоматический PLL и передача конфигурации потребителям
+
+За один reset выбирается одна функция настройки, после System::Init и до периферии. Оба Config — constexpr; поиск PLL и проверки не выполняются во время работы. Прямой HSI игнорирует коэффициенты PLL. Для HSE передайте фактическую частоту кварца платы в CalcPLL, как в разделе 3. Там же показан ручной Config для целей, где точного автоматического решения нет. GetAPB1Clock вычисляет номинальную частоту без настройки аппаратуры: это не измерение и не замена проверке результата Init.
+
+```cpp
+#include "rcc.hpp"
+constexpr ClockSystem::Config hsi{};
+constexpr auto pll = ClockSystem::CalcPLL(32 * MHz, ClockSystem::PLL_ClockSource::HSI);
+SysInitStatus StartHSI() { return ClockSystem::Init<hsi>(); }
+SysInitStatus StartPLL() { return ClockSystem::Init<pll>(); }
+constexpr uint32_t apb1 = ClockSystem::GetAPB1Clock<pll>();
+static_assert(apb1 > 0);
+uint32_t ConfiguredHSE() { return ClockSystem::GetHSEClock(); }
 ```
 
 ---

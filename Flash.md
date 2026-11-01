@@ -235,6 +235,8 @@ Payload integrity itself is not checked (no CRC).
 
 ## 7. Usage Examples
 
+- [Explicit journal load/save and raw programming](#explicit-journal-loadsave-and-raw-programming)
+
 Use a sector **reserved for settings**, never one that contains code.
 
 **A constinit byte buffer** (recommended — no start-up code):
@@ -274,6 +276,29 @@ if (saved != SysStatus::OK) {
     const uint32_t flags = FLASH->SR;
     // Inspect saved and flags before issuing another Flash operation.
     (void)flags;
+}
+```
+
+---
+
+### Explicit journal load/save and raw programming
+
+The journal owns an entire erase unit chosen in the application/linker layout; index 3 below is an example, not an automatically free sector. SetUp scans records, read_data loads only DATA_OK, and Save writes only on an explicit request. Raw programming is a separate alternative for a caller-supplied erased and reserved address. On G0 a 4-byte word still consumes an 8-byte physical programming unit. Timeout does not mean the hardware operation was cancelled. Geometry queries, erase_sector and mass_erase are documented in sections 3–4; never mass-erase a bank containing the running image.
+
+```cpp
+#include "flash.hpp"
+static uint8_t payload[16] = {1}; // Defaults remain if no committed record exists.
+constinit flash_data settings(3, payload, sizeof payload);
+bool Load() {
+    if (settings.SetUp() != SysInitStatus::InitOK) return false;
+    return settings.read_data() == flash_data::Data_Status::DATA_OK;
+}
+SysStatus Save() { return settings.write_data(); }
+SysStatus ProgramReservedWord(uint32_t erased_address, uint32_t value) {
+    if (flash_base::init() != SysInitStatus::InitOK) return SysStatus::Error;
+    SysStatus access = flash_base::enable_access();
+    if (access != SysStatus::OK) return access;
+    return flash_base::write(erased_address, &value);
 }
 ```
 
@@ -529,6 +554,8 @@ header_size = 1 (F4/F7) или 16 (G0)
 
 ## 7. Примеры использования
 
+- [Явная загрузка/запись журнала и низкоуровневое программирование](#явная-загрузказапись-журнала-и-низкоуровневое-программирование)
+
 Используйте сектор, **зарезервированный под настройки**, и никогда — сектор с кодом.
 
 **Байтовый буфер с `constinit`** (рекомендуется — без кода при старте):
@@ -568,6 +595,29 @@ if (saved != SysStatus::OK) {
     const uint32_t flags = FLASH->SR;
     // Разберите saved и flags до следующей операции с Flash.
     (void)flags;
+}
+```
+
+---
+
+### Явная загрузка/запись журнала и низкоуровневое программирование
+
+Журналу выделяется целая erase unit в раскладке приложения/линкера; индекс 3 ниже — пример, а не автоматически свободный сектор. SetUp сканирует записи, read_data загружает только DATA_OK, Save записывает по явному запросу. Raw-программирование — отдельная альтернатива с переданным приложением стёртым и зарезервированным адресом. На G0 слово в 4 байта всё равно занимает физическую единицу записи в 8 байт. Timeout не означает отмену аппаратной операции. Геометрия, erase_sector и mass_erase описаны в разделах 3–4; нельзя стирать банк с выполняемым образом.
+
+```cpp
+#include "flash.hpp"
+static uint8_t payload[16] = {1}; // Defaults remain if no committed record exists.
+constinit flash_data settings(3, payload, sizeof payload);
+bool Load() {
+    if (settings.SetUp() != SysInitStatus::InitOK) return false;
+    return settings.read_data() == flash_data::Data_Status::DATA_OK;
+}
+SysStatus Save() { return settings.write_data(); }
+SysStatus ProgramReservedWord(uint32_t erased_address, uint32_t value) {
+    if (flash_base::init() != SysInitStatus::InitOK) return SysStatus::Error;
+    SysStatus access = flash_base::enable_access();
+    if (access != SysStatus::OK) return access;
+    return flash_base::write(erased_address, &value);
 }
 ```
 

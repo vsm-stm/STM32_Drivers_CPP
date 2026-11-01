@@ -212,6 +212,8 @@ So `GetLevelAll()`/`SetLevelAll()`/`ToggleAll()` are simply `N` calls of `GetLev
 
 ## 8. Usage Examples
 
+- [Input buses, initial HIGH and read-only pin queries](#input-buses-initial-high-and-read-only-pin-queries)
+
 ### An Ordinary Output (LED)
 
 ```cpp
@@ -268,6 +270,28 @@ struct MySpiPins {
 // constinit SPI spi(SPI::_1::instance, SPI::Direction::TXRX, MySpiPins::SCK::PA5, ...);
 // The SPI constructor compares .periph_base with SPI1; with constinit a mismatch
 // is a compile error that names the reason.
+```
+
+---
+
+### Input buses, initial HIGH and read-only pin queries
+
+PinArray bit positions follow array order, even across GPIO ports. INPUT_PullUp below reads two independent inputs. The output starts HIGH before enabling its mode, avoiding an initial LOW pulse. PORT/GetNumber/IsValid query the binding; operator bool reads a level and is not a binding-validity check. Group operations are separate per-pin MMIO accesses, not simultaneous multi-port transactions. PinArray::operator[] permits per-pin level/configuration changes; the hardware binding itself cannot be reassigned.
+
+```cpp
+#include "gpio.hpp"
+constexpr PIN input_pins[] = {PIN(GPIOA_BASE, 0), PIN(GPIOB_BASE, 1)};
+PinArray<2> inputs(input_pins);
+constinit PIN enable(GPIOC_BASE, 13);
+void Setup() {
+    if (inputs.SetUpAll(PIN::TYPE::INPUT_PullUp) != SysInitStatus::InitOK ||
+        enable.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low,
+                     PIN::LVL::HIGH) != SysInitStatus::InitOK)
+        System::DebugTrap("GPIO");
+}
+uint32_t ReadInputs() { return inputs.GetLevelAll(); }
+void SetEnabled(bool on) { enable = on; }
+bool IsHigh() { return static_cast<bool>(enable); }
 ```
 
 ---
@@ -498,6 +522,8 @@ uint32_t GetLevelAll() const {
 
 ## 8. Примеры использования
 
+- [Группа входов, начальный HIGH и запросы о пине](#группа-входов-начальный-high-и-запросы-о-пине)
+
 ### Обычный выход (LED)
 
 ```cpp
@@ -554,6 +580,28 @@ struct MySpiPins {
 // constinit SPI spi(SPI::_1::instance, SPI::Direction::TXRX, MySpiPins::SCK::PA5, ...);
 // Конструктор SPI сравнит .periph_base с SPI1; с constinit несовпадение —
 // ошибка компиляции с указанием причины.
+```
+
+---
+
+### Группа входов, начальный HIGH и запросы о пине
+
+Номера битов PinArray следуют порядку массива, даже на разных портах. INPUT_PullUp ниже читает два независимых входа. Выход сразу настраивается в HIGH до включения режима, без начального LOW-импульса. PORT/GetNumber/IsValid читают привязку; operator bool читает уровень и не проверяет наличие пина. Групповые операции — отдельные обращения к пинам, не одновременная запись нескольких портов. operator[] у PinArray допускает изменение уровня и настройки отдельного пина; сама аппаратная привязка не переназначается.
+
+```cpp
+#include "gpio.hpp"
+constexpr PIN input_pins[] = {PIN(GPIOA_BASE, 0), PIN(GPIOB_BASE, 1)};
+PinArray<2> inputs(input_pins);
+constinit PIN enable(GPIOC_BASE, 13);
+void Setup() {
+    if (inputs.SetUpAll(PIN::TYPE::INPUT_PullUp) != SysInitStatus::InitOK ||
+        enable.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low,
+                     PIN::LVL::HIGH) != SysInitStatus::InitOK)
+        System::DebugTrap("GPIO");
+}
+uint32_t ReadInputs() { return inputs.GetLevelAll(); }
+void SetEnabled(bool on) { enable = on; }
+bool IsHigh() { return static_cast<bool>(enable); }
 ```
 
 ---

@@ -320,6 +320,11 @@ No `Register`/`Unregister`, `SetUp()` or `DeInit()` from callbacks.
 
 ## 9. Usage Examples
 
+Additional complete scenarios below are independent configurations. Call setup functions from main after System/RCC initialization, unless the example explicitly configures RCC. Do not run examples that own the same peripheral simultaneously.
+
+- [Adding application work through inheritance](#adding-application-work-through-inheritance)
+- [Consuming a packet, changing baud and polling](#consuming-a-packet-changing-baud-and-polling)
+
 **Minimal blocking/IRQ port:**
 
 ```cpp
@@ -358,6 +363,93 @@ On F4/F7 pass `USART::_1::DMA::TX_DMA2_Stream7` and `USART::_1::DMA::RX_DMA2_Str
 **Migration note:** code that relied on `GetDataReceivedCount()` clearing the flag must now call `ClearDataReceivedFlag()` explicitly. Modbus uses the same request descriptions; its framing rules are in [Modbus.md](Modbus.md).
 
 Check every returned status.
+
+---
+
+### Adding application work through inheritance
+
+Override callbacks, not HandleIRQ(): the dispatch method is final. OnRxByte/OnTxEmpty need their base implementation to retain standard byte processing; OnIdle/OnTC/OnDma*Complete/OnError are notifications and need no base call. Byte callbacks do not run once per DMA byte. Call Setup from main after System/RCC, BeginReceive for a packet, and StartTransmit only when the previous physical transmission has ended. TC is armed after a successful start so an old idle TC cannot be mistaken for the new transfer. Process the received buffer in main before rearming it; inspect GetRxStatus() on errors. The callback counters have one IRQ writer; serialize any main-side resets.
+
+```cpp
+#include "uart.hpp"
+class AppUsart : public USART {
+public:
+    using USART::USART;
+    volatile uint32_t byte_count = 0, tx_irq_count = 0;
+    volatile uint32_t idle_count = 0, dma_rx_count = 0, dma_tx_count = 0;
+    volatile uint32_t errors = 0;
+    volatile bool wire_done = false;
+protected:
+    void OnRxByte(uint8_t byte) override {
+        USART::OnRxByte(byte);
+        byte_count = byte_count + 1;
+    }
+    void OnTxEmpty() override {
+        USART::OnTxEmpty();
+        tx_irq_count = tx_irq_count + 1;
+    }
+    void OnIdle() override { idle_count = idle_count + 1; }
+    void OnDmaRxComplete() override { dma_rx_count = dma_rx_count + 1; }
+    void OnDmaTxComplete() override { dma_tx_count = dma_tx_count + 1; }
+    void OnTC() override {
+        IRQ_en(IRQ::TC, DISABLE);
+        wire_done = true;
+    }
+    void OnError(uint32_t mask) override { errors = mask; }
+};
+using U = USART::_1;
+#if defined(STM32G0)
+constinit AppUsart port(U::instance, 115200, U::TX::PB6, U::RX::PB7,
+                       DMA1_Channel4_BASE, DMA1_Channel5_BASE);
+#else
+constinit AppUsart port(U::instance, 115200, U::TX::PB6, U::RX::PB7,
+                       U::DMA::TX_DMA2_Stream7, U::DMA::RX_DMA2_Stream5);
+#endif
+alignas(32) static uint8_t rx[64], tx[32] = {'O', 'K', '\r', '\n'};
+void Setup() {
+    if (port.SetUp() != SysInitStatus::InitOK) System::DebugTrap("USART");
+}
+SysStatus BeginReceive(bool dma) {
+    return dma ? port.Receive_DMA(rx, sizeof rx) : port.Receive_IRQ(rx, sizeof rx);
+}
+SysStatus StartTransmit(bool dma) {
+    port.wire_done = false;
+    SysStatus result = dma ? port.Send_DMA(tx, 4) : port.Send_IRQ(tx, 4);
+    if (result == SysStatus::OK) port.IRQ_en(USART::IRQ::TC, ENABLE);
+    return result;
+}
+```
+
+### Consuming a packet, changing baud and polling
+
+This independent example uses IRQ RX, with no DMA. Poll() belongs in main. GetDataReceivedCount() is a pure query; clear readiness explicitly after consuming every byte. GetTxStatus()==OK permits source-buffer reuse, but changing baud also requires physical TC and stopped RX. Stop or finish reception first; use DeInit/SetUp to change frame format. SetParity() is a compatibility no-op. Blocking Receive reads the requested length and does not use IDLE as a packet boundary.
+
+```cpp
+#include "uart.hpp"
+constinit USART link(USART::_1::instance, 19200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+static uint8_t packet[32];
+volatile uint32_t received_bytes = 0, overflow_bytes = 0;
+void Setup() {
+    if (link.SetUp(USART::FIFO::NO, USART::FIFO_TH::NO, USART::FIFO_TH::NO,
+                   USART::FrameFormat::E8_1) != SysInitStatus::InitOK)
+        System::DebugTrap("USART format");
+    if (link.Receive_IRQ(packet, sizeof packet) != SysStatus::OK)
+        System::DebugTrap("USART RX");
+}
+void Poll() {
+    if (link.GetDataReceivedFlag()) {
+        uint32_t count = link.GetDataReceivedCount();
+        received_bytes = count; // Consume packet[0..count) here.
+        overflow_bytes = link.GetOverflowCount();
+        link.ClearDataReceivedFlag();
+        if (link.Receive_IRQ(packet, sizeof packet) != SysStatus::OK)
+            System::DebugTrap("USART rearm");
+    }
+}
+SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
+    return link.Receive(destination, length, 100); // Use while IRQ RX is stopped.
+}
+```
 
 ---
 
@@ -698,6 +790,11 @@ UART RX/DMAR отключаются один раз (по одному изме�
 
 ## 9. Примеры использования
 
+Дополнительные полные сценарии ниже — независимые конфигурации. Функции настройки вызываются из main после System/RCC, если пример явно не настраивает RCC сам. Не запускайте одновременно примеры, занимающие одну периферию.
+
+- [Дополнительные действия в IRQ через наследование](#дополнительные-действия-в-irq-через-наследование)
+- [Разбор пакета, смена baudrate и блокирующий обмен](#разбор-пакета-смена-baudrate-и-блокирующий-обмен)
+
 **Минимальный порт (блокирующий/IRQ):**
 
 ```cpp
@@ -734,6 +831,93 @@ if (uart.GetDataReceivedFlag()) {
 На F4/F7 в позициях DMA передайте `USART::_1::DMA::TX_DMA2_Stream7` и `USART::_1::DMA::RX_DMA2_Stream5`.
 
 Проверяйте каждый возвращаемый статус.
+
+---
+
+### Дополнительные действия в IRQ через наследование
+
+Переопределяются callbacks, а не HandleIRQ(): диспетчер объявлен final. В OnRxByte/OnTxEmpty нужен вызов базы для штатной обработки байтов; OnIdle/OnTC/OnDma*Complete/OnError — уведомления, база не нужна. При DMA байтовые callbacks не вызываются на каждый байт. Setup вызывается из main после System/RCC, BeginReceive запускает пакет, StartTransmit — только после физического завершения предыдущей передачи. TC включается после успешного старта, чтобы старый флаг простоя не приняли за окончание новой передачи. Буфер разбирается в main до повторного приёма; при ошибке проверяется GetRxStatus(). Счётчики пишет IRQ; их сброс из main нужно выполнять согласованно.
+
+```cpp
+#include "uart.hpp"
+class AppUsart : public USART {
+public:
+    using USART::USART;
+    volatile uint32_t byte_count = 0, tx_irq_count = 0;
+    volatile uint32_t idle_count = 0, dma_rx_count = 0, dma_tx_count = 0;
+    volatile uint32_t errors = 0;
+    volatile bool wire_done = false;
+protected:
+    void OnRxByte(uint8_t byte) override {
+        USART::OnRxByte(byte);
+        byte_count = byte_count + 1;
+    }
+    void OnTxEmpty() override {
+        USART::OnTxEmpty();
+        tx_irq_count = tx_irq_count + 1;
+    }
+    void OnIdle() override { idle_count = idle_count + 1; }
+    void OnDmaRxComplete() override { dma_rx_count = dma_rx_count + 1; }
+    void OnDmaTxComplete() override { dma_tx_count = dma_tx_count + 1; }
+    void OnTC() override {
+        IRQ_en(IRQ::TC, DISABLE);
+        wire_done = true;
+    }
+    void OnError(uint32_t mask) override { errors = mask; }
+};
+using U = USART::_1;
+#if defined(STM32G0)
+constinit AppUsart port(U::instance, 115200, U::TX::PB6, U::RX::PB7,
+                       DMA1_Channel4_BASE, DMA1_Channel5_BASE);
+#else
+constinit AppUsart port(U::instance, 115200, U::TX::PB6, U::RX::PB7,
+                       U::DMA::TX_DMA2_Stream7, U::DMA::RX_DMA2_Stream5);
+#endif
+alignas(32) static uint8_t rx[64], tx[32] = {'O', 'K', '\r', '\n'};
+void Setup() {
+    if (port.SetUp() != SysInitStatus::InitOK) System::DebugTrap("USART");
+}
+SysStatus BeginReceive(bool dma) {
+    return dma ? port.Receive_DMA(rx, sizeof rx) : port.Receive_IRQ(rx, sizeof rx);
+}
+SysStatus StartTransmit(bool dma) {
+    port.wire_done = false;
+    SysStatus result = dma ? port.Send_DMA(tx, 4) : port.Send_IRQ(tx, 4);
+    if (result == SysStatus::OK) port.IRQ_en(USART::IRQ::TC, ENABLE);
+    return result;
+}
+```
+
+### Разбор пакета, смена baudrate и блокирующий обмен
+
+Этот отдельный пример принимает через IRQ, без DMA. Poll() вызывается в main. GetDataReceivedCount() только читает длину; после разбора всех байтов готовность очищается явно. GetTxStatus()==OK разрешает переиспользовать исходный буфер, но для смены baudrate нужны также физический TC и остановленный RX. Сначала завершите приём; для смены формата кадра используйте DeInit/SetUp. SetParity() оставлен как пустой метод совместимости. Блокирующий Receive читает указанную длину и не заканчивает пакет по IDLE.
+
+```cpp
+#include "uart.hpp"
+constinit USART link(USART::_1::instance, 19200, USART::_1::TX::PB6, USART::_1::RX::PB7);
+static uint8_t packet[32];
+volatile uint32_t received_bytes = 0, overflow_bytes = 0;
+void Setup() {
+    if (link.SetUp(USART::FIFO::NO, USART::FIFO_TH::NO, USART::FIFO_TH::NO,
+                   USART::FrameFormat::E8_1) != SysInitStatus::InitOK)
+        System::DebugTrap("USART format");
+    if (link.Receive_IRQ(packet, sizeof packet) != SysStatus::OK)
+        System::DebugTrap("USART RX");
+}
+void Poll() {
+    if (link.GetDataReceivedFlag()) {
+        uint32_t count = link.GetDataReceivedCount();
+        received_bytes = count; // Consume packet[0..count) here.
+        overflow_bytes = link.GetOverflowCount();
+        link.ClearDataReceivedFlag();
+        if (link.Receive_IRQ(packet, sizeof packet) != SysStatus::OK)
+            System::DebugTrap("USART rearm");
+    }
+}
+SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
+    return link.Receive(destination, length, 100); // Use while IRQ RX is stopped.
+}
+```
 
 ---
 

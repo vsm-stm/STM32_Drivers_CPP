@@ -303,6 +303,8 @@ SPI binds DMA in the constructor; SPI, DMA TX and DMA RX handlers are registered
 
 ## 11. Usage Examples
 
+- [Standalone G0 memory copy with a registered IRQ handler](#standalone-g0-memory-copy-with-a-registered-irq-handler)
+
 ### G0 — Standalone DMA_Sx with explicit channel and request
 
 ```cpp
@@ -349,6 +351,63 @@ constinit USART a(USART::_3::instance, 115200, USART::_3::TX::PD8, USART::_3::RX
 
 if (a.SetUp() == SysInitStatus::InitOK)   // configures DMA and registers its handler
     a.Send_DMA(buf, len);
+```
+
+---
+
+### Standalone G0 memory copy with a registered IRQ handler
+
+G0 only: F4/F7 Mem_To_Mem is not implemented by this driver. SetUp configures DMA but does not register an application handler. This example owns a physical channel, registers exactly one adapter, reads flags once and gives errors priority over TC. No peripheral driver may own the same channel. The IRQ requests stop without waiting; FinishFromMain confirms stop before releasing DMA. Shared-vector handlers are preserved. Add HT/CIRC only when the application also implements half-buffer ownership and restart deadlines.
+
+```cpp
+#include "dma.hpp"
+#include "irq_registry.hpp"
+constinit DMA_Sx copier(DMA1_Channel3_BASE, 0u);
+static uint32_t source[4] = {1, 2, 3, 4}, destination[4];
+class CopyIRQ : public IIRQHandler {
+public:
+    volatile bool done = false;
+    volatile uint32_t errors = 0;
+    void HandleIRQ() override {
+        const uint32_t flags = copier.GetIRQFlags();
+        if (!(flags & (DMA_Sx::FLAG_TC | DMA_Sx::FLAG_ERRORS))) return;
+        copier.RequestStop();
+        copier.ClearFlags();
+        errors = flags & DMA_Sx::FLAG_ERRORS;
+        __DMB();
+        done = errors == 0;
+    }
+};
+CopyIRQ handler;
+void SetupAndStart() {
+    DMA_Sx::StreamSettings config;
+    config.direction = DMA_Sx::DIR::Mem_To_Mem;
+    config.data_size = DMA_Sx::SIZE::Word;
+    config.minc = config.pinc = true;
+    config.per_address = reinterpret_cast<uint32_t>(source);
+    config.mem_address = reinterpret_cast<uint32_t>(destination);
+    config.count = 4;
+    if (copier.SetUp(config) != SysInitStatus::InitOK)
+        System::DebugTrap("DMA setup");
+    IRQn_Type vector = copier.GetIRQn();
+    NVIC_DisableIRQ(vector);
+    if (IRQ_Registry::Register(vector, &handler) != SysInitStatus::InitOK)
+        System::DebugTrap("DMA register");
+    copier.Enable_IRQ(DMA_Sx::IRQ::TC, false);
+    copier.Enable_IRQ(DMA_Sx::IRQ::TE, false);
+    NVIC_EnableIRQ(vector);
+    copier.Stream_EN(ENABLE);
+}
+SysStatus FinishFromMain() {
+    // Call after done/error, serialized with this channel's IRQ.
+    copier.Stream_EN(DISABLE);
+    IRQn_Type vector = copier.GetIRQn();
+    bool enabled = NVIC_GetEnableIRQ(vector) != 0;
+    NVIC_DisableIRQ(vector);
+    IRQ_Registry::Unregister(vector, &handler);
+    if (enabled && IRQ_Registry::HasHandlers(vector)) NVIC_EnableIRQ(vector);
+    return copier.Release();
+}
 ```
 
 ---
@@ -703,6 +762,8 @@ SPI получает DMA в конструкторе; обработчики SPI
 
 ## 11. Примеры использования
 
+- [Самостоятельное копирование на G0 с обработчиком IRQ](#самостоятельное-копирование-на-g0-с-обработчиком-irq)
+
 ### G0 — отдельный DMA_Sx с явным каналом и запросом
 
 ```cpp
@@ -749,6 +810,63 @@ constinit USART a(USART::_3::instance, 115200, USART::_3::TX::PD8, USART::_3::RX
 
 if (a.SetUp() == SysInitStatus::InitOK)   // настраивает DMA и регистрирует его обработчик
     a.Send_DMA(buf, len);
+```
+
+---
+
+### Самостоятельное копирование на G0 с обработчиком IRQ
+
+Только G0: Mem_To_Mem на F4/F7 драйвером не реализован. SetUp настраивает DMA, но не регистрирует обработчик приложения. Здесь занят физический канал, зарегистрирован один адаптер, флаги читаются один раз, ошибка имеет приоритет над TC. Этот канал нельзя одновременно отдавать драйверу периферии. IRQ запрашивает остановку без ожидания; FinishFromMain подтверждает остановку перед Release. Остальные обработчики общего вектора сохраняются. HT/CIRC добавляются только вместе с обработкой половин буфера и сроков их перезаписи.
+
+```cpp
+#include "dma.hpp"
+#include "irq_registry.hpp"
+constinit DMA_Sx copier(DMA1_Channel3_BASE, 0u);
+static uint32_t source[4] = {1, 2, 3, 4}, destination[4];
+class CopyIRQ : public IIRQHandler {
+public:
+    volatile bool done = false;
+    volatile uint32_t errors = 0;
+    void HandleIRQ() override {
+        const uint32_t flags = copier.GetIRQFlags();
+        if (!(flags & (DMA_Sx::FLAG_TC | DMA_Sx::FLAG_ERRORS))) return;
+        copier.RequestStop();
+        copier.ClearFlags();
+        errors = flags & DMA_Sx::FLAG_ERRORS;
+        __DMB();
+        done = errors == 0;
+    }
+};
+CopyIRQ handler;
+void SetupAndStart() {
+    DMA_Sx::StreamSettings config;
+    config.direction = DMA_Sx::DIR::Mem_To_Mem;
+    config.data_size = DMA_Sx::SIZE::Word;
+    config.minc = config.pinc = true;
+    config.per_address = reinterpret_cast<uint32_t>(source);
+    config.mem_address = reinterpret_cast<uint32_t>(destination);
+    config.count = 4;
+    if (copier.SetUp(config) != SysInitStatus::InitOK)
+        System::DebugTrap("DMA setup");
+    IRQn_Type vector = copier.GetIRQn();
+    NVIC_DisableIRQ(vector);
+    if (IRQ_Registry::Register(vector, &handler) != SysInitStatus::InitOK)
+        System::DebugTrap("DMA register");
+    copier.Enable_IRQ(DMA_Sx::IRQ::TC, false);
+    copier.Enable_IRQ(DMA_Sx::IRQ::TE, false);
+    NVIC_EnableIRQ(vector);
+    copier.Stream_EN(ENABLE);
+}
+SysStatus FinishFromMain() {
+    // Call after done/error, serialized with this channel's IRQ.
+    copier.Stream_EN(DISABLE);
+    IRQn_Type vector = copier.GetIRQn();
+    bool enabled = NVIC_GetEnableIRQ(vector) != 0;
+    NVIC_DisableIRQ(vector);
+    IRQ_Registry::Unregister(vector, &handler);
+    if (enabled && IRQ_Registry::HasHandlers(vector)) NVIC_EnableIRQ(vector);
+    return copier.Release();
+}
 ```
 
 ---
