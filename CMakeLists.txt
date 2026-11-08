@@ -218,9 +218,9 @@ stm32_drivers_module(I2C    SOURCES src/i2c.cpp DEPENDS DMA)
 stm32_drivers_module(MODBUS SOURCES Interfaces/Modbus-slave.cpp                 INCLUDE Interfaces DEPENDS UART DMA)
 stm32_drivers_module(CONTAINERS INCLUDE Containers)          # headers only
 stm32_drivers_module(FILTERS    INCLUDE Filters)             # headers only
-# PID - the author's own controller (math/PID.*): variable dT, dead zone,
-# anti-windup. A simpler recurrence-based alternative is arm_pid_* in the DSP module.
-stm32_drivers_module(PID    SOURCES math/PID.c                        INCLUDE math)
+# PID - the author's own C++ controller (math/PID.*): fixed dt, dead zone,
+# integral contribution clamp. A simpler recurrence-based alternative is arm_pid_* in the DSP module.
+stm32_drivers_module(PID    SOURCES math/PID.cpp                        INCLUDE math)
 # CRC32 - portable software implementation (no HW peripheral, no lookup table),
 # see crc/crc32.h for why. Can also be fetched as a single file without the rest
 # of the driver library - stm32-bootloader does this itself, in its own
@@ -281,7 +281,7 @@ if("DSP" IN_LIST _stm32_modules)
 
 	set(_dsp "${cmsis_dsp_SOURCE_DIR}")
 	# This subset is FastMath + Controller + common tables, not the complete CMSIS-DSP.
-	# arm_pid_* is a separate recurrence-based controller from math/PID's variable-dT API.
+	# arm_pid_* is a separate recurrence-based controller from math/PID's fixed-step class.
 	# Individual kernels only: the aggregate *.c files include those same
 	# kernels again, and FastMathFunctionsF16.c bypasses the _f16.c filter.
 	file(GLOB _dsp_src

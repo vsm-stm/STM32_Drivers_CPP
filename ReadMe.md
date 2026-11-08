@@ -47,15 +47,13 @@ The library is not a standalone CMake project: it is cloned and wired in by the 
 - Initialize each CMSIS PID instance with `arm_pid_init_*(..., 1)` before the first step.
 - Check the returned `arm_status` of square root, division and atan2. Ranges and fixed-point formats: Arm's [FastMath header](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/fast_math_functions.h) and [Controller header](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/controller_functions.h).
 
-**`PID` module** — the in-house PID controller (`math/PID.*`, C API callable from C++): variable step `dT`, dead zone `e_lim`, symmetric integral clamp `max_ki_I`, and the helper `PID_get_quality`.
+**`PID` module** — a C++ class (`math/PID.hpp`, `math/PID.cpp`) with direct constructor arguments and fixed `dt`.
 
-- Zero-initialize the controller state or call `zero_PID_I_D()` before use. Set `e` on each step; `dT` is in seconds.
-- Inputs must be finite, `dT > 0`, `e_lim`/`max_ki_I >= 0`. `dT == 0` returns zero without updating state. With `ki == 0`, `I` is held.
-- Inside the dead zone `|e| <= e_lim`: `I` is held, `D` is zero, `e_old` is updated; the proportional term stays active.
-- `PID_get_quality`: reset with `get=0` before a measurement and when changing setpoint or mode.
-  - `get=1`: `e` is a percentage for non-zero `u` (absolute `y-u` for `u = 0`); `t_time` sums time outside the ±5 % corridor.
-  - `get=2`: `e` is absolute; `t_time` sums every supplied `dt`.
-  - This is accumulated time, not settling time. `max_y` tracks the maximum response for `u >= 0` and the minimum for `u < 0`, starting from zero; `sigma = (max_y - u)/u` (zero for `u = 0`).
+- Constructor order: `PID(kp, ki, kd, ki_saturation, e_deadband, dt, &target, &measured)`. All fields are private; parameters and input pointer bindings stay fixed. The input variables must outlive the controller.
+- Call `controller.u()` once per `dt` seconds; it reads target/measurement and calculates `target-measured`. Only integral, previous error and current derivative state are kept.
+- Inputs must be finite, `dt > 0`, `e_deadband`/`ki_saturation >= 0`. Zero `dt` returns zero without input reads or state changes. `ki_saturation` limits `|ki*I|`, not total output.
+- With `ki == 0`, I is held. Inside `|e| <= e_deadband`, I is held, D=0 and previous error is refreshed; P remains active.
+- `Reset()` clears calculation state. Inline `p_term()`/`i_term()`/`d_term()` read current contributions. Examples: [Utilities.md](Utilities.md#fixed-step-pid-reset-and-term-diagnostics).
 
 **`FILTERS` module** — header-only sample filters in the `Filters` namespace.
 Enable it with `"drivers": ["FILTERS"]`; no CMSIS-DSP dependency is required.
@@ -1017,15 +1015,13 @@ C++20-библиотека поверх CMSIS для семейств **STM32G0*
 - Каждый экземпляр CMSIS PID инициализируйте `arm_pid_init_*(..., 1)` перед первым шагом.
 - Проверяйте `arm_status` у корня, деления и atan2. Диапазоны и форматы фиксированной точки — в заголовках Arm: [FastMath](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/fast_math_functions.h) и [Controller](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/controller_functions.h).
 
-**Модуль `PID`** — собственный ПИД-регулятор (`math/PID.*`, C API, вызывается из C++): переменный шаг `dT`, мёртвая зона `e_lim`, симметричное ограничение интеграла `max_ki_I` и вспомогательная `PID_get_quality`.
+**Модуль `PID`** — класс C++ (`math/PID.hpp`, `math/PID.cpp`) с прямыми аргументами конструктора и постоянным `dt`.
 
-- Перед использованием обнулите состояние или вызовите `zero_PID_I_D()`. На каждом шаге задавайте `e`; `dT` — в секундах.
-- Входы должны быть конечными, `dT > 0`, `e_lim`/`max_ki_I >= 0`. При `dT == 0` возвращается ноль без изменения состояния. При `ki == 0` интеграл `I` сохраняется.
-- В мёртвой зоне `|e| <= e_lim`: `I` сохраняется, `D` равна нулю, `e_old` обновляется; пропорциональная часть действует.
-- `PID_get_quality`: сбрасывайте через `get=0` перед измерением и при смене уставки или режима.
-  - `get=1`: `e` — в процентах при ненулевой `u` (при `u = 0` — абсолютная `y-u`); `t_time` суммирует время вне коридора ±5 %.
-  - `get=2`: `e` абсолютная; `t_time` суммирует каждый переданный `dt`.
-  - Это накопленное время, а не время установления. `max_y` — максимум отклика при `u >= 0` и минимум при `u < 0`, с нуля после сброса; `sigma = (max_y - u)/u` (ноль при `u = 0`).
+- Порядок аргументов: `PID(kp, ki, kd, ki_saturation, e_deadband, dt, &target, &measured)`. Все поля приватные; параметры и привязки входных указателей неизменны. Входные переменные должны жить дольше регулятора.
+- Вызывайте `controller.u()` раз в `dt` секунд: он читает уставку/измерение и вычисляет `target-measured`. Хранятся только интеграл, предыдущая ошибка и текущая производная.
+- Входы конечные, `dt > 0`, `e_deadband`/`ki_saturation >= 0`. При нулевом `dt` возвращается ноль без чтения входов и изменения состояния. `ki_saturation` ограничивает `|ki*I|`, а не весь выход.
+- При `ki == 0` интеграл удерживается. В зоне `|e| <= e_deadband` интеграл сохраняется, D=0, предыдущая ошибка обновляется; P действует.
+- `Reset()` обнуляет состояние расчёта. Inline-методы `p_term()`/`i_term()`/`d_term()` читают текущие составляющие. Примеры: [Utilities.md](Utilities.md#pid-с-постоянным-шагом-сброс-и-чтение-составляющих).
 
 **Модуль `FILTERS`** — фильтры отсчётов в пространстве имён `Filters`, полностью
 реализованные в заголовках. Подключение: `"drivers": ["FILTERS"]`; CMSIS-DSP не нужен.

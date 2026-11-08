@@ -44,7 +44,7 @@ The index covers the exposed API, not every mode of the STM32 hardware. Low-leve
 | [Modbus transport](Modbus.md) | RS-485 DE, DMA, main parser, CRC validation/appending, application address/function/broadcast policy | `SetRxParse`, `SetUp`, `Rx_Process`, `GetTxBufferPtr`, `CancelTxBuffer`, `SendData`, `DeInit` |
 | [Filters](Filters.md) | First-sample/zero startup, independent signals, float calculation, median→EMA and reset | `MovingAverage<N,Sample,Sum>`, `ExponentialMovingAverage<Sample,Value>`, `Median3<Sample>`, `add_new_sample`, `sum/value`, `constructor startup mode` |
 | [Containers](Utilities.md) | Queue/map/list operations, full storage, borrowed pointers and deleting during traversal | `RingQueue`, `StaticMap`, `StaticSList`, `StaticDList` |
-| [PID](Utilities.md) | Variable dT, integral limit/dead zone, history reset, absolute/relative quality modes | `pid`, `PID`, `zero_PID_I_D`, `con_quality_t`, `PID_get_quality` |
+| [PID](Utilities.md) | Fixed dt, direct constructor arguments, private calculation state and P/I/D diagnostics | `PID`, `u`, `Reset`, `p_term`, `i_term`, `d_term` |
 | [CRC32](Utilities.md) | One-shot and chunked IEEE CRC32; distinct from Modbus CRC16 | `CRC32_INIT`, `crc32_update`, `crc32_finish`, `crc32_compute` |
 | [CMSIS-DSP](Utilities.md) | Built FastMath/Controller groups, float/fixed-point domains and excluded algorithms | `arm_sin_*`, `arm_cos_*`, `arm_sqrt_*`, `arm_atan2_*`, `arm_divide_*`, `arm_vlog_*`, `arm_vexp_*`, `arm_sin_cos_*`, `arm_pid_*`, `arm_clarke_*`, `arm_inv_clarke_*`, `arm_park_*`, `arm_inv_park_*` |
 | [WS2812B / RGB](Utilities.md) | Pixel/range encoding and brightness; TIM/DMA transfer and physical reset limits | `WS2812B_Strip`, `SetPixel`, `SetAll`, `Fill`, `Clear`, `Rainbow`, `SetCCR`, `Data`, `Len`, `Size; RGB`, `dim`, `presets`, `==/!=`, `FromHSV` |
@@ -75,7 +75,7 @@ The index covers the exposed API, not every mode of the STM32 hardware. Low-leve
 | Independent channels, float inputs and restarting history | [Filters.md](Filters.md#independent-channels-float-inputs-and-restarting-history) |
 | Queue and unique-key map | [Utilities.md](Utilities.md#queue-and-unique-key-map) |
 | Lists, stable indices and deletion during traversal | [Utilities.md](Utilities.md#lists-stable-indices-and-deletion-during-traversal) |
-| Variable-step PID, reset and quality metrics | [Utilities.md](Utilities.md#variable-step-pid-reset-and-quality-metrics) |
+| Fixed-step PID, reset and term diagnostics | [Utilities.md](Utilities.md#fixed-step-pid-reset-and-term-diagnostics) |
 | CRC32 of one buffer and a stream of chunks | [Utilities.md](Utilities.md#crc32-of-one-buffer-and-a-stream-of-chunks) |
 | Built CMSIS-DSP groups: math and controllers | [Utilities.md](Utilities.md#built-cmsis-dsp-groups-math-and-controllers) |
 | WS2812B pixels, ranges, brightness and DMA data | [Utilities.md](Utilities.md#ws2812b-pixels-ranges-brightness-and-dma-data) |
@@ -153,7 +153,7 @@ The 26 newly added complete scenarios were syntax-checked as C++20 using arm-non
 | [Modbus transport](Modbus.md) | RS-485 DE, DMA, парсер main, проверка/добавление CRC, правила адреса/функции/broadcast приложения | `SetRxParse`, `SetUp`, `Rx_Process`, `GetTxBufferPtr`, `CancelTxBuffer`, `SendData`, `DeInit` |
 | [Filters](Filters.md) | Старт с первого отсчёта/нуля, независимые сигналы, расчёт float, median→EMA и сброс | `MovingAverage<N,Sample,Sum>`, `ExponentialMovingAverage<Sample,Value>`, `Median3<Sample>`, `add_new_sample`, `sum/value`, `constructor startup mode` |
 | [Containers](Utilities.md) | Очередь/таблица/списки, заполнение, выданные указатели и удаление при обходе | `RingQueue`, `StaticMap`, `StaticSList`, `StaticDList` |
-| [PID](Utilities.md) | Переменный dT, предел интеграла/мёртвая зона, сброс истории, абсолютная/относительная оценка | `pid`, `PID`, `zero_PID_I_D`, `con_quality_t`, `PID_get_quality` |
+| [PID](Utilities.md) | Постоянный dt, прямые аргументы конструктора, приватное состояние расчёта и диагностика P/I/D | `PID`, `u`, `Reset`, `p_term`, `i_term`, `d_term` |
 | [CRC32](Utilities.md) | Одноразовый и потоковый IEEE CRC32; отдельно от Modbus CRC16 | `CRC32_INIT`, `crc32_update`, `crc32_finish`, `crc32_compute` |
 | [CMSIS-DSP](Utilities.md) | Собираемые FastMath/Controller, float/fixed-point диапазоны и исключённые алгоритмы | `arm_sin_*`, `arm_cos_*`, `arm_sqrt_*`, `arm_atan2_*`, `arm_divide_*`, `arm_vlog_*`, `arm_vexp_*`, `arm_sin_cos_*`, `arm_pid_*`, `arm_clarke_*`, `arm_inv_clarke_*`, `arm_park_*`, `arm_inv_park_*` |
 | [WS2812B / RGB](Utilities.md) | Кодирование пикселей/диапазонов и яркость; TIM/DMA и ограничения физического reset | `WS2812B_Strip`, `SetPixel`, `SetAll`, `Fill`, `Clear`, `Rainbow`, `SetCCR`, `Data`, `Len`, `Size; RGB`, `dim`, `presets`, `==/!=`, `FromHSV` |
@@ -184,7 +184,7 @@ The 26 newly added complete scenarios were syntax-checked as C++20 using arm-non
 | Независимые каналы, вход float и повторный запуск истории | [Filters.md](Filters.md#независимые-каналы-вход-float-и-повторный-запуск-истории) |
 | Очередь и таблица уникальных ключей | [Utilities.md](Utilities.md#очередь-и-таблица-уникальных-ключей) |
 | Списки, стабильные индексы и удаление при обходе | [Utilities.md](Utilities.md#списки-стабильные-индексы-и-удаление-при-обходе) |
-| PID с переменным шагом, сброс и оценка качества | [Utilities.md](Utilities.md#pid-с-переменным-шагом-сброс-и-оценка-качества) |
+| PID с постоянным шагом, сброс и чтение составляющих | [Utilities.md](Utilities.md#pid-с-постоянным-шагом-сброс-и-чтение-составляющих) |
 | CRC32 одного буфера и потока фрагментов | [Utilities.md](Utilities.md#crc32-одного-буфера-и-потока-фрагментов) |
 | Собираемые группы CMSIS-DSP: математика и регуляторы | [Utilities.md](Utilities.md#собираемые-группы-cmsis-dsp-математика-и-регуляторы) |
 | WS2812B: пиксели, диапазоны, яркость и данные для DMA | [Utilities.md](Utilities.md#ws2812b-пиксели-диапазоны-яркость-и-данные-для-dma) |

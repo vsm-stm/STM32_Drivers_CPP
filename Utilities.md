@@ -102,33 +102,45 @@ void Example() {
 
 ## 3. PID
 
-### Variable-step PID, reset and quality metrics
+### Fixed-step PID, reset and term diagnostics
 
-Enable PID and include PID.h (a C API usable from C++). Gains below illustrate API usage, not tuning. Inputs must be finite, dT positive and in seconds; max_ki_I and e_lim are nonnegative. Zero dT returns zero without history updates. Integral uses trapezoidal integration; the limit applies to |ki*I|, not total output. The dead zone holds I, sets D=0 and updates e_old. There is no actuator clamp or derivative filter. A reset with a nonzero current error can produce a first-step derivative transient when kd is used. Reset quality on a setpoint/mode change. Mode 1 reports percent error (absolute at zero target) and accumulated time outside ±5%; mode 2 reports absolute error and total supplied time. This is not an automatic settling-time detector; sigma is a fraction, not percent.
+Enable the `PID` module and include `PID.hpp`. It is a C++ class with direct constructor arguments; no configuration structure is used. The example gains illustrate usage, not tuning.
 
 ```cpp
-#include "PID.h"
-pid controller{};
-con_quality_t quality{};
-void Setup() {
-    controller.kp = 1.0f;
-    controller.ki = 0.1f;
-    controller.kd = 0.0f;
-    controller.max_ki_I = 2.0f;
-    controller.e_lim = 0.01f;
-}
-float Step(float target, float measured, float dt_seconds) {
-    controller.dT = dt_seconds;
-    controller.e = target - measured;
-    float output = PID(&controller);
-    PID_get_quality(&quality, target, measured, dt_seconds, 2);
-    return output;
+PID(float kp, float ki, float kd, float ki_saturation, float e_deadband,
+    float dt, const float* ptr_to_target, const float* ptr_to_data);
+```
+
+- The constructor fixes gains, limits, sample interval and pointer bindings. All fields are private. `constexpr` construction supports `constinit` when the input variables have static storage duration. There is no hardware access or heap allocation.
+- `u()` reads each input once, computes `target - data` and advances one sample. The application calls it once per **fixed** `dt` seconds; the controller does not read a clock or wait. Repeated calls advance the calculation even if inputs have not changed.
+- Input pointers are read-only `const float*`, must be valid and outlive the controller. The input values may change. The application serializes updates, calculation, reset and diagnostic reads; there are no internal locks.
+- Inputs/gains must be finite, `dt > 0`, `ki_saturation`/`e_deadband >= 0`. Zero `dt` returns zero without input reads/state changes. There are no constructor validity traps.
+- Integration remains trapezoidal. `ki_saturation` limits **the absolute contribution `ki*I`**, not total output. With `ki == 0`, integral state is held. The dead zone holds I, sets D=0 and refreshes previous error; P remains active. There is no output clamp or derivative filter.
+- Only the calculation state is stored: accumulated integral, previous error and current derivative. There is no sample history or quality evaluation. Inline `p_term()`, `i_term()`, `d_term()` return current gain-scaled contributions without reading inputs or changing the state; raw state is private but can be inspected in a debugger.
+- `Reset()` clears the calculation state; all term getters return zero afterwards. It does not touch parameters or input variables. A reset with a nonzero error can cause a first-step derivative transient when `kd != 0`.
+
+```cpp
+#include "PID.hpp"
+
+float target = 100.0f;
+float measured = 0.0f;
+constinit PID controller(
+    1.0f, 0.1f, 0.0f,       // kp, ki, kd
+    2.0f, 0.01f, 0.001f,    // ki_saturation, e_deadband, dt (seconds)
+    &target, &measured);
+
+// Call once per 1 ms, after updating measured.
+float Step() {
+    return controller.u();
 }
 void Reset() {
-    zero_PID_I_D(&controller); // Gains and limits remain.
-    PID_get_quality(&quality, 0.0f, 0.0f, 0.0f, 0);
+    controller.Reset(); // Keeps parameters and pointed-to signals.
 }
+
+// Inline read-only diagnostics: controller.p_term(), i_term(), d_term().
 ```
+
+**Migration:** include `PID.hpp`, construct `PID` directly with eight arguments and replace `PID(&state)` with `controller.u()`. Replace `zero_PID_I_D()` with `Reset()`, `max_ki_I` with constructor argument `ki_saturation`, and per-call `dT`/`e` assignments with fixed `dt` and the input pointers. The old C API/configuration structure is removed. CMake compiles `math/PID.cpp`.
 
 ---
 
@@ -157,7 +169,7 @@ bool CheckCRC() {
 
 ### Built CMSIS-DSP groups: math and controllers
 
-Enable DSP: CMake fetches CMSIS-DSP v1.16.2 and builds FastMath, Controller and common tables only. Include the group headers instead of assuming all arm_math.h declarations are linked. sin/cos take radians; sin_cos_f32 takes degrees. Check arm_status for sqrt, atan2 and fixed-point divide; logs need positive inputs. PID state is distinct from the library's variable-dT pid struct. Initialize every CMSIS PID before use; arm_pid_reset clears history. q15/q31 variants use fixed-point scaling defined by their headers, not plain integer sensor units. Float16, FFT, FIR/IIR and statistics are not included by this module.
+Enable DSP: CMake fetches CMSIS-DSP v1.16.2 and builds FastMath, Controller and common tables only. Include the group headers instead of assuming all arm_math.h declarations are linked. sin/cos take radians; sin_cos_f32 takes degrees. Check arm_status for sqrt, atan2 and fixed-point divide; logs need positive inputs. CMSIS PID state is distinct from the library's fixed-step PID class. Initialize every CMSIS PID before use; arm_pid_reset clears history. q15/q31 variants use fixed-point scaling defined by their headers, not plain integer sensor units. Float16, FFT, FIR/IIR and statistics are not included by this module.
 
 ```cpp
 #include "dsp/fast_math_functions.h"
@@ -342,33 +354,45 @@ void Example() {
 
 ## 3. PID-регулятор
 
-### PID с переменным шагом, сброс и оценка качества
+### PID с постоянным шагом, сброс и чтение составляющих
 
-Подключаются PID и PID.h: это C API, доступный из C++. Коэффициенты ниже показывают API, а не настройку регулятора. Входы конечные, dT положителен и задан в секундах, max_ki_I/e_lim неотрицательны. Нулевой dT возвращает ноль без обновления истории. Интеграл считается трапециями; предел относится к |ki*I|, а не ко всему выходу. Мёртвая зона удерживает I, обнуляет D и обновляет e_old. Ограничения исполнительного выхода и фильтра производной нет. После сброса при ненулевой текущей ошибке возможен первый скачок производной при kd≠0. Оценка качества сбрасывается при смене уставки/режима. Режим 1 даёт ошибку в процентах (абсолютную при нулевой цели) и время вне ±5%; режим 2 — абсолютную ошибку и всё переданное время. Это не автоматическое определение времени установления; sigma — доля, не проценты.
+Подключите модуль `PID` и заголовок `PID.hpp`. Это класс C++ с прямыми аргументами конструктора, без структуры конфигурации. Коэффициенты в примере показывают использование, а не настройку регулятора.
 
 ```cpp
-#include "PID.h"
-pid controller{};
-con_quality_t quality{};
-void Setup() {
-    controller.kp = 1.0f;
-    controller.ki = 0.1f;
-    controller.kd = 0.0f;
-    controller.max_ki_I = 2.0f;
-    controller.e_lim = 0.01f;
-}
-float Step(float target, float measured, float dt_seconds) {
-    controller.dT = dt_seconds;
-    controller.e = target - measured;
-    float output = PID(&controller);
-    PID_get_quality(&quality, target, measured, dt_seconds, 2);
-    return output;
+PID(float kp, float ki, float kd, float ki_saturation, float e_deadband,
+    float dt, const float* ptr_to_target, const float* ptr_to_data);
+```
+
+- Конструктор закрепляет коэффициенты, пределы, интервал расчёта и входные указатели. Все поля приватные. Конструктор `constexpr` позволяет использовать `constinit` при статическом времени жизни входных переменных. Обращений к аппаратуре и выделения памяти нет.
+- `u()` читает каждую входную переменную один раз, вычисляет `target - data` и выполняет один шаг. Приложение вызывает его раз в **постоянный** интервал `dt` секунд; чтения часов и ожиданий внутри нет. Повторные вызовы продвигают расчёт даже при неизменных входных значениях.
+- Указатели `const float*` используются только для чтения, должны быть корректными, а переменные — жить дольше регулятора. Их значения можно менять. Согласование обновления входов, расчёта, сброса и диагностического чтения обеспечивает приложение; внутренних блокировок нет.
+- Входы и коэффициенты конечные, `dt > 0`, `ki_saturation`/`e_deadband >= 0`. При нулевом `dt` возвращается ноль без чтения входов и изменения состояния. Проверок с остановом в конструкторе нет.
+- Интеграл считается трапециями. `ki_saturation` ограничивает **модуль составляющей `ki*I`**, а не весь выход. При `ki == 0` интеграл сохраняется. В мёртвой зоне I удерживается, D=0, предыдущая ошибка обновляется; P продолжает действовать. Ограничения выхода и фильтра производной нет.
+- Хранится только состояние расчёта: накопленный интеграл, предыдущая ошибка и текущая производная. Журнала отсчётов и оценки качества нет. Inline-методы `p_term()`, `i_term()`, `d_term()` возвращают текущие составляющие с учётом коэффициентов без чтения входов и изменения состояния; сырой интеграл и остальные приватные поля можно смотреть в отладчике.
+- `Reset()` обнуляет состояние расчёта; после него все геттеры возвращают ноль. Параметры и входные переменные не меняются. После сброса при ненулевой ошибке возможен первый скачок производной при `kd != 0`.
+
+```cpp
+#include "PID.hpp"
+
+float target = 100.0f;
+float measured = 0.0f;
+constinit PID controller(
+    1.0f, 0.1f, 0.0f,       // kp, ki, kd
+    2.0f, 0.01f, 0.001f,    // ki_saturation, e_deadband, dt (секунды)
+    &target, &measured);
+
+// Вызывать раз в 1 мс, после обновления measured.
+float Step() {
+    return controller.u();
 }
 void Reset() {
-    zero_PID_I_D(&controller); // Gains and limits remain.
-    PID_get_quality(&quality, 0.0f, 0.0f, 0.0f, 0);
+    controller.Reset(); // Параметры и значения входных переменных сохраняются.
 }
+
+// Inline-чтение составляющих: controller.p_term(), i_term(), d_term().
 ```
+
+**Миграция:** подключайте `PID.hpp`, передавайте восемь аргументов непосредственно конструктору `PID` и замените `PID(&state)` на `controller.u()`. Вместо `zero_PID_I_D()` — `Reset()`, вместо `max_ki_I` — аргумент конструктора `ki_saturation`, вместо изменения `dT`/`e` перед вызовом — постоянный `dt` и входные указатели. Старый C API/структура конфигурации удалены. CMake собирает `math/PID.cpp`.
 
 ---
 
@@ -397,7 +421,7 @@ bool CheckCRC() {
 
 ### Собираемые группы CMSIS-DSP: математика и регуляторы
 
-Подключается DSP: CMake скачивает CMSIS-DSP v1.16.2 и собирает только FastMath, Controller и общие таблицы. Подключайте заголовки групп, не предполагая наличие всех реализаций из arm_math.h. sin/cos принимают радианы, sin_cos_f32 — градусы. Проверяйте arm_status у sqrt, atan2 и fixed-point divide; логарифму нужен положительный вход. Состояние CMSIS PID отличается от собственного pid с переменным dT. Каждый CMSIS PID сначала инициализируется; arm_pid_reset очищает историю. Варианты q15/q31 используют масштаб фиксированной точки из заголовков, а не целые значения датчика без преобразования. Float16, FFT, FIR/IIR и статистика этим модулем не собираются.
+Подключается DSP: CMake скачивает CMSIS-DSP v1.16.2 и собирает только FastMath, Controller и общие таблицы. Подключайте заголовки групп, не предполагая наличие всех реализаций из arm_math.h. sin/cos принимают радианы, sin_cos_f32 — градусы. Проверяйте arm_status у sqrt, atan2 и fixed-point divide; логарифму нужен положительный вход. Состояние CMSIS PID отличается от собственного класса PID с постоянным dt. Каждый CMSIS PID сначала инициализируется; arm_pid_reset очищает историю. Варианты q15/q31 используют масштаб фиксированной точки из заголовков, а не целые значения датчика без преобразования. Float16, FFT, FIR/IIR и статистика этим модулем не собираются.
 
 ```cpp
 #include "dsp/fast_math_functions.h"
