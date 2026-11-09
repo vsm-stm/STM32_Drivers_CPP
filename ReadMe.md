@@ -47,13 +47,14 @@ The library is not a standalone CMake project: it is cloned and wired in by the 
 - Initialize each CMSIS PID instance with `arm_pid_init_*(..., 1)` before the first step.
 - Check the returned `arm_status` of square root, division and atan2. Ranges and fixed-point formats: Arm's [FastMath header](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/fast_math_functions.h) and [Controller header](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/controller_functions.h).
 
-**`PID` module** — a C++ class (`math/PID.hpp`, `math/PID.cpp`) with direct constructor arguments and fixed `dt`.
+**`PID` module** — a C++ class (`math/PID.hpp`, `math/PID.cpp`) with direct constructor arguments and adjustable gains, limits and `dt`.
 
-- Constructor order: `PID(kp, ki, kd, ki_saturation, e_deadband, dt, &target, &measured)`. All fields are private; parameters and input pointer bindings stay fixed. The input variables must outlive the controller.
+- Constructor order: `PID(kp, ki, kd, ki_saturation, e_deadband, dt, &target, &measured)`. All fields are private; input pointer bindings stay fixed. Inline get/set methods cover all six numerical parameters. The input variables must outlive the controller.
 - Call `controller.u()` once per `dt` seconds; it reads target/measurement and calculates `target-measured`. Only integral, previous error and current derivative state are kept.
 - Inputs must be finite, `dt > 0`, `e_deadband`/`ki_saturation >= 0`. Zero `dt` returns zero without input reads or state changes. `ki_saturation` limits `|ki*I|`, not total output.
 - With `ki == 0`, I is held. Inside `|e| <= e_deadband`, I is held, D=0 and previous error is refreshed; P remains active.
-- `Reset()` clears calculation state. Inline `p_term()`/`i_term()`/`d_term()` read current contributions. Examples: [Utilities.md](Utilities.md#fixed-step-pid-reset-and-term-diagnostics).
+- Three inline setters support loading/tuning settings: `set_k(kp, ki, kd)`, `set_dt(dt)` and `set_limits(e_deadband, ki_saturation)`. Individual `get_kp()`, `get_ki()`, `get_kd()`, `get_ki_saturation()`, `get_e_deadband()` and `get_dt()` remain available. Gain/limit groups clamp I once per call. Changing `ki` or its limit retains I, clamped immediately to the new limit; with `ki=0` raw I is held. No automatic reset. The caller updates the actual sampling cadence when changing `dt`.
+- `Reset()` clears calculation state. Inline `p_term()`/`i_term()`/`d_term()` use the stored state and current gains. Examples: [Utilities.md](Utilities.md#fixed-step-pid-reset-and-term-diagnostics).
 
 **`FILTERS` module** — header-only sample filters in the `Filters` namespace.
 Enable it with `"drivers": ["FILTERS"]`; no CMSIS-DSP dependency is required.
@@ -1015,13 +1016,14 @@ C++20-библиотека поверх CMSIS для семейств **STM32G0*
 - Каждый экземпляр CMSIS PID инициализируйте `arm_pid_init_*(..., 1)` перед первым шагом.
 - Проверяйте `arm_status` у корня, деления и atan2. Диапазоны и форматы фиксированной точки — в заголовках Arm: [FastMath](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/fast_math_functions.h) и [Controller](https://github.com/ARM-software/CMSIS-DSP/blob/v1.16.2/Include/dsp/controller_functions.h).
 
-**Модуль `PID`** — класс C++ (`math/PID.hpp`, `math/PID.cpp`) с прямыми аргументами конструктора и постоянным `dt`.
+**Модуль `PID`** — класс C++ (`math/PID.hpp`, `math/PID.cpp`) с прямыми аргументами конструктора и изменяемыми коэффициентами, пределами и `dt`.
 
-- Порядок аргументов: `PID(kp, ki, kd, ki_saturation, e_deadband, dt, &target, &measured)`. Все поля приватные; параметры и привязки входных указателей неизменны. Входные переменные должны жить дольше регулятора.
+- Порядок аргументов: `PID(kp, ki, kd, ki_saturation, e_deadband, dt, &target, &measured)`. Все поля приватные; привязки входных указателей неизменны. Для всех шести численных параметров есть inline get/set. Входные переменные должны жить дольше регулятора.
 - Вызывайте `controller.u()` раз в `dt` секунд: он читает уставку/измерение и вычисляет `target-measured`. Хранятся только интеграл, предыдущая ошибка и текущая производная.
 - Входы конечные, `dt > 0`, `e_deadband`/`ki_saturation >= 0`. При нулевом `dt` возвращается ноль без чтения входов и изменения состояния. `ki_saturation` ограничивает `|ki*I|`, а не весь выход.
 - При `ki == 0` интеграл удерживается. В зоне `|e| <= e_deadband` интеграл сохраняется, D=0, предыдущая ошибка обновляется; P действует.
-- `Reset()` обнуляет состояние расчёта. Inline-методы `p_term()`/`i_term()`/`d_term()` читают текущие составляющие. Примеры: [Utilities.md](Utilities.md#pid-с-постоянным-шагом-сброс-и-чтение-составляющих).
+- Три inline-сеттера позволяют загружать и настраивать параметры: `set_k(kp, ki, kd)`, `set_dt(dt)` и `set_limits(e_deadband, ki_saturation)`. Отдельные `get_kp()`, `get_ki()`, `get_kd()`, `get_ki_saturation()`, `get_e_deadband()` и `get_dt()` сохранены. Группы коэффициентов/пределов ограничивают I один раз за вызов. Смена `ki` или его предела сохраняет I с немедленным ограничением по новому пределу; при `ki=0` сырой интеграл удерживается. Автоматического сброса нет. При смене `dt` фактический период вызова меняет приложение.
+- `Reset()` обнуляет состояние расчёта. Inline-методы `p_term()`/`i_term()`/`d_term()` используют сохранённое состояние и текущие коэффициенты. Примеры: [Utilities.md](Utilities.md#pid-с-постоянным-шагом-сброс-и-чтение-составляющих).
 
 **Модуль `FILTERS`** — фильтры отсчётов в пространстве имён `Filters`, полностью
 реализованные в заголовках. Подключение: `"drivers": ["FILTERS"]`; CMSIS-DSP не нужен.

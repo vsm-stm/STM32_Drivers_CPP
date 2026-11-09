@@ -111,12 +111,12 @@ PID(float kp, float ki, float kd, float ki_saturation, float e_deadband,
     float dt, const float* ptr_to_target, const float* ptr_to_data);
 ```
 
-- The constructor fixes gains, limits, sample interval and pointer bindings. All fields are private. `constexpr` construction supports `constinit` when the input variables have static storage duration. There is no hardware access or heap allocation.
-- `u()` reads each input once, computes `target - data` and advances one sample. The application calls it once per **fixed** `dt` seconds; the controller does not read a clock or wait. Repeated calls advance the calculation even if inputs have not changed.
-- Input pointers are read-only `const float*`, must be valid and outlive the controller. The input values may change. The application serializes updates, calculation, reset and diagnostic reads; there are no internal locks.
+- The constructor sets initial gains, limits and sample interval, and fixes the input pointer bindings. All fields remain private; gains, limits and `dt` can be changed with the inline setters below. `constexpr` construction supports `constinit` when the input variables have static storage duration. There is no hardware access or heap allocation.
+- `u()` reads each input once, computes `target - data` and advances one sample. The application calls it once per **configured** `dt` seconds; the controller does not read a clock or wait. Repeated calls advance the calculation even if inputs have not changed.
+- Input pointers are read-only `const float*`, must be valid and outlive the controller. The input values may change. The application serializes input/parameter updates, calculation, reset and diagnostic reads; there are no internal locks.
 - Inputs/gains must be finite, `dt > 0`, `ki_saturation`/`e_deadband >= 0`. Zero `dt` returns zero without input reads/state changes. There are no constructor validity traps.
 - Integration remains trapezoidal. `ki_saturation` limits **the absolute contribution `ki*I`**, not total output. With `ki == 0`, integral state is held. The dead zone holds I, sets D=0 and refreshes previous error; P remains active. There is no output clamp or derivative filter.
-- Only the calculation state is stored: accumulated integral, previous error and current derivative. There is no sample history or quality evaluation. Inline `p_term()`, `i_term()`, `d_term()` return current gain-scaled contributions without reading inputs or changing the state; raw state is private but can be inspected in a debugger.
+- Only the calculation state is stored: accumulated integral, previous error and current derivative. There is no sample history or quality evaluation. Inline `p_term()`, `i_term()`, `d_term()` return contributions from stored calculation state and current gains without reading inputs or changing the state; gain changes affect the getters immediately; raw state is private but can be inspected in a debugger.
 - `Reset()` clears the calculation state; all term getters return zero afterwards. It does not touch parameters or input variables. A reset with a nonzero error can cause a first-step derivative transient when `kd != 0`.
 
 ```cpp
@@ -129,7 +129,7 @@ constinit PID controller(
     2.0f, 0.01f, 0.001f,    // ki_saturation, e_deadband, dt (seconds)
     &target, &measured);
 
-// Call once per 1 ms, after updating measured.
+// Call once per configured dt, after updating measured.
 float Step() {
     return controller.u();
 }
@@ -140,7 +140,31 @@ void Reset() {
 // Inline read-only diagnostics: controller.p_term(), i_term(), d_term().
 ```
 
-**Migration:** include `PID.hpp`, construct `PID` directly with eight arguments and replace `PID(&state)` with `controller.u()`. Replace `zero_PID_I_D()` with `Reset()`, `max_ki_I` with constructor argument `ki_saturation`, and per-call `dT`/`e` assignments with fixed `dt` and the input pointers. The old C API/configuration structure is removed. CMake compiles `math/PID.cpp`.
+**Parameter access and tuning:**
+
+| Parameter | Getter | Setter |
+| --- | --- | --- |
+| P gain | `get_kp()` | `set_k(kp, ki, kd)` |
+| I gain | `get_ki()` | `set_k(kp, ki, kd)` |
+| D gain | `get_kd()` | `set_k(kp, ki, kd)` |
+| Integral contribution limit | `get_ki_saturation()` | `set_limits(e_deadband, ki_saturation)` |
+| Error deadband | `get_e_deadband()` | `set_limits(e_deadband, ki_saturation)` |
+| Sample period, seconds | `get_dt()` | `set_dt(value)` |
+
+The three setters are `set_k(kp, ki, kd)`, `set_dt(dt)` and `set_limits(e_deadband, ki_saturation)`; the separate per-gain/limit setters are removed. Each group applies individually. `set_k()` assigns all gains, then clamps the retained integral once with the new `ki`. `set_limits()` assigns both limits, then clamps once to the new contribution limit, including in the deadband. With zero `ki`, raw I is retained and the I contribution is zero; setting nonzero `ki` limits it then. No setter clears previous error or derivative. `set_dt()` preserves all calculation state. Reset is explicit, and tuning does not guarantee a continuous output.
+
+The caller supplies finite values, nonnegative limits/deadband and a positive `dt`; setters add no validation or synchronization. `set_dt()` affects the next `u()` calculation and does not change a hardware timer or scheduler. The caller also updates the actual sampling cadence. A zero interval retains the documented no-op behavior of `u()`.
+
+```cpp
+// Called after reading values from application storage, outside an active u().
+void ApplyTuning(float kp, float ki, float kd, float saturation, float deadband, float dt) {
+    controller.set_limits(deadband, saturation);
+    controller.set_k(kp, ki, kd);
+    controller.set_dt(dt); // Or 1.0f / sample_rate_hz, for a positive frequency.
+}
+```
+
+**Migration:** include `PID.hpp`, construct `PID` directly with eight arguments and replace `PID(&state)` with `controller.u()`. Replace `zero_PID_I_D()` with `Reset()`, `max_ki_I` with constructor argument `ki_saturation`, and per-call `dT`/`e` assignments with configured `dt` and the input pointers. The old C API/configuration structure is removed. CMake compiles `math/PID.cpp`.
 
 ---
 
@@ -363,12 +387,12 @@ PID(float kp, float ki, float kd, float ki_saturation, float e_deadband,
     float dt, const float* ptr_to_target, const float* ptr_to_data);
 ```
 
-- Конструктор закрепляет коэффициенты, пределы, интервал расчёта и входные указатели. Все поля приватные. Конструктор `constexpr` позволяет использовать `constinit` при статическом времени жизни входных переменных. Обращений к аппаратуре и выделения памяти нет.
-- `u()` читает каждую входную переменную один раз, вычисляет `target - data` и выполняет один шаг. Приложение вызывает его раз в **постоянный** интервал `dt` секунд; чтения часов и ожиданий внутри нет. Повторные вызовы продвигают расчёт даже при неизменных входных значениях.
-- Указатели `const float*` используются только для чтения, должны быть корректными, а переменные — жить дольше регулятора. Их значения можно менять. Согласование обновления входов, расчёта, сброса и диагностического чтения обеспечивает приложение; внутренних блокировок нет.
+- Конструктор задаёт начальные коэффициенты, пределы и интервал расчёта, закрепляет входные указатели. Все поля остаются приватными; коэффициенты, пределы и `dt` меняются inline-сеттерами ниже. Конструктор `constexpr` позволяет использовать `constinit` при статическом времени жизни входных переменных. Обращений к аппаратуре и выделения памяти нет.
+- `u()` читает каждую входную переменную один раз, вычисляет `target - data` и выполняет один шаг. Приложение вызывает его раз в **настроенный** интервал `dt` секунд; чтения часов и ожиданий внутри нет. Повторные вызовы продвигают расчёт даже при неизменных входных значениях.
+- Указатели `const float*` используются только для чтения, должны быть корректными, а переменные — жить дольше регулятора. Их значения можно менять. Согласование обновления входов/параметров, расчёта, сброса и диагностического чтения обеспечивает приложение; внутренних блокировок нет.
 - Входы и коэффициенты конечные, `dt > 0`, `ki_saturation`/`e_deadband >= 0`. При нулевом `dt` возвращается ноль без чтения входов и изменения состояния. Проверок с остановом в конструкторе нет.
 - Интеграл считается трапециями. `ki_saturation` ограничивает **модуль составляющей `ki*I`**, а не весь выход. При `ki == 0` интеграл сохраняется. В мёртвой зоне I удерживается, D=0, предыдущая ошибка обновляется; P продолжает действовать. Ограничения выхода и фильтра производной нет.
-- Хранится только состояние расчёта: накопленный интеграл, предыдущая ошибка и текущая производная. Журнала отсчётов и оценки качества нет. Inline-методы `p_term()`, `i_term()`, `d_term()` возвращают текущие составляющие с учётом коэффициентов без чтения входов и изменения состояния; сырой интеграл и остальные приватные поля можно смотреть в отладчике.
+- Хранится только состояние расчёта: накопленный интеграл, предыдущая ошибка и текущая производная. Журнала отсчётов и оценки качества нет. Inline-методы `p_term()`, `i_term()`, `d_term()` возвращают составляющие по сохранённому состоянию и текущим коэффициентам без чтения входов и изменения состояния; смена коэффициентов сразу влияет на геттеры; сырой интеграл и остальные приватные поля можно смотреть в отладчике.
 - `Reset()` обнуляет состояние расчёта; после него все геттеры возвращают ноль. Параметры и входные переменные не меняются. После сброса при ненулевой ошибке возможен первый скачок производной при `kd != 0`.
 
 ```cpp
@@ -381,7 +405,7 @@ constinit PID controller(
     2.0f, 0.01f, 0.001f,    // ki_saturation, e_deadband, dt (секунды)
     &target, &measured);
 
-// Вызывать раз в 1 мс, после обновления measured.
+// Вызывать раз в настроенный dt, после обновления measured.
 float Step() {
     return controller.u();
 }
@@ -392,7 +416,31 @@ void Reset() {
 // Inline-чтение составляющих: controller.p_term(), i_term(), d_term().
 ```
 
-**Миграция:** подключайте `PID.hpp`, передавайте восемь аргументов непосредственно конструктору `PID` и замените `PID(&state)` на `controller.u()`. Вместо `zero_PID_I_D()` — `Reset()`, вместо `max_ki_I` — аргумент конструктора `ki_saturation`, вместо изменения `dT`/`e` перед вызовом — постоянный `dt` и входные указатели. Старый C API/структура конфигурации удалены. CMake собирает `math/PID.cpp`.
+**Чтение параметров и настройка:**
+
+| Параметр | Чтение | Запись |
+| --- | --- | --- |
+| Коэффициент P | `get_kp()` | `set_k(kp, ki, kd)` |
+| Коэффициент I | `get_ki()` | `set_k(kp, ki, kd)` |
+| Коэффициент D | `get_kd()` | `set_k(kp, ki, kd)` |
+| Предел интегральной составляющей | `get_ki_saturation()` | `set_limits(e_deadband, ki_saturation)` |
+| Зона нечувствительности | `get_e_deadband()` | `set_limits(e_deadband, ki_saturation)` |
+| Интервал расчёта, секунды | `get_dt()` | `set_dt(value)` |
+
+Остались три сеттера: `set_k(kp, ki, kd)`, `set_dt(dt)` и `set_limits(e_deadband, ki_saturation)`; отдельные сеттеры коэффициентов/пределов удалены. Каждая группа применяется отдельно. `set_k()` записывает все коэффициенты и затем один раз ограничивает сохранённый интеграл с новым `ki`. `set_limits()` записывает оба предела и затем один раз ограничивает интеграл новым пределом составляющей, в том числе в зоне нечувствительности. При нулевом `ki` сырой I сохраняется, а интегральная составляющая равна нулю; последующая установка ненулевого `ki` применит ограничение. Сеттеры не обнуляют предыдущую ошибку и производную. `set_dt()` сохраняет всё состояние расчёта. Сброс выполняется явно; непрерывность выхода при настройке не гарантируется.
+
+Пользователь передаёт конечные значения, неотрицательные предел/зону и положительный `dt`; проверки и синхронизация в сеттеры не добавляются. `set_dt()` влияет на следующий расчёт `u()`, не меняя аппаратный таймер или планировщик. Фактический период вызова приложение тоже меняет само. Нулевой интервал сохраняет описанное поведение `u()` без чтения входов и изменения состояния.
+
+```cpp
+// После чтения значений из памяти приложения, вне выполняющегося u().
+void ApplyTuning(float kp, float ki, float kd, float saturation, float deadband, float dt) {
+    controller.set_limits(deadband, saturation);
+    controller.set_k(kp, ki, kd);
+    controller.set_dt(dt); // Либо 1.0f / sample_rate_hz при положительной частоте.
+}
+```
+
+**Миграция:** подключайте `PID.hpp`, передавайте восемь аргументов непосредственно конструктору `PID` и замените `PID(&state)` на `controller.u()`. Вместо `zero_PID_I_D()` — `Reset()`, вместо `max_ki_I` — аргумент конструктора `ki_saturation`, вместо изменения `dT`/`e` перед вызовом — настроенный `dt` и входные указатели. Старый C API/структура конфигурации удалены. CMake собирает `math/PID.cpp`.
 
 ---
 
