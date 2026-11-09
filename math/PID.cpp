@@ -9,20 +9,20 @@
 
 float PID::u()
 {
-	if (_dt == 0.0f) return 0.0f;
+	if (_parameters.dt == 0.0f) return 0.0f;
 
 	const float target = *_target;
 	const float data = *_data;
 	const float error = target - data;
-	if (error > _e_deadband || error < -_e_deadband) {
-		if (_ki != 0.0f) {
-			float integral = _integral + (error + _previous_error) * 0.5f * _dt;
-			if (fabsf(_ki * integral) > _i_ki_saturation)
-				integral = (integral > 0.0f ? _i_ki_saturation : -_i_ki_saturation)
-					/ fabsf(_ki);
+	if (error > _parameters.e_deadband || error < -_parameters.e_deadband) {
+		if (_parameters.ki != 0.0f) {
+			float integral = _integral + (error + _previous_error) * 0.5f * _parameters.dt;
+			if (fabsf(_parameters.ki * integral) > _parameters.ki_saturation)
+				integral = (integral > 0.0f ? _parameters.ki_saturation : -_parameters.ki_saturation)
+					/ fabsf(_parameters.ki);
 			_integral = integral;
 		}
-		_derivative = (error - _previous_error) / _dt;
+		_derivative = (error - _previous_error) / _parameters.dt;
 	} else {
 		_derivative = 0.0f;
 	}
