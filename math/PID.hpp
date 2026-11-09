@@ -113,6 +113,7 @@ public:
 	inline float p_term() const { return _parameters.kp * _previous_error; }
 	inline float i_term() const { return _parameters.ki * _integral; }
 	inline float d_term() const { return _parameters.kd * _derivative; }
+	inline float e_term() const { return _previous_error; }
 
 private:
 	Parameters _parameters{};
