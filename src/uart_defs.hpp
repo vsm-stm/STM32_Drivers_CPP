@@ -67,14 +67,14 @@ static constexpr IRQn_Type uart2_irq = USART2_IRQn;
 #if defined(STM32G0)
 
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 50U, USART1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 51U, USART1_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 50U, USART1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 51U, USART1_BASE, DMA_Sx::DIR::To_Per };
 
-    };
-    static constexpr Instance instance = { USART1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR2)), RCC_APBENR2_USART1EN, &System::APB1BusClock, USART1_IRQn, RCC_CCIPR_USART1SEL,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	};
+	static constexpr Instance instance = { USART1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR2)), RCC_APBENR2_USART1EN, &System::APB1BusClock, USART1_IRQn, RCC_CCIPR_USART1SEL,
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct TX {
 		static constexpr PIN PA9  = { GPIOA_BASE,  9, 1, USART1_BASE };
@@ -87,19 +87,19 @@ struct _1 {
 };
 
 struct _2 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 52U, USART2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 53U, USART2_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 52U, USART2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 53U, USART2_BASE, DMA_Sx::DIR::To_Per };
 
-    };
+	};
 #ifdef RCC_CCIPR_USART2SEL
-    static constexpr Instance instance = { USART2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART2EN, &System::APB1BusClock, uart2_irq, RCC_CCIPR_USART2SEL,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	static constexpr Instance instance = { USART2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART2EN, &System::APB1BusClock, uart2_irq, RCC_CCIPR_USART2SEL,
+		DMA::TX.ch, DMA::RX.ch
+	};
 #else
-    static constexpr Instance instance = { USART2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART2EN, &System::APB1BusClock, uart2_irq, 0,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	static constexpr Instance instance = { USART2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART2EN, &System::APB1BusClock, uart2_irq, 0,
+		DMA::TX.ch, DMA::RX.ch
+	};
 #endif
 
 	struct TX {
@@ -114,19 +114,19 @@ struct _2 {
 
 #ifdef USART3_BASE
 struct _3 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 54U, USART3_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 55U, USART3_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 54U, USART3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 55U, USART3_BASE, DMA_Sx::DIR::To_Per };
 
-    };
+	};
 #ifdef RCC_CCIPR_USART3SEL
-    static constexpr Instance instance = { USART3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART3EN, &System::APB1BusClock, uart_shared_irq, RCC_CCIPR_USART3SEL,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	static constexpr Instance instance = { USART3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART3EN, &System::APB1BusClock, uart_shared_irq, RCC_CCIPR_USART3SEL,
+		DMA::TX.ch, DMA::RX.ch
+	};
 #else
-    static constexpr Instance instance = { USART3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART3EN, &System::APB1BusClock, uart_shared_irq, 0,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	static constexpr Instance instance = { USART3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART3EN, &System::APB1BusClock, uart_shared_irq, 0,
+		DMA::TX.ch, DMA::RX.ch
+	};
 #endif
 
 	struct TX {
@@ -144,14 +144,14 @@ struct _3 {
 
 #ifdef USART4_BASE
 struct _4 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 56U, USART4_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 57U, USART4_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 56U, USART4_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 57U, USART4_BASE, DMA_Sx::DIR::To_Per };
 
-    };
-    static constexpr Instance instance = { USART4_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART4EN, &System::APB1BusClock, uart_shared_irq, 0,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	};
+	static constexpr Instance instance = { USART4_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART4EN, &System::APB1BusClock, uart_shared_irq, 0,
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct TX {
 		static constexpr PIN PA0  = { GPIOA_BASE,  0, 4, USART4_BASE };
@@ -166,14 +166,14 @@ struct _4 {
 
 #ifdef USART5_BASE
 struct _5 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 74U, USART5_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 75U, USART5_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 74U, USART5_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 75U, USART5_BASE, DMA_Sx::DIR::To_Per };
 
-    };
-    static constexpr Instance instance = { USART5_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART5EN, &System::APB1BusClock, uart_shared_irq, 0,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	};
+	static constexpr Instance instance = { USART5_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART5EN, &System::APB1BusClock, uart_shared_irq, 0,
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct TX { static constexpr PIN PC12 = { GPIOC_BASE, 12, 3, USART5_BASE }; };
 	struct RX {
@@ -187,14 +187,14 @@ struct _5 {
 #endif
 #ifdef USART6_BASE
 struct _6 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 76U, USART6_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 77U, USART6_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 76U, USART6_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 77U, USART6_BASE, DMA_Sx::DIR::To_Per };
 
-    };
-    static constexpr Instance instance = { USART6_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART6EN, &System::APB1BusClock, uart_shared_irq, 0,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	};
+	static constexpr Instance instance = { USART6_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_USART6EN, &System::APB1BusClock, uart_shared_irq, 0,
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct TX { static constexpr PIN PC0 = { GPIOC_BASE, 0, 4, USART6_BASE }; };
 	struct RX { static constexpr PIN PC1 = { GPIOC_BASE, 1, 4, USART6_BASE }; };
@@ -222,13 +222,13 @@ static constexpr uint32_t FIFO_TH_RX_Pos = USART_CR3_RXFTCFG_Pos;
 #elif defined(STM32F4) || defined(STM32F7)
 
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 4U, USART1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream7 = { DMA2_Stream7_BASE, 4U, USART1_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream5 = { DMA2_Stream5_BASE, 4U, USART1_BASE, DMA_Sx::DIR::From_Per };  // USART1_RX, not TX.
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 4U, USART1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream7 = { DMA2_Stream7_BASE, 4U, USART1_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream5 = { DMA2_Stream5_BASE, 4U, USART1_BASE, DMA_Sx::DIR::From_Per };  // USART1_RX, not TX.
 
-    };
-    static constexpr Instance instance = UART_INFO(USART1, APB2, USART1_IRQn, RCC_DCKCFGR2_USART1SEL);
+	};
+	static constexpr Instance instance = UART_INFO(USART1, APB2, USART1_IRQn, RCC_DCKCFGR2_USART1SEL);
 
 	struct TX {
 		static constexpr PIN PA9  = { GPIOA_BASE,  9, 7, USART1_BASE };
@@ -241,12 +241,12 @@ struct _1 {
 };
 
 struct _2 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 4U, USART2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 4U, USART2_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 4U, USART2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 4U, USART2_BASE, DMA_Sx::DIR::To_Per };
 
-    };
-    static constexpr Instance instance = UART_INFO(USART2, APB1, USART2_IRQn, RCC_DCKCFGR2_USART2SEL);
+	};
+	static constexpr Instance instance = UART_INFO(USART2, APB1, USART2_IRQn, RCC_DCKCFGR2_USART2SEL);
 
 	struct TX {
 		static constexpr PIN PA2  = { GPIOA_BASE,  2, 7, USART2_BASE };
@@ -264,13 +264,13 @@ struct _2 {
 
 #ifdef USART3_BASE
 struct _3 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 4U, USART3_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream3 = { DMA1_Stream3_BASE, 4U, USART3_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 7U, USART3_BASE, DMA_Sx::DIR::To_Per };  // Stream4 Ch7
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 4U, USART3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream3 = { DMA1_Stream3_BASE, 4U, USART3_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 7U, USART3_BASE, DMA_Sx::DIR::To_Per };  // Stream4 Ch7
 
-    };
-    static constexpr Instance instance = UART_INFO(USART3, APB1, USART3_IRQn, RCC_DCKCFGR2_USART3SEL);
+	};
+	static constexpr Instance instance = UART_INFO(USART3, APB1, USART3_IRQn, RCC_DCKCFGR2_USART3SEL);
 
 	struct TX {
 		static constexpr PIN PB10 = { GPIOB_BASE, 10, 7, USART3_BASE };
@@ -291,12 +291,12 @@ struct _3 {
 
 #ifdef UART4_BASE
 struct _4 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 4U, UART4_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 4U, UART4_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 4U, UART4_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 4U, UART4_BASE, DMA_Sx::DIR::To_Per };
 
-    };
-    static constexpr Instance instance = UART_INFO(UART4, APB1, UART4_IRQn, RCC_DCKCFGR2_UART4SEL);
+	};
+	static constexpr Instance instance = UART_INFO(UART4, APB1, UART4_IRQn, RCC_DCKCFGR2_UART4SEL);
 
 	struct TX {
 		static constexpr PIN PA0  = { GPIOA_BASE,  0, 8, UART4_BASE };
@@ -311,12 +311,12 @@ struct _4 {
 
 #ifdef UART5_BASE
 struct _5 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 4U, UART5_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 4U, UART5_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 4U, UART5_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 4U, UART5_BASE, DMA_Sx::DIR::To_Per };
 
-    };
-    static constexpr Instance instance = UART_INFO(UART5, APB1, UART5_IRQn, RCC_DCKCFGR2_UART5SEL);
+	};
+	static constexpr Instance instance = UART_INFO(UART5, APB1, UART5_IRQn, RCC_DCKCFGR2_UART5SEL);
 
 	struct TX {
 		static constexpr PIN PC12 = { GPIOC_BASE, 12, 8, UART5_BASE };
@@ -331,14 +331,14 @@ struct _5 {
 
 #ifdef USART6_BASE
 struct _6 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream1 = { DMA2_Stream1_BASE, 5U, USART6_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream6 = { DMA2_Stream6_BASE, 5U, USART6_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 5U, USART6_BASE, DMA_Sx::DIR::From_Per };  // Stream2 Ch5
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream7 = { DMA2_Stream7_BASE, 5U, USART6_BASE, DMA_Sx::DIR::To_Per };  // Stream7 Ch5
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream1 = { DMA2_Stream1_BASE, 5U, USART6_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream6 = { DMA2_Stream6_BASE, 5U, USART6_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 5U, USART6_BASE, DMA_Sx::DIR::From_Per };  // Stream2 Ch5
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream7 = { DMA2_Stream7_BASE, 5U, USART6_BASE, DMA_Sx::DIR::To_Per };  // Stream7 Ch5
 
-    };
-    static constexpr Instance instance = UART_INFO(USART6, APB2, USART6_IRQn, RCC_DCKCFGR2_USART6SEL);
+	};
+	static constexpr Instance instance = UART_INFO(USART6, APB2, USART6_IRQn, RCC_DCKCFGR2_USART6SEL);
 
 	struct TX {
 		static constexpr PIN PC6  = { GPIOC_BASE,  6, 8, USART6_BASE };
@@ -357,12 +357,12 @@ struct _6 {
 
 #ifdef UART7_BASE
 struct _7 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream1 = { DMA1_Stream1_BASE, 5U, UART7_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 5U, UART7_BASE, DMA_Sx::DIR::From_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream1 = { DMA1_Stream1_BASE, 5U, UART7_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 5U, UART7_BASE, DMA_Sx::DIR::From_Per };
 
-    };
-    static constexpr Instance instance = UART_INFO(UART7, APB1, UART7_IRQn, RCC_DCKCFGR2_UART7SEL);
+	};
+	static constexpr Instance instance = UART_INFO(UART7, APB1, UART7_IRQn, RCC_DCKCFGR2_UART7SEL);
 
 	struct TX {
 #ifdef GPIOE_BASE
@@ -385,12 +385,12 @@ struct _7 {
 
 #ifdef UART8_BASE
 struct _8 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream0 = { DMA1_Stream0_BASE, 5U, UART8_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream6 = { DMA1_Stream6_BASE, 5U, UART8_BASE, DMA_Sx::DIR::From_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream0 = { DMA1_Stream0_BASE, 5U, UART8_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream6 = { DMA1_Stream6_BASE, 5U, UART8_BASE, DMA_Sx::DIR::From_Per };
 
-    };
-    static constexpr Instance instance = UART_INFO(UART8, APB1, UART8_IRQn, RCC_DCKCFGR2_UART8SEL);
+	};
+	static constexpr Instance instance = UART_INFO(UART8, APB1, UART8_IRQn, RCC_DCKCFGR2_UART8SEL);
 
 	struct TX {
 #ifdef GPIOE_BASE

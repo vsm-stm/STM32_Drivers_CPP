@@ -124,22 +124,22 @@ public:
 	// -----------------------------------------------------------------------
 	// Pin tables: I2C::_N::SCL::<PXn>, I2C::_N::SDA::<PXn>
 	// -----------------------------------------------------------------------
-    /** Fixed device metadata from i2c_defs.hpp; no runtime lookup. */
-    struct Instance {
-        uintptr_t periph;
-        uintptr_t clk_reg;
-        uint32_t            clk_bit;
-        uintptr_t rst_reg;
-        uint32_t            rst_bit;
-        uintptr_t ksel_reg;   ///< Kernel clock selector (0: none)
-        uint32_t            ksel_mask;  ///< Cleared -> PCLK
-        IRQn_Type           irq_ev;
-        IRQn_Type           irq_er;     ///< Same as irq_ev on G0
-        uint32_t            fmp_bit;    ///< SYSCFG Fm+ enable (0: none)
+	/** Fixed device metadata from i2c_defs.hpp; no runtime lookup. */
+	struct Instance {
+		uintptr_t periph;
+		uintptr_t clk_reg;
+		uint32_t            clk_bit;
+		uintptr_t rst_reg;
+		uint32_t            rst_bit;
+		uintptr_t ksel_reg;   ///< Kernel clock selector (0: none)
+		uint32_t            ksel_mask;  ///< Cleared -> PCLK
+		IRQn_Type           irq_ev;
+		IRQn_Type           irq_er;     ///< Same as irq_ev on G0
+		uint32_t            fmp_bit;    ///< SYSCFG Fm+ enable (0: none)
 #if defined(STM32G0)
-        uint32_t dma_tx_request, dma_rx_request;
+		uint32_t dma_tx_request, dma_rx_request;
 #endif
-    };
+	};
 #include "i2c_defs.hpp"
 
 #if defined(STM32G0)
@@ -166,22 +166,22 @@ public:
 		  _dma_tx(dma_tx), _dma_rx(dma_rx),
 #endif
 		  _dma_tx_irq(*this), _dma_rx_irq(*this)
-    {
-        if (!scl.IsValid())
-            STM32_CONFIG_ERROR("I2C: SCL pin is required");
-        if (scl.periph_base != instance.periph)
-            STM32_CONFIG_ERROR("I2C: SCL pin belongs to another peripheral");
-        if (!sda.IsValid())
-            STM32_CONFIG_ERROR("I2C: SDA pin is required");
-        if (sda.periph_base != instance.periph)
-            STM32_CONFIG_ERROR("I2C: SDA pin belongs to another peripheral");
-        if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
-            STM32_CONFIG_ERROR("I2C: invalid TX DMA route");
-        if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
-            STM32_CONFIG_ERROR("I2C: invalid RX DMA route");
-        if (DMA_Sx::SameResource(dma_tx, dma_rx))
-            STM32_CONFIG_ERROR("I2C: TX and RX require different DMA resources");
-    }
+	{
+		if (!scl.IsValid())
+			STM32_CONFIG_ERROR("I2C: SCL pin is required");
+		if (scl.periph_base != instance.periph)
+			STM32_CONFIG_ERROR("I2C: SCL pin belongs to another peripheral");
+		if (!sda.IsValid())
+			STM32_CONFIG_ERROR("I2C: SDA pin is required");
+		if (sda.periph_base != instance.periph)
+			STM32_CONFIG_ERROR("I2C: SDA pin belongs to another peripheral");
+		if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
+			STM32_CONFIG_ERROR("I2C: invalid TX DMA route");
+		if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
+			STM32_CONFIG_ERROR("I2C: invalid RX DMA route");
+		if (DMA_Sx::SameResource(dma_tx, dma_rx))
+			STM32_CONFIG_ERROR("I2C: TX and RX require different DMA resources");
+	}
 
 	I2C() = delete;
 	I2C(I2C const&) = delete;

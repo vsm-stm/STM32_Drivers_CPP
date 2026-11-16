@@ -64,61 +64,61 @@
 class EXTI_Line : public IIRQHandler
 {
 public:
-    enum class Edge : uint8_t { Rising = 1, Falling = 2, Both = 3 };
+	enum class Edge : uint8_t { Rising = 1, Falling = 2, Both = 3 };
 
-    /**
-     * @brief Bind an external GPIO pin and edge selection, without MMIO access.
-     * Use constinit: absent pins, numbers outside 0..15 and invalid edges are compile errors.
-     * Use PIN(GPIOx_BASE, number) or a named constexpr pin. The selected device/package must expose that physical pin.
-     */
-    constexpr EXTI_Line(PIN pin, Edge edge) : _pin(pin), _edge(edge)
-    {
-        if (!pin.IsValid() || pin.GetNumber() >= 16U)
-            STM32_CONFIG_ERROR("EXTI: a valid external GPIO pin is required");
-        if (static_cast<uint32_t>(edge) < 1U || static_cast<uint32_t>(edge) > 3U)
-            STM32_CONFIG_ERROR("EXTI: invalid edge selection");
-    }
-    EXTI_Line(const EXTI_Line&) = delete;
-    EXTI_Line(EXTI_Line&&) = delete;
-    EXTI_Line& operator=(const EXTI_Line&) = delete;
-    EXTI_Line& operator=(EXTI_Line&&) = delete;
+	/**
+	 * @brief Bind an external GPIO pin and edge selection, without MMIO access.
+	 * Use constinit: absent pins, numbers outside 0..15 and invalid edges are compile errors.
+	 * Use PIN(GPIOx_BASE, number) or a named constexpr pin. The selected device/package must expose that physical pin.
+	 */
+	constexpr EXTI_Line(PIN pin, Edge edge) : _pin(pin), _edge(edge)
+	{
+		if (!pin.IsValid() || pin.GetNumber() >= 16U)
+			STM32_CONFIG_ERROR("EXTI: a valid external GPIO pin is required");
+		if (static_cast<uint32_t>(edge) < 1U || static_cast<uint32_t>(edge) > 3U)
+			STM32_CONFIG_ERROR("EXTI: invalid edge selection");
+	}
+	EXTI_Line(const EXTI_Line&) = delete;
+	EXTI_Line(EXTI_Line&&) = delete;
+	EXTI_Line& operator=(const EXTI_Line&) = delete;
+	EXTI_Line& operator=(EXTI_Line&&) = delete;
 
-    /**
-     * @brief Main-only input/pull setup, registration and interrupt enable.
-     * type must be INPUT_NO_Pull, INPUT_PullUp or INPUT_PullDown.
-     * InitError: repeated setup, a used line, invalid type or registry failure.
-     * These errors leave GPIO/EXTI unchanged and restore the previous NVIC mask.
-     * InitOK: source and NVIC are enabled. Repeat configuration needs DeInit.
-     */
-    SysInitStatus SetUp(PIN::TYPE type = PIN::TYPE::INPUT_NO_Pull);
+	/**
+	 * @brief Main-only input/pull setup, registration and interrupt enable.
+	 * type must be INPUT_NO_Pull, INPUT_PullUp or INPUT_PullDown.
+	 * InitError: repeated setup, a used line, invalid type or registry failure.
+	 * These errors leave GPIO/EXTI unchanged and restore the previous NVIC mask.
+	 * InitOK: source and NVIC are enabled. Repeat configuration needs DeInit.
+	 */
+	SysInitStatus SetUp(PIN::TYPE type = PIN::TYPE::INPUT_NO_Pull);
 
-    /// Gate only this source after setup; preserve pending flags and shared NVIC.
-    void IRQ_en(FunctionalState en);
-    /// The physical IRQ, for caller-controlled priority/serialization.
-    IRQn_Type GetIRQn() const;
+	/// Gate only this source after setup; preserve pending flags and shared NVIC.
+	void IRQ_en(FunctionalState en);
+	/// The physical IRQ, for caller-controlled priority/serialization.
+	IRQn_Type GetIRQn() const;
 
-    /**
-     * @brief Main-only release of this line and its registry entry, no callbacks.
-     * Mask source, disable edge detection, acknowledge own flags, free ownership.
-     * Other lines/internal sources/handlers survive. NVIC is disabled only while
-     * changing the registry, and stays disabled if no registered handlers remain.
-     * GPIO input/pull configuration and shared GPIO/SYSCFG clocks are retained.
-     * Constructor bindings survive. Call explicitly before object destruction;
-     * the destructor performs no hardware teardown.
-     */
-    void DeInit();
+	/**
+	 * @brief Main-only release of this line and its registry entry, no callbacks.
+	 * Mask source, disable edge detection, acknowledge own flags, free ownership.
+	 * Other lines/internal sources/handlers survive. NVIC is disabled only while
+	 * changing the registry, and stays disabled if no registered handlers remain.
+	 * GPIO input/pull configuration and shared GPIO/SYSCFG clocks are retained.
+	 * Constructor bindings survive. Call explicitly before object destruction;
+	 * the destructor performs no hardware teardown.
+	 */
+	void DeInit();
 
 protected:
-    /// IRQ notification, after acknowledgement. Default implementation is empty.
-    virtual void OnInterrupt() {}
+	/// IRQ notification, after acknowledgement. Default implementation is empty.
+	virtual void OnInterrupt() {}
 
 private:
-    PIN _pin; // PIN's binding fields are immutable; SetUp configures its hardware.
-    const Edge _edge;
-    bool _initialized = false;
-    static uint16_t _used_lines;
+	PIN _pin; // PIN's binding fields are immutable; SetUp configures its hardware.
+	const Edge _edge;
+	bool _initialized = false;
+	static uint16_t _used_lines;
 
-    void HandleIRQ() override final;
+	void HandleIRQ() override final;
 };
 
 #endif // EXTI_HPP_

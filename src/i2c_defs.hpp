@@ -57,15 +57,15 @@
 
 #if defined(I2C1_BASE)
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 10U, I2C1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 11U, I2C1_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C1RST,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 10U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 11U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C1RST,
 	  (RCC_BASE + offsetof(RCC_TypeDef, CCIPR)), RCC_CCIPR_I2C1SEL, I2C1_IRQn, I2C1_IRQn,
 	  SYSCFG_CFGR1_I2C1_FMP,
-        DMA::TX.ch, DMA::RX.ch
-    };
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct SCL {
 		static constexpr PIN PA9  = { GPIOA_BASE,  9,  6, I2C1_BASE };
@@ -82,15 +82,15 @@ struct _1 {
 
 #if defined(I2C2_BASE)
 struct _2 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 12U, I2C2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 13U, I2C2_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C2RST,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 12U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 13U, I2C2_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C2RST,
 	  (RCC_BASE + offsetof(RCC_TypeDef, CCIPR)), I2C2_KSEL, I2C2_IRQ_LINE, I2C2_IRQ_LINE,
 	  SYSCFG_CFGR1_I2C2_FMP,
-        DMA::TX.ch, DMA::RX.ch
-    };
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct SCL {
 #if defined(I2C_LINE_G0Bx)
@@ -125,15 +125,15 @@ struct _2 {
 
 #if defined(I2C3_BASE)
 struct _3 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 62U, I2C3_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 63U, I2C3_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C3RST,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 62U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 63U, I2C3_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_I2C3RST,
 	  (RCC_BASE + offsetof(RCC_TypeDef, CCIPR)), 0u, I2C2_3_IRQn, I2C2_3_IRQn,
 	  SYSCFG_CFGR1_I2C3_FMP,
-        DMA::TX.ch, DMA::RX.ch
-    };
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct SCL {
 		static constexpr PIN PA7  = { GPIOA_BASE,  7,  9, I2C3_BASE };
@@ -184,13 +184,13 @@ struct _3 {
 
 #if defined(I2C1_BASE)
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C1RST,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C1RST,
 	  0, 0u, I2C1_EV_IRQn, I2C1_ER_IRQn,
 	  0u
 
@@ -209,12 +209,12 @@ struct _1 {
 
 #if defined(I2C2_BASE)
 struct _2 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C2RST,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C2RST,
 	  0, 0u, I2C2_EV_IRQn, I2C2_ER_IRQn,
 	  0u
 
@@ -255,14 +255,14 @@ struct _2 {
 
 #if defined(I2C3_BASE)
 struct _3 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::To_Per };
 #if defined(STM32F7)
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 1U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 1U, I2C3_BASE, DMA_Sx::DIR::From_Per };
 #endif
-    };
-    static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C3RST,
+	};
+	static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C3RST,
 	  0, 0u, I2C3_EV_IRQn, I2C3_ER_IRQn,
 	  0u
 
@@ -305,13 +305,13 @@ struct _3 {
 
 #if defined(I2C1_BASE)
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C1RST,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream5 = { DMA1_Stream5_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream6 = { DMA1_Stream6_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 1U, I2C1_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { I2C1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C1EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C1RST,
 	  (RCC_BASE + offsetof(RCC_TypeDef, DCKCFGR2)), RCC_DCKCFGR2_I2C1SEL, I2C1_EV_IRQn, I2C1_ER_IRQn,
 	  SYSCFG_PMC_I2C1_FMP
 
@@ -330,12 +330,12 @@ struct _1 {
 
 #if defined(I2C2_BASE)
 struct _2 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C2RST,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 7U, I2C2_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { I2C2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C2EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C2RST,
 	  (RCC_BASE + offsetof(RCC_TypeDef, DCKCFGR2)), RCC_DCKCFGR2_I2C2SEL, I2C2_EV_IRQn, I2C2_ER_IRQn,
 	  SYSCFG_PMC_I2C2_FMP
 
@@ -364,14 +364,14 @@ struct _2 {
 
 #if defined(I2C3_BASE)
 struct _3 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::To_Per };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 3U, I2C3_BASE, DMA_Sx::DIR::To_Per };
 #if defined(STM32F7)
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 1U, I2C3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream1 = { DMA1_Stream1_BASE, 1U, I2C3_BASE, DMA_Sx::DIR::From_Per };
 #endif
-    };
-    static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C3RST,
+	};
+	static constexpr Instance instance = { I2C3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C3EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C3RST,
 	  (RCC_BASE + offsetof(RCC_TypeDef, DCKCFGR2)), RCC_DCKCFGR2_I2C3SEL, I2C3_EV_IRQn, I2C3_ER_IRQn,
 	  SYSCFG_PMC_I2C3_FMP
 
@@ -396,11 +396,11 @@ struct _3 {
 
 #if defined(I2C4_BASE)
 struct _4 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 2U, I2C4_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream5 = { DMA1_Stream5_BASE, 2U, I2C4_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { I2C4_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C4EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C4RST,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 2U, I2C4_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream5 = { DMA1_Stream5_BASE, 2U, I2C4_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { I2C4_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_I2C4EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_I2C4RST,
 	  (RCC_BASE + offsetof(RCC_TypeDef, DCKCFGR2)), RCC_DCKCFGR2_I2C4SEL, I2C4_EV_IRQn, I2C4_ER_IRQn,
 	  SYSCFG_PMC_I2C4_FMP
 

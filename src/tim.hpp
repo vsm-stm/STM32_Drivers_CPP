@@ -132,443 +132,443 @@ struct TIM_PIN {
 class TIM : public IIRQHandler
 {
 public:
-    enum class Channel : uint8_t { CH1, CH2, CH3, CH4 };
-    enum class EncoderMode : uint32_t {
-        X2_CH1 = TIM_SMCR_SMS_0, X2_CH2 = TIM_SMCR_SMS_1,
-        X4 = TIM_SMCR_SMS_0 | TIM_SMCR_SMS_1
-    };
-    enum class SlaveMode : uint32_t {
-        Reset = TIM_SMCR_SMS_2,
-        Gated = TIM_SMCR_SMS_2 | TIM_SMCR_SMS_0,
-        Trigger = TIM_SMCR_SMS_2 | TIM_SMCR_SMS_1,
-        ExternalClock = TIM_SMCR_SMS_2 | TIM_SMCR_SMS_1 | TIM_SMCR_SMS_0
-    };
-    enum class IRQ : uint32_t {
-        UE = TIM_DIER_UIE, CC1 = TIM_DIER_CC1IE, CC2 = TIM_DIER_CC2IE,
-        CC3 = TIM_DIER_CC3IE, CC4 = TIM_DIER_CC4IE
-    };
-    /// Hardware MMS field. ComparePulse is CC1's event; OCxRef needs a PWM channel.
-    enum class Trigger : uint32_t {
-        Update = 2U << TIM_CR2_MMS_Pos,
-        ComparePulse = 3U << TIM_CR2_MMS_Pos,
-        OC1Ref = 4U << TIM_CR2_MMS_Pos, OC2Ref = 5U << TIM_CR2_MMS_Pos,
-        OC3Ref = 6U << TIM_CR2_MMS_Pos, OC4Ref = 7U << TIM_CR2_MMS_Pos
-    };
-    using TIM_PIN = ::TIM_PIN;
-    /** Fixed device metadata from tim_defs.hpp; no runtime lookup. */
-    struct Instance {
-        uintptr_t periph;
-        uintptr_t clk_reg;
-        uint32_t clk_bit;
-        uintptr_t rst_reg;
-        uint32_t rst_bit;
-        const uint32_t* bus_clk;
-        IRQn_Type irq_up, irq_cc;
-        bool has_bdtr;
-        uint8_t channel_count;
-        uint32_t arr_max;
-    };
+	enum class Channel : uint8_t { CH1, CH2, CH3, CH4 };
+	enum class EncoderMode : uint32_t {
+		X2_CH1 = TIM_SMCR_SMS_0, X2_CH2 = TIM_SMCR_SMS_1,
+		X4 = TIM_SMCR_SMS_0 | TIM_SMCR_SMS_1
+	};
+	enum class SlaveMode : uint32_t {
+		Reset = TIM_SMCR_SMS_2,
+		Gated = TIM_SMCR_SMS_2 | TIM_SMCR_SMS_0,
+		Trigger = TIM_SMCR_SMS_2 | TIM_SMCR_SMS_1,
+		ExternalClock = TIM_SMCR_SMS_2 | TIM_SMCR_SMS_1 | TIM_SMCR_SMS_0
+	};
+	enum class IRQ : uint32_t {
+		UE = TIM_DIER_UIE, CC1 = TIM_DIER_CC1IE, CC2 = TIM_DIER_CC2IE,
+		CC3 = TIM_DIER_CC3IE, CC4 = TIM_DIER_CC4IE
+	};
+	/// Hardware MMS field. ComparePulse is CC1's event; OCxRef needs a PWM channel.
+	enum class Trigger : uint32_t {
+		Update = 2U << TIM_CR2_MMS_Pos,
+		ComparePulse = 3U << TIM_CR2_MMS_Pos,
+		OC1Ref = 4U << TIM_CR2_MMS_Pos, OC2Ref = 5U << TIM_CR2_MMS_Pos,
+		OC3Ref = 6U << TIM_CR2_MMS_Pos, OC4Ref = 7U << TIM_CR2_MMS_Pos
+	};
+	using TIM_PIN = ::TIM_PIN;
+	/** Fixed device metadata from tim_defs.hpp; no runtime lookup. */
+	struct Instance {
+		uintptr_t periph;
+		uintptr_t clk_reg;
+		uint32_t clk_bit;
+		uintptr_t rst_reg;
+		uint32_t rst_bit;
+		const uint32_t* bus_clk;
+		IRQn_Type irq_up, irq_cc;
+		bool has_bdtr;
+		uint8_t channel_count;
+		uint32_t arr_max;
+	};
 #include "tim_defs.hpp"
 
 #if defined(STM32G0)
-    using DMAReq = uintptr_t;
+	using DMAReq = uintptr_t;
 #else
-    using DMAReq = DMA_Sx::DMAReq;
+	using DMAReq = DMA_Sx::DMAReq;
 #endif
-    /** Constructor parameters, not channel objects. Pin determines the channel. */
-    struct ChannelConfig {
-        TIM_PIN pin;
-        DMAReq dma;
-        constexpr ChannelConfig(TIM_PIN p = {}, DMAReq d = {}) : pin(p), dma(d) {}
-    };
-    /**
-     * @brief Bind hardware, up to four {pin, dma} descriptions and an optional counter TIM.
-     * No MMIO access or DMA acquisition. Bindings have no reassignment API.
-     * Use constinit: wrong/duplicate channels and DMA without a pin are compile errors.
-     * Named pins are consteval-checked; package bonding remains a caller check.
-     * F4/F7 take a named Req; G0 takes a physical channel and derives its request.
-     * Route validation is done in the constructor; the existing channel map is shared.
-     * counter is the second TIM for finite quadrature generation. It is fixed
-     * here, not attached later. Construct it first and keep it alive throughout
-     * the generator's use. Init checks the normal TRGO/ITR connection;
-     * no hardware or registry resources of either TIM are acquired here.
-     * SetUpQuadrature initializes/reserves that counter; generator DeInit
-     * releases it. Do not configure/use it independently during this interval.
-     * cache_policy defaults to Cacheable (any buffer), shared by all channels.
-     * NonCacheable skips cache calls; caller guarantees DTCM/non-cacheable MPU RAM.
-     * TIM_USE_ATOMIC selects ordinary (0, default) or ST atomic (1) control updates.
-     *
-     * @code
-     *   constexpr TIM::DMAReq dma = TIM::_1::DMA::CH1_DMA2_Stream1; // F4/F7 example
-     *   constinit TIM pwm(TIM::_1::instance, {TIM::_1::CH1::PA8, dma});
-     *   // G0: constexpr TIM::DMAReq dma = DMA1_Channel3_BASE;
-     * @endcode
-     */
-    constexpr explicit TIM(const Instance& instance, ChannelConfig c0 = {}, ChannelConfig c1 = {},
-                 ChannelConfig c2 = {}, ChannelConfig c3 = {}, TIM* counter = nullptr,
-                 System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
-        : _instance(instance), _cache_policy(cache_policy), _counter(counter),
-          _channels{{instance.periph, ChannelBinding(0, c0, c1, c2, c3)},
-                    {instance.periph, ChannelBinding(1, c0, c1, c2, c3)},
-                    {instance.periph, ChannelBinding(2, c0, c1, c2, c3)},
-                    {instance.periph, ChannelBinding(3, c0, c1, c2, c3)}},
-          _dma_irq0(*this), _dma_irq1(*this), _dma_irq2(*this), _dma_irq3(*this)
-    {
-        uint8_t seen = 0;
-        for (const ChannelConfig& cfg : {c0, c1, c2, c3}) {
+	/** Constructor parameters, not channel objects. Pin determines the channel. */
+	struct ChannelConfig {
+		TIM_PIN pin;
+		DMAReq dma;
+		constexpr ChannelConfig(TIM_PIN p = {}, DMAReq d = {}) : pin(p), dma(d) {}
+	};
+	/**
+	 * @brief Bind hardware, up to four {pin, dma} descriptions and an optional counter TIM.
+	 * No MMIO access or DMA acquisition. Bindings have no reassignment API.
+	 * Use constinit: wrong/duplicate channels and DMA without a pin are compile errors.
+	 * Named pins are consteval-checked; package bonding remains a caller check.
+	 * F4/F7 take a named Req; G0 takes a physical channel and derives its request.
+	 * Route validation is done in the constructor; the existing channel map is shared.
+	 * counter is the second TIM for finite quadrature generation. It is fixed
+	 * here, not attached later. Construct it first and keep it alive throughout
+	 * the generator's use. Init checks the normal TRGO/ITR connection;
+	 * no hardware or registry resources of either TIM are acquired here.
+	 * SetUpQuadrature initializes/reserves that counter; generator DeInit
+	 * releases it. Do not configure/use it independently during this interval.
+	 * cache_policy defaults to Cacheable (any buffer), shared by all channels.
+	 * NonCacheable skips cache calls; caller guarantees DTCM/non-cacheable MPU RAM.
+	 * TIM_USE_ATOMIC selects ordinary (0, default) or ST atomic (1) control updates.
+	 *
+	 * @code
+	 *   constexpr TIM::DMAReq dma = TIM::_1::DMA::CH1_DMA2_Stream1; // F4/F7 example
+	 *   constinit TIM pwm(TIM::_1::instance, {TIM::_1::CH1::PA8, dma});
+	 *   // G0: constexpr TIM::DMAReq dma = DMA1_Channel3_BASE;
+	 * @endcode
+	 */
+	constexpr explicit TIM(const Instance& instance, ChannelConfig c0 = {}, ChannelConfig c1 = {},
+				 ChannelConfig c2 = {}, ChannelConfig c3 = {}, TIM* counter = nullptr,
+				 System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
+		: _instance(instance), _cache_policy(cache_policy), _counter(counter),
+		  _channels{{instance.periph, ChannelBinding(0, c0, c1, c2, c3)},
+					{instance.periph, ChannelBinding(1, c0, c1, c2, c3)},
+					{instance.periph, ChannelBinding(2, c0, c1, c2, c3)},
+					{instance.periph, ChannelBinding(3, c0, c1, c2, c3)}},
+		  _dma_irq0(*this), _dma_irq1(*this), _dma_irq2(*this), _dma_irq3(*this)
+	{
+		uint8_t seen = 0;
+		for (const ChannelConfig& cfg : {c0, c1, c2, c3}) {
 #if defined(STM32G0)
-            const bool has_dma = cfg.dma != 0;
+			const bool has_dma = cfg.dma != 0;
 #else
-            const bool has_dma = cfg.dma.stream || cfg.dma.ch || cfg.dma.periph_base;
+			const bool has_dma = cfg.dma.stream || cfg.dma.ch || cfg.dma.periph_base;
 #endif
-            if (!cfg.pin.IsValid()) {
-                if (has_dma) STM32_CONFIG_ERROR("TIM: DMA requires a channel pin");
-                continue;
-            }
-            if (cfg.pin.channel >= instance.channel_count)
-                STM32_CONFIG_ERROR("TIM: channel is not available on this timer");
-            if (cfg.pin.tim_base != instance.periph)
-                STM32_CONFIG_ERROR("TIM: pin belongs to another timer");
-            if (seen & (1U << cfg.pin.channel))
-                STM32_CONFIG_ERROR("TIM: channel is assigned more than once");
-            seen |= static_cast<uint8_t>(1U << cfg.pin.channel);
-            for (const ChannelConfig& other : {c0, c1, c2, c3})
-                if (other.pin.IsValid() && other.pin.channel != cfg.pin.channel
-                    && DMA_Sx::SameResource(cfg.dma, other.dma))
-                    STM32_CONFIG_ERROR("TIM: channels require different DMA resources");
+			if (!cfg.pin.IsValid()) {
+				if (has_dma) STM32_CONFIG_ERROR("TIM: DMA requires a channel pin");
+				continue;
+			}
+			if (cfg.pin.channel >= instance.channel_count)
+				STM32_CONFIG_ERROR("TIM: channel is not available on this timer");
+			if (cfg.pin.tim_base != instance.periph)
+				STM32_CONFIG_ERROR("TIM: pin belongs to another timer");
+			if (seen & (1U << cfg.pin.channel))
+				STM32_CONFIG_ERROR("TIM: channel is assigned more than once");
+			seen |= static_cast<uint8_t>(1U << cfg.pin.channel);
+			for (const ChannelConfig& other : {c0, c1, c2, c3})
+				if (other.pin.IsValid() && other.pin.channel != cfg.pin.channel
+					&& DMA_Sx::SameResource(cfg.dma, other.dma))
+					STM32_CONFIG_ERROR("TIM: channels require different DMA resources");
 #if defined(STM32G0)
-            if (has_dma && !DMA_Sx::ValidResource(cfg.dma))
-                STM32_CONFIG_ERROR("TIM: invalid physical DMA channel");
-            if (has_dma && !DmaRequest(instance.periph, cfg.pin.channel))
+			if (has_dma && !DMA_Sx::ValidResource(cfg.dma))
+				STM32_CONFIG_ERROR("TIM: invalid physical DMA channel");
+			if (has_dma && !DmaRequest(instance.periph, cfg.pin.channel))
 #else
-            if (has_dma && !DmaMatches(instance.periph, cfg.pin.channel, cfg.dma))
+			if (has_dma && !DmaMatches(instance.periph, cfg.pin.channel, cfg.dma))
 #endif
-                STM32_CONFIG_ERROR("TIM: invalid channel DMA route");
-        }
-    }
-    TIM() = delete;
-    TIM(const TIM&) = delete;
-    TIM(TIM&&) = delete;
-    TIM& operator=(const TIM&) = delete;
-    TIM& operator=(TIM&&) = delete;
+				STM32_CONFIG_ERROR("TIM: invalid channel DMA route");
+		}
+	}
+	TIM() = delete;
+	TIM(const TIM&) = delete;
+	TIM(TIM&&) = delete;
+	TIM& operator=(const TIM&) = delete;
+	TIM& operator=(TIM&&) = delete;
 
-    /**
-     * @brief Configure the base once; Start is explicit.
-     * @param freq Update/PWM frequency in Hz, as in the previous periodic API.
-     * @param cb Update IRQ callback; nullptr leaves Update IRQ disabled.
-     * @param arr Period in CNT ticks, register ARR=arr-1; 0 selects it automatically.
-     * Capture/counter use requires an explicit period. The actual CNT clock is
-     * GetCounterClock(); freq is not the CNT clock. Integer division is retained:
-     * actual Update frequency can differ from freq when divisors are not exact.
-     * Repeated setup, invalid period/dividers, a bad counter TIM/ITR route or IRQ registration
-     * failure return InitError. Failed initial setup releases its acquisitions.
-     */
-    SysInitStatus SetUp(uint32_t freq, void (*cb)(void) = nullptr, uint32_t arr = 0);
+	/**
+	 * @brief Configure the base once; Start is explicit.
+	 * @param freq Update/PWM frequency in Hz, as in the previous periodic API.
+	 * @param cb Update IRQ callback; nullptr leaves Update IRQ disabled.
+	 * @param arr Period in CNT ticks, register ARR=arr-1; 0 selects it automatically.
+	 * Capture/counter use requires an explicit period. The actual CNT clock is
+	 * GetCounterClock(); freq is not the CNT clock. Integer division is retained:
+	 * actual Update frequency can differ from freq when divisors are not exact.
+	 * Repeated setup, invalid period/dividers, a bad counter TIM/ITR route or IRQ registration
+	 * failure return InitError. Failed initial setup releases its acquisitions.
+	 */
+	SysInitStatus SetUp(uint32_t freq, void (*cb)(void) = nullptr, uint32_t arr = 0);
 
-    /**
-     * @brief Whole-timer quadrature reader, on constructor-bound CH1 and CH2.
-     * Call instead of SetUp. No DMA, IRQ, software accumulation or auto-start.
-     * period is mandatory, ARR=period-1; Count reads CNT without sign conversion.
-     * X2_CH1/X2_CH2 count both edges of that input; X4 counts both inputs.
-     * The other channel roles and SMCR are unavailable until DeInit.
-     * @code
-     * constinit TIM encoder(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
-     * if (encoder.SetUpEncoder(65536) == SysInitStatus::InitOK) encoder.Start();
-     * const uint32_t position = encoder.Count();
-     * @endcode
-     */
-    SysInitStatus SetUpEncoder(uint32_t period, EncoderMode mode = EncoderMode::X4);
+	/**
+	 * @brief Whole-timer quadrature reader, on constructor-bound CH1 and CH2.
+	 * Call instead of SetUp. No DMA, IRQ, software accumulation or auto-start.
+	 * period is mandatory, ARR=period-1; Count reads CNT without sign conversion.
+	 * X2_CH1/X2_CH2 count both edges of that input; X4 counts both inputs.
+	 * The other channel roles and SMCR are unavailable until DeInit.
+	 * @code
+	 * constinit TIM encoder(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7});
+	 * if (encoder.SetUpEncoder(65536) == SysInitStatus::InitOK) encoder.Start();
+	 * const uint32_t position = encoder.Count();
+	 * @endcode
+	 */
+	SysInitStatus SetUpEncoder(uint32_t period, EncoderMode mode = EncoderMode::X4);
 
-    /**
-     * @brief Whole-timer finite quadrature generator with a constructor-bound counter.
-     * Call instead of SetUp; a/b are distinct bound output channels, without DMA.
-     * freq is full A/B cycles/s. period is CNT ticks per half cycle, even and >=4;
-     * two toggle channels produce a 90-degree phase displacement. Integer base
-     * division is the same as SetUp, so actual frequency can differ from freq.
-     * The second TIM must be free. This function configures it over ITR with
-     * PSC=1; its CNT counts full A/B cycles, without per-cycle IRQ or RAM copies.
-     * Its range is 65535 cycles on 16-bit hardware; all int32_t magnitudes fit
-     * a 32-bit counter. cb is optional, fixed here, called from the counter IRQ
-     * after stopping both timers. Source TIM IRQ stays disabled.
-     * Repeated setup is an error. DeInit releases both acquired timers.
-     * @code
-     * constinit TIM counter(TIM::_2::instance);
-     * constinit TIM generator(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
-     * if (generator.SetUpQuadrature(TIM::Channel::CH1, TIM::Channel::CH2, 1000, 1000)
-     *     == SysInitStatus::InitOK)
-     *     generator.GenPulse(100); // Check SysStatus. Count via counter.Count().
-     * @endcode
-     */
-    SysInitStatus SetUpQuadrature(Channel a, Channel b, uint32_t freq,
-        uint32_t period, void (*cb)(void) = nullptr);
-    /**
-     * @brief Main-only start/restart of a finite number of full A/B cycles.
-     * Positive: A leads B; negative: B leads A; zero leaves a stopped pair idle.
-     * INT32_MIN is supported when the counter range permits it. Busy while either
-     * timer runs, Error for an out-of-range magnitude. Use this, not plain Start.
-     * Both CNT and prescaler phases reset before arming the counter and starting
-     * the generator. Stop stops both; it does not force the A/B outputs LOW.
-     * Completion is an IRQ stop: excess edges are possible if service is late.
-     * The caller serializes main operations with both timers' IRQs. Do not call
-     * this or DeInit from callbacks, or independently reconfigure the counter.
-     */
-    SysStatus GenPulse(int32_t cycles);
+	/**
+	 * @brief Whole-timer finite quadrature generator with a constructor-bound counter.
+	 * Call instead of SetUp; a/b are distinct bound output channels, without DMA.
+	 * freq is full A/B cycles/s. period is CNT ticks per half cycle, even and >=4;
+	 * two toggle channels produce a 90-degree phase displacement. Integer base
+	 * division is the same as SetUp, so actual frequency can differ from freq.
+	 * The second TIM must be free. This function configures it over ITR with
+	 * PSC=1; its CNT counts full A/B cycles, without per-cycle IRQ or RAM copies.
+	 * Its range is 65535 cycles on 16-bit hardware; all int32_t magnitudes fit
+	 * a 32-bit counter. cb is optional, fixed here, called from the counter IRQ
+	 * after stopping both timers. Source TIM IRQ stays disabled.
+	 * Repeated setup is an error. DeInit releases both acquired timers.
+	 * @code
+	 * constinit TIM counter(TIM::_2::instance);
+	 * constinit TIM generator(TIM::_3::instance, {TIM::_3::CH1::PA6}, {TIM::_3::CH2::PA7}, {}, {}, &counter);
+	 * if (generator.SetUpQuadrature(TIM::Channel::CH1, TIM::Channel::CH2, 1000, 1000)
+	 *     == SysInitStatus::InitOK)
+	 *     generator.GenPulse(100); // Check SysStatus. Count via counter.Count().
+	 * @endcode
+	 */
+	SysInitStatus SetUpQuadrature(Channel a, Channel b, uint32_t freq,
+		uint32_t period, void (*cb)(void) = nullptr);
+	/**
+	 * @brief Main-only start/restart of a finite number of full A/B cycles.
+	 * Positive: A leads B; negative: B leads A; zero leaves a stopped pair idle.
+	 * INT32_MIN is supported when the counter range permits it. Busy while either
+	 * timer runs, Error for an out-of-range magnitude. Use this, not plain Start.
+	 * Both CNT and prescaler phases reset before arming the counter and starting
+	 * the generator. Stop stops both; it does not force the A/B outputs LOW.
+	 * Completion is an IRQ stop: excess edges are possible if service is late.
+	 * The caller serializes main operations with both timers' IRQs. Do not call
+	 * this or DeInit from callbacks, or independently reconfigure the counter.
+	 */
+	SysStatus GenPulse(int32_t cycles);
 
-    /**
-     * @brief Whole-timer finite PWM2 burst using hardware RCR + OPM.
-     * Call instead of SetUp; one bound channel, no DMA. period>=2, high time
-     * floor(period/2), initial/final level LOW. freq is the pulse rate.
-     * RunPulses accepts 1..RCR_max+1 (0 leaves a stopped timer unchanged).
-     * F4: max256; F7: max65536; G0 TIM1: max65536, TIM15/16/17: max256.
-     * cb is optional: the hardware stops even without IRQ. No IRQ counting.
-     * Do not use SetDuty/SetCCR to change this mode's fixed pulse shape.
-     */
-    SysInitStatus SetUpPulseBurst(Channel ch, uint32_t freq, uint32_t period,
-        void (*cb)(void) = nullptr);
-    SysStatus RunPulses(uint32_t count);
+	/**
+	 * @brief Whole-timer finite PWM2 burst using hardware RCR + OPM.
+	 * Call instead of SetUp; one bound channel, no DMA. period>=2, high time
+	 * floor(period/2), initial/final level LOW. freq is the pulse rate.
+	 * RunPulses accepts 1..RCR_max+1 (0 leaves a stopped timer unchanged).
+	 * F4: max256; F7: max65536; G0 TIM1: max65536, TIM15/16/17: max256.
+	 * cb is optional: the hardware stops even without IRQ. No IRQ counting.
+	 * Do not use SetDuty/SetCCR to change this mode's fixed pulse shape.
+	 */
+	SysInitStatus SetUpPulseBurst(Channel ch, uint32_t freq, uint32_t period,
+		void (*cb)(void) = nullptr);
+	SysStatus RunPulses(uint32_t count);
 
-    /**
-     * @brief Whole-timer hardware counter, clocked by source TIM TRGO over ITR.
-     * Call instead of SetUp, explicit period (ARR=period-1), PSC=0. source must
-     * be initialized/stopped with TRGO Update already selected. Both objects
-     * must live throughout use; no source reconfiguration is performed here.
-     * Count reads CNT. No per-pulse IRQ. CH1 is reserved for optional StopAfter/
-     * StopAt, which arm a single compare IRQ even with cb=nullptr.
-     * cb is fixed here and optional. Start counter before starting source.
-     */
-    SysInitStatus SetUpCounter(TIM* source, uint32_t period, void (*cb)(void) = nullptr);
-    /**
-     * Arm while both timers are stopped. Target must be ahead of current CNT
-     * without wrapping this period. IRQ disarms itself and stops both counters,
-     * then notifies cb. Source can emit extra/partial pulses during IRQ latency;
-     * clearing CEN does not force its output LOW. Use RCR for hardware-exact bursts.
-     */
-    SysStatus StopAfter(uint32_t count);
-    SysStatus StopAt(uint32_t target);
+	/**
+	 * @brief Whole-timer hardware counter, clocked by source TIM TRGO over ITR.
+	 * Call instead of SetUp, explicit period (ARR=period-1), PSC=0. source must
+	 * be initialized/stopped with TRGO Update already selected. Both objects
+	 * must live throughout use; no source reconfiguration is performed here.
+	 * Count reads CNT. No per-pulse IRQ. CH1 is reserved for optional StopAfter/
+	 * StopAt, which arm a single compare IRQ even with cb=nullptr.
+	 * cb is fixed here and optional. Start counter before starting source.
+	 */
+	SysInitStatus SetUpCounter(TIM* source, uint32_t period, void (*cb)(void) = nullptr);
+	/**
+	 * Arm while both timers are stopped. Target must be ahead of current CNT
+	 * without wrapping this period. IRQ disarms itself and stops both counters,
+	 * then notifies cb. Source can emit extra/partial pulses during IRQ latency;
+	 * clearing CEN does not force its output LOW. Use RCR for hardware-exact bursts.
+	 */
+	SysStatus StopAfter(uint32_t count);
+	SysStatus StopAt(uint32_t target);
 
-    /**
-     * @brief PWM-input period/width measurement using CH1+CH2 and slave reset.
-     * After ordinary SetUp with an explicit period, before Start. input must
-     * be a bound CH1 or CH2; both channels are reserved, no DMA on either.
-     * Rising edges capture period/reset CNT, falling edges capture HIGH width.
-     * Optional cb is a period-edge notification; there is no IRQ data copy.
-     * GetCapture(input) reads period; GetCapture(other channel) reads width.
-     * Reads are raw ticks, not an atomic pair. The first cycle, wraps, missing
-     * edges and overcapture are interpreted by the caller. SMCR cannot also
-     * be assigned to encoder/slave control. Other channels still share this base.
-     */
-    SysInitStatus SetUpPulseMeasure(Channel input, void (*cb)(void) = nullptr);
+	/**
+	 * @brief PWM-input period/width measurement using CH1+CH2 and slave reset.
+	 * After ordinary SetUp with an explicit period, before Start. input must
+	 * be a bound CH1 or CH2; both channels are reserved, no DMA on either.
+	 * Rising edges capture period/reset CNT, falling edges capture HIGH width.
+	 * Optional cb is a period-edge notification; there is no IRQ data copy.
+	 * GetCapture(input) reads period; GetCapture(other channel) reads width.
+	 * Reads are raw ticks, not an atomic pair. The first cycle, wraps, missing
+	 * edges and overcapture are interpreted by the caller. SMCR cannot also
+	 * be assigned to encoder/slave control. Other channels still share this base.
+	 */
+	SysInitStatus SetUpPulseMeasure(Channel input, void (*cb)(void) = nullptr);
 
-    /**
-     * @brief Select an ITR slave function once after ordinary SetUp, stopped.
-     * Source must already have TRGO configured; it is not changed here.
-     * Reset/Gated/Trigger retain PSC/ARR and channel roles. ExternalClock also
-     * retains PSC: one CNT step per PSC+1 source edges. GetCounterClock then
-     * describes the internal time base, not the incoming event frequency.
-     * Only normal TIM TRGO routes are supported; OC-only/remapped ITR and ETR
-     * are not selected. Unsupported connections return InitError.
-     */
-    SysInitStatus SetUpSlave(TIM* source, SlaveMode mode);
-    /// Fix OPM before Start, once after ordinary SetUp; it affects the whole base.
-    SysInitStatus SetUpOnePulse();
+	/**
+	 * @brief Select an ITR slave function once after ordinary SetUp, stopped.
+	 * Source must already have TRGO configured; it is not changed here.
+	 * Reset/Gated/Trigger retain PSC/ARR and channel roles. ExternalClock also
+	 * retains PSC: one CNT step per PSC+1 source edges. GetCounterClock then
+	 * describes the internal time base, not the incoming event frequency.
+	 * Only normal TIM TRGO routes are supported; OC-only/remapped ITR and ETR
+	 * are not selected. Unsupported connections return InitError.
+	 */
+	SysInitStatus SetUpSlave(TIM* source, SlaveMode mode);
+	/// Fix OPM before Start, once after ordinary SetUp; it affects the whole base.
+	SysInitStatus SetUpOnePulse();
 
-    /**
-     * @brief Configure one PWM1 channel while stopped; do not start the counter.
-     * Initial ccr is raw ticks, 0..period. Period must fit CCR, so a 16-bit PWM
-     * accepts at most 65535 ticks (ARR <= 65534). No forced-active switching.
-     * Optional constructor DMA is acquired and registered here, not via AttachDMA.
-     * Its callback reports this channel's DMA completion/error; read GetDMAStatus.
-     * Failure leaves this channel free and other configured channels untouched.
-     */
-    SysInitStatus SetUpPWM(Channel ch, uint32_t ccr = 0, void (*dma_callback)(void) = nullptr);
+	/**
+	 * @brief Configure one PWM1 channel while stopped; do not start the counter.
+	 * Initial ccr is raw ticks, 0..period. Period must fit CCR, so a 16-bit PWM
+	 * accepts at most 65535 ticks (ARR <= 65534). No forced-active switching.
+	 * Optional constructor DMA is acquired and registered here, not via AttachDMA.
+	 * Its callback reports this channel's DMA completion/error; read GetDMAStatus.
+	 * Failure leaves this channel free and other configured channels untouched.
+	 */
+	SysInitStatus SetUpPWM(Channel ch, uint32_t ccr = 0, void (*dma_callback)(void) = nullptr);
 
-    /**
-     * @brief Direct rising-edge capture on a constructor-bound pin; stopped only.
-     * SetUp must have received an explicit period. All channels share PSC/ARR.
-     * cb is fixed here and optional. A callback enables the source; otherwise
-     * capture works without IRQ. IRQ only acknowledges/notifies the event.
-     * GetCapture always reads hardware CCR; there is no RAM copy.
-     * Capture DMA is not added in this step; pass no DMA for this channel.
-     * Values are raw CNT ticks modulo the configured period. The application
-     * handles counter wraps, overcapture and interpretation of successive edges.
-     *
-     * @code
-     *   constinit TIM input(TIM::_3::instance, {TIM::_3::CH1::PA6});
-     *   input.SetUp(100, nullptr, 10000); // Check status. Target CNT clock: 1 MHz.
-     *   input.SetUpCapture(TIM::Channel::CH1, &Edge); // Check status.
-     *   input.Start();
-     *   // In Edge(), read input.GetCapture(TIM::Channel::CH1).
-     * @endcode
-     */
-    SysInitStatus SetUpCapture(Channel ch, void (*cb)(void) = nullptr);
+	/**
+	 * @brief Direct rising-edge capture on a constructor-bound pin; stopped only.
+	 * SetUp must have received an explicit period. All channels share PSC/ARR.
+	 * cb is fixed here and optional. A callback enables the source; otherwise
+	 * capture works without IRQ. IRQ only acknowledges/notifies the event.
+	 * GetCapture always reads hardware CCR; there is no RAM copy.
+	 * Capture DMA is not added in this step; pass no DMA for this channel.
+	 * Values are raw CNT ticks modulo the configured period. The application
+	 * handles counter wraps, overcapture and interpretation of successive edges.
+	 *
+	 * @code
+	 *   constinit TIM input(TIM::_3::instance, {TIM::_3::CH1::PA6});
+	 *   input.SetUp(100, nullptr, 10000); // Check status. Target CNT clock: 1 MHz.
+	 *   input.SetUpCapture(TIM::Channel::CH1, &Edge); // Check status.
+	 *   input.Start();
+	 *   // In Edge(), read input.GetCapture(TIM::Channel::CH1).
+	 * @endcode
+	 */
+	SysInitStatus SetUpCapture(Channel ch, void (*cb)(void) = nullptr);
 
-    /**
-     * @brief Reserve a pin-free compare channel once, before Start.
-     * compare is 0..ARR. cb != nullptr enables CC IRQ; nullptr configures only
-     * hardware compare (for a trigger) and still owns the channel until DeInit.
-     * Peripheral IRQ_en may later gate a source; it cannot replace the callback.
-     */
-    SysInitStatus SetCompareIRQ(Channel ch, uint32_t compare, void (*cb)(void) = nullptr);
+	/**
+	 * @brief Reserve a pin-free compare channel once, before Start.
+	 * compare is 0..ARR. cb != nullptr enables CC IRQ; nullptr configures only
+	 * hardware compare (for a trigger) and still owns the channel until DeInit.
+	 * Peripheral IRQ_en may later gate a source; it cannot replace the callback.
+	 */
+	SysInitStatus SetCompareIRQ(Channel ch, uint32_t compare, void (*cb)(void) = nullptr);
 
-    /**
-     * @brief Select hardware TRGO once while stopped, without enabling an IRQ.
-     * Requires a master-capable TIM. ComparePulse needs configured CH1;
-     * OCxRef needs that channel configured as PWM. Direct ADC CCx triggers use
-     * SetCompareIRQ(ch, compare, nullptr), not a TRGO remapping. ADC selects its
-     * own device-specific source during its migration; TIM stores no ADC EXTSEL.
-     * Configure before arming ADC: setup UG must not be interpreted as a sample.
-     */
-    SysInitStatus SetUpTrigger(Trigger trigger = Trigger::Update);
+	/**
+	 * @brief Select hardware TRGO once while stopped, without enabling an IRQ.
+	 * Requires a master-capable TIM. ComparePulse needs configured CH1;
+	 * OCxRef needs that channel configured as PWM. Direct ADC CCx triggers use
+	 * SetCompareIRQ(ch, compare, nullptr), not a TRGO remapping. ADC selects its
+	 * own device-specific source during its migration; TIM stores no ADC EXTSEL.
+	 * Configure before arming ADC: setup UG must not be interpreted as a sample.
+	 */
+	SysInitStatus SetUpTrigger(Trigger trigger = Trigger::Update);
 
-    /// Change only this timer's interrupt source; registry and NVIC belong to setup.
-    /// A generator-owned counter's completion source is managed by GenPulse.
-    void IRQ_en(IRQ irq, FunctionalState en);
-    void Start() { if (TIMx) TIM_SET_BIT(TIMx->CR1, TIM_CR1_CEN); }
-    void Stop() {
-        if (!TIMx) return;
-        TIM_CLEAR_BIT(TIMx->CR1, TIM_CR1_CEN);
-        if (_mode == Mode::Quadrature) _counter->Stop();
-    }
-    void SetEnable(bool on) { if (on) Start(); else Stop(); }
-    /// Fixed hardware address, also available before SetUp; not an initialization query.
-    TIM_TypeDef* GetTIMx() const { return reinterpret_cast<TIM_TypeDef*>(_instance.periph); }
-    uint32_t GetPeriod() const { return TIMx ? TIMx->ARR + 1U : 0U; }
-    uint32_t GetCounterClock() const { return TIMx ? *_instance.bus_clk / (TIMx->PSC + 1U) : 0U; }
-    uint32_t Count() const { return TIMx ? TIMx->CNT : 0U; }
-    void Reset() { if (TIMx) TIMx->CNT = 0; }
+	/// Change only this timer's interrupt source; registry and NVIC belong to setup.
+	/// A generator-owned counter's completion source is managed by GenPulse.
+	void IRQ_en(IRQ irq, FunctionalState en);
+	void Start() { if (TIMx) TIM_SET_BIT(TIMx->CR1, TIM_CR1_CEN); }
+	void Stop() {
+		if (!TIMx) return;
+		TIM_CLEAR_BIT(TIMx->CR1, TIM_CR1_CEN);
+		if (_mode == Mode::Quadrature) _counter->Stop();
+	}
+	void SetEnable(bool on) { if (on) Start(); else Stop(); }
+	/// Fixed hardware address, also available before SetUp; not an initialization query.
+	TIM_TypeDef* GetTIMx() const { return reinterpret_cast<TIM_TypeDef*>(_instance.periph); }
+	uint32_t GetPeriod() const { return TIMx ? TIMx->ARR + 1U : 0U; }
+	uint32_t GetCounterClock() const { return TIMx ? *_instance.bus_clk / (TIMx->PSC + 1U) : 0U; }
+	uint32_t Count() const { return TIMx ? TIMx->CNT : 0U; }
+	void Reset() { if (TIMx) TIMx->CNT = 0; }
 
-    /// PWM values only; NotInit/Error/Busy or OK. Percent is clamped at 100.
-    SysStatus SetDuty(Channel ch, uint32_t percent);
-    SysStatus SetCCR(Channel ch, uint32_t value);
-    /// Read hardware CCR directly; the next capture may replace it, with or without IRQ.
-    uint32_t GetCapture(Channel ch) const;
+	/// PWM values only; NotInit/Error/Busy or OK. Percent is clamped at 100.
+	SysStatus SetDuty(Channel ch, uint32_t percent);
+	SysStatus SetCCR(Channel ch, uint32_t value);
+	/// Read hardware CCR directly; the next capture may replace it, with or without IRQ.
+	uint32_t GetCapture(Channel ch) const;
 
-    /**
-     * @brief Feed PWM CCR preload from a finite buffer, one item per Update.
-     * Requires SetUpPWM with constructor-bound DMA. 1..65535 aligned elements:
-     * uint16_t/Half_Word for 16-bit timers, uint32_t/Word for 32-bit TIM2/TIM5.
-     * The overload must match hardware counter width. Buffer and contents stay
-     * unchanged until GetDMAStatus leaves Busy. F7 cleans the source through
-     * System with Cacheable policy; NonCacheable skips it for every channel.
-     * No memory-range detection; F4/G0 compile out cache calls.
-     * Every channel uses TIMx_CHx, CCDS=1 and its own CCxDE request gate.
-     * TC means DMA consumed the buffer, not that the final PWM period ended:
-     * CCR preload is applied by a later Update. Keep this distinction when
-     * ending a waveform. WS2812B buffers include their LOW reset trailer.
-     * Start is separate; to arm several channels, call SendDMA while stopped.
-     * Caller masks this TIM's timer/DMA IRQs around main-side request-gate writes;
-     * callbacks do not replace that serialization contract.
-     */
-    SysStatus SendDMA(Channel ch, const uint16_t* data, uint32_t len);
-    SysStatus SendDMA(Channel ch, const uint32_t* data, uint32_t len);
-    SysStatus GetDMAStatus(Channel ch) const {
-        const uint32_t i = static_cast<uint32_t>(ch);
-        return i < 4 ? _dma_status[i] : SysStatus::Error;
-    }
-    bool IsDMABusy(Channel ch) const { return GetDMAStatus(ch) == SysStatus::Busy; }
-    bool IsAnyDMABusy() const {
-        return IsDMABusy(Channel::CH1) || IsDMABusy(Channel::CH2)
-            || IsDMABusy(Channel::CH3) || IsDMABusy(Channel::CH4);
-    }
+	/**
+	 * @brief Feed PWM CCR preload from a finite buffer, one item per Update.
+	 * Requires SetUpPWM with constructor-bound DMA. 1..65535 aligned elements:
+	 * uint16_t/Half_Word for 16-bit timers, uint32_t/Word for 32-bit TIM2/TIM5.
+	 * The overload must match hardware counter width. Buffer and contents stay
+	 * unchanged until GetDMAStatus leaves Busy. F7 cleans the source through
+	 * System with Cacheable policy; NonCacheable skips it for every channel.
+	 * No memory-range detection; F4/G0 compile out cache calls.
+	 * Every channel uses TIMx_CHx, CCDS=1 and its own CCxDE request gate.
+	 * TC means DMA consumed the buffer, not that the final PWM period ended:
+	 * CCR preload is applied by a later Update. Keep this distinction when
+	 * ending a waveform. WS2812B buffers include their LOW reset trailer.
+	 * Start is separate; to arm several channels, call SendDMA while stopped.
+	 * Caller masks this TIM's timer/DMA IRQs around main-side request-gate writes;
+	 * callbacks do not replace that serialization contract.
+	 */
+	SysStatus SendDMA(Channel ch, const uint16_t* data, uint32_t len);
+	SysStatus SendDMA(Channel ch, const uint32_t* data, uint32_t len);
+	SysStatus GetDMAStatus(Channel ch) const {
+		const uint32_t i = static_cast<uint32_t>(ch);
+		return i < 4 ? _dma_status[i] : SysStatus::Error;
+	}
+	bool IsDMABusy(Channel ch) const { return GetDMAStatus(ch) == SysStatus::Busy; }
+	bool IsAnyDMABusy() const {
+		return IsDMABusy(Channel::CH1) || IsDMABusy(Channel::CH2)
+			|| IsDMABusy(Channel::CH3) || IsDMABusy(Channel::CH4);
+	}
 
-    /**
-     * @brief Main-only teardown, without callbacks; constructor bindings survive.
-     * Stop timer requests first, stop/release acquired DMA, remove only this
-     * object's registrations, reset/disable TIM and clear channel/callback state.
-     * Other handlers on shared vectors remain. May wait for DMA stop here;
-     * there is no such wait in timer/DMA IRQs. Call before object destruction.
-     * Quadrature also tears down the counter acquired by SetUpQuadrature;
-     * the constructor's pointer remains fixed for a later fresh setup.
-     */
-    void DeInit();
+	/**
+	 * @brief Main-only teardown, without callbacks; constructor bindings survive.
+	 * Stop timer requests first, stop/release acquired DMA, remove only this
+	 * object's registrations, reset/disable TIM and clear channel/callback state.
+	 * Other handlers on shared vectors remain. May wait for DMA stop here;
+	 * there is no such wait in timer/DMA IRQs. Call before object destruction.
+	 * Quadrature also tears down the counter acquired by SetUpQuadrature;
+	 * the constructor's pointer remains fixed for a later fresh setup.
+	 */
+	void DeInit();
 
 private:
-    const Instance& _instance;
-    const System::CachePolicy _cache_policy; ///< One policy for all channel DMA buffers.
+	const Instance& _instance;
+	const System::CachePolicy _cache_policy; ///< One policy for all channel DMA buffers.
 	TIM_TypeDef* TIMx = nullptr; ///< Register cache and setup state.
-    TIM* const _counter;
-    static constexpr ChannelConfig ChannelBinding(uint32_t ch, ChannelConfig c0, ChannelConfig c1,
-                                        ChannelConfig c2, ChannelConfig c3) {
-        for (const ChannelConfig& cfg : {c0, c1, c2, c3})
-            if (cfg.pin.IsValid() && cfg.pin.channel == ch) return cfg;
-        return {};
-    }
+	TIM* const _counter;
+	static constexpr ChannelConfig ChannelBinding(uint32_t ch, ChannelConfig c0, ChannelConfig c1,
+										ChannelConfig c2, ChannelConfig c3) {
+		for (const ChannelConfig& cfg : {c0, c1, c2, c3})
+			if (cfg.pin.IsValid() && cfg.pin.channel == ch) return cfg;
+		return {};
+	}
 #if defined(STM32G0)
-    static constexpr uint32_t DmaRequest(uintptr_t timer, uint32_t ch);
+	static constexpr uint32_t DmaRequest(uintptr_t timer, uint32_t ch);
 #else
-    static constexpr bool DmaMatches(uintptr_t timer, uint32_t ch, DMAReq req);
+	static constexpr bool DmaMatches(uintptr_t timer, uint32_t ch, DMAReq req);
 #endif
-    struct ChannelState {
-        uint32_t port;
-        uint8_t pin;
-        uint8_t af;
-        DMA_Sx dma;
-        constexpr ChannelState(uintptr_t timer, ChannelConfig cfg)
-            : port(cfg.pin.port), pin(cfg.pin.pin), af(cfg.pin.af),
+	struct ChannelState {
+		uint32_t port;
+		uint8_t pin;
+		uint8_t af;
+		DMA_Sx dma;
+		constexpr ChannelState(uintptr_t timer, ChannelConfig cfg)
+			: port(cfg.pin.port), pin(cfg.pin.pin), af(cfg.pin.af),
 #if defined(STM32G0)
-              dma(cfg.dma, cfg.dma ? DmaRequest(timer, cfg.pin.channel) : 0U)
+			  dma(cfg.dma, cfg.dma ? DmaRequest(timer, cfg.pin.channel) : 0U)
 #else
-              dma(cfg.dma)
+			  dma(cfg.dma)
 #endif
-        { (void)timer; }
-        constexpr bool IsValid() const { return port != 0; }
-        PIN ToPin() const { return PIN(reinterpret_cast<GPIO_TypeDef*>(port), pin, af); }
-    };
-    ChannelState _channels[4]; // Compact GPIO binding and DMA; channel is the array index.
-    uint8_t _channels_used = 0;
-    uint8_t _pwm_channels = 0;
-    uint8_t _capture_channels = 0;
-    enum class Mode : uint8_t { Base, Encoder, Quadrature, Burst, Counter };
-    Mode _mode = Mode::Base;
-    bool _slave_set = false;
-    bool _opm_set = false;
-    uint8_t _quadrature_a = 0, _quadrature_b = 0;
-    TIM* _master = nullptr; // Only hardware-counter mode needs a retained source.
-    volatile bool _dma_error[4]{};
-    bool _period_explicit = false;
-    bool _trigger_set = false;
-    void (*_update_cb)(void) = nullptr;
-    void (*_cc_cb[4])(void) = {};
-    void (*_dma_cb[4])(void) = {};
-    volatile SysStatus _dma_status[4] = {
-        SysStatus::NotInit, SysStatus::NotInit, SysStatus::NotInit, SysStatus::NotInit
-    };
-    bool DmaOwned(uint32_t ch) const { return _dma_status[ch] != SysStatus::NotInit; }
+		{ (void)timer; }
+		constexpr bool IsValid() const { return port != 0; }
+		PIN ToPin() const { return PIN(reinterpret_cast<GPIO_TypeDef*>(port), pin, af); }
+	};
+	ChannelState _channels[4]; // Compact GPIO binding and DMA; channel is the array index.
+	uint8_t _channels_used = 0;
+	uint8_t _pwm_channels = 0;
+	uint8_t _capture_channels = 0;
+	enum class Mode : uint8_t { Base, Encoder, Quadrature, Burst, Counter };
+	Mode _mode = Mode::Base;
+	bool _slave_set = false;
+	bool _opm_set = false;
+	uint8_t _quadrature_a = 0, _quadrature_b = 0;
+	TIM* _master = nullptr; // Only hardware-counter mode needs a retained source.
+	volatile bool _dma_error[4]{};
+	bool _period_explicit = false;
+	bool _trigger_set = false;
+	void (*_update_cb)(void) = nullptr;
+	void (*_cc_cb[4])(void) = {};
+	void (*_dma_cb[4])(void) = {};
+	volatile SysStatus _dma_status[4] = {
+		SysStatus::NotInit, SysStatus::NotInit, SysStatus::NotInit, SysStatus::NotInit
+	};
+	bool DmaOwned(uint32_t ch) const { return _dma_status[ch] != SysStatus::NotInit; }
 
-    // Four fixed adapters: no DMA scan and no run-time channel index in the adapter.
-    template<unsigned N> class DmaIRQ final : public IIRQHandler {
-    public:
-        constexpr explicit DmaIRQ(TIM& tim) : _tim(tim) {}
-        void HandleIRQ() override { _tim.HandleDmaIRQ(N); }
-    private:
-        TIM& _tim;
-    };
-    DmaIRQ<0> _dma_irq0;
-    DmaIRQ<1> _dma_irq1;
-    DmaIRQ<2> _dma_irq2;
-    DmaIRQ<3> _dma_irq3;
-    IIRQHandler* DmaHandler(uint32_t i) {
-        IIRQHandler* const handlers[4] = {&_dma_irq0, &_dma_irq1, &_dma_irq2, &_dma_irq3};
-        return handlers[i];
-    }
-    SysInitStatus Init();
-    SysInitStatus SetFrequency(uint32_t freq, uint32_t arr);
-    SysInitStatus SetUpDMA(uint32_t ch);
-    struct ITRInfo { TIM_TypeDef* slave; TIM_TypeDef* source[4]; };
-    static const ITRInfo itr_table[];
-    static int FindITR(TIM_TypeDef* source, TIM_TypeDef* slave);
-    bool CanUseSource(const TIM* source) const;
-    SysStatus StartDMA(Channel ch, const void* data, uint32_t len, DMA_Sx::SIZE width);
-    bool CanSetUpChannel(uint32_t ch) const {
-        return TIMx && _mode == Mode::Base && ch < _instance.channel_count && !(TIMx->CR1 & TIM_CR1_CEN)
-            && !(_channels_used & (1U << ch));
-    }
-    volatile uint32_t* ccr(uint32_t ch) const {
-        return reinterpret_cast<volatile uint32_t*>(reinterpret_cast<uintptr_t>(&TIMx->CCR1)
-            + ch * sizeof(uint32_t));
-    }
-    void HandleIRQ() override final;
-    void HandleDmaIRQ(uint32_t ch);
+	// Four fixed adapters: no DMA scan and no run-time channel index in the adapter.
+	template<unsigned N> class DmaIRQ final : public IIRQHandler {
+	public:
+		constexpr explicit DmaIRQ(TIM& tim) : _tim(tim) {}
+		void HandleIRQ() override { _tim.HandleDmaIRQ(N); }
+	private:
+		TIM& _tim;
+	};
+	DmaIRQ<0> _dma_irq0;
+	DmaIRQ<1> _dma_irq1;
+	DmaIRQ<2> _dma_irq2;
+	DmaIRQ<3> _dma_irq3;
+	IIRQHandler* DmaHandler(uint32_t i) {
+		IIRQHandler* const handlers[4] = {&_dma_irq0, &_dma_irq1, &_dma_irq2, &_dma_irq3};
+		return handlers[i];
+	}
+	SysInitStatus Init();
+	SysInitStatus SetFrequency(uint32_t freq, uint32_t arr);
+	SysInitStatus SetUpDMA(uint32_t ch);
+	struct ITRInfo { TIM_TypeDef* slave; TIM_TypeDef* source[4]; };
+	static const ITRInfo itr_table[];
+	static int FindITR(TIM_TypeDef* source, TIM_TypeDef* slave);
+	bool CanUseSource(const TIM* source) const;
+	SysStatus StartDMA(Channel ch, const void* data, uint32_t len, DMA_Sx::SIZE width);
+	bool CanSetUpChannel(uint32_t ch) const {
+		return TIMx && _mode == Mode::Base && ch < _instance.channel_count && !(TIMx->CR1 & TIM_CR1_CEN)
+			&& !(_channels_used & (1U << ch));
+	}
+	volatile uint32_t* ccr(uint32_t ch) const {
+		return reinterpret_cast<volatile uint32_t*>(reinterpret_cast<uintptr_t>(&TIMx->CCR1)
+			+ ch * sizeof(uint32_t));
+	}
+	void HandleIRQ() override final;
+	void HandleDmaIRQ(uint32_t ch);
 };
 
 #define TIM_DMA_DEFS

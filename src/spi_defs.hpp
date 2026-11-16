@@ -38,13 +38,13 @@
 
 #ifdef SPI1_BASE
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 16U, SPI1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 17U, SPI1_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { SPI1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR2)), RCC_APBENR2_SPI1EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR2)), RCC_APBRSTR2_SPI1RST, &System::APB1BusClock, SPI1_IRQn,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 16U, SPI1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 17U, SPI1_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { SPI1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR2)), RCC_APBENR2_SPI1EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR2)), RCC_APBRSTR2_SPI1RST, &System::APB1BusClock, SPI1_IRQn,
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct SCK {
 		static constexpr PIN PA5 = { GPIOA_BASE,  5, 0, SPI1_BASE };
@@ -67,18 +67,18 @@ struct _1 {
 
 #ifdef SPI2_BASE
 struct _2 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 18U, SPI2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 19U, SPI2_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { SPI2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_SPI2EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_SPI2RST, &System::APB1BusClock,
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 18U, SPI2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 19U, SPI2_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { SPI2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_SPI2EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_SPI2RST, &System::APB1BusClock,
 #ifdef SPI3_BASE
-      SPI2_3_IRQn
+	  SPI2_3_IRQn
 #else
-      SPI2_IRQn
+	  SPI2_IRQn
 #endif
-        , DMA::TX.ch, DMA::RX.ch
-    };
+		, DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct SCK {
 		static constexpr PIN PB8  = { GPIOB_BASE,  8, 1, SPI2_BASE };
@@ -103,13 +103,13 @@ struct _2 {
 
 #ifdef SPI3_BASE
 struct _3 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = { 66U, SPI3_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX = { 67U, SPI3_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { SPI3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_SPI3EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_SPI3RST, &System::APB1BusClock, SPI2_3_IRQn,
-        DMA::TX.ch, DMA::RX.ch
-    };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = { 66U, SPI3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX = { 67U, SPI3_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { SPI3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR1)), RCC_APBENR1_SPI3EN, (RCC_BASE + offsetof(RCC_TypeDef, APBRSTR1)), RCC_APBRSTR1_SPI3RST, &System::APB1BusClock, SPI2_3_IRQn,
+		DMA::TX.ch, DMA::RX.ch
+	};
 
 	struct SCK {
 		static constexpr PIN PB3 = { GPIOB_BASE, 3, 9, SPI3_BASE };
@@ -137,13 +137,13 @@ struct _3 {
 
 #ifdef SPI1_BASE
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 3U, SPI1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream3 = { DMA2_Stream3_BASE, 3U, SPI1_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 3U, SPI1_BASE, DMA_Sx::DIR::From_Per };  // Stream2 Ch3
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream5 = { DMA2_Stream5_BASE, 3U, SPI1_BASE, DMA_Sx::DIR::To_Per };  // Stream5 Ch3
-    };
-    static constexpr Instance instance = { SPI1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI1EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI1RST, &System::APB2BusClock, SPI1_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 3U, SPI1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream3 = { DMA2_Stream3_BASE, 3U, SPI1_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 3U, SPI1_BASE, DMA_Sx::DIR::From_Per };  // Stream2 Ch3
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream5 = { DMA2_Stream5_BASE, 3U, SPI1_BASE, DMA_Sx::DIR::To_Per };  // Stream5 Ch3
+	};
+	static constexpr Instance instance = { SPI1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI1EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI1RST, &System::APB2BusClock, SPI1_IRQn
 
  };
 
@@ -168,11 +168,11 @@ struct _1 {
 
 #ifdef SPI2_BASE
 struct _2 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 0U, SPI2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 0U, SPI2_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { SPI2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_SPI2EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_SPI2RST, &System::APB1BusClock, SPI2_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream3 = { DMA1_Stream3_BASE, 0U, SPI2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream4 = { DMA1_Stream4_BASE, 0U, SPI2_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { SPI2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_SPI2EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_SPI2RST, &System::APB1BusClock, SPI2_IRQn
 
  };
 
@@ -197,13 +197,13 @@ struct _2 {
 
 #ifdef SPI3_BASE
 struct _3 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 0U, SPI3_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream5 = { DMA1_Stream5_BASE, 0U, SPI3_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 0U, SPI3_BASE, DMA_Sx::DIR::From_Per };  // Stream2 Ch0
-        static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 0U, SPI3_BASE, DMA_Sx::DIR::To_Per };  // Stream7 Ch0
-    };
-    static constexpr Instance instance = { SPI3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_SPI3EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_SPI3RST, &System::APB1BusClock, SPI3_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream0 = { DMA1_Stream0_BASE, 0U, SPI3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream5 = { DMA1_Stream5_BASE, 0U, SPI3_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA1_Stream2 = { DMA1_Stream2_BASE, 0U, SPI3_BASE, DMA_Sx::DIR::From_Per };  // Stream2 Ch0
+		static constexpr DMA_Sx::DMAReq TX_DMA1_Stream7 = { DMA1_Stream7_BASE, 0U, SPI3_BASE, DMA_Sx::DIR::To_Per };  // Stream7 Ch0
+	};
+	static constexpr Instance instance = { SPI3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB1ENR)), RCC_APB1ENR_SPI3EN, (RCC_BASE + offsetof(RCC_TypeDef, APB1RSTR)), RCC_APB1RSTR_SPI3RST, &System::APB1BusClock, SPI3_IRQn
 
  };
 
@@ -227,13 +227,13 @@ struct _3 {
 
 #ifdef SPI4_BASE
 struct _4 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 4U, SPI4_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 5U, SPI4_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream1 = { DMA2_Stream1_BASE, 4U, SPI4_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 5U, SPI4_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { SPI4_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI4EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI4RST, &System::APB2BusClock, SPI4_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 4U, SPI4_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 5U, SPI4_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream1 = { DMA2_Stream1_BASE, 4U, SPI4_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 5U, SPI4_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { SPI4_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI4EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI4RST, &System::APB2BusClock, SPI4_IRQn
 
  };
 
@@ -272,13 +272,13 @@ struct _4 {
 // F410/F411/F412/F413/F423 route SPI5 through AF6; other F4/F7 use AF5.
 #if defined(STM32F410Cx) || defined(STM32F410Rx) || defined(STM32F411xE) || defined(STM32F412Cx) || defined(STM32F412Rx) || defined(STM32F412Vx) || defined(STM32F412Zx) || defined(STM32F413xx) || defined(STM32F423xx)
 struct _5 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 2U, SPI5_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream5 = { DMA2_Stream5_BASE, 7U, SPI5_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 2U, SPI5_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream6 = { DMA2_Stream6_BASE, 7U, SPI5_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { SPI5_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI5EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI5RST, &System::APB2BusClock, SPI5_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 2U, SPI5_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream5 = { DMA2_Stream5_BASE, 7U, SPI5_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 2U, SPI5_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream6 = { DMA2_Stream6_BASE, 7U, SPI5_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { SPI5_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI5EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI5RST, &System::APB2BusClock, SPI5_IRQn
 
  };
 
@@ -316,13 +316,13 @@ struct _5 {
 };
 #else
 struct _5 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 2U, SPI5_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream5 = { DMA2_Stream5_BASE, 7U, SPI5_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 2U, SPI5_BASE, DMA_Sx::DIR::To_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream6 = { DMA2_Stream6_BASE, 7U, SPI5_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { SPI5_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI5EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI5RST, &System::APB2BusClock, SPI5_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 2U, SPI5_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream5 = { DMA2_Stream5_BASE, 7U, SPI5_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream4 = { DMA2_Stream4_BASE, 2U, SPI5_BASE, DMA_Sx::DIR::To_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream6 = { DMA2_Stream6_BASE, 7U, SPI5_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { SPI5_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI5EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI5RST, &System::APB2BusClock, SPI5_IRQn
 
  };
 
@@ -344,11 +344,11 @@ struct _5 {
 
 #ifdef SPI6_BASE
 struct _6 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream6 = { DMA2_Stream6_BASE, 1U, SPI6_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq TX_DMA2_Stream5 = { DMA2_Stream5_BASE, 1U, SPI6_BASE, DMA_Sx::DIR::To_Per };
-    };
-    static constexpr Instance instance = { SPI6_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI6EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI6RST, &System::APB2BusClock, SPI6_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream6 = { DMA2_Stream6_BASE, 1U, SPI6_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq TX_DMA2_Stream5 = { DMA2_Stream5_BASE, 1U, SPI6_BASE, DMA_Sx::DIR::To_Per };
+	};
+	static constexpr Instance instance = { SPI6_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_SPI6EN, (RCC_BASE + offsetof(RCC_TypeDef, APB2RSTR)), RCC_APB2RSTR_SPI6RST, &System::APB2BusClock, SPI6_IRQn
 
  };
 

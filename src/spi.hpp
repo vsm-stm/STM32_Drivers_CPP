@@ -154,434 +154,434 @@
 class SPI : public IIRQHandler
 {
 public:
-    /// Fixed physical direction; transfer methods still select polling/IRQ/DMA.
-    enum class Direction : uint8_t { TX, RX, TXRX };
-    /// Only the role bit; NSS policy is configured independently by SetUp().
-    enum class Master_sel { Slave = 0, Master = SPI_CR1_MSTR };
-    enum class NSS_ctrl { Hard = 0, Software };
-    enum class Data_frame_format {
+	/// Fixed physical direction; transfer methods still select polling/IRQ/DMA.
+	enum class Direction : uint8_t { TX, RX, TXRX };
+	/// Only the role bit; NSS policy is configured independently by SetUp().
+	enum class Master_sel { Slave = 0, Master = SPI_CR1_MSTR };
+	enum class NSS_ctrl { Hard = 0, Software };
+	enum class Data_frame_format {
 #if defined(STM32F4)
-        Byte = 0, Half_Word = SPI_CR1_DFF
+		Byte = 0, Half_Word = SPI_CR1_DFF
 #else
-        Byte = 7U << SPI_CR2_DS_Pos, Half_Word = 15U << SPI_CR2_DS_Pos
+		Byte = 7U << SPI_CR2_DS_Pos, Half_Word = 15U << SPI_CR2_DS_Pos
 #endif
-    };
-    enum class Frame_Format { MSB = 0, LSB = SPI_CR1_LSBFIRST };
-    enum class cPolPha {
-        None = 0, cPha = SPI_CR1_CPHA, cPol = SPI_CR1_CPOL,
-        cPolPha = SPI_CR1_CPHA | SPI_CR1_CPOL
-    };
-    enum class BaudRate { DIV2 = 0, DIV4, DIV8, DIV16, DIV32, DIV64, DIV128, DIV256 };
-    /// Peripheral source bits only. IRQ_en() does not change registry or NVIC.
-    enum class IRQ { TXE = SPI_CR2_TXEIE, RXNE = SPI_CR2_RXNEIE, ERR = SPI_CR2_ERRIE };
-    /// Combined reasons reported to OnError(); DMA errors use separate high bits.
-    enum class Error : uint32_t {
-        Overrun = SPI_SR_OVR, ModeFault = SPI_SR_MODF,
-        DmaTx = 1U << 16, DmaRx = 1U << 17
-    };
+	};
+	enum class Frame_Format { MSB = 0, LSB = SPI_CR1_LSBFIRST };
+	enum class cPolPha {
+		None = 0, cPha = SPI_CR1_CPHA, cPol = SPI_CR1_CPOL,
+		cPolPha = SPI_CR1_CPHA | SPI_CR1_CPOL
+	};
+	enum class BaudRate { DIV2 = 0, DIV4, DIV8, DIV16, DIV32, DIV64, DIV128, DIV256 };
+	/// Peripheral source bits only. IRQ_en() does not change registry or NVIC.
+	enum class IRQ { TXE = SPI_CR2_TXEIE, RXNE = SPI_CR2_RXNEIE, ERR = SPI_CR2_ERRIE };
+	/// Combined reasons reported to OnError(); DMA errors use separate high bits.
+	enum class Error : uint32_t {
+		Overrun = SPI_SR_OVR, ModeFault = SPI_SR_MODF,
+		DmaTx = 1U << 16, DmaRx = 1U << 17
+	};
 
 #if defined(STM32G0)
-    using DMAReq = uintptr_t; ///< Source is implied by SPI and direction.
+	using DMAReq = uintptr_t; ///< Source is implied by SPI and direction.
 #else
-    using DMAReq = DMA_Sx::DMAReq;
+	using DMAReq = DMA_Sx::DMAReq;
 #endif
 
-    /** Fixed device metadata from spi_defs.hpp; no runtime lookup. */
-    struct Instance {
-        uintptr_t periph;
-        uintptr_t clk_reg;
-        uint32_t clk_bit;
-        uintptr_t rst_reg;
-        uint32_t rst_bit;
-        const uint32_t* bus_clk;
-        IRQn_Type irq;
+	/** Fixed device metadata from spi_defs.hpp; no runtime lookup. */
+	struct Instance {
+		uintptr_t periph;
+		uintptr_t clk_reg;
+		uint32_t clk_bit;
+		uintptr_t rst_reg;
+		uint32_t rst_bit;
+		const uint32_t* bus_clk;
+		IRQn_Type irq;
 #if defined(STM32G0)
-        uint32_t dma_tx_request, dma_rx_request;
+		uint32_t dma_tx_request, dma_rx_request;
 #endif
-    };
+	};
 #include "spi_defs.hpp"
 
-    /**
-     * @brief Store pins and hardware; no register access until SetUp().
-     * @param instance SPI::_N::instance for the selected hardware block.
-     * @param direction Fixed TX, RX or TXRX; caller uses compatible transfer methods.
-     * @param sck Named SPI::_N::SCK pin.
-     * @param mosi Optional named MOSI; defaults to PIN{} if externally unused.
-     * @param miso Named MISO, or PIN{} if externally unused.
-     * @param ss Optional software CS GPIO for master; hardware NSS pin for Hard.
-     * @param dma_tx Optional TX DMA, unused/forbidden for Direction::RX.
-     * @param dma_rx Optional RX DMA, unused/forbidden for Direction::TX.
-     * @param cache_policy Cacheable by default (any buffer); NonCacheable skips
-     *        maintenance for both directions. Caller then guarantees non-cacheable RAM.
-     * Use constinit: incompatible named pins or DMA routes are compilation errors.
-     * Objects may not be copied/moved; call DeInit() before destruction.
-     */
-    constexpr explicit SPI(const Instance& instance, Direction direction, PIN sck, PIN mosi = PIN{},
-                 PIN miso = PIN{}, PIN ss = PIN{},
-                 DMAReq dma_tx = {}, DMAReq dma_rx = {},
-                 System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
-        : _direction(direction), _cache_policy(cache_policy),
+	/**
+	 * @brief Store pins and hardware; no register access until SetUp().
+	 * @param instance SPI::_N::instance for the selected hardware block.
+	 * @param direction Fixed TX, RX or TXRX; caller uses compatible transfer methods.
+	 * @param sck Named SPI::_N::SCK pin.
+	 * @param mosi Optional named MOSI; defaults to PIN{} if externally unused.
+	 * @param miso Named MISO, or PIN{} if externally unused.
+	 * @param ss Optional software CS GPIO for master; hardware NSS pin for Hard.
+	 * @param dma_tx Optional TX DMA, unused/forbidden for Direction::RX.
+	 * @param dma_rx Optional RX DMA, unused/forbidden for Direction::TX.
+	 * @param cache_policy Cacheable by default (any buffer); NonCacheable skips
+	 *        maintenance for both directions. Caller then guarantees non-cacheable RAM.
+	 * Use constinit: incompatible named pins or DMA routes are compilation errors.
+	 * Objects may not be copied/moved; call DeInit() before destruction.
+	 */
+	constexpr explicit SPI(const Instance& instance, Direction direction, PIN sck, PIN mosi = PIN{},
+				 PIN miso = PIN{}, PIN ss = PIN{},
+				 DMAReq dma_tx = {}, DMAReq dma_rx = {},
+				 System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
+		: _direction(direction), _cache_policy(cache_policy),
 #if defined(STM32G0)
-          _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request),
+		  _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request),
 #else
-          _dma_tx(dma_tx), _dma_rx(dma_rx),
+		  _dma_tx(dma_tx), _dma_rx(dma_rx),
 #endif
-          _dma_tx_irq(*this), _dma_rx_irq(*this),
-          _instance(instance), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
-    {
-        if (!sck.IsValid())
-            STM32_CONFIG_ERROR("SPI: SCK pin is required");
-        if (sck.periph_base && sck.periph_base != instance.periph)
-            STM32_CONFIG_ERROR("SPI: SCK pin belongs to another peripheral");
-        if (mosi.IsValid() && mosi.periph_base && mosi.periph_base != instance.periph)
-            STM32_CONFIG_ERROR("SPI: MOSI pin belongs to another peripheral");
-        if (miso.IsValid() && miso.periph_base && miso.periph_base != instance.periph)
-            STM32_CONFIG_ERROR("SPI: MISO pin belongs to another peripheral");
-        if (ss.IsValid() && ss.periph_base && ss.periph_base != instance.periph)
-            STM32_CONFIG_ERROR("SPI: NSS pin belongs to another peripheral");
-        if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
-            STM32_CONFIG_ERROR("SPI: invalid TX DMA route");
-        if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
-            STM32_CONFIG_ERROR("SPI: invalid RX DMA route");
-        if (DMA_Sx::SameResource(dma_tx, dma_rx))
-            STM32_CONFIG_ERROR("SPI: TX and RX require different DMA resources");
-        if (direction != Direction::TX && direction != Direction::RX && direction != Direction::TXRX)
-            STM32_CONFIG_ERROR("SPI: invalid direction");
-        if (direction == Direction::TX && _dma_rx.HasSelection())
-            STM32_CONFIG_ERROR("SPI: TX direction cannot use RX DMA");
-        if (direction == Direction::RX && _dma_tx.HasSelection())
-            STM32_CONFIG_ERROR("SPI: RX direction cannot use TX DMA");
-    }
-    SPI() = delete;
-    SPI(const SPI&) = delete;
-    SPI(SPI&&) = delete;
-    SPI& operator=(const SPI&) = delete;
-    SPI& operator=(SPI&&) = delete;
-    ~SPI() = default;
+		  _dma_tx_irq(*this), _dma_rx_irq(*this),
+		  _instance(instance), _clk(sck), _mosi(mosi), _miso(miso), _ss(ss)
+	{
+		if (!sck.IsValid())
+			STM32_CONFIG_ERROR("SPI: SCK pin is required");
+		if (sck.periph_base && sck.periph_base != instance.periph)
+			STM32_CONFIG_ERROR("SPI: SCK pin belongs to another peripheral");
+		if (mosi.IsValid() && mosi.periph_base && mosi.periph_base != instance.periph)
+			STM32_CONFIG_ERROR("SPI: MOSI pin belongs to another peripheral");
+		if (miso.IsValid() && miso.periph_base && miso.periph_base != instance.periph)
+			STM32_CONFIG_ERROR("SPI: MISO pin belongs to another peripheral");
+		if (ss.IsValid() && ss.periph_base && ss.periph_base != instance.periph)
+			STM32_CONFIG_ERROR("SPI: NSS pin belongs to another peripheral");
+		if (!DMA_Sx::RouteMatches(dma_tx, instance.periph, DMA_Sx::DIR::To_Per))
+			STM32_CONFIG_ERROR("SPI: invalid TX DMA route");
+		if (!DMA_Sx::RouteMatches(dma_rx, instance.periph, DMA_Sx::DIR::From_Per))
+			STM32_CONFIG_ERROR("SPI: invalid RX DMA route");
+		if (DMA_Sx::SameResource(dma_tx, dma_rx))
+			STM32_CONFIG_ERROR("SPI: TX and RX require different DMA resources");
+		if (direction != Direction::TX && direction != Direction::RX && direction != Direction::TXRX)
+			STM32_CONFIG_ERROR("SPI: invalid direction");
+		if (direction == Direction::TX && _dma_rx.HasSelection())
+			STM32_CONFIG_ERROR("SPI: TX direction cannot use RX DMA");
+		if (direction == Direction::RX && _dma_tx.HasSelection())
+			STM32_CONFIG_ERROR("SPI: RX direction cannot use TX DMA");
+	}
+	SPI() = delete;
+	SPI(const SPI&) = delete;
+	SPI(SPI&&) = delete;
+	SPI& operator=(const SPI&) = delete;
+	SPI& operator=(SPI&&) = delete;
+	~SPI() = default;
 
-    /// Setup arguments remain in SetUp; physical direction is constructor-bound.
-    struct Init_struct_Typedef {
-        Master_sel mstr;
-        NSS_ctrl nss_ctrl;
-        Data_frame_format dff;
-        Frame_Format ff;
-        cPolPha cpolpha;
-        BaudRate br;
-    };
-    SysInitStatus SetUp(Init_struct_Typedef s)
-    { return SetUp(s.mstr, s.nss_ctrl, s.dff, s.ff, s.cpolpha, s.br); }
+	/// Setup arguments remain in SetUp; physical direction is constructor-bound.
+	struct Init_struct_Typedef {
+		Master_sel mstr;
+		NSS_ctrl nss_ctrl;
+		Data_frame_format dff;
+		Frame_Format ff;
+		cPolPha cpolpha;
+		BaudRate br;
+	};
+	SysInitStatus SetUp(Init_struct_Typedef s)
+	{ return SetUp(s.mstr, s.nss_ctrl, s.dff, s.ff, s.cpolpha, s.br); }
 
-    /**
-     * @brief Configure one SPI, pins, source-free IRQ registration and NVIC.
-     * @return InitError for an unsupported peripheral, invalid enums/missing SCK,
-     *         Hard without SS, software-NSS slave, repeated setup or IRQ failure.
-     * Slave requires hardware NSS; configure EXTI on the same pin in the application.
-     * Byte uses 8-bit DR access and the 8-bit RX threshold on F7/G0; Half_Word
-     * uses 16-bit DR access, the half-word threshold and 16-bit DMA transfers.
-     * TX sets BIDIMODE/BIDIOE; RX/TXRX leave RXONLY clear. Default NSS is Hard;
-     * Owned DMA objects are configured here, after constructor DMAReq validation, with separate
-     * registration per direction. On failure only newly acquired resources are
-     * released. No DMA is required for blocking/IRQ calls. Pass Software explicitly
-     * for a master without a hardware NSS pin.
-     *
-     * @code
-     *   bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
-     *             SPI::Data_frame_format::Half_Word, SPI::Frame_Format::MSB,
-     *             SPI::cPolPha::None, SPI::BaudRate::DIV8);
-     *   uint16_t frames[] = {0x1234, 0xABCD};
-     *   bus.Send(frames, 2); // Two 16-bit frames, not four byte frames.
-     * @endcode
-     */
-    SysInitStatus SetUp(Master_sel mstr, NSS_ctrl nss = NSS_ctrl::Hard,
-                       Data_frame_format dff = Data_frame_format::Byte,
-                       Frame_Format ff = Frame_Format::MSB,
-                       cPolPha cpolpha = cPolPha::None, BaudRate br = BaudRate::DIV2);
+	/**
+	 * @brief Configure one SPI, pins, source-free IRQ registration and NVIC.
+	 * @return InitError for an unsupported peripheral, invalid enums/missing SCK,
+	 *         Hard without SS, software-NSS slave, repeated setup or IRQ failure.
+	 * Slave requires hardware NSS; configure EXTI on the same pin in the application.
+	 * Byte uses 8-bit DR access and the 8-bit RX threshold on F7/G0; Half_Word
+	 * uses 16-bit DR access, the half-word threshold and 16-bit DMA transfers.
+	 * TX sets BIDIMODE/BIDIOE; RX/TXRX leave RXONLY clear. Default NSS is Hard;
+	 * Owned DMA objects are configured here, after constructor DMAReq validation, with separate
+	 * registration per direction. On failure only newly acquired resources are
+	 * released. No DMA is required for blocking/IRQ calls. Pass Software explicitly
+	 * for a master without a hardware NSS pin.
+	 *
+	 * @code
+	 *   bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software,
+	 *             SPI::Data_frame_format::Half_Word, SPI::Frame_Format::MSB,
+	 *             SPI::cPolPha::None, SPI::BaudRate::DIV8);
+	 *   uint16_t frames[] = {0x1234, 0xABCD};
+	 *   bus.Send(frames, 2); // Two 16-bit frames, not four byte frames.
+	 * @endcode
+	 */
+	SysInitStatus SetUp(Master_sel mstr, NSS_ctrl nss = NSS_ctrl::Hard,
+					   Data_frame_format dff = Data_frame_format::Byte,
+					   Frame_Format ff = Frame_Format::MSB,
+					   cPolPha cpolpha = cPolPha::None, BaudRate br = BaudRate::DIV2);
 
-    /// Low-level SPE controls; do not use to interrupt an owned active operation.
-    void Enable() { if (SPIx) SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE); }
-    void Disable() { if (SPIx) SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE); }
-    /// Active-low software master CS: current operation's pin, or constructor SS.
-    /// Hard NSS, slave mode and absent CS are untouched.
-    void SlaveSelect(FunctionalState en) {
-        if (SPIx && Master_slave == Master_sel::Master
-            && nss_ctrl == NSS_ctrl::Software && _active_ss->IsValid()) _active_ss->SetLevel(!en);
-    }
-    /// Raw request gates; normal transfers manage them in start/stop order.
-    void DMA_TX(FunctionalState en) {
-        if (en) SPI_SET_BIT(SPIx->CR2, SPI_CR2_TXDMAEN); else SPI_CLEAR_BIT(SPIx->CR2, SPI_CR2_TXDMAEN);
-    }
-    void DMA_RX(FunctionalState en) {
-        if (en) SPI_SET_BIT(SPIx->CR2, SPI_CR2_RXDMAEN); else SPI_CLEAR_BIT(SPIx->CR2, SPI_CR2_RXDMAEN);
-    }
-    /// Changes CR2 only; safe for a callback to disable its own source.
-    /// Enable sources only for an active transfer; SetUp() owns NVIC registration.
-    void IRQ_en(IRQ irq, FunctionalState en) {
-        if (!SPIx) return;
-        if (en) SPI_SET_BIT(SPIx->CR2, static_cast<uint32_t>(irq));
-        else SPI_CLEAR_BIT(SPIx->CR2, static_cast<uint32_t>(irq));
-    }
+	/// Low-level SPE controls; do not use to interrupt an owned active operation.
+	void Enable() { if (SPIx) SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE); }
+	void Disable() { if (SPIx) SPI_CLEAR_BIT(SPIx->CR1, SPI_CR1_SPE); }
+	/// Active-low software master CS: current operation's pin, or constructor SS.
+	/// Hard NSS, slave mode and absent CS are untouched.
+	void SlaveSelect(FunctionalState en) {
+		if (SPIx && Master_slave == Master_sel::Master
+			&& nss_ctrl == NSS_ctrl::Software && _active_ss->IsValid()) _active_ss->SetLevel(!en);
+	}
+	/// Raw request gates; normal transfers manage them in start/stop order.
+	void DMA_TX(FunctionalState en) {
+		if (en) SPI_SET_BIT(SPIx->CR2, SPI_CR2_TXDMAEN); else SPI_CLEAR_BIT(SPIx->CR2, SPI_CR2_TXDMAEN);
+	}
+	void DMA_RX(FunctionalState en) {
+		if (en) SPI_SET_BIT(SPIx->CR2, SPI_CR2_RXDMAEN); else SPI_CLEAR_BIT(SPIx->CR2, SPI_CR2_RXDMAEN);
+	}
+	/// Changes CR2 only; safe for a callback to disable its own source.
+	/// Enable sources only for an active transfer; SetUp() owns NVIC registration.
+	void IRQ_en(IRQ irq, FunctionalState en) {
+		if (!SPIx) return;
+		if (en) SPI_SET_BIT(SPIx->CR2, static_cast<uint32_t>(irq));
+		else SPI_CLEAR_BIT(SPIx->CR2, static_cast<uint32_t>(irq));
+	}
 
-    /**
-     * @name Blocking transfers
-     * @param len Frames (1..65535), not bytes for uint16_t buffers.
-     * @param timeout One GetTick budget in ms for the entire operation.
-     * @param ss Optional software master CS for this operation; nullptr uses the
-     *           constructor SS. The application configures it as output/high and
-     *           keeps the PIN alive until completion. Asserted just before SPE,
-     *           released after completion/error/timeout or DeInit cancellation.
-     *           Ignored with hardware NSS or in slave mode.
-     * @return NotInit before setup, Busy during another operation, Error for
-     * missing required buffers or hardware errors; Timeout after cleanup; OK
-     * after physical master completion or slave NSS. Calls require status OK;
-     * otherwise the current status is returned. The caller guarantees len=1..65535,
-     * buffer width/alignment and compatibility with the fixed pins/direction.
-     * These arguments are not checked. After a transfer Error/Timeout, use
-     * DeInit()/SetUp() before starting again.
-     * TXRX Send discards RX; TX-only has no RX. Master Receive sends dummy frames.
-     * A slave buffer is capacity; NSS ends a shorter packet and excess RX is
-     * discarded with IsTruncated() set. The user's EXTI must still call NssReleased().
-     * No OnComplete notification for blocking calls. Hardware errors call OnError().
-     * RX data on Error/Timeout must be discarded.
-     */
-    SysStatus Send(uint8_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
-    { return data ? StartPolling(data, nullptr, len, timeout, ss) : SysStatus::Error; }
-    SysStatus Receive(uint8_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
-    { return data ? StartPolling(nullptr, data, len, timeout, ss) : SysStatus::Error; }
-    SysStatus Send_Receive(uint8_t* tx, uint8_t* rx, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
-    { return tx && rx ? StartPolling(tx, rx, len, timeout, ss) : SysStatus::Error; }
-    SysStatus Send(uint16_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
-    { return data ? StartPolling(data, nullptr, len, timeout, ss) : SysStatus::Error; }
-    SysStatus Receive(uint16_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
-    { return data ? StartPolling(nullptr, data, len, timeout, ss) : SysStatus::Error; }
-    SysStatus Send_Receive(uint16_t* tx, uint16_t* rx, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
-    { return tx && rx ? StartPolling(tx, rx, len, timeout, ss) : SysStatus::Error; }
+	/**
+	 * @name Blocking transfers
+	 * @param len Frames (1..65535), not bytes for uint16_t buffers.
+	 * @param timeout One GetTick budget in ms for the entire operation.
+	 * @param ss Optional software master CS for this operation; nullptr uses the
+	 *           constructor SS. The application configures it as output/high and
+	 *           keeps the PIN alive until completion. Asserted just before SPE,
+	 *           released after completion/error/timeout or DeInit cancellation.
+	 *           Ignored with hardware NSS or in slave mode.
+	 * @return NotInit before setup, Busy during another operation, Error for
+	 * missing required buffers or hardware errors; Timeout after cleanup; OK
+	 * after physical master completion or slave NSS. Calls require status OK;
+	 * otherwise the current status is returned. The caller guarantees len=1..65535,
+	 * buffer width/alignment and compatibility with the fixed pins/direction.
+	 * These arguments are not checked. After a transfer Error/Timeout, use
+	 * DeInit()/SetUp() before starting again.
+	 * TXRX Send discards RX; TX-only has no RX. Master Receive sends dummy frames.
+	 * A slave buffer is capacity; NSS ends a shorter packet and excess RX is
+	 * discarded with IsTruncated() set. The user's EXTI must still call NssReleased().
+	 * No OnComplete notification for blocking calls. Hardware errors call OnError().
+	 * RX data on Error/Timeout must be discarded.
+	 */
+	SysStatus Send(uint8_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+	{ return data ? StartPolling(data, nullptr, len, timeout, ss) : SysStatus::Error; }
+	SysStatus Receive(uint8_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+	{ return data ? StartPolling(nullptr, data, len, timeout, ss) : SysStatus::Error; }
+	SysStatus Send_Receive(uint8_t* tx, uint8_t* rx, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+	{ return tx && rx ? StartPolling(tx, rx, len, timeout, ss) : SysStatus::Error; }
+	SysStatus Send(uint16_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+	{ return data ? StartPolling(data, nullptr, len, timeout, ss) : SysStatus::Error; }
+	SysStatus Receive(uint16_t* data, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+	{ return data ? StartPolling(nullptr, data, len, timeout, ss) : SysStatus::Error; }
+	SysStatus Send_Receive(uint16_t* tx, uint16_t* rx, uint32_t len, uint32_t timeout = 100, PIN* ss = nullptr)
+	{ return tx && rx ? StartPolling(tx, rx, len, timeout, ss) : SysStatus::Error; }
 
-    /**
-     * @name IRQ transfers
-     * Same buffer/width/count and optional final ss rules as blocking calls.
-     * OK means started. The selected PIN remains alive until Process() finishes
-     * or DeInit() cancels; both release this operation's software CS.
-     * Keep buffers alive and TX unchanged until Process() finishes.
-     * RX is serviced in RX/TXRX, including discard for TXRX Send and slave truncation.
-     * Software CS stays asserted until Process(), never released by a byte IRQ.
-     */
-    SysStatus Send_IRQ(uint8_t* data, uint32_t len, PIN* ss = nullptr)
-    { return data ? StartIRQ(data, nullptr, len, ss) : SysStatus::Error; }
-    SysStatus Receive_IRQ(uint8_t* data, uint32_t len, PIN* ss = nullptr)
-    { return data ? StartIRQ(nullptr, data, len, ss) : SysStatus::Error; }
-    SysStatus SendReceive_IRQ(uint8_t* tx, uint8_t* rx, uint32_t len, PIN* ss = nullptr)
-    { return tx && rx ? StartIRQ(tx, rx, len, ss) : SysStatus::Error; }
-    SysStatus Send_IRQ(uint16_t* data, uint32_t len, PIN* ss = nullptr)
-    { return data ? StartIRQ(data, nullptr, len, ss) : SysStatus::Error; }
-    SysStatus Receive_IRQ(uint16_t* data, uint32_t len, PIN* ss = nullptr)
-    { return data ? StartIRQ(nullptr, data, len, ss) : SysStatus::Error; }
-    SysStatus SendReceive_IRQ(uint16_t* tx, uint16_t* rx, uint32_t len, PIN* ss = nullptr)
-    { return tx && rx ? StartIRQ(tx, rx, len, ss) : SysStatus::Error; }
+	/**
+	 * @name IRQ transfers
+	 * Same buffer/width/count and optional final ss rules as blocking calls.
+	 * OK means started. The selected PIN remains alive until Process() finishes
+	 * or DeInit() cancels; both release this operation's software CS.
+	 * Keep buffers alive and TX unchanged until Process() finishes.
+	 * RX is serviced in RX/TXRX, including discard for TXRX Send and slave truncation.
+	 * Software CS stays asserted until Process(), never released by a byte IRQ.
+	 */
+	SysStatus Send_IRQ(uint8_t* data, uint32_t len, PIN* ss = nullptr)
+	{ return data ? StartIRQ(data, nullptr, len, ss) : SysStatus::Error; }
+	SysStatus Receive_IRQ(uint8_t* data, uint32_t len, PIN* ss = nullptr)
+	{ return data ? StartIRQ(nullptr, data, len, ss) : SysStatus::Error; }
+	SysStatus SendReceive_IRQ(uint8_t* tx, uint8_t* rx, uint32_t len, PIN* ss = nullptr)
+	{ return tx && rx ? StartIRQ(tx, rx, len, ss) : SysStatus::Error; }
+	SysStatus Send_IRQ(uint16_t* data, uint32_t len, PIN* ss = nullptr)
+	{ return data ? StartIRQ(data, nullptr, len, ss) : SysStatus::Error; }
+	SysStatus Receive_IRQ(uint16_t* data, uint32_t len, PIN* ss = nullptr)
+	{ return data ? StartIRQ(nullptr, data, len, ss) : SysStatus::Error; }
+	SysStatus SendReceive_IRQ(uint16_t* tx, uint16_t* rx, uint32_t len, PIN* ss = nullptr)
+	{ return tx && rx ? StartIRQ(tx, rx, len, ss) : SysStatus::Error; }
 
-    /**
-     * @name DMA transfers
-     * Send_DMA(data, len, ss) uses MINC=ENABLE; the full overload takes minc
-     * before ss. Receive/SendReceive_DMA take ss after len. Lifetime and automatic
-     * release are the same as IRQ.
-     * OK means started. Requires status OK and non-null required buffers, as
-     * for IRQ/polling. Count is 1..65535 frames; cache bytes = len*frame size.
-     * The caller guarantees count, width/alignment, pins/direction and valid minc.
-     * Only the presence of the requested DMA direction is checked additionally.
-     * DMA preparation updates address/count/MINC without NVIC access or waits.
-     * DMA IRQ sources are configured once by SetUpDMA().
-     * Send_DMA requires TX DMA; Receive_DMA requires RX DMA; SendReceive_DMA both.
-     * Direction::TX uses only TX DMA. Direction::RX master uses RX DMA plus TX IRQ
-     * for dummy clocks; slave RX uses only RX DMA. It never needs a second DMA.
-     * In TXRX with one DMA direction, the other is serviced by SPI IRQ (dummy TX
-     * or discarded RX). Both DMA directions reduce TXRX per-frame IRQ overhead.
-     * minc=DISABLE repeats the first source frame and cleans only that source frame.
-     * F7 cacheable RX allocations own full 32-byte lines. CPU does not access RX
-     * or change TX before Process() finishes. TX/RX overlapping buffer ownership
-     * and DMA reachability are the caller's responsibility.
-     */
-    SysStatus Send_DMA(uint8_t* data, uint32_t len, FunctionalState minc = ENABLE, PIN* ss = nullptr)
-    { return data ? StartDMA(data, nullptr, len, minc, ss) : SysStatus::Error; }
-    /// Select this operation's software CS with memory increment enabled.
-    SysStatus Send_DMA(uint8_t* data, uint32_t len, PIN* ss)
-    { return Send_DMA(data, len, ENABLE, ss); }
-    SysStatus Receive_DMA(uint8_t* data, uint32_t len, PIN* ss = nullptr)
-    { return data ? StartDMA(nullptr, data, len, ENABLE, ss) : SysStatus::Error; }
-    SysStatus SendReceive_DMA(uint8_t* tx, uint8_t* rx, uint32_t len, PIN* ss = nullptr)
-    { return tx && rx ? StartDMA(tx, rx, len, ENABLE, ss) : SysStatus::Error; }
-    SysStatus Send_DMA(uint16_t* data, uint32_t len, FunctionalState minc = ENABLE, PIN* ss = nullptr)
-    { return data ? StartDMA(data, nullptr, len, minc, ss) : SysStatus::Error; }
-    /// Select this operation's software CS with memory increment enabled.
-    SysStatus Send_DMA(uint16_t* data, uint32_t len, PIN* ss)
-    { return Send_DMA(data, len, ENABLE, ss); }
-    SysStatus Receive_DMA(uint16_t* data, uint32_t len, PIN* ss = nullptr)
-    { return data ? StartDMA(nullptr, data, len, ENABLE, ss) : SysStatus::Error; }
-    SysStatus SendReceive_DMA(uint16_t* tx, uint16_t* rx, uint32_t len, PIN* ss = nullptr)
-    { return tx && rx ? StartDMA(tx, rx, len, ENABLE, ss) : SysStatus::Error; }
+	/**
+	 * @name DMA transfers
+	 * Send_DMA(data, len, ss) uses MINC=ENABLE; the full overload takes minc
+	 * before ss. Receive/SendReceive_DMA take ss after len. Lifetime and automatic
+	 * release are the same as IRQ.
+	 * OK means started. Requires status OK and non-null required buffers, as
+	 * for IRQ/polling. Count is 1..65535 frames; cache bytes = len*frame size.
+	 * The caller guarantees count, width/alignment, pins/direction and valid minc.
+	 * Only the presence of the requested DMA direction is checked additionally.
+	 * DMA preparation updates address/count/MINC without NVIC access or waits.
+	 * DMA IRQ sources are configured once by SetUpDMA().
+	 * Send_DMA requires TX DMA; Receive_DMA requires RX DMA; SendReceive_DMA both.
+	 * Direction::TX uses only TX DMA. Direction::RX master uses RX DMA plus TX IRQ
+	 * for dummy clocks; slave RX uses only RX DMA. It never needs a second DMA.
+	 * In TXRX with one DMA direction, the other is serviced by SPI IRQ (dummy TX
+	 * or discarded RX). Both DMA directions reduce TXRX per-frame IRQ overhead.
+	 * minc=DISABLE repeats the first source frame and cleans only that source frame.
+	 * F7 cacheable RX allocations own full 32-byte lines. CPU does not access RX
+	 * or change TX before Process() finishes. TX/RX overlapping buffer ownership
+	 * and DMA reachability are the caller's responsibility.
+	 */
+	SysStatus Send_DMA(uint8_t* data, uint32_t len, FunctionalState minc = ENABLE, PIN* ss = nullptr)
+	{ return data ? StartDMA(data, nullptr, len, minc, ss) : SysStatus::Error; }
+	/// Select this operation's software CS with memory increment enabled.
+	SysStatus Send_DMA(uint8_t* data, uint32_t len, PIN* ss)
+	{ return Send_DMA(data, len, ENABLE, ss); }
+	SysStatus Receive_DMA(uint8_t* data, uint32_t len, PIN* ss = nullptr)
+	{ return data ? StartDMA(nullptr, data, len, ENABLE, ss) : SysStatus::Error; }
+	SysStatus SendReceive_DMA(uint8_t* tx, uint8_t* rx, uint32_t len, PIN* ss = nullptr)
+	{ return tx && rx ? StartDMA(tx, rx, len, ENABLE, ss) : SysStatus::Error; }
+	SysStatus Send_DMA(uint16_t* data, uint32_t len, FunctionalState minc = ENABLE, PIN* ss = nullptr)
+	{ return data ? StartDMA(data, nullptr, len, minc, ss) : SysStatus::Error; }
+	/// Select this operation's software CS with memory increment enabled.
+	SysStatus Send_DMA(uint16_t* data, uint32_t len, PIN* ss)
+	{ return Send_DMA(data, len, ENABLE, ss); }
+	SysStatus Receive_DMA(uint16_t* data, uint32_t len, PIN* ss = nullptr)
+	{ return data ? StartDMA(nullptr, data, len, ENABLE, ss) : SysStatus::Error; }
+	SysStatus SendReceive_DMA(uint16_t* tx, uint16_t* rx, uint32_t len, PIN* ss = nullptr)
+	{ return tx && rx ? StartDMA(tx, rx, len, ENABLE, ss) : SysStatus::Error; }
 
-    /**
-     * @brief Complete an async operation from main without waiting for hardware.
-     * @return Busy until master buffers and the SPI transmitter are empty/idle,
-     *         or until slave NssReleased(); final OK/Error afterwards.
-     * Calls OnComplete()/OnError() after stopping sources, DMA/cache return and CS.
-     * Poll regularly. GetStatus() alone does not drive completion.
-     */
-    SysStatus Process();
+	/**
+	 * @brief Complete an async operation from main without waiting for hardware.
+	 * @return Busy until master buffers and the SPI transmitter are empty/idle,
+	 *         or until slave NssReleased(); final OK/Error afterwards.
+	 * Calls OnComplete()/OnError() after stopping sources, DMA/cache return and CS.
+	 * Poll regularly. GetStatus() alone does not drive completion.
+	 */
+	SysStatus Process();
 
-    /**
-     * @brief Notify the slave's hardware NSS rising edge from user EXTI.
-     * The user configures/acknowledges EXTI. This method stops SPI sources and DMA
-     * immediately, retaining data/FIFO for Process(); it does not call completion
-     * callbacks or maintain cache. Ignored unless an active slave operation exists.
-     * No next packet may begin before Process() and rearm. Keep this EXTI and the
-     * SPI/DMA handlers at priorities preventing mutual preemption.
-     * This call contains no hardware wait. F4/F7 await stop TC in DMA IRQ before
-     * Process() publishes data. G0 requires the last request serviced before this
-     * call; Process() reads CNDTR after stop. Error packets must be discarded.
-     * @code
-     *   // In the user's handler, after acknowledging the actual NSS EXTI flag:
-     *   slave.NssReleased();
-     *   // In main:
-     *   if (slave.Process() == SysStatus::OK) {
-     *       auto frames = slave.GetDataReceivedCount();
-     *       bool truncated = slave.IsTruncated();
-     *       // Consume the first frames; then Receive_IRQ/Receive_DMA to rearm.
-     *   }
-     * @endcode
-     */
-    void NssReleased();
-    /// Pure read. A completed buffer is reusable only after Process() leaves Busy.
-    SysStatus GetStatus() const { return _status; }
-    /// Successful packet length, saturated at capacity; 0 before success/while Busy.
-    uint32_t GetDataReceivedCount() const {
-        return _status == SysStatus::OK && _direction != Direction::TX ? _capacity - _rx_remaining : 0U;
-    }
-    /// Excess slave RX after capacity; cleared by the next start or DeInit().
-    bool IsTruncated() const { return _truncated; }
+	/**
+	 * @brief Notify the slave's hardware NSS rising edge from user EXTI.
+	 * The user configures/acknowledges EXTI. This method stops SPI sources and DMA
+	 * immediately, retaining data/FIFO for Process(); it does not call completion
+	 * callbacks or maintain cache. Ignored unless an active slave operation exists.
+	 * No next packet may begin before Process() and rearm. Keep this EXTI and the
+	 * SPI/DMA handlers at priorities preventing mutual preemption.
+	 * This call contains no hardware wait. F4/F7 await stop TC in DMA IRQ before
+	 * Process() publishes data. G0 requires the last request serviced before this
+	 * call; Process() reads CNDTR after stop. Error packets must be discarded.
+	 * @code
+	 *   // In the user's handler, after acknowledging the actual NSS EXTI flag:
+	 *   slave.NssReleased();
+	 *   // In main:
+	 *   if (slave.Process() == SysStatus::OK) {
+	 *       auto frames = slave.GetDataReceivedCount();
+	 *       bool truncated = slave.IsTruncated();
+	 *       // Consume the first frames; then Receive_IRQ/Receive_DMA to rearm.
+	 *   }
+	 * @endcode
+	 */
+	void NssReleased();
+	/// Pure read. A completed buffer is reusable only after Process() leaves Busy.
+	SysStatus GetStatus() const { return _status; }
+	/// Successful packet length, saturated at capacity; 0 before success/while Busy.
+	uint32_t GetDataReceivedCount() const {
+		return _status == SysStatus::OK && _direction != Direction::TX ? _capacity - _rx_remaining : 0U;
+	}
+	/// Excess slave RX after capacity; cleared by the next start or DeInit().
+	bool IsTruncated() const { return _truncated; }
 
-    /**
-     * @brief Cancel, stop SPI/DMA, return RX cache ownership and release registrations.
-     * Removes this SPI only from shared vectors; shared NVIC/controller clocks
-     * are retained. Releases attached DMA. Does not invoke completion callbacks.
-     * Call from main, never from a callback. Repeated setup requires DeInit().
-     * The application owns EXTI and must disable/serialize its NSS callback first.
-     */
-    void DeInit();
+	/**
+	 * @brief Cancel, stop SPI/DMA, return RX cache ownership and release registrations.
+	 * Removes this SPI only from shared vectors; shared NVIC/controller clocks
+	 * are retained. Releases attached DMA. Does not invoke completion callbacks.
+	 * Call from main, never from a callback. Repeated setup requires DeInit().
+	 * The application owns EXTI and must disable/serialize its NSS callback first.
+	 */
+	void DeInit();
 
 private:
-    enum class Mode : uint8_t { Polling, Irq, Dma };
-    static constexpr uint32_t IRQ_MASK = SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE;
-    static constexpr uint32_t DMA_MASK = SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN;
-    // Motorola SPI without hardware CRC; TI frame errors are not applicable.
-    static constexpr uint32_t SPI_ERRORS = SPI_SR_OVR | SPI_SR_MODF;
-    // DMA source bits (not ISR flags); configure once and mask together on error.
-    static constexpr uint32_t DMA_ERROR_IRQ_MASK = static_cast<uint32_t>(DMA_Sx::IRQ::TE)
+	enum class Mode : uint8_t { Polling, Irq, Dma };
+	static constexpr uint32_t IRQ_MASK = SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE;
+	static constexpr uint32_t DMA_MASK = SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN;
+	// Motorola SPI without hardware CRC; TI frame errors are not applicable.
+	static constexpr uint32_t SPI_ERRORS = SPI_SR_OVR | SPI_SR_MODF;
+	// DMA source bits (not ISR flags); configure once and mask together on error.
+	static constexpr uint32_t DMA_ERROR_IRQ_MASK = static_cast<uint32_t>(DMA_Sx::IRQ::TE)
 #if defined(STM32F4) || defined(STM32F7)
-        | static_cast<uint32_t>(DMA_Sx::IRQ::DME)
+		| static_cast<uint32_t>(DMA_Sx::IRQ::DME)
 #endif
-        ;
+		;
 
-    PIN* _active_ss = &_ss; ///< Current software CS; constructor SS while idle.
-    const uint8_t* _tx_data = nullptr;
-    uint8_t* _rx_data = nullptr;
-    uint16_t _capacity = 0;
-    volatile uint16_t _tx_remaining = 0;
-    volatile uint16_t _rx_remaining = 0;
-    Data_frame_format _frame_format = Data_frame_format::Byte;
-    Mode _mode = Mode::Polling;
-    volatile SysStatus _status{SysStatus::NotInit};
-    volatile uint32_t _errors = 0;
-    volatile bool _truncated = false;
-    volatile bool _nss_ended = false;
-    const Direction _direction;
-    const System::CachePolicy _cache_policy; ///< One fixed policy for TX and RX.
-    DMA_Sx _dma_tx;
-    DMA_Sx _dma_rx;
-    // Active directions awaiting a DMA completion/stop event; SPI CR2 bit values.
-    volatile uint8_t _dma_pending = 0;
+	PIN* _active_ss = &_ss; ///< Current software CS; constructor SS while idle.
+	const uint8_t* _tx_data = nullptr;
+	uint8_t* _rx_data = nullptr;
+	uint16_t _capacity = 0;
+	volatile uint16_t _tx_remaining = 0;
+	volatile uint16_t _rx_remaining = 0;
+	Data_frame_format _frame_format = Data_frame_format::Byte;
+	Mode _mode = Mode::Polling;
+	volatile SysStatus _status{SysStatus::NotInit};
+	volatile uint32_t _errors = 0;
+	volatile bool _truncated = false;
+	volatile bool _nss_ended = false;
+	const Direction _direction;
+	const System::CachePolicy _cache_policy; ///< One fixed policy for TX and RX.
+	DMA_Sx _dma_tx;
+	DMA_Sx _dma_rx;
+	// Active directions awaiting a DMA completion/stop event; SPI CR2 bit values.
+	volatile uint8_t _dma_pending = 0;
 
-    class DmaTxIRQ final : public IIRQHandler {
-    public:
-        constexpr explicit DmaTxIRQ(SPI& spi) : _spi(spi) {}
-        void HandleIRQ() override { _spi.HandleDmaTxIRQ(); }
-    private:
-        SPI& _spi;
-    };
-    class DmaRxIRQ final : public IIRQHandler {
-    public:
-        constexpr explicit DmaRxIRQ(SPI& spi) : _spi(spi) {}
-        void HandleIRQ() override { _spi.HandleDmaRxIRQ(); }
-    private:
-        SPI& _spi;
-    };
-    DmaTxIRQ _dma_tx_irq;
-    DmaRxIRQ _dma_rx_irq;
-    void HandleDmaTxIRQ();
-    void HandleDmaRxIRQ();
+	class DmaTxIRQ final : public IIRQHandler {
+	public:
+		constexpr explicit DmaTxIRQ(SPI& spi) : _spi(spi) {}
+		void HandleIRQ() override { _spi.HandleDmaTxIRQ(); }
+	private:
+		SPI& _spi;
+	};
+	class DmaRxIRQ final : public IIRQHandler {
+	public:
+		constexpr explicit DmaRxIRQ(SPI& spi) : _spi(spi) {}
+		void HandleIRQ() override { _spi.HandleDmaRxIRQ(); }
+	private:
+		SPI& _spi;
+	};
+	DmaTxIRQ _dma_tx_irq;
+	DmaRxIRQ _dma_rx_irq;
+	void HandleDmaTxIRQ();
+	void HandleDmaRxIRQ();
 
-    uint16_t ReadFrame() const;
-    void WriteFrame(uint16_t frame);
-    void StoreFrame(uint16_t frame);
-    // RX/error handling share the SR snapshot and budget, including OVR discard.
-    uint32_t FifoFrames() const {
+	uint16_t ReadFrame() const;
+	void WriteFrame(uint16_t frame);
+	void StoreFrame(uint16_t frame);
+	// RX/error handling share the SR snapshot and budget, including OVR discard.
+	uint32_t FifoFrames() const {
 #if defined(STM32F4)
-        return 1U;
+		return 1U;
 #else
-        return _frame_format == Data_frame_format::Byte ? 4U : 2U;
+		return _frame_format == Data_frame_format::Byte ? 4U : 2U;
 #endif
-    }
-    void DrainRx(uint32_t& sr, uint32_t& remaining);
-    uint32_t ReadErrors(uint32_t& sr, uint32_t& remaining);
-    void StopTransfer();
-    SysInitStatus SetUpDMA();
-    void Finish(SysStatus result, uint32_t errors = 0);
-    // Start requires OK: SPI/requests are stopped, errors and pending DMA are zero.
-    // Only buffers, counters and per-packet state need preparation.
-    inline void PrepareTransfer(const void* tx, void* rx, uint32_t len, Mode mode, PIN* ss) {
-        _active_ss = ss ? ss : &_ss;
-        _tx_data = static_cast<const uint8_t*>(tx);
-        _rx_data = static_cast<uint8_t*>(rx);
-        _capacity = static_cast<uint16_t>(len);
-        _tx_remaining = _direction == Direction::RX && Master_slave == Master_sel::Slave ? 0 : _capacity;
-        _rx_remaining = _direction == Direction::TX ? 0 : _capacity;
-        _truncated = false;
-        _nss_ended = false;
-        _mode = mode;
-        _status = SysStatus::Busy;
-    }
-    // Request gates are set by the IRQ/DMA path; polling needs none.
-    inline void EnableTransfer() {
-        SlaveSelect(ENABLE);
-        SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE);
-    }
-    SysStatus StartPolling(const void* tx, void* rx, uint32_t len, uint32_t timeout, PIN* ss);
-    SysStatus StartIRQ(const void* tx, void* rx, uint32_t len, PIN* ss);
-    SysStatus StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState minc, PIN* ss);
-    void HandleIRQ() override final;
+	}
+	void DrainRx(uint32_t& sr, uint32_t& remaining);
+	uint32_t ReadErrors(uint32_t& sr, uint32_t& remaining);
+	void StopTransfer();
+	SysInitStatus SetUpDMA();
+	void Finish(SysStatus result, uint32_t errors = 0);
+	// Start requires OK: SPI/requests are stopped, errors and pending DMA are zero.
+	// Only buffers, counters and per-packet state need preparation.
+	inline void PrepareTransfer(const void* tx, void* rx, uint32_t len, Mode mode, PIN* ss) {
+		_active_ss = ss ? ss : &_ss;
+		_tx_data = static_cast<const uint8_t*>(tx);
+		_rx_data = static_cast<uint8_t*>(rx);
+		_capacity = static_cast<uint16_t>(len);
+		_tx_remaining = _direction == Direction::RX && Master_slave == Master_sel::Slave ? 0 : _capacity;
+		_rx_remaining = _direction == Direction::TX ? 0 : _capacity;
+		_truncated = false;
+		_nss_ended = false;
+		_mode = mode;
+		_status = SysStatus::Busy;
+	}
+	// Request gates are set by the IRQ/DMA path; polling needs none.
+	inline void EnableTransfer() {
+		SlaveSelect(ENABLE);
+		SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE);
+	}
+	SysStatus StartPolling(const void* tx, void* rx, uint32_t len, uint32_t timeout, PIN* ss);
+	SysStatus StartIRQ(const void* tx, void* rx, uint32_t len, PIN* ss);
+	SysStatus StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState minc, PIN* ss);
+	void HandleIRQ() override final;
 
 protected:
-    const Instance& _instance;
+	const Instance& _instance;
 	SPI_TypeDef* SPIx = nullptr; ///< Register cache and setup state.
-    PIN _clk, _mosi, _miso, _ss;
-    NSS_ctrl nss_ctrl{};
-    Master_sel Master_slave{};
+	PIN _clk, _mosi, _miso, _ss;
+	NSS_ctrl nss_ctrl{};
+	Master_sel Master_slave{};
 
-    /**
-     * @name Operational callbacks
-     * IRQ callbacks run in SPI/DMA IRQ. The default implementations move data or
-     * record DMA completion. Overrides call the base to retain that processing.
-     * OnRxByte/OnRxWord can also run in blocking calls or final FIFO drain.
-     * Never change registry/attachment from callbacks; no internal locks exist.
-     */
-    virtual void OnTxEmpty();
-    virtual void OnRxByte(uint8_t frame);
-    virtual void OnRxWord(uint16_t frame);
-    /// DMA IRQ already updated the count; base resumes slave dummy TX/discard RX.
-    virtual void OnDmaTxComplete();
-    virtual void OnDmaRxComplete();
-    /// Notification after physical completion; Process()/main context, not a TXE IRQ.
-    virtual void OnComplete() {}
-    /// Combined Error bits; main/Process or blocking calling context, after cleanup.
-    virtual void OnError(uint32_t errors) { (void)errors; }
+	/**
+	 * @name Operational callbacks
+	 * IRQ callbacks run in SPI/DMA IRQ. The default implementations move data or
+	 * record DMA completion. Overrides call the base to retain that processing.
+	 * OnRxByte/OnRxWord can also run in blocking calls or final FIFO drain.
+	 * Never change registry/attachment from callbacks; no internal locks exist.
+	 */
+	virtual void OnTxEmpty();
+	virtual void OnRxByte(uint8_t frame);
+	virtual void OnRxWord(uint16_t frame);
+	/// DMA IRQ already updated the count; base resumes slave dummy TX/discard RX.
+	virtual void OnDmaTxComplete();
+	virtual void OnDmaRxComplete();
+	/// Notification after physical completion; Process()/main context, not a TXE IRQ.
+	virtual void OnComplete() {}
+	/// Combined Error bits; main/Process or blocking calling context, after cleanup.
+	virtual void OnError(uint32_t errors) { (void)errors; }
 };
 
 #endif // SPI_HPP_

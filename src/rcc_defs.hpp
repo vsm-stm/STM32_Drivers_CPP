@@ -83,11 +83,11 @@ inline constexpr uint32_t OVERDRIVE_LIMIT = SYS_MAX;
 #endif
 
 inline constexpr uint32_t PLL_MASK = RCC_PLLCFGR_PLLSRC_Msk | RCC_PLLCFGR_PLLM_Msk
-    | RCC_PLLCFGR_PLLN_Msk | RCC_PLLCFGR_PLLP_Msk | RCC_PLLCFGR_PLLQ_Msk
+	| RCC_PLLCFGR_PLLN_Msk | RCC_PLLCFGR_PLLP_Msk | RCC_PLLCFGR_PLLQ_Msk
 #ifdef RCC_PLLCFGR_PLLR_Msk
-    | RCC_PLLCFGR_PLLR_Msk
+	| RCC_PLLCFGR_PLLR_Msk
 #endif
-    ;
+	;
 #elif defined(STM32G0)
 inline constexpr uint32_t HSE_MAX = 48U * MHz;
 inline constexpr uint32_t SYS_MAX = 64U * MHz, APB1_MAX = 64U * MHz, APB2_MAX = 0U;
@@ -102,12 +102,12 @@ inline constexpr uint32_t OVERDRIVE_LIMIT = SYS_MAX;
 inline constexpr uint32_t VOS_VALUE = PWR_CR1_VOS_0;
 inline constexpr uint32_t BUS_MASK = RCC_CFGR_HPRE_Msk | RCC_CFGR_PPRE_Msk;
 inline constexpr uint32_t PLL_MASK = RCC_PLLCFGR_PLLSRC_Msk | RCC_PLLCFGR_PLLM_Msk
-    | RCC_PLLCFGR_PLLN_Msk | RCC_PLLCFGR_PLLP_Msk | RCC_PLLCFGR_PLLR_Msk
-    | RCC_PLLCFGR_PLLPEN | RCC_PLLCFGR_PLLREN
+	| RCC_PLLCFGR_PLLN_Msk | RCC_PLLCFGR_PLLP_Msk | RCC_PLLCFGR_PLLR_Msk
+	| RCC_PLLCFGR_PLLPEN | RCC_PLLCFGR_PLLREN
 #ifdef RCC_PLLQ_SUPPORT
-    | RCC_PLLCFGR_PLLQ_Msk | RCC_PLLCFGR_PLLQEN
+	| RCC_PLLCFGR_PLLQ_Msk | RCC_PLLCFGR_PLLQEN
 #endif
-    ;
+	;
 #else
 #error "RCC supports STM32F4, STM32F7 and STM32G0 only"
 #endif

@@ -69,7 +69,7 @@ static constexpr uint32_t EN_VBAT    = ADC_CCR_VBATE;
 static constexpr uint8_t  CH_VREFINT = 17;
 static constexpr uint8_t  CH_VBAT    = 18;
 #if defined(STM32F401xC) || defined(STM32F401xE) || defined(STM32F405xx) || defined(STM32F407xx) || \
-    defined(STM32F410Cx) || defined(STM32F410Rx) || defined(STM32F410Tx) || defined(STM32F415xx) || defined(STM32F417xx)
+	defined(STM32F410Cx) || defined(STM32F410Rx) || defined(STM32F410Tx) || defined(STM32F415xx) || defined(STM32F417xx)
 static constexpr uint8_t  CH_TEMP    = 16;
 #else
 static constexpr uint8_t  CH_TEMP    = 18;   // shared with VBAT
@@ -212,7 +212,7 @@ struct IN {
 	static constexpr ADC_PIN PB11_IN15 = { GPIOB_BASE, 11, 15, ADC1_BASE };   ///< 48+ pin packages
 	static constexpr ADC_PIN PB12_IN16 = { GPIOB_BASE, 12, 16, ADC1_BASE };   ///< 48+ pin packages
 #if defined(STM32G030xx) || defined(STM32G031xx) || defined(STM32G041xx) || \
-    defined(STM32G050xx) || defined(STM32G051xx) || defined(STM32G061xx)
+	defined(STM32G050xx) || defined(STM32G051xx) || defined(STM32G061xx)
 	// Alternatives for IN11/IN15/IN16 in packages without PB10-PB12 (≤ 32 pins)
 	static constexpr ADC_PIN PB7_IN11  = { GPIOB_BASE,  7, 11, ADC1_BASE };
 	static constexpr ADC_PIN PA11_IN15 = { GPIOA_BASE, 11, 15, ADC1_BASE };
@@ -231,11 +231,11 @@ struct IN {
 
 /// ADC1 channels (shared pin mapping with ADC2 — different adc_base).
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 0U, ADC1_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream4 = { DMA2_Stream4_BASE, 0U, ADC1_BASE, DMA_Sx::DIR::From_Per };  // Stream4 Ch0
-    };
-    static constexpr Instance instance = { ADC1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC1EN, ADC_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 0U, ADC1_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream4 = { DMA2_Stream4_BASE, 0U, ADC1_BASE, DMA_Sx::DIR::From_Per };  // Stream4 Ch0
+	};
+	static constexpr Instance instance = { ADC1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC1EN, ADC_IRQn
 
  };
 
@@ -261,11 +261,11 @@ struct _1 {
 /// ADC2 — same GPIO pins as ADC1, different adc_base.
 /// Absent on F401/F410/F411/F412/F413/F423.
 struct _2 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 1U, ADC2_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 1U, ADC2_BASE, DMA_Sx::DIR::From_Per };  // Stream3 Ch1
-    };
-    static constexpr Instance instance = { ADC2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC2EN, ADC_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream2 = { DMA2_Stream2_BASE, 1U, ADC2_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream3 = { DMA2_Stream3_BASE, 1U, ADC2_BASE, DMA_Sx::DIR::From_Per };  // Stream3 Ch1
+	};
+	static constexpr Instance instance = { ADC2_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC2EN, ADC_IRQn
 
  };
 
@@ -291,11 +291,11 @@ struct _2 {
 #if defined(ADC3_BASE)
 /// ADC3 — PA0-PA3, PC0-PC3 shared with ADC1/2, the rest on PORTF.
 struct _3 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 2U, ADC3_BASE, DMA_Sx::DIR::From_Per };
-        static constexpr DMA_Sx::DMAReq RX_DMA2_Stream1 = { DMA2_Stream1_BASE, 2U, ADC3_BASE, DMA_Sx::DIR::From_Per };  // Stream1 Ch2
-    };
-    static constexpr Instance instance = { ADC3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC3EN, ADC_IRQn
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream0 = { DMA2_Stream0_BASE, 2U, ADC3_BASE, DMA_Sx::DIR::From_Per };
+		static constexpr DMA_Sx::DMAReq RX_DMA2_Stream1 = { DMA2_Stream1_BASE, 2U, ADC3_BASE, DMA_Sx::DIR::From_Per };  // Stream1 Ch2
+	};
+	static constexpr Instance instance = { ADC3_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APB2ENR)), RCC_APB2ENR_ADC3EN, ADC_IRQn
 
  };
 
@@ -322,12 +322,12 @@ struct _3 {
 
 #if defined(STM32G0)
 struct _1 {
-    struct DMA {
-        static constexpr DMA_Sx::DMAReq RX = {  5U, ADC1_BASE, DMA_Sx::DIR::From_Per };
-    };
-    static constexpr Instance instance = { ADC1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR2)), RCC_APBENR2_ADCEN, ADC_N_G0_IRQN,
-        DMA::RX.ch
-    };
+	struct DMA {
+		static constexpr DMA_Sx::DMAReq RX = {  5U, ADC1_BASE, DMA_Sx::DIR::From_Per };
+	};
+	static constexpr Instance instance = { ADC1_BASE, (RCC_BASE + offsetof(RCC_TypeDef, APBENR2)), RCC_APBENR2_ADCEN, ADC_N_G0_IRQN,
+		DMA::RX.ch
+	};
 
 };
 #undef ADC_N_G0_IRQN

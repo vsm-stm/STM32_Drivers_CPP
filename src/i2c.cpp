@@ -2,12 +2,12 @@
 
 #if defined(STM32G0) || defined(STM32F7)
 static constexpr uint32_t CR1_IE_ALL = I2C_CR1_TXIE | I2C_CR1_RXIE | I2C_CR1_TCIE
-    | I2C_CR1_STOPIE | I2C_CR1_NACKIE | I2C_CR1_ERRIE;
+	| I2C_CR1_STOPIE | I2C_CR1_NACKIE | I2C_CR1_ERRIE;
 static constexpr uint32_t CR1_DMAEN = I2C_CR1_TXDMAEN | I2C_CR1_RXDMAEN;
 static constexpr uint32_t NBYTES_MAX = 255;
 #else
 static constexpr uint32_t CR2_CTRL = I2C_CR2_ITEVTEN | I2C_CR2_ITBUFEN | I2C_CR2_ITERREN
-    | I2C_CR2_DMAEN | I2C_CR2_LAST;
+	| I2C_CR2_DMAEN | I2C_CR2_LAST;
 static constexpr uint32_t SR1_ERR = I2C_SR1_BERR | I2C_SR1_ARLO | I2C_SR1_AF;
 #endif
 
@@ -15,102 +15,102 @@ static constexpr uint32_t SR1_ERR = I2C_SR1_BERR | I2C_SR1_ARLO | I2C_SR1_AF;
 // starts/Abort/DeInit with this object's I2C and DMA IRQs; its handlers do not nest.
 SysInitStatus I2C::Apply(uint32_t timing, SPEED speed, uint32_t expected_pclk)
 {
-    // Check RCC's published APB1 before changing registers or acquiring resources.
-    if (I2Cx || System::APB1BusClock != expected_pclk) return SysInitStatus::InitError;
-    I2Cx = reinterpret_cast<I2C_TypeDef*>(_instance.periph);
+	// Check RCC's published APB1 before changing registers or acquiring resources.
+	if (I2Cx || System::APB1BusClock != expected_pclk) return SysInitStatus::InitError;
+	I2Cx = reinterpret_cast<I2C_TypeDef*>(_instance.periph);
 
-    _timing = timing;
+	_timing = timing;
 #if defined(STM32F4)
-    (void)speed; // F4 register configuration is entirely encoded in timing.
+	(void)speed; // F4 register configuration is entirely encoded in timing.
 #endif
 
-    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
-    (void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
-    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
-    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
-    if (_instance.ksel_mask) I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.ksel_reg), _instance.ksel_mask);
-    _scl.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High);
-    _sda.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High);
+	I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+	(void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
+	I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+	I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+	if (_instance.ksel_mask) I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.ksel_reg), _instance.ksel_mask);
+	_scl.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High);
+	_sda.SetUp(PIN::TYPE::AF_OD_PulUp, PIN::OUTPUT_SPEED::High);
 #if defined(STM32G0) || defined(STM32F7)
 #if defined(STM32G0)
-    I2C_SET_BIT(RCC->APBENR2, RCC_APBENR2_SYSCFGEN);
-    (void)RCC->APBENR2;
-    auto& fmp = SYSCFG->CFGR1;
+	I2C_SET_BIT(RCC->APBENR2, RCC_APBENR2_SYSCFGEN);
+	(void)RCC->APBENR2;
+	auto& fmp = SYSCFG->CFGR1;
 #else
-    I2C_SET_BIT(RCC->APB2ENR, RCC_APB2ENR_SYSCFGEN);
-    (void)RCC->APB2ENR;
-    auto& fmp = SYSCFG->PMC;
+	I2C_SET_BIT(RCC->APB2ENR, RCC_APB2ENR_SYSCFGEN);
+	(void)RCC->APB2ENR;
+	auto& fmp = SYSCFG->PMC;
 #endif
-    if (speed == SPEED::FAST_PLUS) I2C_SET_BIT(fmp, _instance.fmp_bit);
-    else I2C_CLEAR_BIT(fmp, _instance.fmp_bit);
-    I2Cx->CR1 = 0;
-    I2Cx->TIMINGR = _timing;
-    I2Cx->CR1 = I2C_CR1_PE;
+	if (speed == SPEED::FAST_PLUS) I2C_SET_BIT(fmp, _instance.fmp_bit);
+	else I2C_CLEAR_BIT(fmp, _instance.fmp_bit);
+	I2Cx->CR1 = 0;
+	I2Cx->TIMINGR = _timing;
+	I2Cx->CR1 = I2C_CR1_PE;
 #else
-    ResetPeriph();
+	ResetPeriph();
 #endif
-    if (SetUpDMA() != SysInitStatus::InitOK) {
-        I2Cx->CR1 = 0;
-        I2Cx = nullptr;
-        return SysInitStatus::InitError;
-    }
+	if (SetUpDMA() != SysInitStatus::InitOK) {
+		I2Cx->CR1 = 0;
+		I2Cx = nullptr;
+		return SysInitStatus::InitError;
+	}
 
-    const IRQn_Type none = static_cast<IRQn_Type>(-1);
-    const IRQn_Type irqs[4] = {
-        _instance.irq_ev, _instance.irq_er != _instance.irq_ev ? _instance.irq_er : none,
-        _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : none,
-        _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : none
-    };
-    IIRQHandler* const handlers[4] = { this, this, &_dma_tx_irq, &_dma_rx_irq };
-    for (unsigned i = 0; i < 4; ++i) {
-        if (irqs[i] == none) continue;
-        const bool enabled = NVIC_GetEnableIRQ(irqs[i]) != 0;
-        NVIC_DisableIRQ(irqs[i]);
-        if (IRQ_Registry::Register(irqs[i], handlers[i]) != SysInitStatus::InitOK) {
-            if (enabled) NVIC_EnableIRQ(irqs[i]);
-            // Remove only entries acquired by this attempt; preserve shared users.
-            for (unsigned j = 0; j < i; ++j) {
-                if (irqs[j] == none) continue;
-                const bool was_enabled = NVIC_GetEnableIRQ(irqs[j]) != 0;
-                NVIC_DisableIRQ(irqs[j]);
-                IRQ_Registry::Unregister(irqs[j], handlers[j]);
-                if (was_enabled && IRQ_Registry::HasHandlers(irqs[j])) NVIC_EnableIRQ(irqs[j]);
-                else if (!IRQ_Registry::HasHandlers(irqs[j])) NVIC_ClearPendingIRQ(irqs[j]);
-            }
-            if (_dma_tx.HasSelection()) _dma_tx.Release();
-            if (_dma_rx.HasSelection()) _dma_rx.Release();
-            I2Cx->CR1 = 0;
-            I2Cx = nullptr;
-            return SysInitStatus::InitError;
-        }
-        NVIC_EnableIRQ(irqs[i]); // Sources remain off until a transfer starts.
-    }
-    _err = ERR::None;
-    _state = State::Idle;
-    return SysInitStatus::InitOK;
+	const IRQn_Type none = static_cast<IRQn_Type>(-1);
+	const IRQn_Type irqs[4] = {
+		_instance.irq_ev, _instance.irq_er != _instance.irq_ev ? _instance.irq_er : none,
+		_dma_tx.HasSelection() ? _dma_tx.GetIRQn() : none,
+		_dma_rx.HasSelection() ? _dma_rx.GetIRQn() : none
+	};
+	IIRQHandler* const handlers[4] = { this, this, &_dma_tx_irq, &_dma_rx_irq };
+	for (unsigned i = 0; i < 4; ++i) {
+		if (irqs[i] == none) continue;
+		const bool enabled = NVIC_GetEnableIRQ(irqs[i]) != 0;
+		NVIC_DisableIRQ(irqs[i]);
+		if (IRQ_Registry::Register(irqs[i], handlers[i]) != SysInitStatus::InitOK) {
+			if (enabled) NVIC_EnableIRQ(irqs[i]);
+			// Remove only entries acquired by this attempt; preserve shared users.
+			for (unsigned j = 0; j < i; ++j) {
+				if (irqs[j] == none) continue;
+				const bool was_enabled = NVIC_GetEnableIRQ(irqs[j]) != 0;
+				NVIC_DisableIRQ(irqs[j]);
+				IRQ_Registry::Unregister(irqs[j], handlers[j]);
+				if (was_enabled && IRQ_Registry::HasHandlers(irqs[j])) NVIC_EnableIRQ(irqs[j]);
+				else if (!IRQ_Registry::HasHandlers(irqs[j])) NVIC_ClearPendingIRQ(irqs[j]);
+			}
+			if (_dma_tx.HasSelection()) _dma_tx.Release();
+			if (_dma_rx.HasSelection()) _dma_rx.Release();
+			I2Cx->CR1 = 0;
+			I2Cx = nullptr;
+			return SysInitStatus::InitError;
+		}
+		NVIC_EnableIRQ(irqs[i]); // Sources remain off until a transfer starts.
+	}
+	_err = ERR::None;
+	_state = State::Idle;
+	return SysInitStatus::InitOK;
 }
 
 SysInitStatus I2C::SetUpDMA()
 {
-    DMA_Sx* const streams[2] = { &_dma_tx, &_dma_rx };
-    for (unsigned i = 0; i < 2; ++i) {
-        if (!streams[i]->HasSelection()) continue;
-        DMA_Sx::StreamSettings cfg;
-        cfg.direction = i ? DMA_Sx::DIR::From_Per : DMA_Sx::DIR::To_Per;
-        cfg.data_size = DMA_Sx::SIZE::Byte;
-        cfg.minc = true;
+	DMA_Sx* const streams[2] = { &_dma_tx, &_dma_rx };
+	for (unsigned i = 0; i < 2; ++i) {
+		if (!streams[i]->HasSelection()) continue;
+		DMA_Sx::StreamSettings cfg;
+		cfg.direction = i ? DMA_Sx::DIR::From_Per : DMA_Sx::DIR::To_Per;
+		cfg.data_size = DMA_Sx::SIZE::Byte;
+		cfg.minc = true;
 #if defined(STM32F4)
-        cfg.per_address = reinterpret_cast<uint32_t>(&I2Cx->DR);
+		cfg.per_address = reinterpret_cast<uint32_t>(&I2Cx->DR);
 #else
-        cfg.per_address = i ? reinterpret_cast<uint32_t>(&I2Cx->RXDR)
-                            : reinterpret_cast<uint32_t>(&I2Cx->TXDR);
+		cfg.per_address = i ? reinterpret_cast<uint32_t>(&I2Cx->RXDR)
+							: reinterpret_cast<uint32_t>(&I2Cx->TXDR);
 #endif
-        if (streams[i]->SetUp(cfg) != SysInitStatus::InitOK) {
-            if (i && _dma_tx.HasSelection()) _dma_tx.Release();
-            return SysInitStatus::InitError;
-        }
-    }
-    return SysInitStatus::InitOK;
+		if (streams[i]->SetUp(cfg) != SysInitStatus::InitOK) {
+			if (i && _dma_tx.HasSelection()) _dma_tx.Release();
+			return SysInitStatus::InitError;
+		}
+	}
+	return SysInitStatus::InitOK;
 }
 
 // All public transfer variants use the same FSM.
@@ -245,8 +245,8 @@ SysStatus I2C::Begin(Mode mode, uint8_t addr, uint16_t reg, uint8_t reg_len,
 	// the first byte to move. Register bytes always go through TXIS (CPU);
 	// data through TXIS/RXNE (Poll, Irq) or the DMA request (Dma).
 	const State first = reg_len ? State::TxReg  :
-	                    !len    ? State::Stop   :
-	                    read    ? State::RxData : State::TxData;
+						!len    ? State::Stop   :
+						read    ? State::RxData : State::TxData;
 
 	I2Cx->ICR = I2C_ICR_STOPCF | I2C_ICR_NACKCF | I2C_ICR_BERRCF | I2C_ICR_ARLOCF;
 	uint32_t cr1 = 0;
@@ -524,203 +524,203 @@ void I2C::Process(uint32_t status)
 void I2C::Finish()
 {
 #if defined(STM32F4)
-    I2C_CLEAR_BIT(I2Cx->CR2, CR2_CTRL);
-    I2C_CLEAR_BIT(I2Cx->CR1, I2C_CR1_POS);
+	I2C_CLEAR_BIT(I2Cx->CR2, CR2_CTRL);
+	I2C_CLEAR_BIT(I2Cx->CR1, I2C_CR1_POS);
 #else
-    I2C_CLEAR_BIT(I2Cx->CR1, CR1_IE_ALL | CR1_DMAEN);
-    I2Cx->CR2 = 0;
+	I2C_CLEAR_BIT(I2Cx->CR1, CR1_IE_ALL | CR1_DMAEN);
+	I2Cx->CR2 = 0;
 #endif
-    if (_mode != Mode::Dma) { Complete(true); return; }
+	if (_mode != Mode::Dma) { Complete(true); return; }
 
-    DMA_Sx& dma = _read ? _dma_rx : _dma_tx;
-    _state = State::DmaStop;
+	DMA_Sx& dma = _read ? _dma_rx : _dma_tx;
+	_state = State::DmaStop;
 #if defined(STM32F4) || defined(STM32F7)
-    if (_err != ERR::None) dma.RequestStop();
+	if (_err != ERR::None) dma.RequestStop();
 #endif
-    const uint32_t flags = dma.GetIRQFlags();
-    if (flags & DMA_Sx::FLAG_ERRORS) {
-        if (_err == ERR::None) _err = ERR::DmaError;
+	const uint32_t flags = dma.GetIRQFlags();
+	if (flags & DMA_Sx::FLAG_ERRORS) {
+		if (_err == ERR::None) _err = ERR::DmaError;
 #if defined(STM32F4) || defined(STM32F7)
-        dma.RequestStop();
+		dma.RequestStop();
 #endif
-    }
+	}
 #if defined(STM32F4) || defined(STM32F7)
-    // Normal mode clears EN at finite completion. A requested stop also needs
-    // TC (or hardware TE), so an intermediate EN read cannot publish early.
-    if (dma.IsEnabled() || !(flags & (DMA_Sx::FLAG_TC | DMA_LISR_TEIF0))) return;
+	// Normal mode clears EN at finite completion. A requested stop also needs
+	// TC (or hardware TE), so an intermediate EN read cannot publish early.
+	if (dma.IsEnabled() || !(flags & (DMA_Sx::FLAG_TC | DMA_LISR_TEIF0))) return;
 #else
-    // A failed G0 transfer is discarded: abort CNDTR is not used. A normal
-    // STOP waits for the finite DMA's TC, not an assumed last-request delay.
-    if (_err == ERR::None && !(flags & DMA_Sx::FLAG_TC)) return;
+	// A failed G0 transfer is discarded: abort CNDTR is not used. A normal
+	// STOP waits for the finite DMA's TC, not an assumed last-request delay.
+	if (_err == ERR::None && !(flags & DMA_Sx::FLAG_TC)) return;
 #endif
-    Complete(true);
+	Complete(true);
 }
 
 void I2C::Complete(bool notify)
 {
-    if (_mode == Mode::Dma) {
-        DMA_Sx& dma = _read ? _dma_rx : _dma_tx;
-        dma.Disable_IRQ(DMA_Sx::IRQ::TE);
-        dma.Disable_IRQ(DMA_Sx::IRQ::TC);
+	if (_mode == Mode::Dma) {
+		DMA_Sx& dma = _read ? _dma_rx : _dma_tx;
+		dma.Disable_IRQ(DMA_Sx::IRQ::TE);
+		dma.Disable_IRQ(DMA_Sx::IRQ::TC);
 #if defined(STM32F4) || defined(STM32F7)
-        dma.Disable_IRQ(DMA_Sx::IRQ::DME);
+		dma.Disable_IRQ(DMA_Sx::IRQ::DME);
 #else
-        dma.RequestStop(); // G0 finite transfers leave EN set.
+		dma.RequestStop(); // G0 finite transfers leave EN set.
 #endif
-        __DMB();
-        if (_err == ERR::None && dma.GetCount() != 0) _err = ERR::DmaError;
-        dma.ClearFlags();
+		__DMB();
+		if (_err == ERR::None && dma.GetCount() != 0) _err = ERR::DmaError;
+		dma.ClearFlags();
 #if defined(STM32F7)
-        if (_cache_policy == System::CachePolicy::Cacheable && _read && _err == ERR::None)
-            System::CacheInvalidate(_buf, _len);
+		if (_cache_policy == System::CachePolicy::Cacheable && _read && _err == ERR::None)
+			System::CacheInvalidate(_buf, _len);
 #endif
-    }
-    const ERR error = _err;
-    const bool callback = notify && _mode != Mode::Poll;
-    _buf = nullptr;
-    __DMB();
-    _state = State::Idle;
-    if (callback) {
-        if (error == ERR::None) OnComplete();
-        else OnError(error);
-    }
+	}
+	const ERR error = _err;
+	const bool callback = notify && _mode != Mode::Poll;
+	_buf = nullptr;
+	__DMB();
+	_state = State::Idle;
+	if (callback) {
+		if (error == ERR::None) OnComplete();
+		else OnError(error);
+	}
 }
 
 void I2C::HandleDmaTxIRQ()
 {
-    if (!I2Cx || _mode != Mode::Dma || _read || _state == State::Idle) return;
-    const uint32_t flags = _dma_tx.GetIRQFlags();
-    if ((flags & DMA_Sx::FLAG_ERRORS) && _err == ERR::None) {
-        _err = ERR::DmaError;
-        ResetPeriph();
-        Finish();
-        return;
-    }
-    if (_state == State::DmaStop) {
+	if (!I2Cx || _mode != Mode::Dma || _read || _state == State::Idle) return;
+	const uint32_t flags = _dma_tx.GetIRQFlags();
+	if ((flags & DMA_Sx::FLAG_ERRORS) && _err == ERR::None) {
+		_err = ERR::DmaError;
+		ResetPeriph();
+		Finish();
+		return;
+	}
+	if (_state == State::DmaStop) {
 #if defined(STM32F4) || defined(STM32F7)
-        if (_dma_tx.IsEnabled() || !(flags & (DMA_Sx::FLAG_TC | DMA_LISR_TEIF0))) return;
+		if (_dma_tx.IsEnabled() || !(flags & (DMA_Sx::FLAG_TC | DMA_LISR_TEIF0))) return;
 #else
-        if (!(flags & DMA_Sx::FLAG_TC) && _err == ERR::None) return;
+		if (!(flags & DMA_Sx::FLAG_TC) && _err == ERR::None) return;
 #endif
-        Complete(true);
-    } else if (flags & DMA_Sx::FLAG_TC) {
-        // Data left memory; I2C still owes BTF/STOP. Retain TC for Finish().
-        _dma_tx.Disable_IRQ(DMA_Sx::IRQ::TC);
-    }
+		Complete(true);
+	} else if (flags & DMA_Sx::FLAG_TC) {
+		// Data left memory; I2C still owes BTF/STOP. Retain TC for Finish().
+		_dma_tx.Disable_IRQ(DMA_Sx::IRQ::TC);
+	}
 }
 
 void I2C::HandleDmaRxIRQ()
 {
-    if (!I2Cx || _mode != Mode::Dma || !_read || _state == State::Idle) return;
-    const uint32_t flags = _dma_rx.GetIRQFlags();
-    if ((flags & DMA_Sx::FLAG_ERRORS) && _err == ERR::None) {
-        _err = ERR::DmaError;
-        ResetPeriph();
-        Finish();
-        return;
-    }
-    if (_state == State::DmaStop) {
+	if (!I2Cx || _mode != Mode::Dma || !_read || _state == State::Idle) return;
+	const uint32_t flags = _dma_rx.GetIRQFlags();
+	if ((flags & DMA_Sx::FLAG_ERRORS) && _err == ERR::None) {
+		_err = ERR::DmaError;
+		ResetPeriph();
+		Finish();
+		return;
+	}
+	if (_state == State::DmaStop) {
 #if defined(STM32F4) || defined(STM32F7)
-        if (_dma_rx.IsEnabled() || !(flags & (DMA_Sx::FLAG_TC | DMA_LISR_TEIF0))) return;
+		if (_dma_rx.IsEnabled() || !(flags & (DMA_Sx::FLAG_TC | DMA_LISR_TEIF0))) return;
 #else
-        if (!(flags & DMA_Sx::FLAG_TC) && _err == ERR::None) return;
+		if (!(flags & DMA_Sx::FLAG_TC) && _err == ERR::None) return;
 #endif
-        Complete(true);
-        return;
-    }
-    if (!(flags & DMA_Sx::FLAG_TC)) return;
-    _dma_rx.Disable_IRQ(DMA_Sx::IRQ::TC);
+		Complete(true);
+		return;
+	}
+	if (!(flags & DMA_Sx::FLAG_TC)) return;
+	_dma_rx.Disable_IRQ(DMA_Sx::IRQ::TC);
 #if defined(STM32F4)
-    const uint32_t sr1 = I2Cx->SR1;
-    if (sr1 & SR1_ERR) { Process(sr1); return; }
-    // LAST NACKed the last byte. For N=1 STOP was already set at ADDR.
-    if (_len > 1) I2C_SET_BIT(I2Cx->CR1, I2C_CR1_STOP);
-    I2C_CLEAR_BIT(I2Cx->CR2, CR2_CTRL);
-    I2C_CLEAR_BIT(I2Cx->CR1, I2C_CR1_POS);
-    Complete(true); // TC confirms memory completion; STOP itself is not awaited.
+	const uint32_t sr1 = I2Cx->SR1;
+	if (sr1 & SR1_ERR) { Process(sr1); return; }
+	// LAST NACKed the last byte. For N=1 STOP was already set at ADDR.
+	if (_len > 1) I2C_SET_BIT(I2Cx->CR1, I2C_CR1_STOP);
+	I2C_CLEAR_BIT(I2Cx->CR2, CR2_CTRL);
+	I2C_CLEAR_BIT(I2Cx->CR1, I2C_CR1_POS);
+	Complete(true); // TC confirms memory completion; STOP itself is not awaited.
 #endif
 }
 
 void I2C::HandleIRQ()
 {
-    if (!I2Cx || _state == State::Idle || _state == State::DmaStop || _mode == Mode::Poll) return;
-    Process(StatusReg()); // One snapshot, one bounded FSM step.
+	if (!I2Cx || _state == State::Idle || _state == State::DmaStop || _mode == Mode::Poll) return;
+	Process(StatusReg()); // One snapshot, one bounded FSM step.
 }
 
 void I2C::ResetPeriph()
 {
 #if defined(STM32G0) || defined(STM32F7)
-    // Disable transfer sources too. Three APB reads meet the PE-low interval;
-    // these are fixed accesses, not a polling loop.
-    I2C_CLEAR_BIT(I2Cx->CR1, I2C_CR1_PE | CR1_IE_ALL | CR1_DMAEN);
-    (void)I2Cx->CR1;
-    (void)I2Cx->CR1;
-    (void)I2Cx->CR1;
-    I2C_SET_BIT(I2Cx->CR1, I2C_CR1_PE);
+	// Disable transfer sources too. Three APB reads meet the PE-low interval;
+	// these are fixed accesses, not a polling loop.
+	I2C_CLEAR_BIT(I2Cx->CR1, I2C_CR1_PE | CR1_IE_ALL | CR1_DMAEN);
+	(void)I2Cx->CR1;
+	(void)I2Cx->CR1;
+	(void)I2Cx->CR1;
+	I2C_SET_BIT(I2Cx->CR1, I2C_CR1_PE);
 #else
-    I2Cx->CR1 = I2C_CR1_SWRST;
-    I2Cx->CR1 = 0;
-    I2Cx->CR2 = _timing >> 24;
-    I2Cx->CCR = _timing & 0xFFFFu;
-    I2Cx->TRISE = (_timing >> 16) & 0xFFu;
-    I2Cx->CR1 = I2C_CR1_PE;
+	I2Cx->CR1 = I2C_CR1_SWRST;
+	I2Cx->CR1 = 0;
+	I2Cx->CR2 = _timing >> 24;
+	I2Cx->CCR = _timing & 0xFFFFu;
+	I2Cx->TRISE = (_timing >> 16) & 0xFFu;
+	I2Cx->CR1 = I2C_CR1_PE;
 #endif
 }
 
 void I2C::Abort()
 {
-    if (!I2Cx || _state == State::Idle || _mode == Mode::Poll) return;
-    _err = ERR::Aborted;
+	if (!I2Cx || _state == State::Idle || _mode == Mode::Poll) return;
+	_err = ERR::Aborted;
 #if defined(STM32F4)
-    I2C_CLEAR_BIT(I2Cx->CR2, CR2_CTRL);
+	I2C_CLEAR_BIT(I2Cx->CR2, CR2_CTRL);
 #else
-    I2C_CLEAR_BIT(I2Cx->CR1, CR1_IE_ALL | CR1_DMAEN);
+	I2C_CLEAR_BIT(I2Cx->CR1, CR1_IE_ALL | CR1_DMAEN);
 #endif
-    if (_mode == Mode::Dma) (_read ? _dma_rx : _dma_tx).Stream_EN(DISABLE);
-    ResetPeriph();
-    Complete(false);
+	if (_mode == Mode::Dma) (_read ? _dma_rx : _dma_tx).Stream_EN(DISABLE);
+	ResetPeriph();
+	Complete(false);
 }
 
 void I2C::DeInit()
 {
-    if (!I2Cx) return;
-    Abort();
-    I2Cx->CR1 = 0;
+	if (!I2Cx) return;
+	Abort();
+	I2Cx->CR1 = 0;
 #if defined(STM32F4)
-    I2Cx->CR2 = 0;
+	I2Cx->CR2 = 0;
 #endif
-    if (_dma_tx.HasSelection()) _dma_tx.Stream_EN(DISABLE);
-    if (_dma_rx.HasSelection()) _dma_rx.Stream_EN(DISABLE);
-    const IRQn_Type none = static_cast<IRQn_Type>(-1);
-    const IRQn_Type irqs[4] = {
-        _instance.irq_ev, _instance.irq_er != _instance.irq_ev ? _instance.irq_er : none,
-        _dma_tx.HasSelection() ? _dma_tx.GetIRQn() : none,
-        _dma_rx.HasSelection() ? _dma_rx.GetIRQn() : none
-    };
-    IIRQHandler* const handlers[4] = { this, this, &_dma_tx_irq, &_dma_rx_irq };
-    for (unsigned i = 0; i < 4; ++i) {
-        if (irqs[i] == none) continue;
-        const bool enabled = NVIC_GetEnableIRQ(irqs[i]) != 0;
-        NVIC_DisableIRQ(irqs[i]);
-        IRQ_Registry::Unregister(irqs[i], handlers[i]);
-        if (IRQ_Registry::HasHandlers(irqs[i])) {
-            if (enabled) NVIC_EnableIRQ(irqs[i]);
-        } else NVIC_ClearPendingIRQ(irqs[i]);
-    }
-    if (_dma_tx.HasSelection()) _dma_tx.Release();
-    if (_dma_rx.HasSelection()) _dma_rx.Release();
+	if (_dma_tx.HasSelection()) _dma_tx.Stream_EN(DISABLE);
+	if (_dma_rx.HasSelection()) _dma_rx.Stream_EN(DISABLE);
+	const IRQn_Type none = static_cast<IRQn_Type>(-1);
+	const IRQn_Type irqs[4] = {
+		_instance.irq_ev, _instance.irq_er != _instance.irq_ev ? _instance.irq_er : none,
+		_dma_tx.HasSelection() ? _dma_tx.GetIRQn() : none,
+		_dma_rx.HasSelection() ? _dma_rx.GetIRQn() : none
+	};
+	IIRQHandler* const handlers[4] = { this, this, &_dma_tx_irq, &_dma_rx_irq };
+	for (unsigned i = 0; i < 4; ++i) {
+		if (irqs[i] == none) continue;
+		const bool enabled = NVIC_GetEnableIRQ(irqs[i]) != 0;
+		NVIC_DisableIRQ(irqs[i]);
+		IRQ_Registry::Unregister(irqs[i], handlers[i]);
+		if (IRQ_Registry::HasHandlers(irqs[i])) {
+			if (enabled) NVIC_EnableIRQ(irqs[i]);
+		} else NVIC_ClearPendingIRQ(irqs[i]);
+	}
+	if (_dma_tx.HasSelection()) _dma_tx.Release();
+	if (_dma_rx.HasSelection()) _dma_rx.Release();
 #if defined(STM32G0)
-    I2C_CLEAR_BIT(SYSCFG->CFGR1, _instance.fmp_bit);
+	I2C_CLEAR_BIT(SYSCFG->CFGR1, _instance.fmp_bit);
 #elif defined(STM32F7)
-    I2C_CLEAR_BIT(SYSCFG->PMC, _instance.fmp_bit);
+	I2C_CLEAR_BIT(SYSCFG->PMC, _instance.fmp_bit);
 #endif
-    I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
-    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
-    I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
-    _scl.SetUp(PIN::TYPE::INPUT_NO_Pull);
-    _sda.SetUp(PIN::TYPE::INPUT_NO_Pull);
-    _buf = nullptr;
-    _state = State::Idle;
-    _err = ERR::None;
-    I2Cx = nullptr;
+	I2C_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+	I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.rst_reg), _instance.rst_bit);
+	I2C_CLEAR_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
+	_scl.SetUp(PIN::TYPE::INPUT_NO_Pull);
+	_sda.SetUp(PIN::TYPE::INPUT_NO_Pull);
+	_buf = nullptr;
+	_state = State::Idle;
+	_err = ERR::None;
+	I2Cx = nullptr;
 }
