@@ -4,6 +4,8 @@
  *
  * Example: four G0 USART3..6 owners on one vector need IRQ_MAX_SHARED >= 4,
  * plus capacity for any other registered owner of that shared line.
+ * L072 DMA1 channels 4..7 likewise need >= 4 if all four register separately.
+ * Shared EXTI vectors on L0/G4 may need more slots; count registered objects.
  * IRQ_MAX_FUNCTION_HANDLERS limits plain-function adapters across all IRQs;
  * object handlers use row slots but no function adapter. Exceeding either
  * capacity makes Register return InitError, without a trap or dynamic allocation.

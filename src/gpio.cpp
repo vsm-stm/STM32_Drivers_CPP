@@ -1,10 +1,7 @@
 /**
  * @file gpio.cpp
- * @brief Program one immutable PIN binding; no run-time range guards.
- *
- * GPIO port clock index comes from the CMSIS spacing between GPIOA/ GPIOB.
- * The expression uses division by a compile-time constant so the compiler can
- * choose a shift; no hard-coded "10" is needed for the 0x400-byte port stride.
+ * @brief Configure one immutable GPIO binding using compile-time clock selection.
+ * No run-time range guards, hardware call layer or per-pin state are added.
  */
 #include "gpio.hpp"
 
@@ -16,11 +13,11 @@ SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override
 	const uint8_t otype = (raw >> output_type_pos) & 0x1u;
 
 	const uint32_t gpio_id = (_port_base - GPIOA_BASE) / (GPIOB_BASE - GPIOA_BASE);
-	RCC_GPIO_EN_REG |= (RCC_GPIOA_EN << gpio_id);
-	(void)RCC_GPIO_EN_REG;
+	auto& clock = gpio_hw::ClockEnableRegister();
+	clock |= gpio_hw::port_a_clock << gpio_id;
+	(void)static_cast<uint32_t>(clock); // Read back the enable before port access.
 
 	GPIO_TypeDef* port = PORT();
-
 	const PIN::MODE modeEnum = static_cast<PIN::MODE>(mode);
 	const bool output = modeEnum == PIN::MODE::OUTPUT || modeEnum == PIN::MODE::AF;
 	const uint32_t shift = pin * 2u;
@@ -32,8 +29,8 @@ SysInitStatus PIN::SetUp(PIN::TYPE type, OUTPUT_SPEED speed, uint8_t af_override
 	const uint32_t new_speed = output ? uint32_t(speed) << shift : 0u;
 	const uint32_t new_af = modeEnum == PIN::MODE::AF ? uint32_t(af_override) << af_shift : 0u;
 
-	// One write per configuration register; MODER is changed last, without
-	// temporarily selecting INPUT and releasing an already driven line.
+	// Write each configuration register once and MODER last, without a temporary
+	// INPUT mode. Set the OUTPUT latch before enabling the output driver.
 	if (modeEnum == PIN::MODE::OUTPUT) SetLevel(initial_level);
 	port->OTYPER = (port->OTYPER & ~(0x1u << pin)) | new_type;
 	port->OSPEEDR = (port->OSPEEDR & ~mode_mask) | new_speed;

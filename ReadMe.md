@@ -23,6 +23,8 @@ Every module document follows the same layout as [GPIO.md](GPIO.md): English/Р�
 
 A C++20 library on top of CMSIS for the **STM32G0**, **STM32F4** and **STM32F7** families.
 
+System and GPIO also support **STM32L0/G4** with hardware selection at compilation. RCC and Flash are not yet ported, so this does not enable the complete library for L0/G4. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
+
 - **Core** (always built): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Optional modules:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
 
@@ -118,7 +120,7 @@ directory propagation were also checked; this is not a full firmware build.
 
 Behaviour and limitations of each module are in its own document (e.g. [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-Families other than F4/F7/G0 (including G4) are not supported: set `"drivers": null` and write against registers directly, or port the library (see "Adding a new MCU").
+The full library supports F4/F7/G0. System and GPIO have also been ported to L0/G4; the always-built RCC/Flash core still prevents using the complete library on those families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
 
 ---
 
@@ -217,14 +219,14 @@ The base module: FPU, Flash accelerator/caches, SysTick, delays, cache helpers, 
 ### Initialization
 
 ```cpp
-System::Init();  // core features + SysTick (1 kHz) from HSI 16 MHz
+System::Init();  // reset clock + nominal 1 kHz tick; L0 uses MSI, others HSI16
 ```
 
 Call it **first** in `main()`, before `ClockSystem::Init<config>()`, and check the returned `SysInitStatus`.
 
 - **Normal start:** assumes the hardware-reset state of clocks, power and Flash latency. Call once, before changing clocks.
-- **After a bootloader** (`STM32_USE_BOOTLOADER`, defined automatically when `bootloader` is set in `project.json`): F4/F7/G0 switch back to HSI 16 MHz with bus dividers /1; G0 also restores VOS Range 1 before Flash 0 WS. The HSI wait has no timeout; later waits (VOS/Flash, 100 ms) need interrupts enabled. PLL/HSE settings and RCC interrupts are kept.
-- **L0** keeps the legacy assumption of HSI 16 MHz and restores nothing.
+- **After a bootloader** (`STM32_USE_BOOTLOADER`, defined automatically when `bootloader` is set in `project.json`): F4/F7/G0/G4 return to HSI16; L0 returns to reset MSI range 5 (2,097,152 Hz). Bus dividers become /1. G0/G4 restore VOS Range 1, L0 Range 2, before Flash 0 WS. Source readiness/switching has no timeout; later waits (VOS/Flash, 100 ms) need interrupts enabled. PLL/HSE settings and RCC interrupts are kept.
+- **L0** cold start keeps reset MSI and starts SysTick with 2097 cycles per tick; HSI16 is not started.
 - The base defines `STM32_STARTUP_ENABLES_FPU`, so `Init()` skips FPU setup already done by startup. With another startup, drop the definition unless it enables the FPU itself.
 - On F7 the core caches are enabled; MPU and external-memory access: [System.md](System.md#6-mpu-on-stm32f7).
 
@@ -239,7 +241,7 @@ uint32_t start = System::GetTick();
 if ((System::GetTick() - start) > 1000) { /* one second has passed */ }
 ```
 
-### Microsecond delays (F4/F7)
+### Microsecond delays (F4/F7/G4)
 
 ```cpp
 System::Enable_CYCCNT();   // once at start-up
@@ -248,7 +250,7 @@ System::Delay_us(10);      // 10 µs via DWT
 
 - `Delay_ms()` needs a running SysTick that can interrupt the caller — it cannot wait with ticks masked or inside an IRQ of equal/higher priority. `GetTick()` itself can be read anywhere. The wait is capped at `0x7FFFFFFF` ticks (~24.9 days at 1 kHz).
 - `Delay_us()` uses 64-bit arithmetic and is capped at `0x7FFFFFFF` core cycles. **G0/L0 have no DWT** — `Delay_us()` does not exist there.
-- `SWOTrace()` (F4/F7) is non-blocking and returns the number of bytes ITM accepted.
+- `SWOTrace()` (F4/F7/G4) is non-blocking and returns the number of bytes ITM accepted.
 - `DebugTrap()` in Debug saves the message, prints it over blocking SWO (if enabled in the debugger), executes BKPT and halts; in Release it only halts. `SetDebugOutput()` was removed.
 
 ### Non-cacheable DMA areas
@@ -971,11 +973,11 @@ system.hpp
 
 ## Adding a new MCU
 
-1. Add `#include "stm32xxxx.h"` to `system.hpp`.
+1. Select CMSIS and core capabilities in `src/system.hpp`; update the reset-clock constants and family blocks of `System::Init()` in `src/system.cpp`.
 2. Update the peripheral instance/pin/DMA definitions in the relevant `*_defs.hpp` and, if needed, the DMA hardware descriptors in `dma.cpp`.
 3. Add the vector stubs to `irq_registry_config.h`.
 4. Add verified frequency/PLL/power limits to `rcc_defs.hpp`.
-5. If needed, add register-abstraction macros (e.g. `RCC_GPIO_EN_REG` in `gpio.hpp`).
+5. Select the matching hardware implementation and device capabilities. GPIO selects clocking and capabilities in `src/hardware/gpio.hpp`; short register operations stay in `gpio.hpp` and `SetUp()` stays in `gpio.cpp`.
 
 ---
 
@@ -990,6 +992,8 @@ system.hpp
 - **I2C.** DMA из конструктора, callback через наследование, однократная настройка и `DeInit()`; восстановление шины — код приложения. Тайминги считаются при компиляции: `SetUp<clocks, I2C::SPEED::FAST>()` получает ту же `ClockSystem::Config`, что и RCC; перед настройкой аппаратуры сверяется `System::APB1BusClock`. Поиск во время работы и массив на 2560 байт удалены. См. [I2C.md](I2C.md).
 
 C++20-библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4** и **STM32F7**.
+
+System и GPIO также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. RCC и Flash ещё не перенесены, поэтому вся библиотека для L0/G4 пока не подключается. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
 
 - **Ядро** (собирается всегда): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Опциональные модули:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -1078,7 +1082,7 @@ C++20-библиотека поверх CMSIS для семейств **STM32G0*
 
 Поведение и ограничения каждого модуля описаны в его документе (например, [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-Семейства кроме F4/F7/G0 (в том числе G4) не поддерживаются: задайте `"drivers": null` и пишите под регистры напрямую, либо портируйте библиотеку (см. «Добавление нового МК»).
+Полная библиотека поддерживает F4/F7/G0. System и GPIO уже перенесены на L0/G4; обязательные RCC/Flash пока не позволяют подключить всю библиотеку для этих семейств. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
 
 ---
 
@@ -1177,14 +1181,14 @@ constinit USART debug(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1
 ### Инициализация
 
 ```cpp
-System::Init();  // ядро + SysTick (1 кГц) от HSI 16 МГц
+System::Init();  // штатная частота + номинальный тик 1 кГц: MSI на L0, HSI16 на остальных
 ```
 
 Вызывайте **первым** в `main()`, до `ClockSystem::Init<config>()`, и проверяйте возвращаемый `SysInitStatus`.
 
 - **Обычный старт:** предполагается состояние тактирования, питания и задержки Flash после аппаратного сброса. Вызывать один раз, до изменения частот.
-- **После загрузчика** (`STM32_USE_BOOTLOADER`, задаётся автоматически при настроенном `bootloader` в `project.json`): F4/F7/G0 возвращаются на HSI 16 МГц с делителями шин /1; G0 также восстанавливает VOS Range 1 перед Flash 0 WS. Ожидание HSI без таймаута; последующие ожидания (VOS/Flash, 100 мс) требуют разрешённых прерываний. Настройки PLL/HSE и прерывания RCC сохраняются.
-- **L0** сохраняет старое предположение о HSI 16 МГц и ничего не восстанавливает.
+- **После загрузчика** (`STM32_USE_BOOTLOADER`, задаётся автоматически при настроенном `bootloader` в `project.json`): F4/F7/G0/G4 возвращаются на HSI16, L0 — на штатный MSI range 5 (2 097 152 Гц). Делители шин становятся /1. G0/G4 восстанавливают VOS Range 1, L0 Range 2 перед Flash 0 WS. Готовность источника и переключение ожидаются без таймаута; последующие ожидания (VOS/Flash, 100 мс) требуют разрешённых прерываний. Настройки PLL/HSE и прерывания RCC сохраняются.
+- **L0** при холодном старте сохраняет штатный MSI и задаёт SysTick 2097 тактов на тик; HSI16 не запускается.
 - База определяет `STM32_STARTUP_ENABLES_FPU`, поэтому `Init()` пропускает настройку FPU, уже выполненную startup. При другом startup уберите это определение, если он сам не включает FPU.
 - На F7 кеши ядра включены; MPU и доступ к внешней памяти: [System.md](System.md#6-mpu-на-stm32f7).
 
@@ -1199,7 +1203,7 @@ uint32_t start = System::GetTick();
 if ((System::GetTick() - start) > 1000) { /* прошла секунда */ }
 ```
 
-### Микросекундные задержки (F4/F7)
+### Микросекундные задержки (F4/F7/G4)
 
 ```cpp
 System::Enable_CYCCNT();   // один раз при старте
@@ -1208,7 +1212,7 @@ System::Delay_us(10);      // 10 мкс через DWT
 
 - `Delay_ms()` требует работающего SysTick, способного прервать вызывающий код, — нельзя ждать при замаскированных тиках или внутри IRQ с равным/более высоким приоритетом. `GetTick()` можно читать где угодно. Ожидание ограничено `0x7FFFFFFF` тиками (~24,9 суток при 1 кГц).
 - `Delay_us()` использует 64-битную арифметику и ограничен `0x7FFFFFFF` тактами ядра. **На G0/L0 нет DWT** — `Delay_us()` там не существует.
-- `SWOTrace()` (F4/F7) неблокирующий и возвращает число байтов, принятых ITM.
+- `SWOTrace()` (F4/F7/G4) неблокирующий и возвращает число байтов, принятых ITM.
 - `DebugTrap()` в Debug сохраняет сообщение, выводит его через блокирующий SWO (если он включён в отладчике), выполняет BKPT и останавливается; в Release — только останавливается. `SetDebugOutput()` удалён.
 
 ### Некешируемые DMA-области
@@ -1932,8 +1936,8 @@ system.hpp
 
 ## Добавление нового МК
 
-1. Добавить `#include "stm32xxxx.h"` в `system.hpp`.
+1. Выбрать CMSIS и возможности ядра в `src/system.hpp`; обновить константы штатного тактирования и семейные блоки `System::Init()` в `src/system.cpp`.
 2. Обновить описания instance/выводов/DMA в соответствующих `*_defs.hpp` и при необходимости аппаратные дескрипторы DMA в `dma.cpp`.
 3. Добавить заглушки векторов в `irq_registry_config.h`.
 4. Добавить проверенные пределы частот/PLL/питания в `rcc_defs.hpp`.
-5. При необходимости добавить макросы регистровых абстракций (например, `RCC_GPIO_EN_REG` в `gpio.hpp`).
+5. Выбрать соответствующую аппаратную реализацию и возможности устройства. GPIO выбирает тактирование и возможности в `src/hardware/gpio.hpp`; короткие операции с регистрами остаются в `gpio.hpp`, а `SetUp()` — в `gpio.cpp`.

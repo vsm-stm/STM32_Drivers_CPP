@@ -53,12 +53,6 @@ function(stm32_gen_irq_handlers VECTOR_FILE TEMPLATE OUT_FILE)
 	list(LENGTH _all_entries _total)
 	math(EXPR IRQ_TABLE_SIZE "${_total} - 16")
 
-	if(STM32_SERIES_UC MATCHES "STM32G0")
-		set(IRQ_MAX_SHARED 3)   # DMA1_Ch4_5_DMAMUX1_OVR
-	else()
-		set(IRQ_MAX_SHARED 2)   # timer pairs on F4/F7; a safe default
-	endif()
-
 	file(STRINGS "${VECTOR_FILE}" _handler_lines REGEX "void [A-Za-z0-9_]+_IRQHandler\\(void\\)")
 	set(IRQ_HANDLERS_CODE "")
 	foreach(_line ${_handler_lines})
@@ -72,7 +66,7 @@ function(stm32_gen_irq_handlers VECTOR_FILE TEMPLATE OUT_FILE)
 	endforeach()
 
 	configure_file("${TEMPLATE}" "${OUT_FILE}" @ONLY)
-	message(STATUS "IRQ registry generated: ${OUT_FILE}  (IRQ_TABLE_SIZE=${IRQ_TABLE_SIZE}, IRQ_MAX_SHARED=${IRQ_MAX_SHARED})")
+	message(STATUS "IRQ registry generated: ${OUT_FILE}  (IRQ_TABLE_SIZE=${IRQ_TABLE_SIZE})")
 endfunction()
 
 # ---- download two shared templates, generate two headers -------------------

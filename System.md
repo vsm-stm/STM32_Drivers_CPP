@@ -18,7 +18,8 @@
 8. [Bit-banding and SysStatus/SysInitStatus](#8-bit-banding-and-sysstatussysinitstatus)
 9. [Usage Examples](#9-usage-examples)
 10. [Edge Cases](#10-edge-cases)
-11. [See Also](#see-also)
+11. [Source Layout and Family Selection](#11-source-layout-and-family-selection)
+12. [See Also](#see-also)
 
 ---
 
@@ -67,12 +68,12 @@ static SysInitStatus Init();
 Call **once at the very start of `main()`**, before any other driver. It configures low-level things that belong to no particular peripheral:
 
 1. **FPU** (if `__FPU_PRESENT`/`__FPU_USED`): grants CP10/CP11 access and executes DSB/ISB — **unless** `STM32_STARTUP_ENABLES_FPU` is defined. The current base defines it because its startup already enables the FPU before constructors. A different startup must drop the definition unless it does the same.
-2. **Clock state and SysTick:** sets the frequency variables and starts SysTick at 16 MHz (HSI). On G0 the APB2 and APB2-timer frequencies are 0 (no such bus). Without `STM32_USE_BOOTLOADER`, call it once after hardware reset, before changing clocks, power or Flash latency.
-3. **After a bootloader (F4/F7/G0)** — compiled only with `STM32_USE_BOOTLOADER` (set automatically by the base when `bootloader` is configured in `project.json`; it reaches both images and the shared driver library). `InitAfterBootloader()`:
-   - enables HSI and waits for readiness and the actual switch (**no timeout**);
+2. **Clock state and SysTick:** publishes the reset frequency and starts SysTick: HSI16 on F4/F7/G0/G4, MSI range 5 at 2,097,152 Hz on L0. On G0 the APB2 and APB2-timer frequencies are 0 (no such bus). Without `STM32_USE_BOOTLOADER`, call it once after hardware reset, before changing clocks, power or Flash latency.
+3. **After a bootloader (F4/F7/G0/L0/G4)** — compiled only with `STM32_USE_BOOTLOADER` (set automatically by the base when `bootloader` is configured in `project.json`; it reaches both images and the shared driver library). the corresponding blocks are inside `System::Init()`, before and after SysTick setup:
+   - enables the reset source (HSI16, or MSI range 5 on L0) and waits for readiness and the actual switch (**no timeout**);
    - restores bus dividers to /1 (including G0 HSIDIV);
-   - starts SysTick through `InitClockState()`;
-   - restores G0 VOS Range 1, then Flash latency 0 WS (these waits keep 100 ms timeouts; failure → `InitError`).
+   - the common `System::Init()` publishes the reset frequencies and starts SysTick between these hardware blocks;
+   - restores VOS Range 1 on G0/G4, Range 2 on L0, then Flash latency 0 WS (these waits keep 100 ms timeouts; failure → `InitError`). G4 returns to Range 1 normal mode.
 4. **Flash accelerator / caches:**
 
 | Family | Enabled |
@@ -80,17 +81,18 @@ Call **once at the very start of `main()`**, before any other driver. It configu
 | F4 | `PRFTEN` (prefetch), `ICEN`/`DCEN` (Flash instruction/data cache) |
 | F7 | `PRFTEN`, `ARTEN` (ART accelerator), Cortex-M7 I-cache and D-cache (`SCB_EnableICache()`/`SCB_EnableDCache()`), `PWR` clock (needed by [ClockSystem](RCC.md) for voltage scaling) |
 | G0 | `PRFTEN`, `ICEN` |
-| L0 | nothing (no ART/cache) |
+| L0 | leaves reset Flash settings unchanged |
+| G4 | `PRFTEN`, `ICEN`/`DCEN` (Flash accelerator caches), `PWR` clock; no SRAM D-cache |
 
 **Calling rules:**
 
 - Call with interrupts enabled, outside interrupt handlers, so the newly started SysTick can serve the timed waits. No IPSR/PRIMASK checks are made.
-- With `STM32_USE_BOOTLOADER` the initial HSI waits deliberately have no timeout — a dead HSI will hang there.
-- On G0, 0 WS is temporarily raised to 1 WS before switching to 16 MHz, so a leftover VOS Range 2 stays safe until Range 1 is ready.
+- With `STM32_USE_BOOTLOADER`, source readiness and switching deliberately have no timeout. This concerns HSI16 on F4/F7/G0/G4 and MSI on L0.
+- On G0/G4, 0 WS is temporarily raised to 1 WS before switching to 16 MHz, so a leftover VOS Range 2 stays safe until Range 1 is ready.
 
 **What it does not touch** (bootloader path): PLL/HSE enable and configuration, HSI trim, MCO, RCC interrupts, peripheral enable/reset registers, RTC, LSE/LSI, peripheral clock muxes, tick count. After a later clock change, `ClockSystem` publishes the new frequencies and calls `InitTicks(ticks)` with a precomputed period.
 
-**L0 limitation:** the old path is kept — it only sets the software frequencies to 16 MHz and starts SysTick, assuming hardware already runs from HSI. RCC, power and Flash latency are not restored.
+**L0 reset clock:** cold startup keeps MSI range 5, without starting HSI16. SysTick receives `2097152 / 1000 = 2097` cycles per tick (LOAD = 2096). Integer truncation gives a nominal tick of about 0.9999275 ms; oscillator tolerance is additional. The bootloader path restores this same MSI range and /1 dividers. RCC PLL configuration remains a separate driver port.
 
 ```cpp
 int main() {
@@ -117,11 +119,11 @@ static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (with the "×2" rule, see R
 static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 ```
 
-- `System::Init()` sets the initial HSI values (16 MHz).
+- `System::Init()` publishes HSI16 on F4/F7/G0/G4 or reset MSI at 2,097,152 Hz on L0.
 - **`ClockSystem::Init<config>()` publishes the configured frequencies** (see [RCC.md](RCC.md)).
 - Every other driver only **reads** them. Each peripheral's `_N::instance` points to the variable of its bus, e.g. USART computes BRR from `APB1BusClock` or `APB2BusClock` depending on the instance ([UART.md](UART.md)); TIM uses `TIMxAPB1Clock`/`TIMxAPB2Clock` ([TIM.md](TIM.md)); SPI and I2C likewise.
 
-**Hence the call order matters:** `ClockSystem::Init<config>()` must run **before** any peripheral `SetUp()`. Otherwise, for example, `USART::SetUp()` computes BRR from 16 MHz instead of the real post-PLL frequency.
+**Hence the call order matters:** `ClockSystem::Init<config>()` must run **before** any peripheral `SetUp()`. Otherwise, for example, `USART::SetUp()` computes BRR from the reset frequency instead of the real post-PLL frequency.
 
 ---
 
@@ -176,14 +178,14 @@ Long periods without SysTick service **lose ticks** — one pending exception do
 ## 5. Microsecond delay via DWT CYCCNT
 
 ```cpp
-#if not defined(STM32L0) && not defined(STM32G0)
+#if STM32_SYSTEM_HAS_TRACE
 static void     Enable_CYCCNT();
 static void     Delay_us(uint32_t delay);
 static uint32_t SWOTrace(const uint8_t* ptr, uint32_t len);
 #endif
 ```
 
-Available only where a DWT block exists — Cortex-M4/M7 (F4/F7), **not** Cortex-M0/M0+ (G0/L0).
+Available only where a DWT block exists — Cortex-M4/M7 (F4/F7/G4), **not** Cortex-M0/M0+ (G0/L0).
 
 **`Enable_CYCCNT()`** enables trace (`DEMCR.TRCENA`) and the cycle counter (`DWT->CTRL.CYCCNTENA`). Required before the first `Delay_us()`. On F7 it unlocks DWT first. It does not reset an already-running counter and does not configure ITM output.
 
@@ -315,7 +317,7 @@ System::CacheInvalidate(rx_buffer, received_bytes);  // after DMA has stopped
 - F7: the helpers call CMSIS directly for non-null/nonempty ranges. They do not inspect DTCM addresses, MPU attributes, linker records or D-cache enable state.
 - The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX (all DMA channels for TIM). The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
 - Direct DMA users omit these calls for non-cacheable buffers. DTCM bypasses D-cache without a dedicated MPU region.
-- F4/G0/L0: inline no-ops. Zero size or `nullptr` does nothing.
+- F4/G0/L0/G4: inline no-ops. Zero size or `nullptr` does nothing.
 - Use valid ranges that fit CMSIS's signed byte count (including rounding). Call after `System::Init()`.
 
 References: [ST AN4838](https://www.st.com/resource/en/application_note/DM00272912-.pdf) (MPU attributes), [ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf) (cache/DMA coherency).
@@ -385,7 +387,7 @@ int main() {
     constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
     if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
         System::DebugTrap("Clock init");
-    System::Enable_CYCCNT();   // F4/F7 only; required before the first Delay_us()
+    System::Enable_CYCCNT();   // F4/F7/G4 only; required before the first Delay_us()
 
     uint32_t tick = System::GetTick();
     for (;;) {
@@ -419,7 +421,7 @@ if (!System::WaitBits(RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY, 10)) {
 ### DebugTrap with SWO output
 
 ```cpp
-// Enable ITM channel 0 / SWO in the debugger (F4/F7, DEBUG build).
+// Enable ITM channel 0 / SWO in the debugger (F4/F7/G4, DEBUG build).
 System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, halt
 ```
 
@@ -427,7 +429,7 @@ System::DebugTrap("Invalid peripheral pin"); // blocking output, breakpoint, hal
 
 ### Nonblocking main-loop timing and explicit DMA cache handover
 
-Unsigned tick subtraction works through wraparound for bounded elapsed intervals. Delay_ms/Delay_us are blocking alternatives; do not use them in callbacks that must finish quickly. DWT microsecond delays apply to F4/F7, with family-specific behavior explained in section 5. For a custom raw DMA user, the cache sequence below requires exclusive ownership of every touched F7 cache line. Run BeforeDMA before arming DMA and AfterStoppedDMA only after a successful, confirmed stop. Do not duplicate maintenance around a peripheral driver that already performs its own handover. NonCacheable policy does not configure the MPU or make inaccessible RAM DMA-accessible. SWOTrace is exposed on F4/F7 only; the G0 branch returns zero without calling it.
+Unsigned tick subtraction works through wraparound for bounded elapsed intervals. Delay_ms/Delay_us are blocking alternatives; do not use them in callbacks that must finish quickly. DWT microsecond delays apply to F4/F7/G4, with family-specific behavior explained in section 5. For a custom raw DMA user, the cache sequence below requires exclusive ownership of every touched F7 cache line. Run BeforeDMA before arming DMA and AfterStoppedDMA only after a successful, confirmed stop. Do not duplicate maintenance around a peripheral driver that already performs its own handover. NonCacheable policy does not configure the MPU or make inaccessible RAM DMA-accessible. SWOTrace is exposed on F4/F7/G4; the G0 branch returns zero without calling it.
 
 ```cpp
 #include "system.hpp"
@@ -445,11 +447,11 @@ void BeforeDMA() {
 }
 void AfterStoppedDMA() { System::CacheInvalidate(rx, sizeof rx); }
 uint32_t Trace() {
-#if defined(STM32F4) || defined(STM32F7)
+#if STM32_SYSTEM_HAS_TRACE
     static const uint8_t message[] = "ready\r\n";
     return System::SWOTrace(message, sizeof message - 1);
 #else
-    return 0; // This driver has no SWOTrace on G0.
+    return 0; // No SWOTrace on G0/L0.
 #endif
 }
 ```
@@ -466,6 +468,59 @@ uint32_t Trace() {
 | `DebugTrap()` in release | `msg` is not stored; the string may not be in the binary at all. |
 | `TickIncrease()` called outside `SysTick_Handler` | Not an error, but `GetTick()` stops matching real time. |
 | `Delay_ms()` in a priority-0 IRQ | Never finishes — SysTick has the lowest priority. |
+
+---
+
+## 11. Source Layout and Family Selection
+
+| File | Responsibility |
+| --- | --- |
+| `src/system.hpp` | CMSIS selection, derived core capabilities, public API, statuses, configuration diagnostics and F4 bit-band helpers |
+| `src/system.cpp` | Linear `System::Init()` with family blocks under `#if`, clock variables, SysTick, delays, DWT/SWO, F7 MPU/cache and DebugTrap |
+
+System uses two files. `Init()` contains the FPU, reset-source preparation, clock/SysTick, power/latency and memory blocks in execution order. Family differences are selected by `#if` within this function. The derived `STM32_SYSTEM_HAS_TRACE` and `STM32_SYSTEM_HAS_DCACHE` macros follow CMSIS and are not user settings. F7 DMA-region setup remains a separate helper in the same `.cpp`. No separate hardware source or stage calls are required.
+
+| Family | Reset clock used by System | DWT/SWO | SRAM D-cache helpers |
+| --- | --- | --- | --- |
+| F4 | HSI16 | available | inline no-ops |
+| F7 | HSI16 | available; M7 DWT unlock retained | CMSIS operations, existing MPU/DMA-region contract |
+| G0 | HSI16; no APB2 bus | unavailable | inline no-ops |
+| L0 | MSI range 5, 2,097,152 Hz | unavailable | inline no-ops |
+| G4 | HSI16 | available | inline no-ops; Flash caches are separate |
+
+A minimal L0/G4 startup at the reset frequency needs no RCC configuration:
+
+```cpp
+#include "system.hpp"
+#include "gpio.hpp"
+
+constinit PIN led(GPIOA_BASE, 5); // Check this pin in the selected package.
+int main()
+{
+    if (System::Init() != SysInitStatus::InitOK)
+        System::DebugTrap("System init");
+    led.SetUp(PIN::TYPE::OUTPUT_PushPull);
+    for (;;) {
+        led.TogglePin();
+        System::Delay_ms(500);
+    }
+}
+```
+
+The base's startup, vector table and linker initialization are still required. With a bootloader, the existing automatically generated `STM32_USE_BOOTLOADER` definition selects preparation; it is not a new application option. This example does not make RCC, Flash or all other drivers ready for L0/G4. System and GPIO can be compiled and linked in isolation; the complete library still requires those remaining ports.
+
+Validation of this change (GCC 13.3.1, C++20, `-Os`):
+
+- 81 CMSIS device selections: F4 23, F7 14, G0 12, L0 19, G4 13. `system.cpp` compiles for all DEBUG/Release and bootloader/no-bootloader combinations: 324 translation units. GPIO header/source compatibility was also checked for these devices.
+- 20 current isolated links cover F429/F767/G031/L072/G474 in those four combinations. Twelve links of the former F4/F7/G0 implementation provide the comparison baseline. This is not a complete base-project firmware build.
+- All 130 compared unchanged-function sections match the former object code byte for byte, including tick handling, waits and delays where available.
+- The Release fixture matches the former monolithic F4/F7/G0 implementation in text/data/BSS size, with and without a bootloader, without LTO. The extra stage-call overhead is gone. These sizes describe the isolated fixture, not an arbitrary application.
+- Six hard-float configurations verify FPU enabling versus `STM32_STARTUP_ENABLES_FPU` on F4/F7/G4.
+- A host register model checks cold/bootloader startup for F4/G0/L0/G4, L0 MSI preservation, source selection, latency-before-switch ordering, power-before-latency-reduction ordering and timeout error paths. This model is not hardware validation; F7 cache/MPU code was retained and compile/link checked.
+
+Hardware startup, real oscillator timing and complete L0/G4 firmware remain unverified. The other driver ports remain separate tasks.
+
+Reset-clock and voltage details can be checked in ST's [L0 RCC source](https://github.com/STMicroelectronics/stm32l0xx-hal-driver/blob/master/Src/stm32l0xx_hal_rcc.c) and [G4 reference manual](https://www.st.com/resource/en/reference_manual/dm00355726.pdf). These are references, not HAL dependencies.
 
 ---
 
@@ -493,7 +548,8 @@ uint32_t Trace() {
 8. [Bit-banding и SysStatus/SysInitStatus](#8-bit-banding-и-sysstatussysinitstatus)
 9. [Примеры использования](#9-примеры-использования)
 10. [Угловые случаи](#10-угловые-случаи)
-11. [См. также](#см-также)
+11. [Структура файлов и выбор семейства](#11-структура-файлов-и-выбор-семейства)
+12. [См. также](#см-также)
 
 ---
 
@@ -542,12 +598,12 @@ static SysInitStatus Init();
 Вызывайте **один раз в самом начале `main()`**, до любого другого драйвера. Настраивает низкоуровневые вещи, не относящиеся к конкретной периферии:
 
 1. **FPU** (если `__FPU_PRESENT`/`__FPU_USED`): открывает доступ к CP10/CP11 и выполняет DSB/ISB — **если не** определён `STM32_STARTUP_ENABLES_FPU`. Текущая база определяет его, поскольку её startup включает FPU ещё до конструкторов. При другом startup определение нужно убрать, если он сам этого не делает.
-2. **Частоты и SysTick:** записывает переменные частот и запускает SysTick на 16 МГц (HSI). На G0 частоты APB2 и её таймеров равны 0 (такой шины нет). Без `STM32_USE_BOOTLOADER` вызывать один раз после аппаратного сброса, до изменения тактирования, питания или задержки Flash.
-3. **После загрузчика (F4/F7/G0)** — компилируется только с `STM32_USE_BOOTLOADER` (база задаёт его автоматически при настроенном `bootloader` в `project.json`; макрос получают оба образа и общая библиотека драйверов). `InitAfterBootloader()`:
-   - включает HSI и ждёт готовности и фактического переключения (**без таймаута**);
+2. **Частоты и SysTick:** публикует частоту после сброса и запускает SysTick: HSI16 на F4/F7/G0/G4, MSI range 5 с частотой 2 097 152 Гц на L0. На G0 частоты APB2 и её таймеров равны 0 (такой шины нет). Без `STM32_USE_BOOTLOADER` вызывать один раз после аппаратного сброса, до изменения тактирования, питания или задержки Flash.
+3. **После загрузчика (F4/F7/G0/L0/G4)** — компилируется только с `STM32_USE_BOOTLOADER` (база задаёт его автоматически при настроенном `bootloader` в `project.json`; макрос получают оба образа и общая библиотека драйверов). соответствующие блоки находятся внутри `System::Init()`, до и после запуска SysTick:
+   - включает штатный источник (HSI16 либо MSI range 5 на L0) и ждёт готовности и фактического переключения (**без таймаута**);
    - возвращает делители шин в /1 (включая HSIDIV на G0);
-   - запускает SysTick через `InitClockState()`;
-   - восстанавливает VOS Range 1 на G0, затем задержку Flash 0 WS (эти ожидания с таймаутом 100 мс; ошибка → `InitError`).
+   - между аппаратными блоками общий `System::Init()` публикует штатные частоты и запускает SysTick;
+   - восстанавливает VOS Range 1 на G0/G4, Range 2 на L0, затем задержку Flash 0 WS (эти ожидания с таймаутом 100 мс; ошибка → `InitError`). G4 возвращается в Range 1 normal.
 4. **Flash-акселератор / кеши:**
 
 | Семейство | Что включается |
@@ -555,17 +611,18 @@ static SysInitStatus Init();
 | F4 | `PRFTEN` (предвыборка), `ICEN`/`DCEN` (кеши инструкций/данных Flash) |
 | F7 | `PRFTEN`, `ARTEN` (ART-акселератор), I-cache и D-cache ядра Cortex-M7 (`SCB_EnableICache()`/`SCB_EnableDCache()`), тактирование `PWR` (нужно [ClockSystem](RCC.md) для масштабирования напряжения) |
 | G0 | `PRFTEN`, `ICEN` |
-| L0 | ничего (ART/кеша нет) |
+| L0 | настройки Flash после сброса сохраняются |
+| G4 | `PRFTEN`, `ICEN`/`DCEN` (кеши Flash-акселератора), тактирование `PWR`; кеша SRAM нет |
 
 **Правила вызова:**
 
 - Вызывайте с разрешёнными прерываниями, вне обработчиков, чтобы запущенный SysTick обслуживал ожидания. Проверок IPSR/PRIMASK нет.
-- С `STM32_USE_BOOTLOADER` первые ожидания HSI намеренно без таймаута — неисправный HSI оставит программу там.
-- На G0 перед переходом на 16 МГц задержка 0 WS временно повышается до 1 WS, чтобы оставшийся VOS Range 2 был безопасен до готовности Range 1.
+- С `STM32_USE_BOOTLOADER` готовность источника и переключение намеренно ожидаются без таймаута: HSI16 на F4/F7/G0/G4, MSI на L0.
+- На G0/G4 перед переходом на 16 МГц задержка 0 WS временно повышается до 1 WS, чтобы оставшийся VOS Range 2 был безопасен до готовности Range 1.
 
 **Что не трогается** (путь после загрузчика): включение и настройки PLL/HSE, подстройка HSI, MCO, прерывания RCC, регистры включения/сброса периферии, RTC, LSE/LSI, мультиплексоры тактирования периферии, счётчик тиков. После последующей смены частоты `ClockSystem` публикует новые частоты и вызывает `InitTicks(ticks)` с готовым периодом.
 
-**Ограничение L0:** сохранена старая ветка — она только записывает программные частоты 16 МГц и запускает SysTick, предполагая, что аппаратура уже работает от HSI. RCC, питание и задержка Flash не восстанавливаются.
+**Штатное тактирование L0:** при холодном старте сохраняется MSI range 5, HSI16 не запускается. SysTick получает `2097152 / 1000 = 2097` тактов на тик (LOAD = 2096). Целочисленное усечение даёт номинальный тик около 0,9999275 мс; допуск генератора добавляется отдельно. После загрузчика восстанавливаются тот же диапазон MSI и делители /1. Настройка PLL в RCC остаётся отдельной задачей.
 
 ```cpp
 int main() {
@@ -573,7 +630,7 @@ int main() {
     constexpr auto clocks = ClockSystem::CalcPLL(64 * MHz, ClockSystem::PLL_ClockSource::HSI);
     if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
         System::DebugTrap("Clock init");
-    System::Enable_CYCCNT();                            // F4/F7, для Delay_us() — §5
+    System::Enable_CYCCNT();                            // F4/F7/G4, для Delay_us() — §5
     ...
 }
 ```
@@ -592,11 +649,11 @@ static uint32_t TIMxAPB1Clock;   // TIM2-7, TIM12-14 (с учётом прави
 static uint32_t TIMxAPB2Clock;   // TIM1, TIM8-11
 ```
 
-- `System::Init()` задаёт начальные значения HSI (16 МГц).
+- `System::Init()` публикует HSI16 на F4/F7/G0/G4 либо штатную частоту MSI 2 097 152 Гц на L0.
 - **`ClockSystem::Init<config>()` публикует выбранные частоты** (см. [RCC.md](RCC.md)).
 - Все остальные драйверы их только **читают**. `_N::instance` каждой периферии указывает на переменную своей шины: например, USART считает BRR от `APB1BusClock` или `APB2BusClock` в зависимости от экземпляра ([UART.md](UART.md)); TIM использует `TIMxAPB1Clock`/`TIMxAPB2Clock` ([TIM.md](TIM.md)); SPI и I2C — аналогично.
 
-**Поэтому порядок вызовов важен:** `ClockSystem::Init<config>()` должен выполниться **до** `SetUp()` любой периферии. Иначе, например, `USART::SetUp()` посчитает BRR от 16 МГц, а не от реальной частоты после PLL.
+**Поэтому порядок вызовов важен:** `ClockSystem::Init<config>()` должен выполниться **до** `SetUp()` любой периферии. Иначе, например, `USART::SetUp()` посчитает BRR от штатной частоты, а не от реальной частоты после PLL.
 
 ---
 
@@ -651,14 +708,14 @@ while ((GetTick() - tick_start) < wait) {}
 ## 5. Микросекундная задержка через DWT CYCCNT
 
 ```cpp
-#if not defined(STM32L0) && not defined(STM32G0)
+#if STM32_SYSTEM_HAS_TRACE
 static void     Enable_CYCCNT();
 static void     Delay_us(uint32_t delay);
 static uint32_t SWOTrace(const uint8_t* ptr, uint32_t len);
 #endif
 ```
 
-Доступно только там, где есть блок DWT — Cortex-M4/M7 (F4/F7), **не** Cortex-M0/M0+ (G0/L0).
+Доступно только там, где есть блок DWT — Cortex-M4/M7 (F4/F7/G4), **не** Cortex-M0/M0+ (G0/L0).
 
 **`Enable_CYCCNT()`** включает трассировку (`DEMCR.TRCENA`) и счётчик тактов (`DWT->CTRL.CYCCNTENA`). Обязателен до первого `Delay_us()`. На F7 сначала разблокирует DWT. Уже работающий счётчик не сбрасывается; выход ITM не настраивается.
 
@@ -790,7 +847,7 @@ System::CacheInvalidate(rx_buffer, received_bytes);  // после остано�
 - F7: для ненулевого адреса/размера функции напрямую вызывают CMSIS. Адреса DTCM, атрибуты MPU, записи линкера и состояние включения D-cache не анализируются.
 - Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX (для TIM — всех DMA-каналов). В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
 - При прямой работе с DMA для некешируемых буферов эти вызовы не нужны. DTCM обходит D-cache без отдельного региона MPU.
-- F4/G0/L0: пустые inline-функции. Нулевой размер или `nullptr` ничего не делает.
+- F4/G0/L0/G4: пустые inline-функции. Нулевой размер или `nullptr` ничего не делает.
 - Диапазон должен быть корректным и помещаться в знаковый размер CMSIS (с учётом округления). Вызывайте после `System::Init()`.
 
 Источники: [ST AN4838](https://www.st.com/resource/en/application_note/DM00272912-.pdf) (атрибуты регионов MPU), [ST AN4839](https://www.st.com/resource/en/application_note/an4839-level-1-cache-on-stm32f7-series-and-stm32h7-series-stmicroelectronics.pdf) (согласование кеша и DMA).
@@ -894,7 +951,7 @@ if (!System::WaitBits(RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY, 10)) {
 ### DebugTrap с выводом через SWO
 
 ```cpp
-// Включить канал ITM 0 / SWO в отладчике (F4/F7, сборка DEBUG).
+// Включить канал ITM 0 / SWO в отладчике (F4/F7/G4, сборка DEBUG).
 System::DebugTrap("Invalid peripheral pin"); // блокирующий вывод, брейкпоинт, останов
 ```
 
@@ -920,11 +977,11 @@ void BeforeDMA() {
 }
 void AfterStoppedDMA() { System::CacheInvalidate(rx, sizeof rx); }
 uint32_t Trace() {
-#if defined(STM32F4) || defined(STM32F7)
+#if STM32_SYSTEM_HAS_TRACE
     static const uint8_t message[] = "ready\r\n";
     return System::SWOTrace(message, sizeof message - 1);
 #else
-    return 0; // This driver has no SWOTrace on G0.
+    return 0; // No SWOTrace on G0/L0.
 #endif
 }
 ```
@@ -935,12 +992,65 @@ uint32_t Trace() {
 
 | Ситуация | Поведение |
 | --- | --- |
-| `SetUp()` периферии до `ClockSystem::Init<config>()` | Делители считаются от HSI 16 МГц, а не от реальной частоты (§3). Порядок: `System::Init()` → `ClockSystem::Init<config>()` → `Enable_CYCCNT()` → `SetUp()` периферии. |
+| `SetUp()` периферии до `ClockSystem::Init<config>()` | Делители считаются от штатной частоты, а не от реальной частоты (§3). Порядок: `System::Init()` → `ClockSystem::Init<config>()` → `Enable_CYCCNT()` → `SetUp()` периферии. |
 | `Enable_CYCCNT()`/`Delay_us()`/`SWOTrace()` на G0/L0 | Ошибка компиляции — у Cortex-M0/M0+ нет DWT/CYCCNT, функций не существует. |
 | `Delay_ms(0xFFFFFFFF)` | Ограничивается `0x7FFFFFFF` тиками вместе с компенсирующим тиком. |
 | `DebugTrap()` в release | `msg` не сохраняется; строки может вообще не быть в прошивке. |
 | `TickIncrease()` вне `SysTick_Handler` | Не ошибка, но `GetTick()` перестанет соответствовать реальному времени. |
 | `Delay_ms()` в IRQ с приоритетом 0 | Никогда не завершится — у SysTick самый низкий приоритет. |
+
+---
+
+## 11. Структура файлов и выбор семейства
+
+| Файл | Ответственность |
+| --- | --- |
+| `src/system.hpp` | Выбор CMSIS, возможности ядра, публичный API, статусы, диагностика конфигурации и bit-band функции F4 |
+| `src/system.cpp` | Линейный `System::Init()` с семейными блоками под `#if`, частоты, SysTick, задержки, DWT/SWO, MPU/кеш F7 и DebugTrap |
+
+System состоит из двух файлов. Внутри `Init()` последовательно расположены блоки FPU, подготовки штатного источника, частот/SysTick, питания/latency и памяти. Различия семейств выбираются через `#if` в этой функции. Производные макросы `STM32_SYSTEM_HAS_TRACE` и `STM32_SYSTEM_HAS_DCACHE` определяются CMSIS и не являются пользовательскими настройками. Настройка DMA-областей F7 остаётся отдельной функцией в том же `.cpp`. Отдельного аппаратного исходника и вызовов функций этапов нет.
+
+| Семейство | Штатное тактирование System | DWT/SWO | Функции кеша SRAM |
+| --- | --- | --- | --- |
+| F4 | HSI16 | доступны | пустые inline-функции |
+| F7 | HSI16 | доступны; разблокировка DWT M7 сохранена | операции CMSIS, прежний контракт MPU/DMA-областей |
+| G0 | HSI16; шины APB2 нет | недоступны | пустые inline-функции |
+| L0 | MSI range 5, 2 097 152 Гц | недоступны | пустые inline-функции |
+| G4 | HSI16 | доступны | пустые inline-функции; кеши Flash настраиваются отдельно |
+
+Минимальный старт L0/G4 на штатной частоте не требует настройки RCC:
+
+```cpp
+#include "system.hpp"
+#include "gpio.hpp"
+
+constinit PIN led(GPIOA_BASE, 5); // Проверить наличие вывода в выбранном корпусе.
+int main()
+{
+    if (System::Init() != SysInitStatus::InitOK)
+        System::DebugTrap("System init");
+    led.SetUp(PIN::TYPE::OUTPUT_PushPull);
+    for (;;) {
+        led.TogglePin();
+        System::Delay_ms(500);
+    }
+}
+```
+
+По-прежнему нужны startup базы, таблица векторов и инициализация памяти линкером/startup. При использовании загрузчика подготовка выбирается существующим автоматически сформированным определением `STM32_USE_BOOTLOADER`, это не новая настройка приложения. Пример не добавляет поддержку RCC, Flash и остальных драйверов на L0/G4. System и GPIO собираются и линкуются изолированно; для всей библиотеки ещё нужны оставшиеся переносы.
+
+Проверки этого изменения (GCC 13.3.1, C++20, `-Os`):
+
+- 81 вариант CMSIS: F4 — 23, F7 — 14, G0 — 12, L0 — 19, G4 — 13. `system.cpp` компилируется во всех сочетаниях DEBUG/Release и с загрузчиком/без него: 324 единицы трансляции. Для этих устройств также проверена совместимость заголовка/исходника GPIO.
+- Пройдены 20 изолированных линковок текущего System для F429/F767/G031/L072/G474 в этих четырёх сочетаниях. Ещё 12 линковок прежней реализации F4/F7/G0 дают базу сравнения. Это не полная сборка прошивки базового проекта.
+- Все 130 сравниваемых секций неизменённых функций побайтово совпали с прежним объектным кодом, включая тик, ожидания и доступные задержки.
+- Размеры text/data/BSS Release-образа совпали с прежней монолитной реализацией F4/F7/G0, с загрузчиком и без него, без LTO. Дополнительные расходы на вызовы этапов устранены. Это размеры изолированного проверочного образа, а не произвольного приложения.
+- Шесть hard-float конфигураций проверяют включение FPU и его пропуск при `STM32_STARTUP_ENABLES_FPU` на F4/F7/G4.
+- Модель регистров на ПК проверяет холодный старт и переход после загрузчика на F4/G0/L0/G4, сохранение MSI на L0, выбор источника, увеличение latency перед переключением, восстановление питания перед снижением latency и возврат ошибки по таймауту. Это не проверка на железе; код MPU/кеша F7 сохранён и проверен компиляцией/линковкой.
+
+Старт на железе, реальные времена готовности генераторов и полная прошивка L0/G4 не проверены. Перенос остальных драйверов остаётся отдельной задачей.
+
+Штатные частоты и ограничения питания можно сверить с [RCC L0 от ST](https://github.com/STMicroelectronics/stm32l0xx-hal-driver/blob/master/Src/stm32l0xx_hal_rcc.c) и [reference manual G4](https://www.st.com/resource/en/reference_manual/dm00355726.pdf). Это справочные источники, не зависимости от HAL.
 
 ---
 

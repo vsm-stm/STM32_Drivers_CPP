@@ -1,9 +1,30 @@
 /**
  * @file  system.cpp
- * @brief System initialisation, timekeeping and debug utilities.
+ * @brief Common initialization sequence, timekeeping, trace and debug utilities.
  */
 
 #include "system.hpp"
+
+#if defined(STM32L0)
+// MSI range 5 is the hardware reset source; do not start HSI16 in Init().
+static constexpr uint32_t reset_clock = 2097152U;
+static constexpr uint32_t reset_source = RCC_CFGR_SW_MSI;
+static constexpr uint32_t reset_status = RCC_CFGR_SWS_MSI;
+#elif defined(STM32F4) || defined(STM32F7) || defined(STM32G4)
+static constexpr uint32_t reset_clock = 16000000U;
+static constexpr uint32_t reset_source = RCC_CFGR_SW_HSI;
+static constexpr uint32_t reset_status = RCC_CFGR_SWS_HSI;
+#elif defined(STM32G0)
+static constexpr uint32_t reset_clock = 16000000U;
+static constexpr uint32_t reset_source = RCC_CFGR_SW_HSISYS;
+static constexpr uint32_t reset_status = RCC_CFGR_SWS_HSISYS;
+#endif
+
+#if defined(STM32G0)
+static constexpr bool has_apb2 = false;
+#else
+static constexpr bool has_apb2 = true;
+#endif
 
 #if defined(STM32F7)
 // Linker records: MPU region number, base address, size in bytes.
@@ -12,25 +33,7 @@ extern "C" {
 	extern const uint32_t __stm32_dma_regions_start__[] __attribute__((weak));
 	extern const uint32_t __stm32_dma_regions_end__[] __attribute__((weak));
 }
-#endif
 
-// ---------------------------------------------------------------------------
-// Module-private tick counter
-// ---------------------------------------------------------------------------
-
-static volatile uint32_t Tick;
-
-// ---------------------------------------------------------------------------
-// Static member definitions
-// ---------------------------------------------------------------------------
-
-uint32_t System::SystemCoreClock{ HSI_Clock };
-uint32_t System::APB1BusClock   { HSI_Clock };
-uint32_t System::APB2BusClock   { HSI_Clock };
-uint32_t System::TIMxAPB1Clock  { HSI_Clock };
-uint32_t System::TIMxAPB2Clock  { HSI_Clock };
-
-#if defined(STM32F7)
 // Project records are triples: MPU number/base/size. Region 0 remains reserved;
 // configuration validates 1..7, power-of-two sizes and aligned SRAM1/SRAM2 tails.
 // Keep custom non-project MPU regions, and preserve existing dirty RAM data.
@@ -66,52 +69,77 @@ static void InitDMARegions()
 }
 #endif
 
-// Publish HSI frequencies and start the millisecond time base.
-static SysInitStatus InitClockState()
-{
-	System::SystemCoreClock = System::APB1BusClock = System::TIMxAPB1Clock = HSI_Clock;
-#if defined(STM32G0)
-	System::APB2BusClock = System::TIMxAPB2Clock = 0U; // G0 has no APB2 bus
-#else
-	System::APB2BusClock = System::TIMxAPB2Clock = HSI_Clock;
-#endif
-	return System::InitTicks(HSI_Clock / TICK_BASE);
-}
+// ---------------------------------------------------------------------------
+// Module-private tick counter
+// ---------------------------------------------------------------------------
 
-#if defined(STM32_USE_BOOTLOADER) && (defined(STM32F4) || defined(STM32F7) || defined(STM32G0))
-// Restore HSI, bus dividers, G0 power and Flash latency after the bootloader.
-// This is clock handover preparation, not an RCC/peripheral factory reset.
-// HSI and the actual source switch precede timed waits because no trustworthy
-// software tick is available yet. Once HSI /1 is published, VOS/latency use 100 ms.
-static SysInitStatus InitAfterBootloader()
+static volatile uint32_t Tick;
+
+// ---------------------------------------------------------------------------
+// Static member definitions
+// ---------------------------------------------------------------------------
+
+uint32_t System::SystemCoreClock{ reset_clock };
+uint32_t System::APB1BusClock   { reset_clock };
+uint32_t System::APB2BusClock   { reset_clock };
+uint32_t System::TIMxAPB1Clock  { reset_clock };
+uint32_t System::TIMxAPB2Clock  { reset_clock };
+
+// ---------------------------------------------------------------------------
+// System::Init: linear initialization with compile-time family selection.
+// ---------------------------------------------------------------------------
+
+SysInitStatus System::Init()
 {
+#if (__FPU_PRESENT == 1) && (__FPU_USED == 1) && !defined(STM32_STARTUP_ENABLES_FPU)
+	SCB->CPACR |= (3UL << (10U * 2U)) | (3UL << (11U * 2U)); // CP10 + CP11 full access
+	__DSB();
+	__ISB();
+#endif
+
+#if defined(STM32_USE_BOOTLOADER)
+	// Before SysTick: source readiness and switching have no timeout.
+	// PLL/HSE configuration is retained.
 	// Stop the previous time base while its input clock is being changed.
 	SysTick->CTRL = 0U;
 	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
+#if defined(STM32L0)
+	// Restore MSI range 5, including when the bootloader selected another source.
+	RCC->ICSCR = (RCC->ICSCR & ~RCC_ICSCR_MSIRANGE_Msk) | RCC_ICSCR_MSIRANGE_5;
+	RCC->CR |= RCC_CR_MSION;
+	while (!(RCC->CR & RCC_CR_MSIRDY)) {}
+#else
 	RCC->CR |= RCC_CR_HSION;
 	while (!(RCC->CR & RCC_CR_HSIRDY)) {}
+#endif
 
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 	// HSI /1 can reach 16 MHz even if a previous setup left VOS in Range 2.
 	// Keep existing higher latency; raise 0 WS to 1 WS before the switch.
 	if ((FLASH->ACR & FLASH_ACR_LATENCY_Msk) == 0U) {
-		FLASH->ACR |= FLASH_ACR_LATENCY_0;
+		FLASH->ACR |= 1U << FLASH_ACR_LATENCY_Pos; // One wait state.
 		if ((FLASH->ACR & FLASH_ACR_LATENCY_Msk) == 0U)
 			return SysInitStatus::InitError;
 	}
 #endif
-	// Preserve prescalers until the hardware confirms HSI as SYSCLK.
-	RCC->CFGR &= ~RCC_CFGR_SW_Msk;
-	while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != 0U) {}
+	// Preserve prescalers until the hardware confirms the reset source.
+	RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | reset_source;
+	while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != reset_status) {}
 #if defined(STM32G0)
 	RCC->CFGR &= ~(RCC_CFGR_HPRE_Msk | RCC_CFGR_PPRE_Msk);
 	RCC->CR &= ~RCC_CR_HSIDIV_Msk;
 #else
 	RCC->CFGR &= ~(RCC_CFGR_HPRE_Msk | RCC_CFGR_PPRE1_Msk | RCC_CFGR_PPRE2_Msk);
 #endif
-	if (InitClockState() != SysInitStatus::InitOK)
+#endif
+
+	SystemCoreClock = APB1BusClock = TIMxAPB1Clock = reset_clock;
+	APB2BusClock = TIMxAPB2Clock = has_apb2 ? reset_clock : 0U;
+	if (InitTicks(reset_clock / TICK_BASE) != SysInitStatus::InitOK)
 		return SysInitStatus::InitError;
 
+#if defined(STM32_USE_BOOTLOADER)
+	// SysTick is running: restore power before reducing Flash latency.
 	static constexpr uint32_t INIT_TIMEOUT_MS = 100U;
 	uint32_t tick_start;
 
@@ -124,9 +152,23 @@ static SysInitStatus InitAfterBootloader()
 		if ((System::GetTick() - tick_start) > INIT_TIMEOUT_MS)
 			return SysInitStatus::InitError;
 	}
+#elif defined(STM32L0)
+	RCC->APB1ENR |= RCC_APB1ENR_PWREN;
+	(void)RCC->APB1ENR;
+	// Hardware reset selects Range 2. MSI range 5 permits 0 WS in this range.
+	PWR->CR = (PWR->CR & ~PWR_CR_VOS_Msk) | PWR_CR_VOS_1;
+	if (!System::WaitBits(PWR->CSR, PWR_CSR_VOSF, 0U, INIT_TIMEOUT_MS))
+		return SysInitStatus::InitError;
+#elif defined(STM32G4)
+	RCC->APB1ENR1 |= RCC_APB1ENR1_PWREN;
+	(void)RCC->APB1ENR1;
+	PWR->CR1 = (PWR->CR1 & ~PWR_CR1_VOS_Msk) | PWR_CR1_VOS_0;
+	if (!System::WaitBits(PWR->SR2, PWR_SR2_VOSF, 0U, INIT_TIMEOUT_MS))
+		return SysInitStatus::InitError;
+	PWR->CR5 |= PWR_CR5_R1MODE; // Reset choice: Range 1 normal, not boost.
 #endif
 
-	// Reduce wait states only after HSI /1 and (on G0) VOS Range 1 are ready.
+	// Reduce wait states only after the reset clock and power range are ready.
 	FLASH->ACR &= ~FLASH_ACR_LATENCY_Msk;
 	tick_start = System::GetTick();
 	while (FLASH->ACR & FLASH_ACR_LATENCY_Msk) {
@@ -134,36 +176,6 @@ static SysInitStatus InitAfterBootloader()
 			return SysInitStatus::InitError;
 	}
 
-	return SysInitStatus::InitOK;
-}
-#endif
-
-// ---------------------------------------------------------------------------
-// System::Init
-// ---------------------------------------------------------------------------
-
-/**
- * @brief Initialise reset clock state, SysTick and core features.
- * With STM32_USE_BOOTLOADER, restore HSI clocking and power/latency first.
- * Otherwise the first call must follow hardware reset, before clock setup.
- */
-SysInitStatus System::Init()
-{
-	// --- FPU (Cortex-M4/M7 only) ---
-#ifndef STM32_STARTUP_ENABLES_FPU
-#if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
-	SCB->CPACR |= (3UL << (10U * 2U)) | (3UL << (11U * 2U)); // CP10 + CP11 full access
-	__DSB();
-	__ISB();
-#endif
-#endif
-
-#if defined(STM32_USE_BOOTLOADER) && (defined(STM32F4) || defined(STM32F7) || defined(STM32G0))
-	if (InitAfterBootloader() != SysInitStatus::InitOK)
-		return SysInitStatus::InitError;
-#else
-	if (InitClockState() != SysInitStatus::InitOK)
-		return SysInitStatus::InitError;
 #endif
 
 	// --- Flash accelerator & cache configuration ---
@@ -185,10 +197,10 @@ SysInitStatus System::Init()
 #elif defined(STM32G0)
 	FLASH->ACR |= FLASH_ACR_PRFTEN  // Prefetch buffer
 				| FLASH_ACR_ICEN;   // Instruction cache
-#elif defined(STM32L0)
-	// Legacy path: assumes 16 MHz HSI already selected; RCC/latency are not reset.
+#elif defined(STM32G4)
+	FLASH->ACR |= FLASH_ACR_PRFTEN | FLASH_ACR_ICEN | FLASH_ACR_DCEN;
+	RCC->APB1ENR1 |= RCC_APB1ENR1_PWREN;
 #endif
-
 	return SysInitStatus::InitOK;
 }
 
@@ -256,7 +268,7 @@ void System::Delay_ms(uint32_t delay)
 	while ((GetTick() - tick_start) < wait) {}
 }
 
-#if not defined(STM32L0) && not defined(STM32G0)
+#if STM32_SYSTEM_HAS_TRACE
 // ---------------------------------------------------------------------------
 // System::Enable_CYCCNT
 // ---------------------------------------------------------------------------
@@ -264,12 +276,12 @@ void System::Delay_ms(uint32_t delay)
 /**
  * @brief Enable the DWT cycle counter.
  *
- * Available on F4/F7. It enables the cycle counter, not the ITM/SWO output.
+ * Available on the selected Cortex-M4/M7 devices (F4/F7/G4). It enables the cycle counter, not the ITM/SWO output.
  */
 void System::Enable_CYCCNT()
 {
 	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; // Enable trace
-#if defined(STM32F7)
+#if (__CORTEX_M == 7U)
 	DWT->LAR = 0xC5ACCE55UL;                      // Unlock Cortex-M7 DWT writes
 #endif
 	DWT->CTRL        |= DWT_CTRL_CYCCNTENA_Msk;      // Start CYCCNT
@@ -321,7 +333,7 @@ uint32_t System::SWOTrace(const uint8_t *ptr, uint32_t len)
 	}
 	return written;
 }
-#endif // STM32L0 or STM32G0
+#endif // STM32_SYSTEM_HAS_TRACE
 // ---------------------------------------------------------------------------
 // System cache maintenance / MPU_Init (STM32F7 only)
 // ---------------------------------------------------------------------------
@@ -386,6 +398,7 @@ void System::MPU_Init()
 }
 #endif // STM32F7
 
+
 // ---------------------------------------------------------------------------
 // System::DebugTrap
 // ---------------------------------------------------------------------------
@@ -398,7 +411,7 @@ static const char* volatile _debug_trap_msg = nullptr;
 [[noreturn]] void System::DebugTrap(const char* msg)
 {
 	_debug_trap_msg = msg;          // visible in debugger even without call-stack
-#if defined(STM32F4) || defined(STM32F7)
+#if STM32_SYSTEM_HAS_TRACE
 	// Fault reporting deliberately waits for ITM; it does not depend on SysTick.
 	// When trace is disabled the message is available only in the debugger.
 	if (msg != nullptr && (CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk)

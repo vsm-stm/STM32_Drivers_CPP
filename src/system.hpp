@@ -17,7 +17,9 @@
  * The driver's SysTick_Handler calls TickIncrease(); do not define another
  * handler when linking this implementation. Time-based waits need SysTick to
  * preempt them. No IPSR/PRIMASK guard, fallback timer or internal lock is added.
- * F4/F7/G0 are the configured driver families; L0 retains a limited legacy path.
+ * System supports F4/F7/G0/L0/G4. L0 starts from reset MSI at 2,097,152 Hz;
+ * other families start from reset HSI16. RCC and other driver ports are separate.
+ * Initialization and family-specific register operations are in system.cpp.
  */
 #ifndef SYSTEM_H_
 #define SYSTEM_H_
@@ -26,18 +28,34 @@
 #include <cstddef>
 #include <type_traits>
 
-extern "C"
-{
+extern "C" {
 #if defined(STM32F4)
-	#include "stm32f4xx.h"
+#include "stm32f4xx.h"
 #elif defined(STM32F7)
-	#include "stm32f7xx.h"
-#elif defined(STM32L0)
-	#include "stm32l0xx.h"
+#include "stm32f7xx.h"
 #elif defined(STM32G0)
-	#include "stm32g0xx.h"
+#include "stm32g0xx.h"
+#elif defined(STM32L0)
+#include "stm32l0xx.h"
+#elif defined(STM32G4)
+#include "stm32g4xx.h"
+#else
+#error "System supports STM32F4, STM32F7, STM32G0, STM32L0 and STM32G4 only"
 #endif
 }
+
+// Derived capabilities, not application configuration switches.
+#if (__CORTEX_M == 4U) || (__CORTEX_M == 7U)
+#define STM32_SYSTEM_HAS_TRACE 1
+#else
+#define STM32_SYSTEM_HAS_TRACE 0
+#endif
+
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+#define STM32_SYSTEM_HAS_DCACHE 1
+#else
+#define STM32_SYSTEM_HAS_DCACHE 0
+#endif
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -118,16 +136,16 @@ public:
 	static uint32_t TIMxAPB2Clock;
 
 	/**
-	 * @brief Initialise clock state, FPU, Flash/cache and SysTick at 16 MHz.
-	 * @note With STM32_USE_BOOTLOADER on F4/F7/G0, restores HSI and dividers /1;
-	 *       HSI readiness and source switch wait without a timeout. G0 restores
-	 *       VOS Range 1, then Flash latency becomes 0; VOS/latency waits have
+	 * @brief Initialise reset clock state, FPU, Flash/cache and SysTick.
+	 * @note With STM32_USE_BOOTLOADER, restores the reset source and dividers /1;
+	 *       source readiness and switching wait without a timeout. G0/G4 restore
+	 *       VOS Range 1, L0 Range 2, then Flash latency becomes 0; VOS/latency waits have
 	 *       a 100 ms timeout. PLL/HSE configuration and RCC interrupts remain.
 	 *       Without that definition, assumes the reset clock/power/latency state;
 	 *       call once after hardware reset, before changing clock settings.
 	 *       Call at the beginning of main with interrupts enabled, before
-	 *       peripheral setup. L0 retains its legacy assumption of 16 MHz HSI;
-	 *       it does not restore RCC, power or Flash settings.
+	 *       peripheral setup. L0 uses reset MSI range 5 (2,097,152 Hz), not HSI16;
+	 *       the other families use HSI16. This does not configure the main PLL.
 	 *       F7 applies project DMA areas to their MPU regions before enabling
 	 *       D-cache. An already enabled D-cache is disabled with clean/invalidate
 	 *       first. Call before DMA starts; other MPU regions are retained.
@@ -195,7 +213,7 @@ public:
 	 * @brief Enable the DWT cycle counter (required before Delay_us).
 	 * @note Not declared on STM32G0/L0 (Cortex-M0+). This does not configure SWO.
 	 */
-#if not defined(STM32L0) && not defined(STM32G0)
+#if STM32_SYSTEM_HAS_TRACE
 	static void Enable_CYCCNT();
 
 	/**
@@ -206,7 +224,7 @@ public:
 	 *       The clock must remain unchanged during the delay. Counter subtraction
 	 *       handles wrap-around provided polling resumes within half the counter range.
 	 * @code
-	 *   System::Enable_CYCCNT(); // F4/F7, after the core frequency is established.
+	 *   System::Enable_CYCCNT(); // F4/F7/G4, after the core frequency is established.
 	 *   System::Delay_us(10);
 	 * @endcode
 	 */
@@ -228,7 +246,7 @@ public:
 	static uint32_t SWOTrace(const uint8_t *ptr, uint32_t len);
 #endif
 
-#if defined(STM32F7)
+#if STM32_SYSTEM_HAS_DCACHE
 	/**
 	 * @brief Guard unused external memory addresses on STM32F7 using MPU region 0.
 	 * @note Blocks 0x60000000..0xDFFFFFFF. Configure higher-numbered regions
@@ -261,7 +279,7 @@ public:
 	 *       including line rounding. nullptr or zero size performs no operation.
 	 *       RX buffers must own every affected cache line, including padding;
 	 *       do not share those lines with independently modified data.
-	 *       F4/G0/L0 have no SRAM D-cache; these functions perform no operation.
+	 *       F4/G0/L0/G4 have no SRAM D-cache; these functions perform no operation.
 	 *
 	 * Ownership transitions:
 	 * - CPU -> TX DMA: CacheClean (write dirty source bytes to RAM).
@@ -282,7 +300,7 @@ public:
 	 * users decide whether these calls are needed; DTCM or non-cacheable MPU
 	 * buffers need none. The policy does not configure MPU or place a buffer.
 	 */
-#if defined(STM32F7)
+#if STM32_SYSTEM_HAS_DCACHE
 	static void CacheClean(const void* addr, uint32_t size);
 	static void CacheInvalidate(void* addr, uint32_t size);
 	static void CacheCleanInvalidate(void* addr, uint32_t size);
@@ -299,7 +317,7 @@ public:
 	/**
 	 * @brief Stop execution after reporting a diagnostic in a DEBUG build.
 	 * @note DEBUG saves the message pointer in _debug_trap_msg, sends it through
-	 *       blocking ITM channel 0 on F4/F7 when trace is enabled, then executes
+	 *       blocking ITM channel 0 on F4/F7/G4 when trace is enabled, then executes
 	 *       BKPT and loops forever. The debugger must configure SWO; an enabled
 	 *       but stalled ITM port can hold this call before BKPT. G0/L0 have no SWO.
 	 *       Release uses an inline body which ignores the message and loops forever.

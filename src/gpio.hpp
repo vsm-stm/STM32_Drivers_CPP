@@ -18,6 +18,8 @@
  * @endcode
  * GPIO and PinArray operations have no internal locks. SetLevel uses BSRR;
  * TogglePin uses ODR read/modify/write and must not race with another port writer.
+ * Short register operations stay inline here; SetUp is defined in gpio.cpp.
+ * hardware/gpio.hpp selects clocking and AF limits for F4/F7/G0/L0/G4.
  */
 #ifndef GPIO_H_
 #define GPIO_H_
@@ -25,14 +27,7 @@
 #include "system.hpp"
 #include <cstddef>
 #include <utility>
-
-#if defined(STM32F4) or defined(STM32F7)
-	#define RCC_GPIO_EN_REG		RCC->AHB1ENR
-	#define RCC_GPIOA_EN		RCC_AHB1ENR_GPIOAEN
-#elif defined(STM32G0)
-	#define RCC_GPIO_EN_REG		RCC->IOPENR
-	#define RCC_GPIOA_EN		RCC_IOPENR_GPIOAEN
-#endif
+#include "hardware/gpio.hpp"
 
 /**
  * @brief One immutable pin binding; operations configure/read/write its hardware.
@@ -124,48 +119,21 @@ public:
 	{
 		// Reaching a non-constant expression rejects an invalid definition at build time.
 		if (p >= 16) STM32_CONFIG_ERROR("PIN: pin number must be in 0..15");
-		if (a >= 16) STM32_CONFIG_ERROR("PIN: alternate function must be in 0..15");
-		switch (port_base) {
-		case GPIOA_BASE:
-		case GPIOB_BASE:
-#if defined(GPIOC_BASE)
-		case GPIOC_BASE:
-#endif
-#if defined(GPIOD_BASE)
-		case GPIOD_BASE:
-#endif
-#if defined(GPIOE_BASE)
-		case GPIOE_BASE:
-#endif
-#if defined(GPIOF_BASE)
-		case GPIOF_BASE:
-#endif
-#if defined(GPIOG_BASE)
-		case GPIOG_BASE:
-#endif
-#if defined(GPIOH_BASE)
-		case GPIOH_BASE:
-#endif
-#if defined(GPIOI_BASE)
-		case GPIOI_BASE:
-#endif
-#if defined(GPIOJ_BASE)
-		case GPIOJ_BASE:
-#endif
-#if defined(GPIOK_BASE)
-		case GPIOK_BASE:
-#endif
-			break;
-		default:
-			STM32_CONFIG_ERROR("PIN: GPIO port is not available on this device");
+		if (a >= gpio_hw::af_count) {
+			if constexpr (gpio_hw::af_count == 8)
+				STM32_CONFIG_ERROR("PIN: alternate function must be in 0..7");
+			else
+				STM32_CONFIG_ERROR("PIN: alternate function must be in 0..15");
 		}
+		if (!gpio_hw::IsPortAvailable(port_base))
+			STM32_CONFIG_ERROR("PIN: GPIO port is not available on this device");
 	}
 
 	/**
 	 * @brief Bind a direct CMSIS GPIO pointer; retained for ordinary GPIOx syntax.
 	 * @param port Existing GPIO port pointer on the selected device.
 	 * @param p Pin number 0..15, provided correctly by the caller.
-	 * @param a Stored alternate function 0..15, default 0.
+	 * @param a Stored AF: 0..7 on G0/L0, 0..15 on F4/F7/G4; default 0.
 	 * No run-time validation; this overload is not a compile-time pointer checker.
 	 */
 	PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept
@@ -206,7 +174,8 @@ public:
 
 	/**
 	 * @brief Full configuration with an explicit hardware AF override.
-	 * @param af_override AF field 0..15; does not change the stored constructor AF.
+	 * @param af_override AF 0..7 on G0/L0, 0..15 on F4/F7/G4.
+	 *        Does not change the stored constructor AF.
 	 * Caller supplies a valid route/value; the GPIO layer does not validate
 	 * whether that AF connects to a particular peripheral on the selected pin.
 	 */
@@ -244,7 +213,6 @@ public:
 	 */
 	inline void TogglePin() noexcept
 	{
-		// ODR read-modify-write: do not modify this port from IRQ during the toggle.
 		PORT()->ODR ^= (0x1u << pin);
 	}
 

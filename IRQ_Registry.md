@@ -169,10 +169,12 @@ What a callback **may** do: disable its own peripheral interrupt source while ke
 
 ## 8. Capacity and memory
 
-**`IRQ_MAX_SHARED`** (default **3** on F4/F7/G0) — maximum handlers on one vector.
+**`IRQ_MAX_SHARED`** (default **3** on F4/F7/G0/L0/G4) — maximum handlers on one vector.
 
 - 3 is enough for ADC1/ADC2/ADC3 sharing `ADC_IRQn`.
 - G0 may need more: on G071 one vector serves DMA1 channels 4…7 plus DMAMUX overrun; G0B1 adds DMA2 channels 1…5 to that vector.
+- L0: on L072, DMA1 channels 4…7 share `DMA1_Channel4_5_6_7_IRQn`. Four separately registered DMA handlers require `IRQ_MAX_SHARED >= 4`. EXTI lines 4…15 also share one vector; count the EXTI objects you register.
+- G4: shared vectors include `ADC1_2_IRQn` and `TIM1_BRK_TIM15_IRQn`. EXTI lines 5…9 share `EXTI9_5_IRQn`, and lines 10…15 share `EXTI15_10_IRQn`; five or six separately registered EXTI objects require the corresponding capacity. Vector availability depends on the selected device.
 - Count the objects/functions your project registers on each vector and raise the limit if needed.
 
 **RAM cost of the table:**
@@ -476,10 +478,12 @@ if (IRQ_Registry::HasHandlers(irqn)) NVIC_EnableIRQ(irqn);
 
 ## 8. Вместимость и память
 
-**`IRQ_MAX_SHARED`** (по умолчанию **3** на F4/F7/G0) — максимум обработчиков на одном векторе.
+**`IRQ_MAX_SHARED`** (по умолчанию **3** на F4/F7/G0/L0/G4) — максимум обработчиков на одном векторе.
 
 - 3 хватает для ADC1/ADC2/ADC3 на общем `ADC_IRQn`.
 - G0 может потребовать больше: на G071 один вектор обслуживает каналы 4…7 DMA1 и переполнение DMAMUX; на G0B1 к нему добавляются каналы 1…5 DMA2.
+- L0: на L072 каналы DMA1 4…7 используют общий `DMA1_Channel4_5_6_7_IRQn`. Для четырёх отдельно зарегистрированных DMA-обработчиков нужен `IRQ_MAX_SHARED >= 4`. Линии EXTI 4…15 тоже используют один вектор; учитывайте количество регистрируемых объектов EXTI.
+- G4: общие векторы включают `ADC1_2_IRQn` и `TIM1_BRK_TIM15_IRQn`. Линии EXTI 5…9 используют `EXTI9_5_IRQn`, а 10…15 — `EXTI15_10_IRQn`; для пяти или шести отдельно зарегистрированных объектов EXTI нужна соответствующая вместимость. Наличие векторов зависит от выбранной модели.
 - Посчитайте, сколько объектов/функций ваш проект регистрирует на каждом векторе, и при необходимости увеличьте лимит.
 
 **Расход RAM на таблицу:**
