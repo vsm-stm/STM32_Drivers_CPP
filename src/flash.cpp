@@ -4,214 +4,25 @@
  *
  * The driver never masks interrupts. SysTick-based waits can be delayed by
  * same-bank instruction/vector fetch stalls; timeout is not hardware cancellation.
- * Destination cache invalidation prevents stale Flash reads; F4/G0 accelerator
+ * Destination cache invalidation prevents stale Flash reads; F4/G0/G4 accelerator
  * resets are distinct from Cortex-M7 SRAM/data-cache range maintenance.
  */
 #include "flash.hpp"
 
 namespace {
-#if defined(STM32G0)
-constexpr uint32_t record_header_size = 2U * sizeof(status_t);
-#else
-constexpr uint32_t record_header_size = sizeof(status_t);
-#endif
+using namespace flash_hw;
 
-#if defined(STM32F4) || defined(STM32F7)
-constexpr uint32_t flash_timeout_ms = 50000U;
-constexpr uint32_t busy_mask = FLASH_SR_BSY;
-constexpr uint32_t erase_bit = FLASH_CR_SER;
-constexpr uint32_t sector_pos = FLASH_CR_SNB_Pos;
-constexpr uint32_t sector_mask = FLASH_CR_SNB_Msk;
-constexpr uint32_t mass_erase_bit = FLASH_CR_MER;
-#else // STM32G0
-constexpr uint32_t flash_timeout_ms = 1000U;
-constexpr uint32_t busy_mask = FLASH_SR_BSY1
-#if defined(FLASH_SR_BSY2)
-	| FLASH_SR_BSY2
-#endif
-	;
-constexpr uint32_t erase_bit = FLASH_CR_PER;
-constexpr uint32_t sector_pos = FLASH_CR_PNB_Pos;
-constexpr uint32_t sector_mask = FLASH_CR_PNB_Msk;
-constexpr uint32_t mass_erase_bit = FLASH_CR_MER1;
-#endif
-
-constexpr uint32_t ready_mask = busy_mask
-#if defined(STM32G0)
-	| FLASH_SR_CFGBSY
-#endif
-	;
-
-constexpr uint32_t error_mask = FLASH_SR_WRPERR | FLASH_SR_PGAERR
-#if defined(FLASH_SR_OPERR)
-	| FLASH_SR_OPERR
-#elif defined(FLASH_SR_SOP)
-	| FLASH_SR_SOP
-#endif
-#if defined(FLASH_SR_PGPERR)
-	| FLASH_SR_PGPERR
-#endif
-#if defined(FLASH_SR_PGSERR)
-	| FLASH_SR_PGSERR
-#endif
-#if defined(FLASH_SR_ERSERR)
-	| FLASH_SR_ERSERR
-#endif
-#if defined(FLASH_SR_PROGERR)
-	| FLASH_SR_PROGERR
-#endif
-#if defined(FLASH_SR_SIZERR)
-	| FLASH_SR_SIZERR
-#endif
-#if defined(FLASH_SR_MISERR)
-	| FLASH_SR_MISERR
-#elif defined(FLASH_SR_MISSERR)
-	| FLASH_SR_MISSERR
-#endif
-#if defined(FLASH_SR_FASTERR)
-	| FLASH_SR_FASTERR
-#endif
-#if defined(FLASH_SR_RDERR)
-	| FLASH_SR_RDERR
-#endif
-#if defined(FLASH_SR_OPTVERR)
-	| FLASH_SR_OPTVERR
-#endif
-	;
-
-// Replace all mutually exclusive operation fields, including a previous
-// operation's fields left set after a timeout. Only access CR when ready.
-constexpr uint32_t operation_mask = FLASH_CR_PG | erase_bit | sector_mask | mass_erase_bit
-#if defined(FLASH_CR_MER2)
-	| FLASH_CR_MER2
-#endif
-#if defined(FLASH_CR_BKER)
-	| FLASH_CR_BKER
-#endif
-#if defined(FLASH_CR_FSTPG)
-	| FLASH_CR_FSTPG
-#endif
-#if defined(FLASH_CR_PSIZE_Msk)
-	| FLASH_CR_PSIZE_Msk
-#endif
-	;
-
-// Wait for the physical operation, report controller errors, then on G0 confirm
-// that CR is writable (CFGBSY clear) using the remainder of the same time budget.
-SysStatus wait_operation()
-{
-#if defined(STM32G0)
-	const uint32_t started = System::GetTick();
-#endif
-	if (!System::WaitBits(FLASH->SR, busy_mask, 0U, flash_timeout_ms))
-		return SysStatus::Timeout;
-	// G0 programming errors are checked before waiting for CR availability.
-	if (FLASH->SR & error_mask) return SysStatus::Error;
-#if defined(STM32G0)
-	const uint32_t elapsed = System::GetTick() - started;
-	const uint32_t remaining = elapsed < flash_timeout_ms ? flash_timeout_ms - elapsed : 0U;
-	if (!System::WaitBits(FLASH->SR, FLASH_SR_CFGBSY, 0U, remaining))
-		return SysStatus::Timeout;
-#endif
-	return SysStatus::OK;
-}
-
-// Invalidate only modified Flash addresses in the Cortex-M7 D-cache.
-// Flash accelerator caches and the instruction cache have no range API.
-void invalidate_flash(uint32_t addr, uint32_t bytes)
-{
-	__DSB();
-#if defined(STM32F7)
-	if (SCB->CCR & SCB_CCR_DC_Msk) {
-		const uint32_t first = addr & ~31U;
-		const uint32_t length = (addr - first + bytes + 31U) & ~31U;
-		SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(first), static_cast<int32_t>(length));
-	}
-	if (FLASH->ACR & FLASH_ACR_ARTEN) {
-		FLASH->ACR &= ~FLASH_ACR_ARTEN;
-		FLASH->ACR |= FLASH_ACR_ARTRST;
-		FLASH->ACR &= ~FLASH_ACR_ARTRST;
-		FLASH->ACR |= FLASH_ACR_ARTEN;
-	}
-	if (SCB->CCR & SCB_CCR_IC_Msk) SCB_InvalidateICache();
-#else
-	(void)addr;
-	(void)bytes;
-	if (FLASH->ACR & FLASH_ACR_ICEN) {
-		FLASH->ACR &= ~FLASH_ACR_ICEN;
-		FLASH->ACR |= FLASH_ACR_ICRST;
-		FLASH->ACR &= ~FLASH_ACR_ICRST;
-		FLASH->ACR |= FLASH_ACR_ICEN;
-	}
-#if defined(STM32F4)
-	if (FLASH->ACR & FLASH_ACR_DCEN) {
-		FLASH->ACR &= ~FLASH_ACR_DCEN;
-		FLASH->ACR |= FLASH_ACR_DCRST;
-		FLASH->ACR &= ~FLASH_ACR_DCRST;
-		FLASH->ACR |= FLASH_ACR_DCEN;
-	}
-#endif
-#endif
-	__DSB();
-	__ISB();
-}
-
-// Derive each selected bank's address span from the generated geometry.
-// Never assume equal contiguous bank sizes in this helper.
-void invalidate_banks(uint8_t banks)
-{
-	for (uint32_t bank = 1U; bank <= 2U; ++bank) {
-		if (!(banks & (1U << (bank - 1U)))) continue;
-		uint32_t first = UINT32_MAX;
-		uint32_t last = 0;
-		for (uint32_t index = 0; index < FLASH_SECTOR_COUNT; ++index) {
-			const FlashSector sector = GetFlashSector(index);
-			if (sector.bank != bank) continue;
-			if (sector.address < first) first = sector.address;
-			const uint32_t end = sector.address + sector.size;
-			if (end > last) last = end;
-		}
-		if (first != UINT32_MAX) invalidate_flash(first, last - first);
-	}
-}
+constexpr uint32_t record_header_size = record_header_words * sizeof(status_t);
+constexpr uint32_t commit_offset = record_header_words == 3U ? sizeof(status_t) : 0U;
 
 } // namespace
 
 SysInitStatus flash_base::init(bank_type tb)
 {
 	const bank_type expected = FLASH_DUAL_BANK ? bank_type::DUAL_BANK : bank_type::SINGLE_BANK;
-	if (tb != expected) return SysInitStatus::InitError;
-	if constexpr (FLASH_BANK_SWITCHABLE) {
-		bool dual;
-#if defined(STM32F4) && defined(FLASH_OPTCR_DB1M)
-		dual = (FLASH->OPTCR & FLASH_OPTCR_DB1M) != 0U;
-#elif defined(STM32F7) && defined(FLASH_OPTCR_nDBANK)
-		dual = (FLASH->OPTCR & FLASH_OPTCR_nDBANK) == 0U;
-#elif defined(STM32G0) && (defined(STM32G0B1xx) || defined(STM32G0C1xx))
-		dual = (FLASH->OPTR & FLASH_OPTR_DUAL_BANK) != 0U;
-#else
-		return SysInitStatus::InitError;
-#endif
-		if (dual != FLASH_DUAL_BANK) return SysInitStatus::InitError;
-	}
+	if (tb != expected || !bank_mode_matches()) return SysInitStatus::InitError;
 	if constexpr (FLASH_DUAL_BANK) {
-#if defined(SYSCFG_MEMRMP_UFB_MODE) || defined(SYSCFG_MEMRMP_SWP_FB)
-		// Read the active mapping; restore the clock if it was initially disabled.
-		const bool clock_enabled = (RCC->APB2ENR & RCC_APB2ENR_SYSCFGEN) != 0U;
-		if (!clock_enabled) {
-			RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
-			(void)RCC->APB2ENR;
-		}
-#if defined(SYSCFG_MEMRMP_UFB_MODE)
-		const bool swapped = (SYSCFG->MEMRMP & SYSCFG_MEMRMP_UFB_MODE) != 0U;
-#else
-		const bool swapped = (SYSCFG->MEMRMP & SYSCFG_MEMRMP_SWP_FB) != 0U;
-#endif
-		if (!clock_enabled) RCC->APB2ENR &= ~RCC_APB2ENR_SYSCFGEN;
-		if (swapped) return SysInitStatus::InitError;
-#elif defined(STM32G0B1xx) || defined(STM32G0C1xx)
-		if (!(FLASH->OPTR & FLASH_OPTR_nSWAP_BANK)) return SysInitStatus::InitError;
-#endif
+		if (bank_swapped()) return SysInitStatus::InitError;
 	}
 	return SysInitStatus::InitOK;
 }
@@ -227,9 +38,118 @@ void flash_base::clear_errors()
 	FLASH->SR = error_mask | FLASH_SR_EOP;
 }
 
+#if defined(STM32L0)
+// STM32L0 uses PECR. Page erase starts by writing at the page address.
+namespace {
+using namespace flash_hw;
+
+constexpr uint32_t lock_mask = FLASH_PECR_PELOCK | FLASH_PECR_PRGLOCK;
+constexpr uint32_t page_erase = FLASH_PECR_ERASE | FLASH_PECR_PROG;
+constexpr uint32_t operation_mask = page_erase | FLASH_PECR_FPRG | FLASH_PECR_DATA;
+
+SysStatus wait_operation()
+{
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
+		return SysStatus::Timeout;
+	return (FLASH->SR & error_mask) ? SysStatus::Error : SysStatus::OK;
+}
+} // namespace
+
 SysStatus flash_base::enable_access()
 {
-	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
+		return SysStatus::Timeout;
+	if (FLASH->PECR & FLASH_PECR_PELOCK) {
+		FLASH->PEKEYR = 0x89ABCDEFU;
+		FLASH->PEKEYR = 0x02030405U;
+	}
+	if (FLASH->PECR & FLASH_PECR_PRGLOCK) {
+		FLASH->PRGKEYR = 0x8C9DAEBFU;
+		FLASH->PRGKEYR = 0x13141516U;
+	}
+	return (FLASH->PECR & lock_mask) ? SysStatus::Error : SysStatus::OK;
+}
+
+SysStatus flash_base::erase_sector(uint32_t sector)
+{
+	if (sector >= FLASH_SECTOR_COUNT) return SysStatus::Error;
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
+		return SysStatus::Timeout;
+	if (FLASH->PECR & lock_mask) return SysStatus::Error;
+	clear_errors();
+
+	const uint32_t addr = GetFlashSector(sector).address;
+	FLASH->PECR = (FLASH->PECR & ~operation_mask) | page_erase;
+	*reinterpret_cast<volatile uint32_t*>(addr) = 0U;
+	__DSB();
+	const SysStatus result = wait_operation();
+	if (ready()) FLASH->PECR &= ~page_erase;
+	return result;
+}
+
+SysStatus flash_base::mass_erase(uint8_t banks)
+{
+	if (!banks || banks > 3U || (!FLASH_DUAL_BANK && banks != 1U)) return SysStatus::Error;
+	for (uint32_t sector = 0U; sector < FLASH_SECTOR_COUNT; ++sector) {
+		const auto bank = GetFlashSector(sector).bank;
+		if (!(banks & (1U << (bank - 1U)))) continue;
+		const SysStatus result = erase_sector(sector);
+		if (result != SysStatus::OK) return result;
+	}
+	return SysStatus::OK;
+}
+
+template<uint32_t width>
+SysStatus flash_base::program(uint32_t addr, const void* data, uint32_t bytes)
+{
+	static_assert(width == 4U);
+	if (!bytes) return SysStatus::OK;
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
+		return SysStatus::Timeout;
+	if (FLASH->PECR & lock_mask) return SysStatus::Error;
+	clear_errors();
+	// A previous erase timeout can leave ERASE and PROG set.
+	FLASH->PECR &= ~operation_mask;
+
+	const auto* source = static_cast<const uint8_t*>(data);
+	const uint32_t physical_bytes = (bytes + width - 1U) & ~(width - 1U);
+	for (uint32_t i = 0; i < physical_bytes; i += width) {
+		uint32_t value = 0U;
+		const uint32_t remaining = bytes - i;
+		memcpy(&value, source + i, remaining < width ? remaining : width);
+		*reinterpret_cast<volatile uint32_t*>(addr + i) = value;
+		__DSB();
+		const SysStatus result = wait_operation();
+		if (result != SysStatus::OK) return result;
+	}
+	return SysStatus::OK;
+}
+
+template SysStatus flash_base::program<4U>(uint32_t, const void*, uint32_t);
+#else
+namespace {
+// Check errors as soon as the hardware operation stops. G0 also requires
+// CFGBSY clear before CR can be written again.
+SysStatus wait_operation()
+{
+	uint32_t started = 0U;
+	if constexpr (ready_mask != busy_mask) started = System::GetTick();
+	if (!System::WaitBits(FLASH->SR, busy_mask, 0U, timeout_ms))
+		return SysStatus::Timeout;
+	if (FLASH->SR & error_mask) return SysStatus::Error;
+	if constexpr (ready_mask != busy_mask) {
+		const uint32_t elapsed = System::GetTick() - started;
+		const uint32_t remaining = elapsed < timeout_ms ? timeout_ms - elapsed : 0U;
+		if (!System::WaitBits(FLASH->SR, ready_mask & ~busy_mask, 0U, remaining))
+			return SysStatus::Timeout;
+	}
+	return SysStatus::OK;
+}
+} // namespace
+
+SysStatus flash_base::enable_access()
+{
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
 		return SysStatus::Timeout;
 	if (FLASH->CR & FLASH_CR_LOCK) {
 		FLASH->KEYR = 0x45670123U;
@@ -241,29 +161,22 @@ SysStatus flash_base::enable_access()
 SysStatus flash_base::erase_sector(uint32_t sector)
 {
 	if (sector >= FLASH_SECTOR_COUNT) return SysStatus::Error;
-	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
 		return SysStatus::Timeout;
 	if (FLASH->CR & FLASH_CR_LOCK) return SysStatus::Error;
 	clear_errors();
 	const FlashSector geometry = GetFlashSector(sector);
+	const bool restore_cache = pause_data_cache();
 	invalidate_flash(geometry.address, geometry.size);
-
-	uint32_t erase = erase_bit | ((geometry.number << sector_pos) & sector_mask);
-#if defined(STM32F4) || defined(STM32F7)
-	// VDD = 3-3.3 V, no external VPP: use x32 parallelism for erase.
-	erase |= 2U << FLASH_CR_PSIZE_Pos;
-#endif
-#if defined(STM32G0) && defined(FLASH_CR_BKER)
-	if (geometry.bank == 2U) erase |= FLASH_CR_BKER;
-#endif
-	FLASH->CR = (FLASH->CR & ~operation_mask) | erase;
+	FLASH->CR = (FLASH->CR & ~operation_mask) | page_erase_bits(geometry);
 	FLASH->CR |= FLASH_CR_STRT;
 	const SysStatus completed = wait_operation();
-	// Timeout does not cancel erase: touch CR and Flash caches only when ready.
+	// Timeout does not cancel erase. Modify CR only when hardware is ready.
 	if (ready()) {
 		FLASH->CR &= ~operation_mask;
 		invalidate_flash(geometry.address, geometry.size);
 	}
+	resume_data_cache(restore_cache);
 	return completed;
 }
 
@@ -271,104 +184,68 @@ SysStatus flash_base::mass_erase(uint8_t bank)
 {
 	// Mask: 1 = bank 1, 2 = bank 2, 3 = both. Reject absent banks.
 	if (!bank || bank > 3U || (!FLASH_DUAL_BANK && bank != 1U)) return SysStatus::Error;
-#if !defined(FLASH_CR_MER2)
-	if (bank & 2U) return SysStatus::Error;
-#endif
-	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
+	if ((bank & 2U) && !second_bank_erase) return SysStatus::Error;
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
 		return SysStatus::Timeout;
 	if (FLASH->CR & FLASH_CR_LOCK) return SysStatus::Error;
 	clear_errors();
+	const bool restore_cache = pause_data_cache();
 	invalidate_banks(bank);
-	uint32_t erase = (bank & 1U) ? mass_erase_bit : 0U;
-#if defined(FLASH_CR_MER2)
-	if (bank & 2U) erase |= FLASH_CR_MER2;
-#endif
-#if defined(STM32F4) || defined(STM32F7)
-	erase |= 2U << FLASH_CR_PSIZE_Pos;
-#endif
-	FLASH->CR = (FLASH->CR & ~operation_mask) | erase;
+	FLASH->CR = (FLASH->CR & ~operation_mask) | bank_erase_bits(bank);
 	FLASH->CR |= FLASH_CR_STRT;
 	const SysStatus completed = wait_operation();
 	if (ready()) {
 		FLASH->CR &= ~operation_mask;
 		invalidate_banks(bank);
 	}
+	resume_data_cache(restore_cache);
 	return completed;
 }
 
-// Physical-width programming only. Locally copy source bytes rather than casting
-// potentially unaligned RAM; G0's final partial doubleword is padded with FF.
-// Cache/CR cleanup after Timeout is permitted only once hardware is ready.
+// A final partial G0/G4 doubleword is padded with FF by the physical store.
 template<uint32_t width>
 SysStatus flash_base::program(uint32_t addr, const void* data, uint32_t bytes)
 {
 	if (!bytes) return SysStatus::OK;
-#if defined(STM32G0)
-	const uint32_t physical_bytes = (bytes + 7U) & ~7U;
-#else
-	const uint32_t physical_bytes = bytes;
-#endif
-	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
+	const uint32_t physical_bytes = doubleword ? (bytes + 7U) & ~7U : bytes;
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
 		return SysStatus::Timeout;
 	if (FLASH->CR & FLASH_CR_LOCK) return SysStatus::Error;
 	clear_errors();
-	// Remove old cache lines before starting, including when completion times out.
-	// The caller must not access the destination range during the operation.
+	const bool restore_cache = pause_data_cache();
+	// Clear stale lines even if the operation later times out while busy.
 	invalidate_flash(addr, physical_bytes);
-
-	constexpr uint32_t program_bits = FLASH_CR_PG
-#if defined(STM32F4) || defined(STM32F7)
-		| ((width >> 1U) << FLASH_CR_PSIZE_Pos)
-#endif
-		;
-	FLASH->CR = (FLASH->CR & ~operation_mask) | program_bits;
+	FLASH->CR = (FLASH->CR & ~operation_mask) | program_bits(width);
 	const uint8_t* src = static_cast<const uint8_t*>(data);
 	SysStatus result = SysStatus::OK;
-#if defined(STM32G0)
-	for (uint32_t i = 0; i < physical_bytes; i += 8U) {
-		uint64_t value = UINT64_MAX;
-		const uint32_t count = bytes - i < 8U ? bytes - i : 8U;
-		// Source buffers can be unaligned. Only the destination must be 8-byte aligned.
-		memcpy(&value, src + i, count);
-		*reinterpret_cast<volatile uint32_t*>(addr + i) = static_cast<uint32_t>(value);
-		__ISB(); // Preserve the controller's two-word programming sequence.
-		*reinterpret_cast<volatile uint32_t*>(addr + i + 4U) = static_cast<uint32_t>(value >> 32U);
+	for (uint32_t i = 0; i < physical_bytes; i += width) {
+		store<width>(addr + i, src + i, bytes - i);
 		__DSB();
 		result = wait_operation();
 		if (result != SysStatus::OK) break;
 	}
-#else
-	for (uint32_t i = 0; i < bytes; i += width) {
-		uint32_t value = 0;
-		memcpy(&value, src + i, width);
-		if constexpr (width == 1U) *reinterpret_cast<volatile uint8_t*>(addr + i) = static_cast<uint8_t>(value);
-		else if constexpr (width == 2U) *reinterpret_cast<volatile uint16_t*>(addr + i) = static_cast<uint16_t>(value);
-		else *reinterpret_cast<volatile uint32_t*>(addr + i) = value;
-		__DSB();
-		result = wait_operation();
-		if (result != SysStatus::OK) break;
-	}
-#endif
-	// A timed-out hardware write may still be running; do not write CR then.
 	if (ready()) {
 		FLASH->CR &= ~operation_mask;
 		invalidate_flash(addr, physical_bytes);
 	}
+	resume_data_cache(restore_cache);
 	return result;
 }
 
-// Only physical widths are instantiated: one on G0, three on F4/F7.
-#if defined(STM32G0)
-template SysStatus flash_base::program<8U>(uint32_t, const void*, uint32_t);
-#else
+// Emit only the physical programming widths supported by the selected controller.
+#if defined(STM32F4) || defined(STM32F7)
 template SysStatus flash_base::program<1U>(uint32_t, const void*, uint32_t);
 template SysStatus flash_base::program<2U>(uint32_t, const void*, uint32_t);
 template SysStatus flash_base::program<4U>(uint32_t, const void*, uint32_t);
+#else
+template SysStatus flash_base::program<8U>(uint32_t, const void*, uint32_t);
 #endif
 
+#endif // STM32L0
+
 // One sector contains full, fixed-size slots:
-// F4/F7: [status byte][payload]. G0: [commit word][invalid word][payload][padding].
-// G0 leaves the invalid word erased until a newer record has been committed.
+// F4/F7: [status byte][payload]. G0/G4: [commit word][invalid word][payload][padding].
+// L0: [writing word][commit word][invalid word][payload][padding].
 SysInitStatus flash_data::SetUp(bank_type tb)
 {
 	stride = 0;
@@ -403,7 +280,7 @@ flash_data::Data_Status flash_data::read_data()
 SysStatus flash_data::write_data()
 {
 	if (!stride) return SysStatus::NotInit;
-	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, flash_timeout_ms))
+	if (!System::WaitBits(FLASH->SR, ready_mask, 0U, timeout_ms))
 		return SysStatus::Timeout;
 	const FlashSector geometry = GetFlashSector(sector);
 	if (next_offset > geometry.size - stride) {
@@ -429,14 +306,14 @@ SysStatus flash_data::write_data()
 	if (result != SysStatus::OK) return result;
 	result = write(addr + record_header_size, data, size);
 	if (result != SysStatus::OK) return result;
-	// G0 permits reprogramming an occupied main-Flash word with a full zero.
+	// L0 commits in a second word. G0/G4 commit by writing a full zero.
 	marker = Data_Status::DATA_OK;
-	result = write(addr, &marker);
+	result = write(addr + commit_offset, &marker);
 	if (result != SysStatus::OK) return result;
 
 	// Invalidate the previous record only after the new commit succeeded.
 	if (status == Data_Status::DATA_OK) {
-		// Last header unit: the second word on G0, the status byte on F4/F7.
+		// The invalidation marker occupies the last unit of the record header.
 		marker = Data_Status::DATA_NOT_VALID;
 		result = write(geometry.address + offset + record_header_size - sizeof(status_t),
 					   &marker);
@@ -449,7 +326,7 @@ SysStatus flash_data::write_data()
 
 // Continue past invalid/incomplete slots after a good record. offset retains the
 // last valid commit; next_offset follows the last occupied slot of any status.
-// FF inside payload/padding is irrelevant because the scan always steps by stride.
+// Payload and padding are skipped because the scan always steps by stride.
 void flash_data::find_offset()
 {
 	offset = 0;
@@ -459,19 +336,20 @@ void flash_data::find_offset()
 	const uint32_t last_offset = geometry.size - stride;
 	for (uint32_t pos = 0; pos <= last_offset; pos += stride) {
 		const uint32_t addr = geometry.address + pos;
-#if defined(STM32G0)
-		// The invalidation word takes priority over the commit word.
-		if (read<Data_Status>(addr + sizeof(status_t)) != Data_Status::NO_DATA) {
-			next_offset = pos + stride;
-			if (status != Data_Status::DATA_OK) status = Data_Status::DATA_NOT_VALID;
-			continue;
+		if constexpr (record_header_words > 1U) {
+			// The invalidation word takes priority over the commit word.
+			if (read<Data_Status>(addr + record_header_size - sizeof(status_t)) != Data_Status::NO_DATA) {
+				next_offset = pos + stride;
+				if (status != Data_Status::DATA_OK) status = Data_Status::DATA_NOT_VALID;
+				continue;
+			}
 		}
-#endif
 		const Data_Status marker = read<Data_Status>(addr);
-		if (marker == Data_Status::NO_DATA) continue;
+		const Data_Status commit = commit_offset ? read<Data_Status>(addr + commit_offset) : marker;
+		if (marker == Data_Status::NO_DATA && commit == Data_Status::NO_DATA) continue;
 		// Skip the entire occupied record, including its payload and padding.
 		next_offset = pos + stride;
-		if (marker == Data_Status::DATA_OK) {
+		if (commit == Data_Status::DATA_OK && (!commit_offset || marker == Data_Status::DATA_WRITING)) {
 			offset = pos;
 			status = Data_Status::DATA_OK;
 		} else if (status != Data_Status::DATA_OK) {

@@ -36,7 +36,8 @@ The application is responsible for reserving the Flash area (so that it does not
 ## 2. Scope and calling contract
 
 - **Files:** `src/flash.hpp`, `src/flash.cpp`.
-- **Families:** STM32F4, F7, G0. (L0 is not implemented — its erased value and programming protocol differ from G0.)
+- **Families:** STM32F4, F7, G0, G4 and L0. On L0, the driver targets main Flash through PECR. G4 programming and erase require VOS Range 1.
+- `flash.hpp` selects `f4_f7.hpp`, `g0.hpp`, `g4.hpp` or `l0.hpp` in `src/hardware/flash/`. G0 and G4 share the page commands and doubleword programming code. `flash.cpp` contains the L0 PECR operations and the shared journal.
 
 **Calling rules:**
 
@@ -48,10 +49,10 @@ The application is responsible for reserving the Flash area (so that it does not
 
 | Family | Timeout per hardware operation |
 | --- | --- |
-| F4/F7 | 50000 ms (50 s) |
-| G0 | 1000 ms (1 s) |
+| F4/F7/L0 | 50000 ms (50 s) |
+| G0/G4 | 1000 ms (1 s) |
 
-These are ST HAL defaults ([F4](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Src/stm32f4xx_hal_flash.c), [F7](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Src/stm32f7xx_hal_flash.c), [G0](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_hal_flash.h)). The timeout restarts for every physical write, not once for the whole buffer.
+These are ST HAL defaults ([F4](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Src/stm32f4xx_hal_flash.c), [F7](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Src/stm32f7xx_hal_flash.c), [G0](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_hal_flash.h), [L0](https://raw.githubusercontent.com/STMicroelectronics/stm32l0xx-hal-driver/master/Inc/stm32l0xx_hal_flash.h)). The timeout restarts for every physical write, not once for the whole buffer.
 
 > **Timeout limitation.** While a Flash bank is busy, reading from it stalls instruction fetch — including the SysTick handler and its vector. `GetTick()` then does not track real time reliably. No code is moved to RAM.
 >
@@ -70,7 +71,7 @@ const uint32_t address = page.address;
 ```
 
 - `GetFlashSector(index)` returns the sector by value. The caller ensures `index < FLASH_SECTOR_COUNT`; `erase_sector()` checks its own argument.
-- `number` is the **hardware** selector (SNB on F4/F7, PNB on G0), not the logical index. Example: F429ZI 2 MiB — bank 2 starts at `0x08100000`, logical index 12, SNB selector 16.
+- `number` is the **hardware** selector (SNB on F4/F7, PNB on G0/G4), not the logical index. Example: F429ZI 2 MiB — bank 2 starts at `0x08100000`, logical index 12, SNB selector 16.
 
 **Uniform vs. table geometry.** The generator detects geometry from the data, without a family list:
 
@@ -79,14 +80,15 @@ const uint32_t address = page.address;
 
 Always use `GetFlashSector()` — it works for both. `STM32_FLASH_UNIFORM_PAGES` (1/0) is generated, not a user setting. For uniform maps `flash_sectors[]` is **not declared**, so replace direct indexing or range-for loops with `GetFlashSector()` and `FLASH_SECTOR_COUNT`.
 
-**Updating.** Update the drivers and `STM32-base_files/cmake/flash_config.h.in` together, refresh the cached template and regenerate the project. A stale format-3 config is rejected explicitly. The generic geometry does not port the Flash operations to families other than F4/F7/G0.
+**Updating.** Update the drivers and `STM32-base_files/cmake/flash_config.h.in` together, refresh the cached template and regenerate the project. A stale format-3 config is rejected explicitly. The generic geometry does not port the Flash operations to families other than F4/F7/G0/G4/L0.
 
 **Banks:**
 
 - The default bank type follows `FLASH_DUAL_BANK`.
 - `init()` does **not** change option bytes. It checks an explicit argument against the map, checks the hardware mode bit on switchable devices, and returns `InitError` on mismatch or when bank swap is active. Single-only and dual-only devices use their fixed mode.
+- Switchable G4 devices require a map that describes both bank modes. `init()` rejects an incomplete map. Refresh the cached `STM32G4-map.cmake` for STM32G411xC and STM32G414. The default single-bank layout uses 4 KiB pages. Dual-bank mode uses 2 KiB pages and places bank 2 at `0x08040000`.
 - Call `init()` once (and check it) before direct operations; `flash_data::SetUp()` does it for the log. Unlock/erase/write do not re-check the mode, so do not change bank mode or mapping while the driver is in use.
-- `mass_erase(mask)`: **1** = bank 1, **2** = bank 2, **3** = both. Absent banks and other masks → `Error`.
+- `mass_erase(mask)`: **1** = bank 1, **2** = bank 2, **3** = both. Absent banks and other masks → `Error`. On L0, this loops over the selected pages, with a timeout per page. It returns on the first error and earlier pages remain erased.
 
 ---
 
@@ -129,11 +131,12 @@ Hardware width and PSIZE are chosen at compile time:
 | Family | Hardware programming | Destination alignment |
 | --- | --- | --- |
 | F4/F7 | 8/16/32-bit; a 64-bit element is split into two separately checked 32-bit writes | 1/2/4 bytes respectively; 4 for 64-bit elements |
-| G0 | 64-bit: two consecutive 32-bit stores separated by ISB | 8 bytes |
+| G0/G4 | 64-bit: two consecutive 32-bit stores separated by ISB | 8 bytes |
+| L0 | One aligned 32-bit store, zero padding at the end | 4 bytes |
 
 **F4/F7** assume **VDD 3–3.3 V without external VPP**: erase uses ×32 parallelism, ×64 PSIZE is never used ([RM0090, programming parallelism](https://www.st.com/resource/en/reference_manual/rm0090-stm32f4xx-reference-manual-stmicroelectronics.pdf)).
 
-**G0:**
+**G0/G4:**
 
 - each 64-bit value is assembled with `memcpy`, so the source needs no 8-byte alignment;
 - the last block is padded with `0xFF` — the caller must reserve and validate the **whole** padded block; that padding cannot later be programmed as a separate record;
@@ -142,6 +145,8 @@ Hardware width and PSIZE are chosen at compile time:
 After every hardware write the driver waits and checks SR, stopping at the first error. So a buffer write is **not atomic** — an F4/F7 64-bit write can fail after its first half.
 
 ---
+
+L0 main Flash must be erased before programming a word. Writing over a nonzero word can set `NOTZEROERR` and corrupt ECC. Callers must meet the device voltage requirements for programming and erase. [RM0376](https://www.st.com/resource/en/reference_manual/DM00108281.pdf)
 
 ## 5. Cache maintenance
 
@@ -152,10 +157,14 @@ Before modifying Flash, and after the operation (also after an error, once ready
 | F7 | Only the affected Flash range in the Cortex-M7 D-cache (rounded to 32-byte lines); I-cache and ART are reset if enabled |
 | F4 | Flash accelerator instruction/data caches, if enabled |
 | G0 | Flash instruction cache, if enabled |
+| G4 | Flash instruction/data caches, if enabled |
+| L0 | No cache reset for program Flash |
+
+On G4, the driver suspends the Flash data cache during programming and erase and resets it before restoring it. [ES0430](https://www.st.com/resource/en/errata_sheet/dm00500968-stm32g471xx473xx474xx483xx484xx-device-errata-stmicroelectronics.pdf)
 
 - Mass erase covers the selected banks.
 - SRAM D-cache is not cleaned or invalidated globally.
-- Cache enable states are preserved.
+- On G4, the Flash data cache returns to its previous enable state even on timeout. If hardware is still busy, reads from the other bank can trigger the ES0430 cache erratum after restoration.
 - No access to the destination during the operation — including from callbacks and interrupts.
 
 ---
@@ -166,27 +175,28 @@ Before modifying Flash, and after the operation (also after an error, once ready
 
 ```text
 F4/F7: [ status byte ][ payload ] ...
-G0:    [ commit: 8 bytes ][ invalid: 8 bytes ][ payload ][ padding ] ...
+G0/G4: [ commit: 8 bytes ][ invalid: 8 bytes ][ payload ][ padding ] ...
+L0:    [ writing: 4 bytes ][ commit: 4 bytes ][ invalid: 4 bytes ][ payload ][ zero padding ] ...
 ```
 
-The header is 1 byte on F4/F7 and **16 bytes** on G0. Marker values in Flash:
+The header is 1 byte on F4/F7, 16 bytes on G0/G4 and 12 bytes on L0. Marker values for F4/F7 and G0/G4:
 
-| Record state | F4/F7 status | G0 commit word | G0 invalidation word |
+| Record state | F4/F7 status | G0/G4 commit word | G0/G4 invalidation word |
 | --- | --- | --- | --- |
 | Free | `FF` | `FFFFFFFFFFFFFFFF` | `FFFFFFFFFFFFFFFF` |
 | Writing | `7F` | `00000000FFFFFFFF` | `FFFFFFFFFFFFFFFF` |
 | Ready | `0F` | `0000000000000000` | `FFFFFFFFFFFFFFFF` |
 | Invalidated | `00` | unchanged | `FFFFFFFF00000000` |
 
-- On G0, any non-erased invalidation word overrides the commit word; the state is determined from both.
-- `Data_Status` is the single definition used for programming, scanning and API results. On G0, `DATA_WRITING`/`DATA_OK` refer to the first word, `DATA_NOT_VALID` to the second.
+- On G0/G4, any non-erased invalidation word overrides the commit word; the state is determined from both.
+- `Data_Status` is the single definition used for programming, scanning and API results. On G0/G4, `DATA_WRITING`/`DATA_OK` refer to the first word, `DATA_NOT_VALID` to the second.
 - G0 enum values changed to this encoding — use the named enumerators, not numbers. F4/F7 values are unchanged. `DATA_CORRUPT` was removed.
 
 **Record size (stride):**
 
 ```text
 stride = header_size + ceil(size / sizeof(status_t)) * sizeof(status_t)
-header_size = 1 (F4/F7) or 16 (G0)
+header_size = 1 (F4/F7), 16 (G0/G4), 12 (L0)
 ```
 
 Offsets are in bytes and advance by `stride`. Capacity check: `next_offset > sector.size - stride`; scanning stops at `sector.size - stride`. No division by the record size is used.
@@ -198,9 +208,9 @@ Offsets are in bytes and advance by `stride`. Capacity check: `next_offset > sec
 **`write_data()`** — each step is checked:
 
 1. Write the "writing" marker into a new slot.
-2. Write the payload after the full header (G0's second word stays erased).
-3. Write the "ready" marker (first word).
-4. Invalidate the previous ready record, if any: its status byte on F4/F7, its second 64-bit word on G0.
+2. Write the payload after the full header. Leave any unused commit and invalidation words erased.
+3. Write the "ready" marker in the first word, or in the second word on L0.
+4. Invalidate the previous ready record, if any: its status byte on F4/F7, its second 64-bit word on G0/G4 or its third 32-bit word on L0.
 
 What survives a failure:
 
@@ -219,6 +229,10 @@ What survives a failure:
 Payload integrity itself is not checked (no CRC).
 
 **Why the G0 format changed.** The old commit step overwrote one non-zero value with another, which produced `PROGERR` in a test on G031. Now the first word ends as a **full 64-bit zero** — the allowed re-programming exception for main Flash — and the second word is programmed only once, after a newer record is committed. See [RM0444, main memory programming / PROGERR](https://www.st.com.cn/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+
+**L0** starts with three zero words. It writes `1` to the first word before the payload, `2` to the second to commit, and `4` to the third word of the old record after the new commit. Each word is written once. A single 128-byte page fits a payload up to 116 bytes.
+
+**G4** uses the same 16-byte record header and full-zero commit. [RM0440](https://www.st.com/resource/en/reference_manual/dm00355726.pdf)
 
 **G0 format break:** logs with the old 8-byte header are incompatible. Start from an erased log sector; `SetUp()` does not erase or migrate old records. F4/F7 keep their existing layout.
 
@@ -283,7 +297,7 @@ if (saved != SysStatus::OK) {
 
 ### Explicit journal load/save and raw programming
 
-The journal owns an entire erase unit chosen in the application/linker layout; index 3 below is an example, not an automatically free sector. SetUp scans records, read_data loads only DATA_OK, and Save writes only on an explicit request. Raw programming is a separate alternative for a caller-supplied erased and reserved address. On G0 a 4-byte word still consumes an 8-byte physical programming unit. Timeout does not mean the hardware operation was cancelled. Geometry queries, erase_sector and mass_erase are documented in sections 3–4; never mass-erase a bank containing the running image.
+The journal owns an entire erase unit chosen in the application/linker layout; index 3 below is an example, not an automatically free sector. SetUp scans records, read_data loads only DATA_OK, and Save writes only on an explicit request. Raw programming is a separate alternative for a caller-supplied erased and reserved address. On G0/G4 a 4-byte word still consumes an 8-byte physical programming unit. Timeout does not mean the hardware operation was cancelled. Geometry queries, erase_sector and mass_erase are documented in sections 3–4; never mass-erase a bank containing the running image.
 
 ```cpp
 #include "flash.hpp"
@@ -355,7 +369,8 @@ SysStatus ProgramReservedWord(uint32_t erased_address, uint32_t value) {
 ## 2. Область поддержки и порядок вызова
 
 - **Файлы:** `src/flash.hpp`, `src/flash.cpp`.
-- **Семейства:** STM32F4, F7, G0. (L0 не реализован — у него другое стёртое значение и протокол программирования.)
+- **Семейства:** STM32F4, F7, G0, G4 и L0. На L0 драйвер работает с основной Flash через PECR. Для записи и стирания на G4 нужен VOS Range 1.
+- `flash.hpp` выбирает `f4_f7.hpp`, `g0.hpp`, `g4.hpp` или `l0.hpp` из `src/hardware/flash/`. G0 и G4 используют общие команды работы со страницами и код записи 64-битных блоков. Операции PECR для L0 и общий журнал находятся в `flash.cpp`.
 
 **Правила вызова:**
 
@@ -367,10 +382,10 @@ SysStatus ProgramReservedWord(uint32_t erased_address, uint32_t value) {
 
 | Семейство | Предел на одну аппаратную операцию |
 | --- | --- |
-| F4/F7 | 50000 мс (50 с) |
-| G0 | 1000 мс (1 с) |
+| F4/F7/L0 | 50000 мс (50 с) |
+| G0/G4 | 1000 мс (1 с) |
 
-Это значения ST HAL ([F4](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Src/stm32f4xx_hal_flash.c), [F7](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Src/stm32f7xx_hal_flash.c), [G0](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_hal_flash.h)). Отсчёт начинается заново для каждой физической записи, а не один раз на весь буфер.
+Это значения ST HAL ([F4](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Src/stm32f4xx_hal_flash.c), [F7](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Src/stm32f7xx_hal_flash.c), [G0](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_hal_flash.h), [L0](https://raw.githubusercontent.com/STMicroelectronics/stm32l0xx-hal-driver/master/Inc/stm32l0xx_hal_flash.h)). Отсчёт начинается заново для каждой физической записи, а не один раз на весь буфер.
 
 > **Ограничение таймаута.** Пока банк Flash занят, чтение из него останавливает выборку инструкций — в том числе обработчика SysTick и его вектора. `GetTick()` тогда не отражает реальное время. Перенос кода в RAM не выполняется.
 >
@@ -389,7 +404,7 @@ const uint32_t address = page.address;
 ```
 
 - `GetFlashSector(index)` возвращает сектор по значению. Условие `index < FLASH_SECTOR_COUNT` обеспечивает вызывающий; `erase_sector()` проверяет свой аргумент сам.
-- `number` — **аппаратный** селектор (SNB на F4/F7, PNB на G0), а не логический индекс. Пример: F429ZI 2 МиБ — второй банк начинается с `0x08100000`, логический индекс 12, селектор SNB 16.
+- `number` — **аппаратный** селектор (SNB на F4/F7, PNB на G0/G4), а не логический индекс. Пример: F429ZI 2 МиБ — второй банк начинается с `0x08100000`, логический индекс 12, селектор SNB 16.
 
 **Равномерная и табличная геометрия.** Генератор определяет геометрию по данным, без списка семейств:
 
@@ -398,14 +413,15 @@ const uint32_t address = page.address;
 
 Всегда используйте `GetFlashSector()` — он работает в обоих случаях. `STM32_FLASH_UNIFORM_PAGES` (1/0) выставляет генератор, это не пользовательская настройка. При равномерной геометрии `flash_sectors[]` **не объявлен** — прямую индексацию и range-for замените на `GetFlashSector()` и `FLASH_SECTOR_COUNT`.
 
-**Обновление.** Драйверы и шаблон `STM32-base_files/cmake/flash_config.h.in` обновляются вместе; затем обновите кешированную копию шаблона и пересоздайте конфигурацию проекта. Устаревший формат 3 отклоняется явно. Универсальная геометрия не переносит сами операции Flash на семейства кроме F4/F7/G0.
+**Обновление.** Драйверы и шаблон `STM32-base_files/cmake/flash_config.h.in` обновляются вместе; затем обновите кешированную копию шаблона и пересоздайте конфигурацию проекта. Устаревший формат 3 отклоняется явно. Универсальная геометрия не переносит сами операции Flash на семейства кроме F4/F7/G0/G4/L0.
 
 **Банки:**
 
 - Режим по умолчанию следует `FLASH_DUAL_BANK`.
 - `init()` **не меняет** option bytes. Он сверяет явный аргумент с картой, проверяет аппаратный бит режима на переключаемых МК и возвращает `InitError` при несовпадении или активном bank swap. МК только с одним или только с двумя банками используют свой фиксированный режим.
+- Для STM32G411xC и STM32G414 обновите кешированную карту `STM32G4-map.cmake`. В single-bank по умолчанию страницы по 4 КиБ. В dual-bank страницы по 2 КиБ, второй банк начинается с `0x08040000`.
 - Перед прямыми операциями вызовите `init()` один раз (с проверкой результата); у журнала это делает `SetUp()`. Разблокировка/стирание/запись режим повторно не проверяют — не меняйте режим и отображение банков во время работы.
-- `mass_erase(маска)`: **1** — банк 1, **2** — банк 2, **3** — оба. Несуществующий банк или другая маска → `Error`.
+- `mass_erase(маска)`: **1** — банк 1, **2** — банк 2, **3** — оба. Несуществующий банк или другая маска → `Error`. На L0 страницы стираются по очереди, с таймаутом на каждую. При первой ошибке операция прекращается, уже стёртые страницы не восстанавливаются.
 
 ---
 
@@ -448,11 +464,12 @@ static T read(uint32_t addr);
 | Семейство | Аппаратная запись | Выравнивание назначения |
 | --- | --- | --- |
 | F4/F7 | 8/16/32 бит; 64-битный элемент пишется двумя отдельными 32-битными записями с проверкой каждой | 1/2/4 байта соответственно; для 64-битного элемента — 4 |
-| G0 | 64 бит: два последовательных 32-битных обращения с ISB между ними | 8 байт |
+| G0/G4 | 64 бит: два последовательных 32-битных обращения с ISB между ними | 8 байт |
+| L0 | Одна выровненная запись по 32 бита, дополнение последнего слова нулями | 4 байта |
 
 **F4/F7** рассчитаны на **питание 3–3,3 В без внешнего VPP**: стирание — ×32, PSIZE ×64 не используется ([RM0090, параллелизм программирования](https://www.st.com/resource/en/reference_manual/rm0090-stm32f4xx-reference-manual-stmicroelectronics.pdf)).
 
-**G0:**
+**G0/G4:**
 
 - каждое 64-битное значение собирается через `memcpy`, поэтому источник может быть невыровненным;
 - хвост дополняется `0xFF` — вызывающий код резервирует и проверяет **весь** дополненный блок; это дополнение потом нельзя запрограммировать отдельной записью;
@@ -461,6 +478,8 @@ static T read(uint32_t addr);
 После каждой аппаратной записи драйвер ждёт и проверяет SR, останавливаясь на первой ошибке. Поэтому запись буфера **не атомарна** — 64-битная запись на F4/F7 может прерваться после первой половины.
 
 ---
+
+Перед записью слово основной Flash L0 должно быть стёрто. Повторная запись ненулевого слова может выставить `NOTZEROERR` и повредить ECC. Вызывающий код обеспечивает допустимые напряжения для записи и стирания. [RM0376](https://www.st.com/resource/en/reference_manual/DM00108281.pdf)
 
 ## 5. Кеш
 
@@ -471,10 +490,14 @@ static T read(uint32_t addr);
 | F7 | Только изменяемый диапазон Flash в D-cache Cortex-M7 (с округлением до 32-байтных линий); I-cache и ART — если включены |
 | F4 | Кеши инструкций/данных Flash-акселератора, если включены |
 | G0 | Кеш инструкций Flash, если включён |
+| G4 | Кеши инструкций/данных Flash, если включены |
+| L0 | Сброс кеша основной Flash не требуется |
+
+На G4 драйвер отключает кеш данных Flash на время записи и стирания, а перед восстановлением сбрасывает его. [ES0430](https://www.st.com/resource/en/errata_sheet/dm00500968-stm32g471xx473xx474xx483xx484xx-device-errata-stmicroelectronics.pdf)
 
 - При массовом стирании обслуживаются выбранные банки.
 - Глобальная очистка/инвалидация D-cache для SRAM не выполняется.
-- Состояние включения кешей сохраняется.
+- На G4 прежнее состояние кеша данных Flash восстанавливается и при таймауте. Если контроллер ещё занят, чтение из другого банка после включения кеша может вызвать ошибку, описанную в ES0430.
 - Во время операции доступ к назначению запрещён — в том числе из callback и прерываний.
 
 ---
@@ -485,27 +508,28 @@ static T read(uint32_t addr);
 
 ```text
 F4/F7: [ статус: 1 байт ][ данные ] ...
-G0:    [ готовность: 8 байт ][ невалидность: 8 байт ][ данные ][ дополнение ] ...
+G0/G4: [ готовность: 8 байт ][ невалидность: 8 байт ][ данные ][ дополнение ] ...
+L0:    [ пишется: 4 байта ][ готово: 4 байта ][ устарело: 4 байта ][ данные ][ нули ] ...
 ```
 
-Заголовок — 1 байт на F4/F7 и **16 байт** на G0. Значения маркеров во Flash:
+Заголовок занимает 1 байт на F4/F7, 16 байт на G0/G4 и 12 байт на L0. Маркеры F4/F7 и G0/G4:
 
-| Состояние записи | Статус F4/F7 | Первый блок G0 | Второй блок G0 |
+| Состояние записи | Статус F4/F7 | Первый блок G0/G4 | Второй блок G0/G4 |
 | --- | --- | --- | --- |
 | Свободно | `FF` | `FFFFFFFFFFFFFFFF` | `FFFFFFFFFFFFFFFF` |
 | Идёт запись | `7F` | `00000000FFFFFFFF` | `FFFFFFFFFFFFFFFF` |
 | Готово | `0F` | `0000000000000000` | `FFFFFFFFFFFFFFFF` |
 | Невалидна | `00` | без изменения | `FFFFFFFF00000000` |
 
-- На G0 любое нестёртое значение второго блока важнее первого; состояние определяется по обоим.
-- `Data_Status` — единственное определение значений для записи, поиска и результатов API. На G0 `DATA_WRITING`/`DATA_OK` относятся к первому блоку, `DATA_NOT_VALID` — ко второму.
+- На G0/G4 любое нестёртое значение второго блока важнее первого; состояние определяется по обоим.
+- `Data_Status` — единственное определение значений для записи, поиска и результатов API. На G0/G4 `DATA_WRITING`/`DATA_OK` относятся к первому блоку, `DATA_NOT_VALID` — ко второму.
 - Численные значения enum на G0 изменились по этой таблице — используйте именованные значения, а не числа. Значения F4/F7 не изменились. `DATA_CORRUPT` удалён.
 
 **Размер записи (stride):**
 
 ```text
 stride = header_size + ceil(size / sizeof(status_t)) * sizeof(status_t)
-header_size = 1 (F4/F7) или 16 (G0)
+header_size = 1 (F4/F7), 16 (G0/G4), 12 (L0)
 ```
 
 Смещения хранятся в байтах и растут на `stride`. Проверка вместимости: `next_offset > sector.size - stride`; поиск ограничен `sector.size - stride`. Деления на размер записи нет.
@@ -517,9 +541,9 @@ header_size = 1 (F4/F7) или 16 (G0)
 **`write_data()`** — результат каждого шага проверяется:
 
 1. Записать маркер «идёт запись» в новый слот.
-2. Записать данные после всего заголовка (второй блок G0 остаётся стёртым).
-3. Записать маркер «готово» (первый блок).
-4. Пометить предыдущую готовую запись невалидной, если она есть: байтом статуса на F4/F7, вторым 64-битным блоком на G0.
+2. Записать данные после всего заголовка. Неиспользованные слова готовности и невалидности остаются стёртыми.
+3. Записать маркер «готово» в первый блок, а на L0 во второе слово.
+4. Пометить предыдущую готовую запись невалидной, если она есть: байтом статуса на F4/F7, вторым 64-битным блоком на G0/G4 или третьим 32-битным словом на L0.
 
 Что остаётся при сбое:
 
@@ -538,6 +562,10 @@ header_size = 1 (F4/F7) или 16 (G0)
 Целостность самих данных не проверяется (CRC нет).
 
 **Почему изменился формат G0.** Прежний шаг фиксации перезаписывал одно ненулевое значение другим, что дало `PROGERR` в тесте на G031. Теперь первый блок завершается **полным 64-битным нулём** — разрешённым исключением повторного программирования основной Flash, — а второй блок пишется один раз, после фиксации более новой записи. См. [RM0444, программирование основной памяти / PROGERR](https://www.st.com.cn/resource/en/reference_manual/rm0444-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
+
+**L0** начинает с трёх нулевых слов. Перед данными пишет `1` в первое слово, для фиксации пишет `2` во второе, после новой фиксации пишет `4` в третье слово прежней записи. Каждое слово записывается один раз. В странице размером 128 байт помещается запись с данными до 116 байт.
+
+**G4** использует такой же заголовок записи из 16 байт и фиксацию полным нулём. [RM0440](https://www.st.com/resource/en/reference_manual/dm00355726.pdf)
 
 **Несовместимость формата G0:** журналы со старым 8-байтным заголовком не читаются. Начните со стёртого сектора журнала; `SetUp()` не стирает и не преобразует старые записи. Формат F4/F7 не изменился.
 
@@ -602,7 +630,7 @@ if (saved != SysStatus::OK) {
 
 ### Явная загрузка/запись журнала и низкоуровневое программирование
 
-Журналу выделяется целая erase unit в раскладке приложения/линкера; индекс 3 ниже — пример, а не автоматически свободный сектор. SetUp сканирует записи, read_data загружает только DATA_OK, Save записывает по явному запросу. Raw-программирование — отдельная альтернатива с переданным приложением стёртым и зарезервированным адресом. На G0 слово в 4 байта всё равно занимает физическую единицу записи в 8 байт. Timeout не означает отмену аппаратной операции. Геометрия, erase_sector и mass_erase описаны в разделах 3–4; нельзя стирать банк с выполняемым образом.
+Журналу выделяется целая erase unit в раскладке приложения/линкера; индекс 3 ниже — пример, а не автоматически свободный сектор. SetUp сканирует записи, read_data загружает только DATA_OK, Save записывает по явному запросу. Raw-программирование — отдельная альтернатива с переданным приложением стёртым и зарезервированным адресом. На G0/G4 слово в 4 байта всё равно занимает физическую единицу записи в 8 байт. Timeout не означает отмену аппаратной операции. Геометрия, erase_sector и mass_erase описаны в разделах 3–4; нельзя стирать банк с выполняемым образом.
 
 ```cpp
 #include "flash.hpp"

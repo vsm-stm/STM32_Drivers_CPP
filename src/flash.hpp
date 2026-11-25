@@ -1,6 +1,6 @@
 /**
  * @file flash.hpp
- * @brief F4/F7/G0 Flash programming and a single-sector settings journal.
+ * @brief F4/F7/G0/G4/L0 Flash programming and a single-sector settings journal.
  *
  * flash_config.h format 4 is generated from the base map: GetFlashSector(index)
  * gives address, size, bank and hardware erase number. Uniform pages use bank
@@ -10,7 +10,7 @@
  *
  * Operations are blocking and belong in main, with a running SysTick. Do not
  * invoke them in IRQ or an interrupt-masked critical section. The configured
- * wait budget is 50 s on F4/F7, 1 s on G0. When code/vector fetches stall in the
+ * wait budget is 50 s on F4/F7/L0, 1 s on G0/G4. When code/vector fetches stall in the
  * busy Flash bank, SysTick may not advance: this is not a guaranteed wall-clock
  * timeout. Timeout does not cancel an operation already started by hardware.
  *
@@ -30,13 +30,20 @@
 #error "Flash requires config format 4; update drivers and STM32-base_files/flash_config.h.in"
 #endif
 
-#if defined(STM32F7) || defined(STM32F4)
-	using status_t = uint8_t;
+#if defined(STM32F4) || defined(STM32F7)
+#include "hardware/flash/f4_f7.hpp"
 #elif defined(STM32G0)
-	using status_t = uint64_t;
+#include "hardware/flash/g0.hpp"
+#elif defined(STM32G4)
+#include "hardware/flash/g4.hpp"
+#elif defined(STM32L0)
+#include "hardware/flash/l0.hpp"
 #else
-#error "Flash driver supports STM32F4, STM32F7 and STM32G0 only"
+#error "Flash driver supports STM32F4, STM32F7, STM32G0, STM32G4 and STM32L0 only"
 #endif
+
+using status_t = flash_hw::status_t;
+
 // Blocking operations: call from the main loop, with SysTick running.
 // Do not call from interrupts or critical sections; the driver does not mask IRQs.
 class flash_base
@@ -80,6 +87,8 @@ public:
 	 * @brief Erase selected physical banks in normal (non-swapped) mapping.
 	 * @param bank Bit mask: 1 = bank 1, 2 = bank 2, 3 = both.
 	 * @return OK, Error for invalid/absent bank or hardware/lock error, or Timeout.
+	 * On L0, erases the selected pages in order and stops at the first error.
+	 * The timeout applies to each page; earlier pages remain erased on failure.
 	 * All contents of selected banks, including code, are affected.
 	 */
 	static SysStatus mass_erase(uint8_t bank);
@@ -105,11 +114,12 @@ public:
 	 * @return OK, controller Error or Timeout; an incomplete write is not rolled back.
 	 *
 	 * F4/F7 use byte/halfword/word programming; uint64_t is two x32 operations
-	 * under the agreed 3.0/3.3 V use without external VPP. G0 always programs
-	 * 8-byte doublewords and pads a final partial block with FF.
+	 * under the agreed 3.0/3.3 V use without external VPP. G0/G4 always program
+	 * 8-byte doublewords and pad a final partial block with FF. L0 writes aligned
+	 * 4-byte words, pads with zero and requires an erased destination word.
 	 * Caller validates multiplication/rounding overflow and the whole physical
 	 * destination extent, prepares erased Flash, and keeps it inaccessible during
-	 * programming. Rewriting an occupied G0 doubleword is not general bit clearing.
+	 * programming. Rewriting an occupied G0/G4 doubleword is not general bit clearing.
 	 *
 	 * @code
 	 *   // address is an aligned, erased range reserved outside the firmware.
@@ -134,10 +144,12 @@ public:
  * OK; the previous good record is invalidated only after the new commit.
  *
  * F4/F7: [one status byte][payload], FF -> 7F -> 0F -> 00.
- * G0: [8-byte commit/status][8-byte invalidation][payload padded to 8 bytes].
- * First G0 word goes FF -> DATA_WRITING -> full zero (DATA_OK); only after a
+ * G0/G4: [8-byte commit/status][8-byte invalidation][payload padded to 8 bytes].
+ * The first word goes FF -> DATA_WRITING -> full zero (DATA_OK); only after a
  * newer commit is the old record's second word programmed DATA_NOT_VALID.
  * The second word takes precedence when interpreting an old committed record.
+ * L0: three 32-bit words for WRITING, OK and INVALID, then a zero-padded payload.
+ * Each marker is written once. The erased value of each L0 marker word is zero.
  *
  * One sector is deliberate: when full, it is erased before the next record.
  * A power failure during that erase can lose the last saved settings. There is
@@ -169,20 +181,18 @@ public:
 	 * @brief API states also used as physical Flash markers; no duplicate encoding.
 	 * NO_DATA means erased. WRITING is an incomplete record, OK is committed.
 	 * NOT_VALID covers obsolete/invalid records; there is no separate CORRUPT state.
-	 * On G0, NOT_VALID is stored in a different 8-byte word from WRITING/OK.
+	 * On G0/G4, NOT_VALID is stored in a different 8-byte word from WRITING/OK.
+	 * On L0, WRITING, OK and NOT_VALID occupy separate 4-byte words.
 	 */
 	enum class Data_Status : status_t
 	{
-		NO_DATA = static_cast<status_t>(-1),
-#if defined(STM32G0)
-		DATA_WRITING = 0x00000000FFFFFFFFULL,
-		DATA_OK = 0x0000000000000000ULL,
-		DATA_NOT_VALID = 0xFFFFFFFF00000000ULL
-#else
-		DATA_WRITING = 0x7F,
-		DATA_OK = 0x0F,
-		DATA_NOT_VALID = 0
-#endif
+		NO_DATA = flash_hw::record_header_words == 3U ? 0U : static_cast<status_t>(-1),
+		DATA_WRITING = flash_hw::record_header_words == 3U ? 1U
+			: (flash_hw::record_header_words == 2U ? 0x00000000FFFFFFFFULL : 0x7FU),
+		DATA_OK = flash_hw::record_header_words == 3U ? 2U
+			: (flash_hw::record_header_words == 2U ? 0U : 0x0FU),
+		DATA_NOT_VALID = flash_hw::record_header_words == 3U ? 4U
+			: (flash_hw::record_header_words == 2U ? 0xFFFFFFFF00000000ULL : 0U)
 	};
 
 	/**
@@ -254,12 +264,9 @@ template<typename T>
 SysStatus flash_base::write(uint32_t addr, const T* data, uint32_t size)
 {
 	static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
-#if defined(STM32G0)
-	return program<8U>(addr, data, size * static_cast<uint32_t>(sizeof(T)));
-#else
-	// x64 requires external VPP on F4/F7: use two x32 writes.
-	return program<sizeof(T) == 8U ? 4U : sizeof(T)>(addr, data, size * static_cast<uint32_t>(sizeof(T)));
-#endif
+	// x64 requires external VPP on F4/F7, so use two x32 writes.
+	constexpr uint32_t width = flash_hw::write_width(sizeof(T));
+	return program<width>(addr, data, size * static_cast<uint32_t>(sizeof(T)));
 }
 
 #endif

@@ -23,7 +23,7 @@ Every module document follows the same layout as [GPIO.md](GPIO.md): English/Р�
 
 A C++20 library on top of CMSIS for the **STM32G0**, **STM32F4** and **STM32F7** families.
 
-System and GPIO also support **STM32L0/G4** with hardware selection at compilation. RCC and Flash are not yet ported, so this does not enable the complete library for L0/G4. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
+System, GPIO and RCC also support **STM32L0/G4** with hardware selection at compilation. Main Flash is available on L0 and G4 with a matching bank map. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
 
 - **Core** (always built): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Optional modules:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -120,7 +120,7 @@ directory propagation were also checked; this is not a full firmware build.
 
 Behaviour and limitations of each module are in its own document (e.g. [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-The full library supports F4/F7/G0. System, GPIO and RCC have also been ported to L0/G4; the always-built Flash core and remaining peripheral ports still prevent using the complete library on those families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
+The full library supports F4/F7/G0. The core modules also build on L0 and G4 with a supported Flash map. Some optional drivers are still limited to F4/F7/G0. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
 
 ---
 
@@ -858,8 +858,8 @@ clock.GetDateTime(time, date);   // TR then DR: coherent pair, shadow lock relea
 
 ### flash_base — low-level access
 
-- F4/F7/G0. `init()` checks the generated bank map against the hardware mode and rejects active bank swap; it never changes option bytes.
-- `erase_sector()` takes a **map index**; `mass_erase()` takes 1/2/3 for bank 1/2/both.
+- F4/F7/G0/G4/L0. `init()` checks the generated bank map against the hardware mode and rejects active bank swap; it never changes option bytes.
+- `erase_sector()` takes a **map index**; `mass_erase()` takes 1/2/3 for bank 1/2/both. On L0 it erases one page at a time.
 - `GetFlashSector(index)` gives `{address, size, bank, number}`: uniform maps are computed, irregular ones come from a table. Config format 4 needs the matching `flash_config.h.in` template.
 
 ```cpp
@@ -995,7 +995,7 @@ system.hpp
 
 C++20-библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4** и **STM32F7**.
 
-System и GPIO также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. RCC и Flash ещё не перенесены, поэтому вся библиотека для L0/G4 пока не подключается. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
+System, GPIO и RCC также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. На L0 и G4 доступна основная Flash с согласованной картой банков. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
 
 - **Ядро** (собирается всегда): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Опциональные модули:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -1084,7 +1084,7 @@ System и GPIO также поддерживают **STM32L0/G4** с выбор�
 
 Поведение и ограничения каждого модуля описаны в его документе (например, [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-Полная библиотека поддерживает F4/F7/G0. System, GPIO и RCC уже перенесены на L0/G4; обязательный Flash и оставшиеся переносы периферии пока не позволяют подключить всю библиотеку для этих семейств. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
+Полная библиотека поддерживает F4/F7/G0. Базовые модули также собираются на L0 и G4 с поддерживаемой картой Flash. Часть дополнительных драйверов пока ограничена F4/F7/G0. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
 
 ---
 
@@ -1823,8 +1823,8 @@ clock.GetDateTime(time, date);   // TR, затем DR: согласованна�
 
 ### flash_base — низкоуровневый доступ
 
-- F4/F7/G0. `init()` сверяет сгенерированную карту банков с аппаратным режимом и отклоняет активный bank swap; option bytes никогда не меняет.
-- `erase_sector()` принимает **индекс карты**; `mass_erase()` — 1/2/3 для банка 1/2/обоих.
+- F4/F7/G0/G4/L0. `init()` сверяет сгенерированную карту банков с аппаратным режимом и отклоняет активный bank swap; option bytes никогда не меняет.
+- `erase_sector()` принимает **индекс карты**; `mass_erase()` — 1/2/3 для банка 1/2/обоих. На L0 стирание выполняется постранично.
 - `GetFlashSector(index)` возвращает `{address, size, bank, number}`: равномерные карты вычисляются, неравномерные берутся из таблицы. Формат конфигурации 4 требует согласованного шаблона `flash_config.h.in`.
 
 ```cpp
