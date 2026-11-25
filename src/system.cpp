@@ -7,15 +7,12 @@
 
 #if defined(STM32L0)
 // MSI range 5 is the hardware reset source; do not start HSI16 in Init().
-static constexpr uint32_t reset_clock = 2097152U;
 static constexpr uint32_t reset_source = RCC_CFGR_SW_MSI;
 static constexpr uint32_t reset_status = RCC_CFGR_SWS_MSI;
 #elif defined(STM32F4) || defined(STM32F7) || defined(STM32G4)
-static constexpr uint32_t reset_clock = 16000000U;
 static constexpr uint32_t reset_source = RCC_CFGR_SW_HSI;
 static constexpr uint32_t reset_status = RCC_CFGR_SWS_HSI;
 #elif defined(STM32G0)
-static constexpr uint32_t reset_clock = 16000000U;
 static constexpr uint32_t reset_source = RCC_CFGR_SW_HSISYS;
 static constexpr uint32_t reset_status = RCC_CFGR_SWS_HSISYS;
 #endif
@@ -79,11 +76,11 @@ static volatile uint32_t Tick;
 // Static member definitions
 // ---------------------------------------------------------------------------
 
-uint32_t System::SystemCoreClock{ reset_clock };
-uint32_t System::APB1BusClock   { reset_clock };
-uint32_t System::APB2BusClock   { reset_clock };
-uint32_t System::TIMxAPB1Clock  { reset_clock };
-uint32_t System::TIMxAPB2Clock  { reset_clock };
+uint32_t System::SystemCoreClock{ ResetClock };
+uint32_t System::APB1BusClock   { ResetClock };
+uint32_t System::APB2BusClock   { ResetClock };
+uint32_t System::TIMxAPB1Clock  { ResetClock };
+uint32_t System::TIMxAPB2Clock  { ResetClock };
 
 // ---------------------------------------------------------------------------
 // System::Init: linear initialization with compile-time family selection.
@@ -133,9 +130,9 @@ SysInitStatus System::Init()
 #endif
 #endif
 
-	SystemCoreClock = APB1BusClock = TIMxAPB1Clock = reset_clock;
-	APB2BusClock = TIMxAPB2Clock = has_apb2 ? reset_clock : 0U;
-	if (InitTicks(reset_clock / TICK_BASE) != SysInitStatus::InitOK)
+	SystemCoreClock = APB1BusClock = TIMxAPB1Clock = ResetClock;
+	APB2BusClock = TIMxAPB2Clock = has_apb2 ? ResetClock : 0U;
+	if (InitTicks(ResetClock / TICK_BASE) != SysInitStatus::InitOK)
 		return SysInitStatus::InitError;
 
 #if defined(STM32_USE_BOOTLOADER)

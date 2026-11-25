@@ -120,7 +120,7 @@ directory propagation were also checked; this is not a full firmware build.
 
 Behaviour and limitations of each module are in its own document (e.g. [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-The full library supports F4/F7/G0. System and GPIO have also been ported to L0/G4; the always-built RCC/Flash core still prevents using the complete library on those families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
+The full library supports F4/F7/G0. System, GPIO and RCC have also been ported to L0/G4; the always-built Flash core and remaining peripheral ports still prevent using the complete library on those families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
 
 ---
 
@@ -275,9 +275,11 @@ System::TIMxAPB2Clock    // timers on APB2
 
 ## 3. RCC / ClockSystem
 
-**Files:** `rcc.hpp`, `rcc.cpp`, `rcc_defs.hpp` · **Details:** [RCC.md](RCC.md)
+**Files:** `rcc.hpp`, `rcc.cpp`, `src/hardware/rcc/` · **Details:** [RCC.md](RCC.md)
 
 One clock setup per hardware reset. The configuration is a `constexpr` value; `Init<config>()` validates and precomputes everything at **compile time**. Order: `System::Init()` → `ClockSystem::Init<config>()` → peripherals.
+
+RCC supports F4/F7/G0/L0/G4. On L0, `Voltage` defaults to Range 2; request Range 1 explicitly for 32 MHz. All seven MSI ranges and `PLL_MUL/PLL_DIV` are supported. G4 chooses normal/boost automatically and switches through AHB /2 where required. See [L0 examples](RCC.md#l0-voltage-ranges-manual-pll-and-msi) and [G4](RCC.md#g4-automatic-normalboost-and-pll-r). This does not complete the other L0/G4 driver ports.
 
 ### HSI without PLL
 
@@ -976,7 +978,7 @@ system.hpp
 1. Select CMSIS and core capabilities in `src/system.hpp`; update the reset-clock constants and family blocks of `System::Init()` in `src/system.cpp`.
 2. Update the peripheral instance/pin/DMA definitions in the relevant `*_defs.hpp` and, if needed, the DMA hardware descriptors in `dma.cpp`.
 3. Add the vector stubs to `irq_registry_config.h`.
-4. Add verified frequency/PLL/power limits to `rcc_defs.hpp`.
+4. Add verified frequency/PLL/power limits to the matching header in `src/hardware/rcc/`.
 5. Select the matching hardware implementation and device capabilities. GPIO selects clocking and capabilities in `src/hardware/gpio.hpp`; short register operations stay in `gpio.hpp` and `SetUp()` stays in `gpio.cpp`.
 
 ---
@@ -1082,7 +1084,7 @@ System и GPIO также поддерживают **STM32L0/G4** с выбор�
 
 Поведение и ограничения каждого модуля описаны в его документе (например, [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-Полная библиотека поддерживает F4/F7/G0. System и GPIO уже перенесены на L0/G4; обязательные RCC/Flash пока не позволяют подключить всю библиотеку для этих семейств. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
+Полная библиотека поддерживает F4/F7/G0. System, GPIO и RCC уже перенесены на L0/G4; обязательный Flash и оставшиеся переносы периферии пока не позволяют подключить всю библиотеку для этих семейств. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
 
 ---
 
@@ -1237,9 +1239,11 @@ System::TIMxAPB2Clock    // таймеры на APB2
 
 ## 3. RCC / ClockSystem
 
-**Файлы:** `rcc.hpp`, `rcc.cpp`, `rcc_defs.hpp` · **Подробнее:** [RCC.md](RCC.md)
+**Файлы:** `rcc.hpp`, `rcc.cpp`, `src/hardware/rcc/` · **Подробнее:** [RCC.md](RCC.md)
 
 Одна настройка тактирования на аппаратный сброс. Конфигурация — `constexpr`-значение; `Init<config>()` проверяет и рассчитывает всё **при компиляции**. Порядок: `System::Init()` → `ClockSystem::Init<config>()` → периферия.
+
+RCC поддерживает F4/F7/G0/L0/G4. На L0 `Voltage` по умолчанию Range 2; для 32 МГц явно задайте Range 1. Поддерживаются все семь диапазонов MSI и `PLL_MUL/PLL_DIV`. G4 автоматически выбирает normal/boost и при необходимости переключается через AHB /2. См. [примеры L0](RCC.md#l0-диапазон-питания-ручной-pll-и-msi) и [G4](RCC.md#g4-автоматический-normalboost-и-выход-pll-r). Остальные переносы драйверов L0/G4 этим не завершаются.
 
 ### HSI без PLL
 
@@ -1939,5 +1943,5 @@ system.hpp
 1. Выбрать CMSIS и возможности ядра в `src/system.hpp`; обновить константы штатного тактирования и семейные блоки `System::Init()` в `src/system.cpp`.
 2. Обновить описания instance/выводов/DMA в соответствующих `*_defs.hpp` и при необходимости аппаратные дескрипторы DMA в `dma.cpp`.
 3. Добавить заглушки векторов в `irq_registry_config.h`.
-4. Добавить проверенные пределы частот/PLL/питания в `rcc_defs.hpp`.
+4. Добавить проверенные пределы частот/PLL/питания в заголовок нужного семейства в `src/hardware/rcc/`.
 5. Выбрать соответствующую аппаратную реализацию и возможности устройства. GPIO выбирает тактирование и возможности в `src/hardware/gpio.hpp`; короткие операции с регистрами остаются в `gpio.hpp`, а `SetUp()` — в `gpio.cpp`.

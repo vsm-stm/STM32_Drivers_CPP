@@ -92,7 +92,7 @@ Call **once at the very start of `main()`**, before any other driver. It configu
 
 **What it does not touch** (bootloader path): PLL/HSE enable and configuration, HSI trim, MCO, RCC interrupts, peripheral enable/reset registers, RTC, LSE/LSI, peripheral clock muxes, tick count. After a later clock change, `ClockSystem` publishes the new frequencies and calls `InitTicks(ticks)` with a precomputed period.
 
-**L0 reset clock:** cold startup keeps MSI range 5, without starting HSI16. SysTick receives `2097152 / 1000 = 2097` cycles per tick (LOAD = 2096). Integer truncation gives a nominal tick of about 0.9999275 ms; oscillator tolerance is additional. The bootloader path restores this same MSI range and /1 dividers. RCC PLL configuration remains a separate driver port.
+**L0 reset clock:** cold startup keeps MSI range 5, without starting HSI16. SysTick receives `2097152 / 1000 = 2097` cycles per tick (LOAD = 2096). Integer truncation gives a nominal tick of about 0.9999275 ms; oscillator tolerance is additional. The bootloader path restores this same MSI range and /1 dividers. Further clock configuration is performed by [ClockSystem](RCC.md), including L0/G4.
 
 ```cpp
 int main() {
@@ -507,7 +507,7 @@ int main()
 }
 ```
 
-The base's startup, vector table and linker initialization are still required. With a bootloader, the existing automatically generated `STM32_USE_BOOTLOADER` definition selects preparation; it is not a new application option. This example does not make RCC, Flash or all other drivers ready for L0/G4. System and GPIO can be compiled and linked in isolation; the complete library still requires those remaining ports.
+The base's startup, vector table and linker initialization are still required. With a bootloader, the existing automatically generated `STM32_USE_BOOTLOADER` definition selects preparation; it is not a new application option. System, GPIO and RCC support L0/G4 in isolation. This example does not complete the Flash and remaining peripheral ports required by the complete driver library.
 
 Validation of this change (GCC 13.3.1, C++20, `-Os`):
 
@@ -622,7 +622,7 @@ static SysInitStatus Init();
 
 **Что не трогается** (путь после загрузчика): включение и настройки PLL/HSE, подстройка HSI, MCO, прерывания RCC, регистры включения/сброса периферии, RTC, LSE/LSI, мультиплексоры тактирования периферии, счётчик тиков. После последующей смены частоты `ClockSystem` публикует новые частоты и вызывает `InitTicks(ticks)` с готовым периодом.
 
-**Штатное тактирование L0:** при холодном старте сохраняется MSI range 5, HSI16 не запускается. SysTick получает `2097152 / 1000 = 2097` тактов на тик (LOAD = 2096). Целочисленное усечение даёт номинальный тик около 0,9999275 мс; допуск генератора добавляется отдельно. После загрузчика восстанавливаются тот же диапазон MSI и делители /1. Настройка PLL в RCC остаётся отдельной задачей.
+**Штатное тактирование L0:** при холодном старте сохраняется MSI range 5, HSI16 не запускается. SysTick получает `2097152 / 1000 = 2097` тактов на тик (LOAD = 2096). Целочисленное усечение даёт номинальный тик около 0,9999275 мс; допуск генератора добавляется отдельно. После загрузчика восстанавливаются тот же диапазон MSI и делители /1. Дальнейшее тактирование настраивает [ClockSystem](RCC.md), в том числе на L0/G4.
 
 ```cpp
 int main() {
@@ -1037,7 +1037,7 @@ int main()
 }
 ```
 
-По-прежнему нужны startup базы, таблица векторов и инициализация памяти линкером/startup. При использовании загрузчика подготовка выбирается существующим автоматически сформированным определением `STM32_USE_BOOTLOADER`, это не новая настройка приложения. Пример не добавляет поддержку RCC, Flash и остальных драйверов на L0/G4. System и GPIO собираются и линкуются изолированно; для всей библиотеки ещё нужны оставшиеся переносы.
+По-прежнему нужны startup базы, таблица векторов и инициализация памяти линкером/startup. При использовании загрузчика подготовка выбирается существующим автоматически сформированным определением `STM32_USE_BOOTLOADER`, это не новая настройка приложения. System, GPIO и RCC поддерживают L0/G4 изолированно. Пример не завершает перенос Flash и остальных драйверов периферии, необходимых всей библиотеке.
 
 Проверки этого изменения (GCC 13.3.1, C++20, `-Os`):
 

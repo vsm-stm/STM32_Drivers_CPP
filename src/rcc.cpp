@@ -24,32 +24,39 @@ bool SetLatency(uint32_t latency)
 }
 
 // F4/F7 VOS is programmed with PLL off and acknowledged after PLL starts.
-// On G0 VOS readiness is independent of PLL.
-void SetPowerScale()
+// On G0/L0/G4 VOS readiness is independent of PLL.
+void SetPowerScale(uint32_t vos)
 {
 #if defined(STM32G0)
 	RCC->APBENR1 |= RCC_APBENR1_PWREN;
 	(void)RCC->APBENR1;
-	PWR->CR1 = (PWR->CR1 & ~PWR_CR1_VOS_Msk) | VOS_VALUE;
+	PWR->CR1 = (PWR->CR1 & ~PWR_CR1_VOS_Msk) | vos;
+#elif defined(STM32G4)
+	RCC->APB1ENR1 |= RCC_APB1ENR1_PWREN;
+	(void)RCC->APB1ENR1;
+	PWR->CR1 = (PWR->CR1 & ~PWR_CR1_VOS_Msk) | vos;
 #elif defined(STM32F7)
 	RCC->APB1ENR |= RCC_APB1ENR_PWREN;
 	(void)RCC->APB1ENR;
-	PWR->CR1 = (PWR->CR1 & ~PWR_CR1_VOS_Msk) | VOS_VALUE;
+	PWR->CR1 = (PWR->CR1 & ~PWR_CR1_VOS_Msk) | vos;
 #else
 	RCC->APB1ENR |= RCC_APB1ENR_PWREN;
 	(void)RCC->APB1ENR;
-	// F401 has no Scale 1. Other F4 select it using one or two VOS bits.
-	PWR->CR = (PWR->CR & ~PWR_CR_VOS_Msk) | VOS_VALUE;
+	// F4 uses one/two VOS bits; L0 uses its explicitly selected voltage range.
+	PWR->CR = (PWR->CR & ~PWR_CR_VOS_Msk) | vos;
 #endif
 }
 
 // Voltage-scale acknowledgement and, when requested, the two overdrive stages.
-// F4/F7 call this after PLL enable; G0 checks VOSF independently of PLL.
+// F4/F7 call this after PLL enable; G0/L0/G4 check VOSF independently.
 bool WaitPower(bool overdrive)
 {
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 	(void)overdrive;
 	return System::WaitBits(PWR->SR2, PWR_SR2_VOSF, 0U, POWER_TIMEOUT_MS);
+#elif defined(STM32L0)
+	(void)overdrive;
+	return System::WaitBits(PWR->CSR, PWR_CSR_VOSF, 0U, POWER_TIMEOUT_MS);
 #elif defined(STM32F7)
 	if (!System::WaitBits(PWR->CSR1, PWR_CSR1_VOSRDY, PWR_CSR1_VOSRDY, POWER_TIMEOUT_MS)) return false;
 	if (overdrive) {
@@ -83,6 +90,12 @@ bool EnableSource(ClockSystem::SystemClockSource source, bool use_hse)
 		RCC->CR |= RCC_CR_HSEON;
 		return System::WaitBits(RCC->CR, RCC_CR_HSERDY, RCC_CR_HSERDY, HSE_TIMEOUT_MS);
 	}
+#if defined(STM32L0)
+	if (source == ClockSystem::SystemClockSource::MSI) {
+		RCC->CR |= RCC_CR_MSION;
+		return System::WaitBits(RCC->CR, RCC_CR_MSIRDY, RCC_CR_MSIRDY, MSI_TIMEOUT_MS);
+	}
+#endif
 #if defined(STM32G0)
 	if (source == ClockSystem::SystemClockSource::LSI) {
 		RCC->CSR |= RCC_CSR_LSION;
@@ -105,9 +118,16 @@ bool EnableSource(ClockSystem::SystemClockSource source, bool use_hse)
 #else
 	(void)source;
 #endif
-	// HSI supplies direct SYSCLK or PLL; System::Init() has selected HSI /1.
+#if defined(STM32L0)
+	// L0 starts from MSI. Enable HSI for direct SYSCLK or the PLL input.
 	RCC->CR |= RCC_CR_HSION;
-	return System::WaitBits(RCC->CR, RCC_CR_HSIRDY, RCC_CR_HSIRDY, HSI_TIMEOUT_MS);
+	if (!System::WaitBits(RCC->CR, RCC_CR_HSIRDY, RCC_CR_HSIRDY, HSI_TIMEOUT_MS)) return false;
+	RCC->CR &= ~RCC_CR_HSIDIVEN;
+	return System::WaitBits(RCC->CR, RCC_CR_HSIDIVF, 0U, HSI_TIMEOUT_MS);
+#else
+	// System::Init() starts on HSI16.
+	return true;
+#endif
 }
 }
 
@@ -125,23 +145,39 @@ SysInitStatus ClockSystem::Apply(const Prepared& config)
 	init_started = true;
 
 	if (!EnableSource(config.source, config.hse != 0U)) return SysInitStatus::InitError;
+#if defined(STM32L0)
+	// Also stop an unused inherited PLL before lowering its allowed VCO voltage range.
+	{
+#else
 	if (config.pll) {
-		// SYSCLK is HSI after System::Init(); an old, unused PLL may still be on.
+#endif
+		// System::Init() selected the reset source; an old, unused PLL may be on.
 		RCC->CR &= ~RCC_CR_PLLON;
 		if (!System::WaitBits(RCC->CR, RCC_CR_PLLRDY, 0U, PLL_TIMEOUT_MS)) return SysInitStatus::InitError;
 	}
-#if defined(STM32G0)
-	SetPowerScale();
+#if defined(STM32L0)
+	SetPowerScale(config.vos);
 	if (!WaitPower(false)) return SysInitStatus::InitError;
+#elif defined(STM32G0) || defined(STM32G4)
+	SetPowerScale(VOS_VALUE);
+	if (!WaitPower(false)) return SysInitStatus::InitError;
+#if defined(STM32G4)
+	if (config.boost) PWR->CR5 &= ~PWR_CR5_R1MODE;
+	else PWR->CR5 |= PWR_CR5_R1MODE;
+#endif
 #else
-	if (config.pll) SetPowerScale();
+	if (config.pll) SetPowerScale(VOS_VALUE);
 #endif
 	if (config.pll) {
 		// Preserve reserved bits and fields not present on this device.
+#if defined(STM32L0)
+		RCC->CFGR = (RCC->CFGR & ~PLL_MASK) | config.pll_word;
+#else
 		RCC->PLLCFGR = (RCC->PLLCFGR & ~PLL_MASK) | config.pll_word;
+#endif
 		RCC->CR |= RCC_CR_PLLON;
 		if (!System::WaitBits(RCC->CR, RCC_CR_PLLRDY, RCC_CR_PLLRDY, PLL_TIMEOUT_MS)) return SysInitStatus::InitError;
-#if !defined(STM32G0)
+#if defined(STM32F4) || defined(STM32F7)
 		if (!WaitPower(config.overdrive)) return SysInitStatus::InitError;
 #endif
 	}
@@ -149,11 +185,25 @@ SysInitStatus ClockSystem::Apply(const Prepared& config)
 	const uint32_t old_latency = (FLASH->ACR & FLASH_ACR_LATENCY_Msk) >> FLASH_ACR_LATENCY_Pos;
 	if (config.latency > old_latency && !SetLatency(config.latency)) return SysInitStatus::InitError;
 
-	// Apply dividers while still on HSI. This cannot raise HCLK above 16 MHz.
+	// Apply dividers on the reset source: MSI range 5 on L0, HSI16 elsewhere.
+#if defined(STM32G4)
+	RCC->CFGR = (RCC->CFGR & ~BUS_MASK) | config.switch_bus_word;
+#else
 	RCC->CFGR = (RCC->CFGR & ~BUS_MASK) | config.bus_word;
-	System::SystemCoreClock = config.hsi_hclk;
-	if (System::InitTicks(config.hsi_ticks) != SysInitStatus::InitOK) return SysInitStatus::InitError;
+#endif
+	if (System::SystemCoreClock != config.boot_hclk) {
+		System::SystemCoreClock = config.boot_hclk;
+		if (System::InitTicks(config.boot_ticks) != SysInitStatus::InitOK) return SysInitStatus::InitError;
+	}
 
+#if defined(STM32L0)
+	if (config.source == SystemClockSource::MSI) {
+		// MSI is already SYSCLK: changing its range changes HCLK immediately.
+		RCC->ICSCR = (RCC->ICSCR & ~RCC_ICSCR_MSIRANGE_Msk) | config.msi_range;
+		System::SystemCoreClock = config.hclk;
+		if (System::InitTicks(config.ticks) != SysInitStatus::InitOK) return SysInitStatus::InitError;
+	}
+#endif
 	// Enforce the APB timer x1/x2 rule used by the compile-time calculations.
 #if defined(RCC_DCKCFGR1_TIMPRE)
 	RCC->DCKCFGR1 &= ~RCC_DCKCFGR1_TIMPRE;
@@ -165,6 +215,14 @@ SysInitStatus ClockSystem::Apply(const Prepared& config)
 	RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | sw;
 	if (!System::WaitBits(RCC->CFGR, RCC_CFGR_SWS_Msk, sws, SWITCH_TIMEOUT_MS)) return SysInitStatus::InitError;
 
+#if defined(STM32G4)
+	if (config.switch_bus_word != config.bus_word) {
+		// PLL first supplies HCLK /2; keep ticks correct before returning to /1.
+		System::SystemCoreClock = config.switch_hclk;
+		if (System::InitTicks(config.switch_ticks) != SysInitStatus::InitOK) return SysInitStatus::InitError;
+		RCC->CFGR = (RCC->CFGR & ~BUS_MASK) | config.bus_word;
+	}
+#endif
 	// Restart SysTick immediately after the actual source switch, before late waits.
 	System::SystemCoreClock = config.hclk;
 	if (System::InitTicks(config.ticks) != SysInitStatus::InitOK) return SysInitStatus::InitError;

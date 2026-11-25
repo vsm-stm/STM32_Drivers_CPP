@@ -33,6 +33,8 @@ The work is split in two:
 | --- | --- |
 | PLL coefficients, bus dividers, Flash wait states, SysTick periods, all limit checks | Write the precomputed register values, wait for oscillators/PLL to become ready, switch SYSCLK |
 
+`Prepare()` keeps the common sequence and calls functional stages: voltage limits, source selection, PLL validation/frequency/encoding, buses, latency, SysTick and transition preparation. `rcc.hpp` selects one family header from `src/hardware/rcc/`. The choices are `rcc_defs_f4_f7.hpp`, `rcc_defs_g0.hpp`, `rcc_defs_g4.hpp` or `rcc_defs_l0.hpp`. Each provides its limits, register encodings and family functions under common names. `rcc_common.hpp` holds the shared types and helpers. `ClockSystem` keeps its public type names and uses the same `Prepare()` sequence and bus calculations across families. All preparation calls are evaluated for `static constexpr Prepared` in `Init<config>()`; they add no run-time call chain. `CalcPLL()` uses a separate selected search implementation and retains its previous search order. Hardware application stays in `rcc.cpp` with its existing local helpers and family/capability blocks. No additional hardware-stage call chain or inline register implementations are introduced in the header.
+
 A wrong configuration therefore fails the **build**, not the device.
 
 ---
@@ -43,7 +45,7 @@ A wrong configuration therefore fails the **build**, not the device.
 System::Init()  →  ClockSystem::Init<config>()  →  peripherals
 ```
 
-- Works on STM32F4, F7 and G0.
+- Works on STM32F4, F7, G0, L0 and G4.
 - One clock setup per hardware reset.
 - Requires C++20 (already selected by the build).
 
@@ -51,7 +53,7 @@ System::Init()  →  ClockSystem::Init<config>()  →  peripherals
 
 ## 3. Automatic PLL selection
 
-The easiest way: ask for a SYSCLK frequency and let `CalcPLL` find exact PLL coefficients.
+Ask for a SYSCLK frequency and let `CalcPLL` find exact PLL coefficients. The following 64 MHz example is for F4/F7/G0/G4; L0 has a 32 MHz maximum and the voltage-range argument shown below.
 
 ```cpp
 constexpr auto clocks = ClockSystem::CalcPLL(
@@ -73,14 +75,16 @@ if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
 **How the search works:**
 
 1. Try PLL input dividers M from small to large — this gives the highest legal PLL input (comparison) frequency, which means lower jitter. ST recommends about 2 MHz on F4/F7 and about 16 MHz on G0 ([F4](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_hal_rcc.h), [F7](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Inc/stm32f7xx_hal_rcc.h), [G0](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_hal_rcc.h) RCC docs).
-2. For the same M, take the smallest legal output divider: P on F4/F7, R on G0.
+2. For the same M, take the smallest legal output divider: P on F4/F7, R on G0/G4.
 3. Accept only exact results, checked with 64-bit integers:
 
 ```text
 Fsource * N == Frequested * M * output_divider
 ```
 
-**No exact solution?** `CalcPLL` returns a configuration with `M = 0`, and `Init<clocks>()` fails a `static_assert` — the build stops. Choose another frequency or write a manual configuration. There is no "closest frequency" fallback.
+L0 has no PLL input divider: it searches the allowed multiplier/output-divider pairs, preferring the smallest output divider. Its fourth argument is `VoltageRange` instead of `pll_q`; the default is Range 2.
+
+**No exact solution?** `CalcPLL` returns a configuration with `M = 0` (L0: `PLL_MUL = 0`), and `Init<clocks>()` fails a `static_assert` — the build stops. Choose another frequency or write a manual configuration. There is no "closest frequency" fallback.
 
 ---
 
@@ -121,6 +125,64 @@ if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
 
 ---
 
+### L0: voltage ranges, manual PLL and MSI
+
+The default `Config{}` selects HSI16 and Range 2, with 1 WS. `System::Init()` itself starts on MSI range 5 and retains reset Range 2. To request 32 MHz, explicitly select Range 1:
+
+```cpp
+using C = ClockSystem;
+constexpr auto clocks = C::CalcPLL(32 * MHz, C::PLL_ClockSource::HSI,
+                                  0U, C::VoltageRange::Range1);
+// Manual equivalent: HSI16 * 4 / 2 = 32 MHz.
+constexpr C::Config manual{
+    .ClkSrc = C::SystemClockSource::PLL,
+    .PLLCfgr = {.PLL_ClkSrc = C::PLL_ClockSource::HSI,
+                .PLL_MUL = 4, .PLL_DIV = 2},
+    .Voltage = C::VoltageRange::Range1
+};
+// Apply exactly one configuration, after System::Init().
+if (C::Init<clocks>() != SysInitStatus::InitOK) System::DebugTrap("Clock init");
+```
+
+For low-frequency MSI without starting HSI:
+
+```cpp
+constexpr ClockSystem::Config clocks{
+    .ClkSrc = ClockSystem::SystemClockSource::MSI,
+    .MSIRange = ClockSystem::MSI_Range::Range0,
+    .Voltage = ClockSystem::VoltageRange::Range3
+}; // 65,536 Hz, 0 WS; call Init<clocks>() after System::Init().
+```
+
+| MSI range | Nominal Hz |
+| --- | ---: |
+| Range0 | 65,536 |
+| Range1 | 131,072 |
+| Range2 | 262,144 |
+| Range3 | 524,288 |
+| Range4 | 1,048,576 |
+| Range5 | 2,097,152 |
+| Range6 | 4,194,304 |
+
+Voltage-range CPU limits apply to HCLK after AHB division; for example, direct HSI16 with AHB /4 permits HCLK 4 MHz in Range 3. The PLL VCO limit is checked separately. Flash latency: Range 1 is 0 WS through 16 MHz, then 1 WS; Range 2 is 0 WS through 8 MHz, then 1 WS; Range 3 is 0 WS through 4.2 MHz. `Prepare()` also checks the voltage-dependent VCO ceiling; a small output frequency alone does not make an excessive VCO valid. Flash/EEPROM programming and erase are not available in Range 3. This RCC adaptation does not port the Flash driver to L0.
+
+MSI uses the same integer SysTick calculation as other sources. AHB choices yielding HCLK below 1 kHz are rejected instead of producing a zero reload. Oscillator tolerances remain additional to integer-reload error.
+
+### G4: automatic normal/boost and PLL R
+
+```cpp
+constexpr auto clocks = ClockSystem::CalcPLL(
+    170 * MHz, ClockSystem::PLL_ClockSource::HSI);
+// M=4, N=85, R=2; SYSCLK/APB1/APB2=170 MHz, Range 1 boost, 4 WS.
+// After System::Init(): ClockSystem::Init<clocks>().
+```
+
+At SYSCLK 150 MHz or lower, normal mode is used. Flash latency is calculated from HCLK with 30 MHz bands in normal mode, 34 MHz bands in boost. Mode selection uses SYSCLK even when AHB divides it. All coefficients, latency, intermediate AHB/tick values and bus clocks are calculated at compilation; hardware application retains the one-attempt-per-reset contract.
+
+References: [L0 RM0451](https://www.st.com/resource/en/reference_manual/dm00443854-ultra-low-power-stm32l0x0-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf), [L0 RM0376](https://www.st.com/resource/en/reference_manual/dm00108281.pdf), [G4 RCC sequence](https://raw.githubusercontent.com/STMicroelectronics/stm32g4xx-hal-driver/master/Src/stm32g4xx_hal_rcc.c), [G4 voltage scaling](https://raw.githubusercontent.com/STMicroelectronics/stm32g4xx-hal-driver/master/Src/stm32g4xx_hal_pwr_ex.c).
+
+---
+
 ## 5. Static validation and supported devices
 
 `Init<config>()` rejects at compile time:
@@ -134,7 +196,9 @@ if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
 
 Limits are compared as exact fractions before any division. For manual configurations producing fractional-Hz frequencies, the published `uint32_t` frequency variables are rounded **down** to whole Hz. Automatic selection is exact to the requested Hz.
 
-**Device limits** (`rcc_defs.hpp` covers every F4/F7 selector in STM32-base_files):
+Numeric data shared by the search and bus calculations are grouped in the nine fields of `RCCDefs::ClockLimits`: SYSCLK/APB limits, M/N ranges and PLL-input limits. The selected `inline constexpr ClockLimits limits{...}` uses named fields. HSE/VCO/minimum-PLL-output checks and voltage/Flash rules live in their functions instead of universal table columns. Unused fields remain zero; register masks, oscillator references and wait timeouts remain separate constants. Public names such as `ClockSystem::Config` are aliases for `RCCDefs` types. Rebuild the driver library and consuming firmware together after updating. The search receives the common `Prepare()` by function reference, so candidate validation is reused rather than duplicated.
+
+**Device limits** (`rcc_defs_f4_f7.hpp` covers every F4/F7 selector in STM32-base_files):
 
 | Devices | SYSCLK/HCLK max | APB1 max | APB2 max |
 | --- | ---: | ---: | ---: |
@@ -144,13 +208,15 @@ Limits are compared as exact fractions before any division. For manual configura
 | F427/429/437/439/446/469/479 | 180 MHz | 45 MHz | 90 MHz |
 | F722/723/730/732/733/745/746/750/756/765/767/769/777/779 | 216 MHz | 54 MHz | 108 MHz |
 | G0 | 64 MHz | 64 MHz | — |
+| L0 | SYSCLK ≤32 MHz; HCLK ≤32/16/4.2 MHz in Range 1/2/3 | ≤HCLK | ≤HCLK |
+| G4 | 170 MHz (boost); 150 MHz (normal) | same as SYSCLK limit | same as SYSCLK limit |
 
-Unknown F4/F7 selectors and other families stop with a clear `#error`.
+Unknown F4/F7 selectors and families outside F4/F7/G0/L0/G4 stop with a clear `#error`.
 
 **Power assumptions** (fixed, not measured):
 
 - VDD = 3000 mV, i.e. the 2.7…3.6 V timing band (also valid at 3.3 V).
-- Voltage scaling: F401 — Scale 2; other F4/F7 — Scale 1; G0 — Range 1.
+- Voltage scaling: F401 — Scale 2; other F4/F7 — Scale 1; G0 — Range 1. L0 selects `Config::Voltage` (default Range 2). G4 selects Range 1 normal up to SYSCLK 150 MHz, boost above it.
 - Over-drive is enabled when required: F4 above HCLK 168 MHz (where present), F7 above 180 MHz.
 - Flash latency is derived from HCLK: one wait state per 30 MHz on F4/F7, per 24 MHz on G0 Range 1.
 
@@ -163,7 +229,9 @@ Unknown F4/F7 selectors and other families stop with a clear `#error`.
 | Other F4/F7 | ≥ 50 | 100 MHz | |
 | G0 | 8…86 | 96 MHz | M = 1…8, R = 2…8, P = 2…32, Q = 2…8 where present ([G030 datasheet](https://www.st.com/resource/en/datasheet/stm32g030f6.pdf), [RM0444](https://www.st.com/resource/en/reference_manual/dm00371828-stm32g0x1-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)) |
 
-Minimum SYSCLK from PLL: 24 MHz on F4/F7 (F446: 12.5 MHz), 12 MHz on G0.
+Minimum SYSCLK from PLL: 24 MHz on F4/F7 (F446: 12.5 MHz), 12 MHz on G0, 2 MHz on L0, 8 MHz on G4.
+
+L0 accepts an HSE crystal frequency of 1..25 MHz; a PLL input must be 2..24 MHz. Its VCO maximum is 96/48/24 MHz for Range 1/2/3. G4 uses M=1..16, N=8..127, R/Q in {2,4,6,8}, P=2..31 and VCO 64..344 MHz; P/Q outputs remain disabled. These limits do not add HSE bypass, USB or other peripheral-clock configuration.
 
 ---
 
@@ -172,19 +240,21 @@ Minimum SYSCLK from PLL: 24 MHz on F4/F7 (F446: 12.5 MHz), 12 MHz on G0.
 What `Init<config>()` does on the hardware:
 
 1. **One attempt only.** A second call is rejected before touching registers. A hardware failure (oscillator does not start) also uses up the attempt — recover with a reset.
-2. Enable only the oscillator needed by `ClkSrc` (and the PLL's input).
-3. If using the PLL: stop the old unused PLL, set voltage scaling while the PLL is off, program and start the PLL, wait for lock. On F4/F7 wait for VOSRDY after the PLL starts, then enable over-drive if needed. On G0 wait for VOSF to clear.
+2. Enable the required oscillator. F4/F7/G0/G4 reuse the HSI16 already running after `System::Init()`. On L0, RCC starts HSI if it supplies SYSCLK or the PLL.
+3. If using the PLL: stop the old unused PLL, set voltage scaling while the PLL is off, program and start the PLL, wait for lock. On F4/F7 wait for VOSRDY after the PLL starts, then enable over-drive if needed. On G0/L0/G4 wait for VOSF to clear. L0 stops an inherited unused PLL even for a direct source before applying its voltage range. G4 applies normal/boost before increasing SYSCLK.
 4. Raise Flash latency (one masked ACR write) **before** HCLK goes up.
-5. Set bus dividers while still running from HSI; reload SysTick for the intermediate HCLK. Clear TIMPRE where present so timer clocks follow the standard ×1/×2 rule.
+5. Set bus dividers while still running from the reset source (L0: MSI range 5; others: HSI16). Reload SysTick if the new divider changes HCLK. Clear TIMPRE where present so timer clocks follow the standard ×1/×2 rule.
 6. Switch SYSCLK (one masked CFGR write) and wait until SWS reports exactly that source.
 7. Publish the final HCLK and immediately reload SysTick with its precomputed period; check `InitTicks()`; publish APB/timer clocks and the HSE frequency.
 8. Lower Flash latency only after the frequency decrease is confirmed.
+
+G4 switches to PLL above 80 MHz with final AHB /1 through an intermediate AHB /2, then restores /1. SysTick is reloaded at each HCLK stage. L0 changes the MSI range after preparing power and latency; because MSI is already SYSCLK, its tick is immediately updated.
 
 **Timeouts:**
 
 | Wait | Limit |
 | --- | --- |
-| PLL lock, HSI/LSI ready | 2 ms |
+| PLL lock, HSI/MSI/LSI ready | 2 ms |
 | HSE ready | 100 ms |
 | LSE ready | 5000 ms |
 | Voltage scaling / over-drive / Flash | 100 ms |
@@ -346,6 +416,8 @@ uint32_t ConfiguredHSE() { return ClockSystem::GetHSEClock(); }
 
 Поэтому неверная конфигурация ломает **сборку**, а не устройство.
 
+`Prepare()` сохраняет общую последовательность и вызывает функциональные этапы: пределы питания, выбор источника, проверку/расчёт/кодирование PLL, шины, latency, SysTick и подготовку перехода. `rcc.hpp` подключает один заголовок из `src/hardware/rcc/` для выбранного семейства. Доступны `rcc_defs_f4_f7.hpp`, `rcc_defs_g0.hpp`, `rcc_defs_g4.hpp` или `rcc_defs_l0.hpp`. В нём заданы пределы, кодирование регистров и функции семейства под общими именами. Общие типы и вспомогательные функции находятся в `rcc_common.hpp`. `ClockSystem` сохраняет публичные имена типов и использует общий порядок `Prepare()` и расчёт шин. Все вызовы подготовки вычисляются для `static constexpr Prepared` внутри `Init<config>()` и не добавляют цепочку вызовов во время работы. `CalcPLL()` использует отдельно выбранный алгоритм поиска с прежним порядком перебора. Применение настроек остаётся в `rcc.cpp` с прежними локальными функциями и блоками семейств/возможностей. Дополнительная цепочка аппаратных этапов и inline-реализации регистровых операций в заголовке не добавляются.
+
 ---
 
 ## 2. Порядок инициализации
@@ -354,7 +426,7 @@ uint32_t ConfiguredHSE() { return ClockSystem::GetHSEClock(); }
 System::Init()  →  ClockSystem::Init<config>()  →  периферия
 ```
 
-- Работает на STM32F4, F7 и G0.
+- Работает на STM32F4, F7, G0, L0 и G4.
 - Одна настройка тактирования на один аппаратный сброс.
 - Нужен C++20 (уже выбран сборкой).
 
@@ -420,22 +492,83 @@ if (ClockSystem::Init<clocks>() != SysInitStatus::InitOK)
 **Как идёт поиск:**
 
 1. Делитель входа M перебирается от меньшего к большему — так получается максимальная допустимая частота сравнения PLL, а значит меньший джиттер. Ориентиры ST: около 2 МГц на входе PLL для F4/F7 и около 16 МГц для G0 (документация RCC: [F4](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_hal_rcc.h), [F7](https://raw.githubusercontent.com/STMicroelectronics/stm32f7xx-hal-driver/master/Inc/stm32f7xx_hal_rcc.h), [G0](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_hal_rcc.h)).
-2. При одинаковом M выбирается минимальный выходной делитель: P на F4/F7, R на G0.
-3. Принимается только точный результат, проверка в 64-битных целых:
+2. При одинаковом M выбирается минимальный выходной делитель: P на F4/F7, R на G0/G4.
+3. L0 перебирает дискретные множители и делители, предпочитая минимальный выходной делитель. Четвёртый аргумент `CalcPLL()` на L0 — `VoltageRange`, по умолчанию Range 2; при отсутствии решения возвращается `PLL_MUL=0`.
+4. Принимается только точный результат, проверка в 64-битных целых:
 
 ```text
 Fsource * N == Frequested * M * P/R
 ```
 
-**Точного решения нет?** `CalcPLL` вернёт конфигурацию с `M = 0`, и `Init<config>()` остановит сборку. Выберите другую частоту или задайте конфигурацию вручную (она тоже проверяется). Округления «до ближайшей частоты» нет.
+**Точного решения нет?** `CalcPLL` вернёт конфигурацию с `M = 0` (на L0 — `PLL_MUL = 0`), и `Init<config>()` остановит сборку. Выберите другую частоту или задайте конфигурацию вручную (она тоже проверяется). Округления «до ближайшей частоты» нет.
 
 Пределы частот сравниваются как точные дроби до деления. Если ручная конфигурация даёт дробные герцы, опубликованные переменные `uint32_t` округляются **вниз** до целых Гц; автоматический расчёт точен до заданного герца.
 
 ---
 
+### L0: диапазон питания, ручной PLL и MSI
+
+По умолчанию `Config{}` выбирает HSI16 и Range 2 с 1 WS. Сам `System::Init()` оставляет штатный MSI range 5 и Range 2. Для 32 МГц нужно явно выбрать Range 1:
+
+```cpp
+using C = ClockSystem;
+constexpr auto clocks = C::CalcPLL(32 * MHz, C::PLL_ClockSource::HSI,
+                                  0U, C::VoltageRange::Range1);
+// Ручной эквивалент: HSI16 * 4 / 2 = 32 МГц.
+constexpr C::Config manual{
+    .ClkSrc = C::SystemClockSource::PLL,
+    .PLLCfgr = {.PLL_ClkSrc = C::PLL_ClockSource::HSI,
+                .PLL_MUL = 4, .PLL_DIV = 2},
+    .Voltage = C::VoltageRange::Range1
+};
+// После System::Init() применить ровно одну конфигурацию.
+if (C::Init<clocks>() != SysInitStatus::InitOK) System::DebugTrap("Clock init");
+```
+
+Низкочастотный MSI без запуска HSI:
+
+```cpp
+constexpr ClockSystem::Config clocks{
+    .ClkSrc = ClockSystem::SystemClockSource::MSI,
+    .MSIRange = ClockSystem::MSI_Range::Range0,
+    .Voltage = ClockSystem::VoltageRange::Range3
+}; // 65 536 Гц, 0 WS; после System::Init() вызвать Init<clocks>().
+```
+
+| Диапазон MSI | Номинальные Гц |
+| --- | ---: |
+| Range0 | 65 536 |
+| Range1 | 131 072 |
+| Range2 | 262 144 |
+| Range3 | 524 288 |
+| Range4 | 1 048 576 |
+| Range5 | 2 097 152 |
+| Range6 | 4 194 304 |
+
+Предел частоты ядра для диапазона питания применяется к HCLK после делителя AHB: например, HSI16 с AHB /4 даёт допустимые 4 МГц в Range 3. Предел VCO проверяется отдельно. Flash latency: Range 1 — 0 WS до 16 МГц, затем 1 WS; Range 2 — 0 WS до 8 МГц, затем 1 WS; Range 3 — 0 WS до 4,2 МГц. `Prepare()` проверяет и зависящий от диапазона предел VCO: низкая выходная частота сама по себе не делает завышенную VCO допустимой. В Range 3 недоступны запись и стирание Flash/EEPROM. Эта адаптация RCC не переносит драйвер Flash на L0.
+
+Для MSI используется тот же целочисленный расчёт SysTick. Делители AHB, дающие HCLK ниже 1 кГц, отклоняются вместо нулевого reload. К погрешности целочисленного тика добавляется погрешность самого генератора.
+
+### G4: автоматический normal/boost и выход PLL R
+
+```cpp
+constexpr auto clocks = ClockSystem::CalcPLL(
+    170 * MHz, ClockSystem::PLL_ClockSource::HSI);
+// M=4, N=85, R=2; SYSCLK/APB1/APB2=170 МГц, Range 1 boost, 4 WS.
+// После System::Init(): ClockSystem::Init<clocks>().
+```
+
+До SYSCLK 150 МГц включительно используется normal. Flash latency считается от HCLK с шагом 30 МГц в normal и 34 МГц в boost. Режим выбирается по SYSCLK, в том числе при делителе AHB. Коэффициенты, latency, промежуточные AHB/тик и частоты шин считаются при компиляции; аппаратная настройка сохраняет правило одной попытки на сброс.
+
+Источники: [L0 RM0451](https://www.st.com/resource/en/reference_manual/dm00443854-ultra-low-power-stm32l0x0-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf), [L0 RM0376](https://www.st.com/resource/en/reference_manual/dm00108281.pdf), [последовательность RCC G4](https://raw.githubusercontent.com/STMicroelectronics/stm32g4xx-hal-driver/master/Src/stm32g4xx_hal_rcc.c), [питание G4](https://raw.githubusercontent.com/STMicroelectronics/stm32g4xx-hal-driver/master/Src/stm32g4xx_hal_pwr_ex.c).
+
+---
+
 ## 5. Модели, питание и порядок переключения
 
-**Пределы моделей** (`rcc_defs.hpp` покрывает все F4/F7 из STM32-base_files):
+Данные, общие для поиска и расчёта шин, объединены в девять полей `RCCDefs::ClockLimits`: пределы SYSCLK/APB, диапазоны M/N и входа PLL. Выбранный `inline constexpr ClockLimits limits{...}` задаётся именованными полями. Проверки HSE/VCO/минимального выхода PLL и правила питания/Flash находятся в своих функциях вместо универсальных столбцов таблицы. Неиспользуемые поля остаются нулевыми; маски регистров, опорные частоты и таймауты — отдельными константами. Публичные имена, например `ClockSystem::Config`, сохранены как алиасы типов `RCCDefs`. После обновления пересоберите библиотеку и использующие её прошивки вместе. Поиск получает общую `Prepare()` по ссылке на функцию, поэтому проверка кандидата используется повторно, а не дублируется.
+
+**Пределы моделей** (`rcc_defs_f4_f7.hpp` покрывает все F4/F7 из STM32-base_files):
 
 | МК | SYSCLK/HCLK макс. | APB1 макс. | APB2 макс. |
 | --- | ---: | ---: | ---: |
@@ -445,13 +578,15 @@ Fsource * N == Frequested * M * P/R
 | F427/429/437/439/446/469/479 | 180 МГц | 45 МГц | 90 МГц |
 | F722/723/730/732/733/745/746/750/756/765/767/769/777/779 | 216 МГц | 54 МГц | 108 МГц |
 | G0 | 64 МГц | 64 МГц | — |
+| L0 | SYSCLK ≤32 МГц; HCLK ≤32/16/4,2 МГц в Range 1/2/3 | ≤HCLK | ≤HCLK |
+| G4 | 170 МГц (boost); 150 МГц (normal) | как предел SYSCLK | как предел SYSCLK |
 
-Неизвестная модель F4/F7 или другое семейство — явный `#error`.
+Неизвестная модель F4/F7 или семейство вне F4/F7/G0/L0/G4 — явный `#error`.
 
 **Допущения по питанию** (фиксированы, не измеряются):
 
 - VDD = 3000 мВ, то есть диапазон таймингов 2,7…3,6 В (подходит и для 3,3 В).
-- Масштаб напряжения ядра: F401 — Scale 2; остальные F4/F7 — Scale 1; G0 — Range 1.
+- Масштаб напряжения ядра: F401 — Scale 2; остальные F4/F7 — Scale 1; G0 — Range 1. На L0 выбирается `Config::Voltage` (по умолчанию Range 2). G4 выбирает Range 1 normal до SYSCLK 150 МГц, boost выше этой частоты.
 - Over-drive включается при необходимости: F4 — при HCLK выше 168 МГц (где он есть), F7 — выше 180 МГц.
 - Задержка Flash считается от HCLK: один такт ожидания на каждые 30 МГц для F4/F7 и 24 МГц для G0 Range 1.
 
@@ -464,22 +599,26 @@ Fsource * N == Frequested * M * P/R
 | Остальные F4/F7 | ≥ 50 | 100 МГц | |
 | G0 | 8…86 | 96 МГц (по datasheet) | M = 1…8, R = 2…8, P = 2…32, Q = 2…8 при наличии |
 
-Минимальная SYSCLK от PLL: 24 МГц для F4/F7 (F446 — 12,5 МГц), 12 МГц для G0.
+Минимальная SYSCLK от PLL: 24 МГц для F4/F7 (F446 — 12,5 МГц), 12 МГц для G0, 2 МГц для L0, 8 МГц для G4.
+
+На L0 поддерживается частота кварца HSE 1..25 МГц; вход PLL — 2..24 МГц. Предел VCO — 96/48/24 МГц для Range 1/2/3. На G4: M=1..16, N=8..127, R/Q из {2,4,6,8}, P=2..31, VCO 64..344 МГц; выходы P/Q не включаются. Поддержка HSE bypass, USB и настройки прочих периферийных тактов этим не добавляется.
 
 **Что `Init<config>()` делает с аппаратурой:**
 
 1. **Только одна попытка.** Повторный вызов отклоняется до записи регистров. Аппаратный отказ (генератор не запустился) тоже расходует попытку — нужен сброс.
-2. Включается нужный источник. Для PLL: остановить оставшуюся неиспользуемую PLL, задать масштаб напряжения, записать коэффициенты, запустить PLL, дождаться готовности напряжения и при необходимости over-drive. На F4/F7 VOSRDY ожидается после запуска PLL.
+2. Включается нужный источник. На F4/F7/G0/G4 HSI16 уже работает после `System::Init()`. На L0 RCC включает HSI, если он питает SYSCLK или PLL. Для PLL: остановить оставшуюся неиспользуемую PLL, задать масштаб напряжения, записать коэффициенты, запустить PLL, дождаться готовности напряжения и при необходимости over-drive. На F4/F7 VOSRDY ожидается после запуска PLL. На L0 неиспользуемая PLL останавливается и при прямом источнике — до выбора диапазона питания. G0/L0/G4 ожидают сброса VOSF; G4 выбирает normal/boost до повышения SYSCLK.
 3. Задержка Flash повышается одной записью ACR **до** повышения HCLK.
-4. Делители шин выставляются, пока система ещё на HSI; SysTick перенастраивается для промежуточной HCLK. TIMPRE сбрасывается (где есть), чтобы частоты таймеров подчинялись обычному правилу ×1/×2.
+4. Делители шин выставляются на штатном источнике (L0 — MSI range 5, остальные — HSI16). SysTick перенастраивается, если новый делитель изменил HCLK. TIMPRE сбрасывается (где есть), чтобы частоты таймеров подчинялись обычному правилу ×1/×2.
 5. SYSCLK переключается одной записью CFGR по маске; ожидается точное значение SWS.
 6. SysTick сразу перенастраивается по готовому периоду, результат проверяется, публикуются частоты APB и таймеров. Задержка Flash снижается только после подтверждённого снижения частоты.
+
+При переключении G4 на PLL выше 80 МГц с итоговым AHB /1 сначала используется промежуточный AHB /2, затем возвращается /1. SysTick перенастраивается на каждом этапе HCLK. На L0 диапазон MSI меняется после подготовки питания и latency; поскольку MSI уже является SYSCLK, тик обновляется сразу.
 
 **Пределы ожидания:**
 
 | Ожидание | Предел |
 | --- | --- |
-| PLL, HSI/LSI | 2 мс |
+| PLL, HSI/MSI/LSI | 2 мс |
 | HSE | 100 мс |
 | LSE | 5000 мс |
 | Напряжение / over-drive / Flash | 100 мс |

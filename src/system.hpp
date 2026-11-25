@@ -110,6 +110,13 @@ enum class SysInitStatus : uint8_t
 class System
 {
 public:
+	/// Core frequency used by Init() before applying an RCC configuration.
+#if defined(STM32L0)
+	static constexpr uint32_t ResetClock = 65536U << 5; // MSI range 5.
+#else
+	static constexpr uint32_t ResetClock = HSI_Clock;
+#endif
+
 	/**
 	 * @brief Core/AHB frequency. Peripheral kernel clocks such as USB are separate.
 	 */

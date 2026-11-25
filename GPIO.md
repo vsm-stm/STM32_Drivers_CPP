@@ -354,7 +354,7 @@ Validation of this GPIO-only change (GCC 13.3.1, C++20):
 
 Full L0/G4 firmware builds and hardware operation remain unverified.
 
-GPIO and System now support L0/G4. The whole driver library still needs RCC/Flash and the remaining peripheral ports. Reset-clock startup and System limitations are described in [System.md](System.md#11-source-layout-and-family-selection).
+GPIO, System and RCC now support L0/G4 in isolation. The whole driver library still needs Flash and the remaining peripheral ports. Reset-clock startup and System limitations are described in [System.md](System.md#11-source-layout-and-family-selection).
 
 ---
 
@@ -715,7 +715,7 @@ void InitPins()
 
 Полная сборка прошивки L0/G4 и работа на железе не проверены.
 
-GPIO и System теперь поддерживают L0/G4. Для всей библиотеки ещё нужны RCC/Flash и оставшиеся переносы периферии. Штатный старт и ограничения System описаны в [System.md](System.md#11-структура-файлов-и-выбор-семейства).
+GPIO, System и RCC поддерживают L0/G4 изолированно. Для всей библиотеки ещё нужны Flash и оставшиеся переносы периферии. Штатный старт и ограничения System описаны в [System.md](System.md#11-структура-файлов-и-выбор-семейства).
 
 ---
 
