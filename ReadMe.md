@@ -23,7 +23,7 @@ Every module document follows the same layout as [GPIO.md](GPIO.md): English/Р�
 
 A C++20 library on top of CMSIS for the **STM32G0**, **STM32F4** and **STM32F7** families.
 
-System, GPIO and RCC also support **STM32L0/G4** with hardware selection at compilation. Main Flash is available on L0 and G4 with a matching bank map. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
+System, GPIO and RCC also support **STM32L0/G4** with hardware selection at compilation. Main Flash is available on L0 and G4 with a matching bank map. Direct DMA is also supported on both families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
 
 - **Core** (always built): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Optional modules:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -120,7 +120,7 @@ directory propagation were also checked; this is not a full firmware build.
 
 Behaviour and limitations of each module are in its own document (e.g. [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-The full library supports F4/F7/G0. The core modules also build on L0 and G4 with a supported Flash map. Some optional drivers are still limited to F4/F7/G0. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
+The full library supports F4/F7/G0. The core modules and standalone DMA also build on L0 and G4 with a supported Flash map. Some optional drivers are still limited to F4/F7/G0. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
 
 ---
 
@@ -141,7 +141,7 @@ and [TIM channel IRQs without pins](TIM.md#several-channel-interrupts-without-gp
 | [RCC.md](RCC.md) | clock tree: HSI/HSE/PLL, bus dividers, Flash latency, compile-time validation |
 | [GPIO.md](GPIO.md) | `PIN`/`PinArray`: mode encoding, registers, bit-banding |
 | [IRQ_Registry.md](IRQ_Registry.md) | the single interrupt dispatcher, registration with and without inheritance, capacity |
-| [DMA.md](DMA.md) | `DMA_Sx`: streams (F4/F7) and channels + DMAMUX (G0), request tables |
+| [DMA.md](DMA.md) | `DMA_Sx`: streams (F4/F7), DMAMUX (G0/G4) and CSELR (L0) |
 | [UART.md](UART.md) | `USART`: blocking/IRQ/DMA, packet reception on line IDLE |
 | [SPI.md](SPI.md) | `SPI`: master/slave, software/hardware NSS, DMA, `Process()` |
 | [I2C.md](I2C.md) | master, blocking/IRQ/DMA, callbacks, STOP handling, application recovery |
@@ -462,9 +462,9 @@ Each extra slot costs `IRQ_TABLE_SIZE × 4` bytes of RAM. The separate `IRQ_MAX_
 
 ## 6. DMA
 
-**Files:** `dma.hpp`, `dma.cpp`, `dma_requests.hpp` · **Details:** [DMA.md](DMA.md)
+**Files:** `dma.hpp`, `dma.cpp` · **Details:** [DMA.md](DMA.md)
 
-One API for F4/F7 streams (`DMA_Stream_TypeDef`) and G0 channels (`DMA_Channel_TypeDef` + DMAMUX). Peripheral drivers embed their own `DMA_Sx` — the examples below are for standalone use.
+One API for F4/F7 streams, G0/G4 channels with DMAMUX and L0 channels with CSELR. See [DMA.md](DMA.md#11-usage-examples) for direct DMA on G4/L0. Peripheral drivers embed their own `DMA_Sx` — the examples below are for standalone use.
 
 - `SetUp()` accepts zero count/addresses (prepare without starting). It rejects an owned channel, invalid fields, misaligned addresses and counts above 65535.
 - `SetCount()` takes 1…65535 **elements**. Address/count setters return `NotInit` before setup, `Busy` while EN is set, `Error` for invalid arguments — check them.
@@ -995,7 +995,7 @@ system.hpp
 
 C++20-библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4** и **STM32F7**.
 
-System, GPIO и RCC также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. На L0 и G4 доступна основная Flash с согласованной картой банков. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
+System, GPIO и RCC также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. На L0 и G4 доступны основная Flash с согласованной картой банков и самостоятельный DMA. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
 
 - **Ядро** (собирается всегда): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Опциональные модули:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -1084,7 +1084,7 @@ System, GPIO и RCC также поддерживают **STM32L0/G4** с выб
 
 Поведение и ограничения каждого модуля описаны в его документе (например, [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-Полная библиотека поддерживает F4/F7/G0. Базовые модули также собираются на L0 и G4 с поддерживаемой картой Flash. Часть дополнительных драйверов пока ограничена F4/F7/G0. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
+Полная библиотека поддерживает F4/F7/G0. Базовые модули и самостоятельный DMA также собираются на L0 и G4 с поддерживаемой картой Flash. Часть дополнительных драйверов пока ограничена F4/F7/G0. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
 
 ---
 
@@ -1105,7 +1105,7 @@ System, GPIO и RCC также поддерживают **STM32L0/G4** с выб
 | [RCC.md](RCC.md) | дерево тактирования: HSI/HSE/PLL, делители шин, задержка Flash, проверка при компиляции |
 | [GPIO.md](GPIO.md) | `PIN`/`PinArray`: кодирование режимов, регистры, bit-banding |
 | [IRQ_Registry.md](IRQ_Registry.md) | единый диспетчер прерываний, регистрация с наследованием и без, вместимость |
-| [DMA.md](DMA.md) | `DMA_Sx`: потоки (F4/F7) и каналы + DMAMUX (G0), таблицы запросов |
+| [DMA.md](DMA.md) | `DMA_Sx`: потоки (F4/F7), DMAMUX (G0/G4) и CSELR (L0) |
 | [UART.md](UART.md) | `USART`: блокирующий/IRQ/DMA, приём пакетов по паузе IDLE |
 | [SPI.md](SPI.md) | `SPI`: master/slave, программный/аппаратный NSS, DMA, `Process()` |
 | [I2C.md](I2C.md) | master, блокирующий/IRQ/DMA, callback, обработка STOP, восстановление шины приложением |
@@ -1426,9 +1426,9 @@ if (IRQ_Registry::HasHandlers(TIM3_IRQn)) NVIC_EnableIRQ(TIM3_IRQn);
 
 ## 6. DMA
 
-**Файлы:** `dma.hpp`, `dma.cpp`, `dma_requests.hpp` · **Подробнее:** [DMA.md](DMA.md)
+**Файлы:** `dma.hpp`, `dma.cpp` · **Подробнее:** [DMA.md](DMA.md)
 
-Единый API для потоков F4/F7 (`DMA_Stream_TypeDef`) и каналов G0 (`DMA_Channel_TypeDef` + DMAMUX). Драйверы периферии содержат свои `DMA_Sx` внутри — примеры ниже для самостоятельного использования.
+Единый API для потоков F4/F7, каналов G0/G4 с DMAMUX и каналов L0 с CSELR. Примеры самостоятельного DMA на G4/L0 есть в [DMA.md](DMA.md#11-примеры-использования). Драйверы периферии содержат свои `DMA_Sx` внутри — примеры ниже для самостоятельного использования.
 
 - `SetUp()` допускает нулевые счётчик/адреса (подготовка без запуска). Отклоняет занятый канал, неверные поля, невыровненные адреса и счётчик больше 65535.
 - `SetCount()` принимает 1…65535 **элементов**. Методы адресов/счётчика возвращают `NotInit` до настройки, `Busy` при установленном EN, `Error` при неверных аргументах — проверяйте.

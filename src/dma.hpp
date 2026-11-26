@@ -1,14 +1,14 @@
 /**
  * @file    dma.hpp
- * @brief   DMA driver for STM32 (F4/F7 stream-based, G0 channel-based).
+ * @brief   DMA driver for STM32F4/F7/G0/G4/L0.
  *
- * The two families use fundamentally different DMA hardware:
+ * The DMA hardware uses two register layouts:
  *  - F4/F7: DMA_Stream_TypeDef, registers CR/NDTR/PAR/M0AR, LISR/HISR flag pairs
- *  - G0:    DMA_Channel_TypeDef, registers CCR/CNDTR/CPAR/CMAR, single ISR/IFCR
+ *  - G0/G4/L0: DMA_Channel_TypeDef, registers CCR/CNDTR/CPAR/CMAR, single ISR/IFCR
+ *  - Requests are selected through CHSEL (F4/F7), DMAMUX1 (G0/G4) or CSELR (L0).
  *
  * All register differences are hidden behind private inline accessors
- * (_CR, _NDTR, _PAR, _MAR) and per-family flag constants (FLAG_HT, FLAG_TC, FLAG_ALL).
- * Public API is identical on both families.
+ * (_CR, _NDTR, _PAR, _MAR) and family-specific flag constants.
  *
  * Nested types (DIR, SIZE, IRQ, StreamSettings, DMAReq) live inside
  * the DMA_Sx class — access them as DMA_Sx::DIR::To_Per, DMA_Sx::DMAReq, etc.
@@ -53,6 +53,13 @@
  *         DMA_Sx dma_tx(DMA2_Stream7);
  *         // StreamSettings::channel must be set to 4 (CHSEL for USART1)
  *       @endcode
+ *
+ *    STM32G4 and STM32L0 — direct DMA with a route from the device manual:
+ *    @code
+ *      constinit DMA_Sx dma_tx(DMA2_Channel1_BASE, 25U); // G4: USART1_TX
+ *      constinit DMA_Sx dma_rx(DMA1_Channel1_BASE, 0U);  // L072: ADC, CSELR=0
+ *    @endcode
+ *    Adapt the direction, element width and peripheral address below for RX.
  *
  * 2. Call SetUp() with a StreamSettings descriptor.
  *    Per-address and count can be omitted here if they will be set dynamically.
@@ -109,7 +116,8 @@
  *  - SetMemAddr/SetPerAddr/SetCount require an owned, stopped channel. Stop
  *    through Stream_EN(DISABLE), which waits for EN=0 without a timeout.
  *  - On G0, DMA1 has 5 or 7 channels; some models also have DMA2 with 5 channels.
- *    Shared IRQ lines require enough IRQ_Registry slots for their consumers.
+ *  - G4 has 6 or 8 channels per controller. L0 has 5 or 7 channels on DMA1.
+ *    Shared IRQ lines on G0/L0 require enough IRQ_Registry slots for their consumers.
  *  - On F4/F7, stream + CHSEL are hardware-fixed; use the peripheral DMA definitions to pick
  *    the correct combination. Names include controller and stream, for example
  *    USART::_3::DMA::TX_DMA1_Stream3 and USART::_3::DMA::TX_DMA1_Stream4.
@@ -141,109 +149,58 @@
 #define DMA_MODIFY_REG MODIFY_REG
 #endif
 
-/** @brief Read-only stream/channel descriptor; ownership flags are separate in dma.cpp. */
+/// Read-only descriptor. Ownership flags are stored separately in dma.cpp.
 struct dma_sets_typedef {
-	DMA_TypeDef*        ctrl;      ///< DMA1 or DMA2
-	volatile uint32_t*  isr;       ///< Status register (LISR/HISR on F4, ISR on G0)
-	volatile uint32_t*  ifcr;      ///< Clear register  (LIFCR/HIFCR on F4, IFCR on G0)
-	uint8_t             if_offset; ///< Bit offset of this stream's flag group
-	IRQn_Type           irqn;      ///< NVIC IRQ number
+	volatile uint32_t* isr;
+	volatile uint32_t* ifcr;
+	uint8_t if_offset;
+	IRQn_Type irqn;
 };
 
-// ---------------------------------------------------------------------------
+#if defined(STM32F4) || defined(STM32F7)
+#include "hardware/dma/f4_f7.hpp"
+#elif defined(STM32G0)
+#include "hardware/dma/g0.hpp"
+#elif defined(STM32G4)
+#include "hardware/dma/g4.hpp"
+#elif defined(STM32L0)
+#include "hardware/dma/l0.hpp"
+#endif
 
 class DMA_Sx {
 public:
 	// Normalized flag masks returned by GetIRQFlags(), independent of stream/channel.
-#if defined(STM32F4) || defined(STM32F7)
-	static constexpr uint32_t FLAG_HT = DMA_LISR_HTIF0;
-	static constexpr uint32_t FLAG_TC = DMA_LISR_TCIF0;
-	static constexpr uint32_t FLAG_ERRORS = DMA_LISR_TEIF0 | DMA_LISR_DMEIF0;
-#elif defined(STM32G0)
-	static constexpr uint32_t FLAG_HT = DMA_ISR_HTIF1;
-	static constexpr uint32_t FLAG_TC = DMA_ISR_TCIF1;
-	static constexpr uint32_t FLAG_ERRORS = DMA_ISR_TEIF1;
-#endif
+	static constexpr uint32_t FLAG_HT = dma_hw::FLAG_HT;
+	static constexpr uint32_t FLAG_TC = dma_hw::FLAG_TC;
+	static constexpr uint32_t FLAG_ERRORS = dma_hw::FLAG_ERRORS;
 
 private:
-	// Register-name abstraction layer.
-	// F4/F7 use DMA_Stream_TypeDef (CR/NDTR/PAR/M0AR).
-	// G0    uses DMA_Channel_TypeDef (CCR/CNDTR/CPAR/CMAR).
-#if defined(STM32F4) || defined(STM32F7)
 	uintptr_t _stream;
-	DMA_Stream_TypeDef* Stream() const { return reinterpret_cast<DMA_Stream_TypeDef*>(_stream); }
-	volatile uint32_t& _CR()   const { return Stream()->CR;   }
-	volatile uint32_t& _NDTR() const { return Stream()->NDTR; }
-	volatile uint32_t& _PAR()  const { return Stream()->PAR;  }
-	volatile uint32_t& _MAR()  const { return Stream()->M0AR; }
-	static constexpr uint32_t CR_EN   = DMA_SxCR_EN;
-	static constexpr uint32_t CR_MINC = DMA_SxCR_MINC;
-	static constexpr uint32_t CR_PINC = DMA_SxCR_PINC;
-	static constexpr uint32_t CR_CIRC = DMA_SxCR_CIRC;
-	static constexpr uint32_t CR_MSIZE_Msk = DMA_SxCR_MSIZE_Msk;
-	static constexpr uint32_t CR_MSIZE_Pos = DMA_SxCR_MSIZE_Pos;
-	static constexpr uint32_t CR_PSIZE_Msk = DMA_SxCR_PSIZE_Msk;
-	static constexpr uint32_t CR_PSIZE_Pos = DMA_SxCR_PSIZE_Pos;
-	static constexpr uint32_t FLAG_ALL = DMA_LIFCR_CTCIF0 | DMA_LIFCR_CHTIF0 |
-	                                     DMA_LIFCR_CTEIF0 | DMA_LIFCR_CDMEIF0 |
-	                                     DMA_LIFCR_CFEIF0;
-#elif defined(STM32G0)
-	uintptr_t _stream;
-	DMA_Channel_TypeDef* Stream() const { return reinterpret_cast<DMA_Channel_TypeDef*>(_stream); }
-	volatile uint32_t& _CR()   const { return Stream()->CCR;   }
-	volatile uint32_t& _NDTR() const { return Stream()->CNDTR; }
-	volatile uint32_t& _PAR()  const { return Stream()->CPAR;  }
-	volatile uint32_t& _MAR()  const { return Stream()->CMAR;  }
-	static constexpr uint32_t CR_EN   = DMA_CCR_EN;
-	static constexpr uint32_t CR_MINC = DMA_CCR_MINC;
-	static constexpr uint32_t CR_PINC = DMA_CCR_PINC;
-	static constexpr uint32_t CR_CIRC = DMA_CCR_CIRC;
-	static constexpr uint32_t CR_MSIZE_Msk = DMA_CCR_MSIZE_Msk;
-	static constexpr uint32_t CR_MSIZE_Pos = DMA_CCR_MSIZE_Pos;
-	static constexpr uint32_t CR_PSIZE_Msk = DMA_CCR_PSIZE_Msk;
-	static constexpr uint32_t CR_PSIZE_Pos = DMA_CCR_PSIZE_Pos;
-	static constexpr uint32_t FLAG_ALL = 0xFu; // GIF+TCIF+HTIF+TEIF per channel
-#endif
+	dma_hw::Registers* Stream() const { return reinterpret_cast<dma_hw::Registers*>(_stream); }
+	volatile uint32_t& _CR()   const { return Stream()->*dma_hw::CONTROL; }
+	volatile uint32_t& _NDTR() const { return Stream()->*dma_hw::COUNT; }
+	volatile uint32_t& _PAR()  const { return Stream()->*dma_hw::PER_ADDRESS; }
+	volatile uint32_t& _MAR()  const { return Stream()->*dma_hw::MEM_ADDRESS; }
 
 	const dma_sets_typedef* _info = nullptr;
 	static constexpr uint32_t MAX_COUNT = 0xFFFFU;
-	uint32_t          _preset_ch  = 0;
-	bool              _has_preset = false;
+	uint32_t _preset_ch = 0;
+	bool _has_preset = false;
+
 	static constexpr int32_t GetStreamIndex(uintptr_t base)
 	{
-
-#if defined(STM32F4) || defined(STM32F7)
-		constexpr uintptr_t stride = DMA1_Stream1_BASE - DMA1_Stream0_BASE;
-		constexpr uintptr_t dma1_base = DMA1_Stream0_BASE;
-		constexpr uintptr_t dma1_end = DMA1_Stream7_BASE;
-		constexpr uintptr_t dma2_base = DMA2_Stream0_BASE;
-		constexpr uintptr_t dma2_end = DMA2_Stream7_BASE;
-
-		if (base >= dma1_base && base <= dma1_end && (base - dma1_base) % stride == 0U)
-			return (base - dma1_base) / stride;
-		if (base >= dma2_base && base <= dma2_end && (base - dma2_base) % stride == 0U)
-			return 8 + (base - dma2_base) / stride;
-
-#elif defined(STM32G0)
-		constexpr uintptr_t stride = DMA1_Channel2_BASE - DMA1_Channel1_BASE;
-		constexpr uintptr_t ch1_base = DMA1_Channel1_BASE;
-#if defined(DMA1_Channel7)
-		constexpr uintptr_t ch1_end = DMA1_Channel7_BASE;
-#else
-		constexpr uintptr_t ch1_end = DMA1_Channel5_BASE;
-#endif
-
-		if (base >= ch1_base && base <= ch1_end && (base - ch1_base) % stride == 0U)
-			return (base - ch1_base) / stride;
-#if defined(DMA2_Channel1)
-		constexpr uintptr_t ch2_base = DMA2_Channel1_BASE;
-		constexpr uintptr_t ch2_end = DMA2_Channel5_BASE;
-		if (base >= ch2_base && base <= ch2_end && (base - ch2_base) % stride == 0U)
-			return 7 + (base - ch2_base) / stride;
-#endif
-#endif
-
-		return -1;
+		using namespace dma_hw;
+		uintptr_t first = DMA1_FIRST;
+		int32_t first_index = 0;
+		if (base < DMA1_FIRST || base >= DMA1_FIRST + DMA1_COUNT * STRIDE) {
+			if (DMA2_COUNT == 0 || base < DMA2_FIRST || base >= DMA2_FIRST + DMA2_COUNT * STRIDE)
+				return -1;
+			first = DMA2_FIRST;
+			first_index = DMA1_COUNT;
+		}
+		const uintptr_t offset = base - first;
+		const uintptr_t index = offset / STRIDE;
+		return index * STRIDE == offset ? first_index + static_cast<int32_t>(index) : -1;
 	}
 
 public:
@@ -251,7 +208,7 @@ public:
 	enum class DIR {
 		From_Per,   ///< Peripheral → memory
 		To_Per,     ///< Memory → peripheral
-		Mem_To_Mem  ///< Memory → memory on G0; SetUp rejects it on F4/F7.
+		Mem_To_Mem  ///< Memory → memory, currently supported by this driver on G0.
 	};
 
 	/** @brief Transfer element width. */
@@ -269,15 +226,11 @@ public:
 	 * DME (direct-mode error) exists only on F4/F7.
 	 */
 	enum class IRQ {
+		TC  = dma_hw::IRQ_TC,
+		HTC = dma_hw::IRQ_HT,
+		TE  = dma_hw::IRQ_TE,
 #if defined(STM32F4) || defined(STM32F7)
-		TC  = DMA_SxCR_TCIE,
-		HTC = DMA_SxCR_HTIE,
-		TE  = DMA_SxCR_TEIE,
 		DME = DMA_SxCR_DMEIE,
-#elif defined(STM32G0)
-		TC  = DMA_CCR_TCIE,
-		HTC = DMA_CCR_HTIE,
-		TE  = DMA_CCR_TEIE,
 #endif
 	};
 
@@ -286,8 +239,9 @@ public:
 	 *
 	 * The @p channel field has different semantics per family:
 	 *  - F4/F7: DMA channel selection (CHSEL bits, 0–7)
-	 *  - G0:    DMAMUX request ID fitting the selected device's DMAREQ_ID field
-	 *           (6 or 7 bits); the peripheral driver checks the actual route.
+	 *  - G0/G4: nonzero peripheral request ID in the device's DMAREQ_ID field.
+	 *  - L0: CSELR field for the specific channel (0..15, including valid zero).
+	 * The peripheral consumer checks the actual route for the selected device.
 	 * Count is in elements, 0..65535. Zero addresses/count are permitted here
 	 * for deferred preparation. Nonzero addresses must match data_size alignment.
 	 */
@@ -303,33 +257,46 @@ public:
 		uint32_t count{0}; // Zero means preparation without a start.
 	};
 
-	// Only the common value type is defined here; named routes belong to peripheral defs.
-#include "dma_requests.hpp"
-
-#if defined(STM32F4) || defined(STM32F7)
-	// Stream + CHSEL come from DMAReq; no separate channel choice needed.
-	explicit DMA_Sx(DMA_Stream_TypeDef* stream) : _stream(reinterpret_cast<uintptr_t>(stream)) {}
-	constexpr explicit DMA_Sx(DMAReq req)
-		: _stream(req.stream),
-		  _preset_ch(req.ch), _has_preset(true) {}
-#elif defined(STM32G0)
-	// Channel chosen by the user; request ID comes from DMAReq (DMAMUX1).
-	explicit DMA_Sx(DMA_Channel_TypeDef* ch) : _stream(reinterpret_cast<uintptr_t>(ch)) {}
-	explicit DMA_Sx(DMA_Channel_TypeDef* ch, DMAReq req) : _stream(reinterpret_cast<uintptr_t>(ch)), _preset_ch(req.ch), _has_preset(true) {}
-	explicit DMA_Sx(DMA_Channel_TypeDef* ch, uint32_t req) : _stream(reinterpret_cast<uintptr_t>(ch)), _preset_ch(req),   _has_preset(true) {}
+	/**
+	 * @brief DMA route value. Named routes live in the peripheral definitions.
+	 * F4/F7/L0 pair a physical resource with a selector. G0/G4 describe a
+	 * DMAMUX request independently of the physical channel.
+	 */
+	struct DMAReq {
+#if defined(STM32F4) || defined(STM32F7) || defined(STM32L0)
+		uintptr_t stream; ///< DMAx_Streamy_BASE or DMA1_Channely_BASE.
+		uint32_t ch;      ///< CHSEL or CSELR selector.
+		constexpr bool IsValid() const noexcept { return stream != 0U && dma_hw::ValidRequest(ch); }
+#else
+		uint32_t ch;      ///< DMAMUX request ID. Zero is reserved for memory-to-memory.
+		constexpr bool IsValid() const noexcept { return dma_hw::ValidRequest(ch); }
 #endif
+		uintptr_t periph_base; ///< Zero means the consumer validates its own route.
+		DIR direction;
+	};
+
+	explicit DMA_Sx(dma_hw::Registers* resource)
+		: DMA_Sx(reinterpret_cast<uintptr_t>(resource)) {}
 
 	/// Numeric selection supports constinit; an empty selection is optional DMA.
 	constexpr explicit DMA_Sx(uintptr_t base) : _stream(base) {}
 	constexpr DMA_Sx(uintptr_t base, uint32_t request)
 		: _stream(base), _preset_ch(request), _has_preset(true) {}
-#if defined(STM32G0)
-	constexpr DMA_Sx(uintptr_t base, DMAReq request)
-		: _stream(base), _preset_ch(request.ch), _has_preset(true) {}
+
+#if defined(STM32F4) || defined(STM32F7) || defined(STM32L0)
+	// A fixed route describes both the physical resource and the selector.
+	constexpr explicit DMA_Sx(DMAReq req) : DMA_Sx(req.stream, req.ch) {}
+#elif defined(STM32G0) || defined(STM32G4)
+	// DMAMUX separates the physical channel from the peripheral request ID.
+	explicit DMA_Sx(DMA_Channel_TypeDef* ch, DMAReq req)
+		: DMA_Sx(reinterpret_cast<uintptr_t>(ch), req.ch) {}
+	explicit DMA_Sx(DMA_Channel_TypeDef* ch, uint32_t req)
+		: DMA_Sx(reinterpret_cast<uintptr_t>(ch), req) {}
+	constexpr DMA_Sx(uintptr_t base, DMAReq req) : DMA_Sx(base, req.ch) {}
 #endif
 
 	static constexpr bool ValidResource(uintptr_t base) { return GetStreamIndex(base) >= 0; }
-#if defined(STM32F4) || defined(STM32F7)
+#if defined(STM32F4) || defined(STM32F7) || defined(STM32L0)
 	static constexpr bool RouteMatches(DMAReq req, uintptr_t owner, DIR dir) {
 		return !(req.stream || req.ch || req.periph_base)
 			|| (req.IsValid() && ValidResource(req.stream)
@@ -349,13 +316,12 @@ public:
 
 	/** @brief Check a peripheral's DMAReq against this object's constructor selection.
 	 * No hardware access or ownership change. With no preset, SetUp must receive req.ch.
-	 * F4/F7 compare stream and any constructor preset; G0 compares the preset
-	 * request but leaves actual channel existence to SetUp(). This is a route
-	 * candidate check, not a reservation or proof the resource is free.
+	 * F4/F7/L0 compare the resource and any constructor preset. G0/G4 compare
+	 * the preset request and leave actual channel existence to SetUp().
 	 */
 	inline bool CanUseRequest(DMAReq req) const {
 		if (!req.IsValid() || (_has_preset && _preset_ch != req.ch)) return false;
-	#if defined(STM32F4) || defined(STM32F7)
+	#if defined(STM32F4) || defined(STM32F7) || defined(STM32L0)
 		return _stream == req.stream;
 	#else
 		return true; // DMAMUX permits the request on any existing channel.
@@ -375,7 +341,7 @@ public:
 	 *         unknown, already in use, or the settings are invalid.
 	 * @note Constructor request takes precedence over settings.channel.
 	 *       Does not start DMA. Repeated setup requires prior Release().
-	 *       Mem_To_Mem is currently unsupported on F4/F7 and returns InitError.
+	 *       Mem_To_Mem is currently supported only on G0.
 	 * @param settings Numeric request/channel, direction, widths, addresses/count.
 	 * count=0 and zero addresses allow deferred preparation without starting.
 	 * Existing hardware ownership, including this same configured object, rejects
@@ -397,8 +363,8 @@ public:
 	inline SysStatus SetMemAddr(uint32_t addr) {
 		if (!_info) return SysStatus::NotInit;
 		const uint32_t cr = _CR();
-		if (cr & CR_EN) return SysStatus::Busy;
-		if (!addr || (addr & ((1U << ((cr & CR_MSIZE_Msk) >> CR_MSIZE_Pos)) - 1U)))
+		if (cr & dma_hw::EN) return SysStatus::Busy;
+		if (!addr || (addr & ((1U << ((cr & dma_hw::MSIZE_MASK) >> dma_hw::MSIZE_POS)) - 1U)))
 			return SysStatus::Error;
 		_MAR() = addr;
 		return SysStatus::OK;
@@ -408,8 +374,8 @@ public:
 	inline SysStatus SetPerAddr(uint32_t addr) {
 		if (!_info) return SysStatus::NotInit;
 		const uint32_t cr = _CR();
-		if (cr & CR_EN) return SysStatus::Busy;
-		if (!addr || (addr & ((1U << ((cr & CR_PSIZE_Msk) >> CR_PSIZE_Pos)) - 1U)))
+		if (cr & dma_hw::EN) return SysStatus::Busy;
+		if (!addr || (addr & ((1U << ((cr & dma_hw::PSIZE_MASK) >> dma_hw::PSIZE_POS)) - 1U)))
 			return SysStatus::Error;
 		_PAR() = addr;
 		return SysStatus::OK;
@@ -423,7 +389,7 @@ public:
 	 */
 	inline SysStatus SetCount(uint32_t n) {
 		if (!_info) return SysStatus::NotInit;
-		if (_CR() & CR_EN) return SysStatus::Busy;
+		if (_CR() & dma_hw::EN) return SysStatus::Busy;
 		if (!n || n > MAX_COUNT) return SysStatus::Error;
 		_NDTR() = n;
 		return SysStatus::OK;
@@ -444,7 +410,7 @@ public:
 	inline void PrepareTransfer(uint32_t addr, uint32_t n, FunctionalState minc, uint32_t irq_mask) {
 		_MAR() = addr;
 		_NDTR() = n;
-		DMA_MODIFY_REG(_CR(), CR_MINC, (minc == ENABLE ? CR_MINC : 0U) | irq_mask);
+		DMA_MODIFY_REG(_CR(), dma_hw::MINC, (minc == ENABLE ? dma_hw::MINC : 0U) | irq_mask);
 		ClearFlags();
 	}
 
@@ -455,9 +421,9 @@ public:
 	 */
 	inline uint32_t GetCount() { return _NDTR(); }
 
-	/** @brief Clears all status flags for this stream/channel. */
+	/** @brief Clear the stream flags or the channel's individual HT/TC/TE flags. */
 	inline void ClearFlags() {
-		*_info->ifcr = FLAG_ALL << _info->if_offset;
+		*_info->ifcr = dma_hw::CLEAR_FLAGS << _info->if_offset;
 	}
 
 	/** @brief Returns true if the Transfer Complete flag is set. */
@@ -489,7 +455,7 @@ public:
 	}
 
 	/** @brief Read this stream's error bits, normalized to the first flag group.
-	 * F4/F7: TEIF0, DMEIF0 (direct mode); G0: TEIF1. Zero when not configured.
+	 * F4/F7: TEIF0, DMEIF0 (direct mode). G0/G4/L0: TEIF1. Zero before SetUp.
 	 */
 	inline uint32_t GetErrorFlags() const {
 		if (!_info) return 0;
@@ -527,15 +493,15 @@ public:
 
 	/// Change memory-address increment; configure while stopped and under the owner's control.
 	inline void MINC(FunctionalState en) {
-		if (en) DMA_SET_BIT(_CR(), CR_MINC); else DMA_CLEAR_BIT(_CR(), CR_MINC);
+		if (en) DMA_SET_BIT(_CR(), dma_hw::MINC); else DMA_CLEAR_BIT(_CR(), dma_hw::MINC);
 	}
 	/// Change peripheral-address increment; ordinary peripheral registers keep it disabled.
 	inline void PINC(FunctionalState en) {
-		if (en) DMA_SET_BIT(_CR(), CR_PINC); else DMA_CLEAR_BIT(_CR(), CR_PINC);
+		if (en) DMA_SET_BIT(_CR(), dma_hw::PINC); else DMA_CLEAR_BIT(_CR(), dma_hw::PINC);
 	}
 	/// Change circular mode while stopped; the consumer defines completion/buffer ownership.
 	inline void CIRC(FunctionalState en) {
-		if (en) DMA_SET_BIT(_CR(), CR_CIRC); else DMA_CLEAR_BIT(_CR(), CR_CIRC);
+		if (en) DMA_SET_BIT(_CR(), dma_hw::CIRC); else DMA_CLEAR_BIT(_CR(), dma_hw::CIRC);
 	}
 
 	/**
@@ -545,12 +511,12 @@ public:
 	 * transfer. Do not publish the buffer or reconfigure DMA before that event.
 	 * G0 abort/restart requires no transfer in progress on the DMA master port.
 	 */
-	inline void RequestStop() { DMA_CLEAR_BIT(_CR(), CR_EN); }
+	inline void RequestStop() { DMA_CLEAR_BIT(_CR(), dma_hw::EN); }
 
 	/** @brief Read EN once; no wait and no flag acknowledgement.
 	 * @pre Successful SetUp. On F4/F7 use TC for RX buffer handover after a stop.
 	 */
-	inline bool IsEnabled() const { return (_CR() & CR_EN) != 0U; }
+	inline bool IsEnabled() const { return (_CR() & dma_hw::EN) != 0U; }
 
 	/**
 	 * @brief Enable the prepared transfer or stop and wait for EN=0.
@@ -564,10 +530,10 @@ public:
 	inline void Stream_EN(FunctionalState en) {
 		if (en) {
 			__DMB(); // Publish preceding buffer writes before starting DMA.
-			DMA_SET_BIT(_CR(), CR_EN);
+			DMA_SET_BIT(_CR(), dma_hw::EN);
 		} else {
-			DMA_CLEAR_BIT(_CR(), CR_EN);
-			while (_CR() & CR_EN) {}
+			DMA_CLEAR_BIT(_CR(), dma_hw::EN);
+			while (_CR() & dma_hw::EN) {}
 			__DMB(); // Keep subsequent buffer accesses after the confirmed stop.
 		}
 	}
