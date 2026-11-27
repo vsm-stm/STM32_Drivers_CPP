@@ -1,8 +1,8 @@
 /**
  * @file    uart.hpp
- * @brief   USART/UART driver for STM32F4, STM32F7 and STM32G0.
+ * @brief   USART, UART and LPUART driver for STM32F4/F7/G0/L0/G4.
  *
- * One object controls one peripheral. Three transfer modes are available:
+ * Use one object per hardware peripheral. Three transfer modes are available:
  * - Send()/Receive(): blocking polling with a timeout for the whole call.
  * - Send_IRQ()/Receive_IRQ(): asynchronous byte/FIFO interrupt transfers.
  * - Send_DMA()/Receive_DMA(): asynchronous transfers using constructor-bound DMA.
@@ -16,10 +16,10 @@
  *
  * Initialization and IRQ ownership
  * -------------------------------
- * Initialize System/RCC before SetUp(). PCLK is the default; on F7/G0 the
+ * Initialize System/RCC before SetUp(). PCLK is the default. On F7/G0/L0/G4 the
  * constructor can select SYSCLK, HSI or LSE where the instance supports them.
  * SetUp() uses oversampling x16 and a selected 8N1/8E1/8O1/8N2 frame (default
- * 8N1); G0 PRESC is /1. The selected instance provides clock
+ * 8N1). UART PRESC is /1 where present. The selected instance provides clock
  * gates, PCLK variables, vectors and pins for the selected MCU. Named DMAReq
  * entries carry USART ownership/direction; DMA objects are stored inside USART.
  * TX/RX pins come from USART::_N::TX/RX. Their number/AF are defined by PIN;
@@ -33,12 +33,12 @@
  * Shared IRQ capacity is configured in irq_registry_settings.hpp.
  * USART and its DMA handlers must not preempt one another for the same object.
  * Each IRQ entry services at most one hardware FIFO per direction: 8 words
- * on G0 with FIFO enabled, otherwise one byte. IDLE owns its RX tail budget.
+ * on G0/G4 with FIFO enabled, otherwise one byte. IDLE owns its RX tail budget.
  * USART IRQ uses entry snapshots for source/DMA-gate checks, except TCIE/TC,
  * which are re-read after callbacks and TX handling.
  * UART_USE_ATOMIC in this header selects control-bit and UART clock-field updates:
  * 0 (default) uses ordinary SET_BIT/CLEAR_BIT/MODIFY_REG; 1 uses ST ATOMIC_*.
- * In atomic mode F4/F7 use LDREX/STREX retries; G0 briefly masks interrupts for
+ * In atomic mode F4/F7/G4 use LDREX/STREX retries. G0/L0 briefly mask interrupts for
  * each update and restores the prior PRIMASK. Rebuild all UART users after changing it.
  *
  * Packet reception
@@ -49,7 +49,7 @@
  * explicitly after consuming the packet, then start the next receive.
  * The receiver remains enabled between packets: this API does not guarantee
  * continuous reception without gaps. A new Receive discards stale input/errors.
- * On G0 IDLE disables DMAR and DMA without waiting, then publishes the packet
+ * On G0/G4/L0 IDLE disables DMAR and DMA without waiting, then publishes the packet
  * from USART IRQ. The last DMA request must have been serviced before this
  * stop; abort during a DMA transfer can leave CNDTR inaccurate. Failed packets
  * are discarded without reading their DMA length.
@@ -135,32 +135,123 @@
  */
 class USART : public IIRQHandler
 {
+private:
+	// F4 uses SR/DR. Newer layouts use ISR, TDR and RDR.
+#if defined(STM32F4)
+	static constexpr uint32_t CR1_TXEIE  = USART_CR1_TXEIE;
+	static constexpr uint32_t CR1_RXNEIE = USART_CR1_RXNEIE;
+	static constexpr uint32_t ISR_TXE = USART_SR_TXE;
+	static constexpr uint32_t ISR_RXNE = USART_SR_RXNE;
+	static constexpr uint32_t ISR_IDLE = USART_SR_IDLE;
+	static constexpr uint32_t ISR_TC = USART_SR_TC;
+	static constexpr uint32_t UART_ERRORS = USART_SR_PE | USART_SR_FE | USART_SR_NE | USART_SR_ORE;
+
+	volatile uint32_t& TXD()        const { return USARTx->DR; }
+	volatile uint32_t& RXD()        const { return USARTx->DR; }
+	volatile uint32_t& Status_reg() const { return USARTx->SR; }
+#else
+#if defined(USART_CR1_FIFOEN)
+	static constexpr uint32_t CR1_TXEIE  = USART_CR1_TXEIE_TXFNFIE;
+	static constexpr uint32_t CR1_RXNEIE = USART_CR1_RXNEIE_RXFNEIE;
+	static constexpr uint32_t ISR_TXE = USART_ISR_TXE_TXFNF;
+	static constexpr uint32_t ISR_RXNE = USART_ISR_RXNE_RXFNE;
+	static constexpr uint32_t ISR_TXFT = USART_ISR_TXFT;
+	static constexpr uint32_t ISR_RXFT = USART_ISR_RXFT;
+#else
+	static constexpr uint32_t CR1_TXEIE  = USART_CR1_TXEIE;
+	static constexpr uint32_t CR1_RXNEIE = USART_CR1_RXNEIE;
+	static constexpr uint32_t ISR_TXE = USART_ISR_TXE;
+	static constexpr uint32_t ISR_RXNE = USART_ISR_RXNE;
+#endif
+	static constexpr uint32_t ISR_IDLE = USART_ISR_IDLE;
+	static constexpr uint32_t ISR_TC = USART_ISR_TC;
+	static constexpr uint32_t UART_ERRORS = USART_ISR_PE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE;
+
+	volatile uint32_t& TXD()        const { return USARTx->TDR; }
+	volatile uint32_t& RXD()        const { return USARTx->RDR; }
+	volatile uint32_t& Status_reg() const { return USARTx->ISR; }
+#endif
+
+	// RX interrupt sources are enabled and disabled for each packet.
+	static constexpr uint32_t CR1_RX_IRQ = CR1_RXNEIE | USART_CR1_IDLEIE | USART_CR1_PEIE;
+#if defined(USART_CR1_FIFOEN)
+	static constexpr uint32_t CR3_RX_IRQ = USART_CR3_EIE | USART_CR3_RXFTIE;
+	static constexpr uint32_t CR3_TX_IRQ = USART_CR3_TXFTIE;
+#else
+	static constexpr uint32_t CR3_RX_IRQ = USART_CR3_EIE;
+#endif
+
 public:
 	/// Eight payload bits. Parity occupies the ninth hardware word bit.
 	enum class FrameFormat : uint8_t { N8_1, E8_1, O8_1, N8_2 };
-	// Named pin tables, FIFO enums and family-specific register accessors.
-	// For example USART::_1::TX::PB6 stores port, pin, AF and USART1 ownership.
-    /** Fixed device metadata from uart_defs.hpp; no runtime lookup. */
-    struct Instance {
-        uintptr_t periph;
-        uintptr_t clk_reg;
-        uint32_t clk_bit;
-        const uint32_t* bus_clk;
-        IRQn_Type irq;
-#if defined(STM32F7) || defined(STM32G0)
-        uint32_t clock_select; ///< Two-bit RCC selector mask; zero means fixed PCLK.
+	/** Fixed device metadata. Defined once for each available instance. */
+	struct Instance {
+		uintptr_t periph;
+		uintptr_t clk_reg;
+		uint32_t clk_bit;
+		const uint32_t* bus_clk;
+		IRQn_Type irq;
+#if !defined(STM32F4)
+		uint32_t clock_select; ///< Two-bit RCC selector mask. Zero means fixed PCLK.
 #endif
-#if defined(STM32G0)
-        uint32_t dma_tx_request, dma_rx_request;
+#if defined(STM32G0) || defined(STM32G4)
+		uint32_t dma_tx_request, dma_rx_request;
 #endif
-    };
-#include "uart_defs.hpp"
+#if !defined(STM32F4)
+		uint8_t clock_select_pos = clock_select ? __builtin_ctz(clock_select) : 0U;
+#endif
+#if !defined(STM32F4) && !defined(STM32F7)
+		bool low_power = false; ///< Selects the LPUART BRR calculation.
+#endif
+	};
 
-#if defined(STM32F7) || defined(STM32G0)
+	// The selected family defines constexpr instances, pins and DMA routes.
+#if defined(STM32F4) || defined(STM32F7)
+#include "hardware/uart/f4_f7.hpp"
+#elif defined(STM32G0)
+#include "hardware/uart/g0.hpp"
+#elif defined(STM32G4)
+#include "hardware/uart/g4.hpp"
+#elif defined(STM32L0)
+#include "hardware/uart/l0.hpp"
+#endif
+
+#if defined(USART_CR1_FIFOEN)
+	enum class FIFO {
+		NO = 0,
+		EN = USART_CR1_FIFOEN
+	};
+
+	enum class FIFO_TH {
+		NO    = 0,
+		TH_1_8 = 0b000,
+		TH_1_4 = 0b001,
+		TH_1_2 = 0b010,
+		TH_3_4 = 0b011,
+		TH_7_8 = 0b100,
+		all    = 0b101 ///< RX full / TX empty (threshold encoding 5).
+	};
+
+	static constexpr uint32_t FIFO_TH_TX_Pos = USART_CR3_TXFTCFG_Pos;
+	static constexpr uint32_t FIFO_TH_RX_Pos = USART_CR3_RXFTCFG_Pos;
+#else
+	enum class FIFO {
+		NO = 0,
+	};
+
+	enum class FIFO_TH {
+		NO = 0,
+	};
+
+	static constexpr uint32_t FIFO_TH_TX_Pos = 0;
+	static constexpr uint32_t FIFO_TH_RX_Pos = 0;
+#endif
+
+#if !defined(STM32F4)
 	/**
 	 * @brief USART kernel clock, fixed when the object is constructed.
 	 * Values match the two-bit RCC USARTxSEL field. Availability depends on
-	 * the selected MCU and instance; a G0 instance without a selector uses PCLK only.
+	 * the selected MCU and instance; an instance without a selector uses PCLK only.
 	 * The caller enables HSI/LSE before SetUp() and keeps the source running.
 	 * Keep RCC source frequencies and bus dividers unchanged while UART is in use.
 	 */
@@ -168,7 +259,7 @@ public:
 	ClockSource : uint8_t {
 		PCLK = 0,   ///< APB clock for this instance (default).
 		SYSCLK = 1, ///< System clock before the AHB divider.
-		HSI = 2,    ///< HSI 16 MHz; on G0 this is before HSIDIV.
+		HSI = 2,    ///< HSI clock. On G0 it is before HSIDIV; on L0 HSIDIVF selects /4.
 		LSE = 3     ///< LSE 32768 Hz.
 	};
 #endif
@@ -176,7 +267,7 @@ public:
 	/**
 	 * @brief Peripheral interrupt sources controlled by IRQ_en().
 	 *
-	 * TXE/RXNE/TC/IDLE map to CR1. G0 FIFO threshold sources map to CR3.
+	 * TXE/RXNE/TC/IDLE map to CR1. G0/G4 FIFO threshold sources map to CR3.
 	 * Send_IRQ()/Receive_IRQ() select their byte/FIFO sources automatically;
 	 * manual IRQ_en() is useful for notifications such as physical TX completion.
 	 */
@@ -185,9 +276,9 @@ public:
 		RXNE = CR1_RXNEIE,           ///< RX data register/FIFO contains data.
 		TC = USART_CR1_TCIE,         ///< Last frame, including its stop bit, completed.
 		IDLE = USART_CR1_IDLEIE,     ///< Idle line: end the current packet.
-#if defined(STM32G0)
-		TXFIFO = USART_CR3_TXFTIE,   ///< G0 TX FIFO reached its configured threshold.
-		RXFIFO = USART_CR3_RXFTIE,   ///< G0 RX FIFO reached its configured threshold.
+#if defined(USART_CR1_FIFOEN)
+		TXFIFO = USART_CR3_TXFTIE,   ///< TX FIFO reached its configured threshold.
+		RXFIFO = USART_CR3_RXFTIE,   ///< RX FIFO reached its configured threshold.
 #endif
 	};
 	/**
@@ -200,7 +291,7 @@ public:
 		RX = USART_CR3_DMAR                     ///< UART RX requests only.
 	};
 
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 	using DMAReq = uintptr_t; ///< Request source follows USART and TX/RX.
 #else
 	using DMAReq = DMA_Sx::DMAReq;
@@ -233,9 +324,9 @@ public:
 	 * @param baudrate Requested bits per second; validated against the kernel clock.
 	 * @param tx Named USART::_N::TX pin, or PIN{} to leave TX unconfigured.
 	 * @param rx Named USART::_N::RX pin, or PIN{} to leave RX unconfigured.
-	 * @param dma_tx Named TX request; {} means no DMA. On G0: DMAx_Channely_BASE.
+	 * @param dma_tx Named TX route on F4/F7/L0 or DMAx_Channely_BASE on G0/G4. {} omits DMA.
 	 * @param dma_rx Named RX request; {} means no DMA. TX/RX resources must differ.
-	 * @param clock_source F7/G0 only: kernel clock, PCLK by default. Immutable;
+	 * @param clock_source F7/G0/L0/G4 kernel clock, PCLK by default. Immutable;
 	 *        SetUp() applies the choice but never starts an oscillator. An unavailable
 	 *        source or an HSI/LSE source that is not enabled and ready gives InitError.
 	 *
@@ -283,16 +374,16 @@ public:
 	/// NonCacheable trusts the caller to supply only DTCM/non-cacheable MPU buffers.
 	constexpr explicit USART(const Instance& instance, uint32_t baudrate,
 		PIN tx = {}, PIN rx = {}, DMAReq dma_tx = {}, DMAReq dma_rx = {}
-#if defined(STM32F7) || defined(STM32G0)
+#if !defined(STM32F4)
 		, ClockSource clock_source = ClockSource::PCLK
 #endif
 		, System::CachePolicy cache_policy = System::CachePolicy::Cacheable
 		)
 		: _instance(instance), _cache_policy(cache_policy), BaudRate(baudrate), _TX(tx), _RX(rx)
-#if defined(STM32F7) || defined(STM32G0)
+#if !defined(STM32F4)
 		, _clock_source(clock_source)
 #endif
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 		, _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request)
 #else
 		, _dma_tx(dma_tx), _dma_rx(dma_rx)
@@ -309,7 +400,7 @@ public:
 			STM32_CONFIG_ERROR("USART: invalid RX DMA route");
 		if (DMA_Sx::SameResource(dma_tx, dma_rx))
 			STM32_CONFIG_ERROR("USART: TX and RX require different DMA resources");
-#if defined(STM32F7) || defined(STM32G0)
+#if !defined(STM32F4)
 		if (static_cast<uint32_t>(clock_source) > static_cast<uint32_t>(ClockSource::LSE))
 			STM32_CONFIG_ERROR("USART: invalid clock source");
 		if (!instance.clock_select && clock_source != ClockSource::PCLK)
@@ -321,21 +412,21 @@ public:
 	[[deprecated("Use instance and constinit")]]
 	explicit USART(USART_TypeDef* usartx, uint32_t baudrate,
 		PIN tx = PIN{}, PIN rx = PIN{},
-		#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 		DMA_Channel_TypeDef* dma_tx = nullptr, DMA_Channel_TypeDef* dma_rx = nullptr
 #else
 		DMAReq dma_tx = {}, DMAReq dma_rx = {}
 #endif
-#if defined(STM32F7) || defined(STM32G0)
+#if !defined(STM32F4)
 		, ClockSource clock_source = ClockSource::PCLK
 #endif
 		, System::CachePolicy cache_policy = System::CachePolicy::Cacheable
 		)
 		: _instance(FindInstance(usartx)), _cache_policy(cache_policy), BaudRate(baudrate), _TX(tx), _RX(rx)
-#if defined(STM32F7) || defined(STM32G0)
+#if !defined(STM32F4)
 		, _clock_source(clock_source)
 #endif
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 		, _dma_tx(dma_tx, _instance.dma_tx_request), _dma_rx(dma_rx, _instance.dma_rx_request)
 #else
 		, _dma_tx(dma_tx), _dma_rx(dma_rx)
@@ -346,7 +437,7 @@ public:
 			STM32_CONFIG_ERROR("USART: TX pin belongs to wrong peripheral");
 		if (rx.IsValid() && rx.periph_base && rx.periph_base != (uint32_t)usartx)
 			STM32_CONFIG_ERROR("USART: RX pin belongs to wrong peripheral");
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 		if (dma_tx && dma_tx == dma_rx)
 			STM32_CONFIG_ERROR("USART: TX and RX require different DMA channels");
 #else
@@ -384,22 +475,24 @@ public:
 	 * Uses the constructor's kernel clock (PCLK on F4), oversampling x16,
 	 * 8 data bits, no parity and one stop bit. BRR is rounded from
 	 * (kernel_clock + baud/2) / baud; it must fit 16..65535,
-	 * and requested baud must not exceed kernel_clock/16. G0 PRESC is /1.
+	 * and requested baud must not exceed kernel_clock/16 for USART/UART.
+	 * LPUART uses round(256 * kernel_clock / baud), BRR 0x300..0xFFFFF.
+	 * UART PRESC is /1 where present.
 	 * HSI/LSE must already be enabled and ready; SetUp() only checks their state.
 	 * SetUp() registers this object and each bound DMA direction separately.
 	 * Request compatibility was checked by construction. Busy/invalid hardware
 	 * resources are rejected at acquisition; partial setup releases its acquisitions.
 	 * Transfer sources themselves are enabled later by the selected operation.
 	 *
-	 * @param fifo NO by default. EN is supported only on FIFO-capable G0 instances.
-	 * @param fifo_th_tx G0 TX threshold when FIFO is enabled.
-	 * @param fifo_th_rx G0 RX threshold when FIFO is enabled.
-	 * FIFO_TH::all is encoding 5: RX full, TX empty. F4/F7 accept NO only.
+	 * @param fifo NO by default. EN is supported only on FIFO-capable G0/G4 instances.
+	 * @param fifo_th_tx G0/G4 TX threshold when FIFO is enabled.
+	 * @param fifo_th_rx G0/G4 RX threshold when FIFO is enabled.
+	 * FIFO_TH::all is encoding 5: RX full, TX empty. F4/F7/L0 offer FIFO::NO.
 	 * @return InitOK on success; InitError for invalid peripheral/clock/baud/FIFO,
 	 *         repeated setup or a failed IRQ registration (including a full row).
 	 * @pre System/RCC are initialized. Call from main; repeated setup needs DeInit().
 	 *
-	 * G0 FIFO example, on an instance supporting FIFO:
+	 * G0/G4 FIFO example, on an instance supporting FIFO:
 	 * @code
 	 *   uart.SetUp(USART::FIFO::EN, USART::FIFO_TH::TH_1_2,
 	 *                              USART::FIFO_TH::TH_1_2);
@@ -419,7 +512,7 @@ public:
 	 * Transfer methods manage their own sources; disabling one manually during
 	 * an operation does not by itself complete that operation or change Busy.
 	 *
-	 * @param irq UART source in CR1, or G0 FIFO threshold source in CR3.
+	 * @param irq UART source in CR1, or G0/G4 FIFO threshold source in CR3.
 	 * @param en ENABLE to set, DISABLE to clear.
 	 * @code
 	 *   uart.IRQ_en(USART::IRQ::TC, ENABLE); // OnTC(): last stop bit completed.
@@ -428,7 +521,7 @@ public:
 	inline void IRQ_en(IRQ irq, FunctionalState en)
 	{
 		if (!USARTx) return;
-#if defined(STM32G0)
+#if defined(USART_CR1_FIFOEN)
 		auto& reg = (irq == IRQ::TXFIFO || irq == IRQ::RXFIFO) ? USARTx->CR3 : USARTx->CR1;
 #else
 		auto& reg = USARTx->CR1;
@@ -445,7 +538,7 @@ public:
 	 * This low-level method does not configure/start/stop/release a DMA resource,
 	 * disable the UART receiver, or perform cache/buffer handover. Normal *_DMA()
 	 * operations manage these gates themselves: DMA starts before requests are
-	 * enabled; RX completion disables requests and waits for DMA EN=0.
+	 * enabled. RX completion disables requests before handing the buffer back.
 	 * UART_USE_ATOMIC selects ordinary or atomic DMAT/DMAR changes.
 	 */
 	inline void DMA_en(FunctionalState en, DMA dma = DMA::TXRX)
@@ -466,14 +559,14 @@ public:
 	inline void ClearFlags() { USARTx->SR = 0; }
 #else
 	/**
-	 * @brief F7/G0 flags cleared through ICR, including noise error (NE).
+	 * @brief F7/G0/G4/L0 flags cleared through ICR, including noise error (NE).
 	 * Values are ICR masks; F4 instead provides the SR-based ClearFlags().
-	 * CMSIS names the noise-clear bit NCF on F7 and NECF on G0.
+	 * CMSIS uses NCF or NECF for the noise-clear bit.
 	 */
 	enum class ISR_FLAGS {
 		PE = USART_ICR_PECF,
 		FE = USART_ICR_FECF,
-#if defined(STM32G0)
+#if defined(USART_ICR_NECF)
 		NE = USART_ICR_NECF,
 #else
 		NE = USART_ICR_NCF,
@@ -483,7 +576,7 @@ public:
 		TC = USART_ICR_TCCF
 	};
 	/**
-	 * @brief Acknowledge one F7/G0 status flag through ICR.
+	 * @brief Acknowledge one F7/G0/G4/L0 status flag through ICR.
 	 * @param flag Flag to clear; this does not change transfer state or counters.
 	 * @code
 	 *   uart.ClearFlags(USART::ISR_FLAGS::TC);
@@ -525,7 +618,7 @@ public:
 	 */
 	SysStatus Receive(uint8_t* data, uint32_t len, uint32_t timeout = 100);
 	/**
-	 * @brief Start asynchronous TX through TXE or G0 FIFO threshold interrupts.
+	 * @brief Start asynchronous TX through TXE or G0/G4 FIFO threshold interrupts.
 	 * @param data Source buffer; keep alive and unchanged until TX leaves Busy.
 	 * @param len Number of bytes, 1..65535.
 	 * @return OK when started (not completed); NotInit before SetUp(); Error
@@ -559,7 +652,7 @@ public:
 	 *         invalid buffer/length; Busy if TX is active.
 	 *         The caller uses the constructor-configured TX direction.
 	 *
-	 * System::CacheClean() publishes source bytes before DMA starts; on F4/G0
+	 * System::CacheClean() publishes source bytes before DMA starts. On F4/G0/L0/G4
 	 * it is compiled out; NonCacheable skips it on F7 as well.
 	 * The DMA handler stops/acknowledges DMA and sets TX OK before notifying
 	 * OnDmaTxComplete(). The source buffer is reusable; physical TC is separate.
@@ -580,15 +673,15 @@ public:
 	 * invalidate the bytes written by DMA, retain a fitting UART/FIFO tail,
 	 * then publish RX OK and ready/count. Errors instead publish RX Error and
 	 * invoke OnError(), without a ready packet.
-	 * G0 IDLE completes in USART IRQ without waiting. This assumes that the last
+	 * G0/G4/L0 IDLE completes in USART IRQ without waiting. This assumes that the last
 	 * DMA request has completed; arbitrary mid-transfer abort does not guarantee
-	 * CNDTR. Failed G0 packets are discarded without calculating their length.
+	 * CNDTR. Failed packets are discarded without calculating their length.
 	 *
 	 * F7 cacheable RX storage must own every touched 32-byte cache line, including
 	 * padding. Do not share these lines with unrelated data or access them from
 	 * CPU while Busy. NonCacheable skips all cache maintenance for both TX/RX;
 	 * the caller guarantees non-cacheable memory. DMA buffer ownership still applies.
-	 * F4/G0 compile out cache operations and their argument evaluation.
+	 * F4/G0/L0/G4 compile out cache operations and their argument evaluation.
 	 *
 	 * Example after successful SetUp() with constructor-bound RX DMA:
 	 * @code
@@ -720,12 +813,13 @@ private:
 
 	PIN _TX; ///< Optional TX pin and stored AF.
 	PIN _RX; ///< Optional RX pin and stored AF.
-#if defined(STM32F7) || defined(STM32G0)
+#if !defined(STM32F4)
 	const ClockSource _clock_source; ///< Constructor choice, retained across DeInit().
 #endif
 	/// Selected nominal kernel frequency; zero for an unavailable/not-ready source.
 	static const Instance& FindInstance(USART_TypeDef* usart);
 	uint32_t KernelClock(const Instance& info) const;
+	uint32_t BaudRegister(uint32_t baud) const;
 
 	/**
 	 * @brief Asynchronous transfer descriptor, initialized before enabling a source.
@@ -778,10 +872,13 @@ private:
 	bool FinishRx(uint32_t errors); // Publish once, after hardware/buffer cleanup.
 	bool FinishRxIRQ();            // Stopped IRQ reception: acknowledge/drain tail.
 	bool FinishRxDMA();            // Confirmed DMA stop: count/cache/tail handover.
+#if defined(USART_CR1_FIFOEN)
+	static constexpr uint32_t FIFO_CAPACITY = 8U;
+#endif
 	/// Maximum ready words serviced in one direction per IRQ entry.
 	uint32_t FifoDepth() const {
-#if defined(STM32G0)
-		return (USARTx->CR1 & USART_CR1_FIFOEN) ? 8U : 1U;
+#if defined(USART_CR1_FIFOEN)
+		return (USARTx->CR1 & USART_CR1_FIFOEN) ? FIFO_CAPACITY : 1U;
 #else
 		return 1U;
 #endif
@@ -823,7 +920,7 @@ protected:
 	 * in the calling context instead.
 	 * On F4/F7, OnIdle() for DMA RX runs from DMA RX TC after the requested stop,
 	 * not from USART IRQ. Without DMA it runs from USART IRQ as before.
-	 * On G0, IDLE completion runs from USART IRQ, capacity from DMA RX IRQ.
+	 * On G0/G4/L0, IDLE completion runs from USART IRQ, capacity from DMA RX IRQ.
 	 *
 	 * OnRxByte and OnTxEmpty perform byte-buffer handling: call the base to keep
 	 * that processing. RX completion is published once by the interrupt handler
@@ -873,7 +970,7 @@ protected:
 	/**
 	 * @brief Notify successful packet completion caused by IDLE; empty by default.
 	 * RX is already stopped and OK, count/ready and cache handover are complete.
-	 * F4/F7 DMA: called from DMA RX IRQ after stop TC. G0 DMA and IRQ reception:
+	 * F4/F7 DMA: called from DMA RX IRQ after stop TC. G0/G4/L0 DMA and IRQ reception:
 	 * called from USART IRQ. No base call or hardware cleanup is needed here.
 	 * Failed packets call OnError instead; capacity events do not call OnIdle.
 	 */
@@ -927,6 +1024,12 @@ inline const USART::Instance& USART::FindInstance(USART_TypeDef* usart)
 #endif
 #ifdef USART6_BASE
     case USART6_BASE: return _6::instance;
+#endif
+#ifdef LPUART1_BASE
+    case LPUART1_BASE: return _LP1::instance;
+#endif
+#ifdef LPUART2_BASE
+    case LPUART2_BASE: return _LP2::instance;
 #endif
 #if defined(USART7_BASE)
     case USART7_BASE: return _7::instance;

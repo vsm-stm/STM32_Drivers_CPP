@@ -10,18 +10,26 @@
  */
 #include "uart.hpp"
 
-// OVER8=0: 16-bit BRR, USARTDIV >= 16. G0 PRESC is /1.
-static uint32_t BaudRegister(uint32_t clock, uint32_t baud)
+uint32_t USART::BaudRegister(uint32_t baud) const
 {
-	if (!baud || baud > clock / 16U) return 0;
+	const uint32_t clock = KernelClock(_instance);
+#if defined(LPUART1_BASE) || defined(LPUART2_BASE)
+	if (_instance.low_power) {
+		// LPUART uses a 20-bit BRR with eight fractional bits.
+		if (!baud || baud > clock / 3U) return 0U;
+		const uint64_t brr = (uint64_t{clock} * 256U + baud / 2U) / baud;
+		return brr >= 0x300U && brr <= 0xFFFFFU ? static_cast<uint32_t>(brr) : 0U;
+	}
+#endif
+	// OVER8=0: 16-bit BRR. PRESC, where available, is /1.
+	if (!baud || baud > clock / 16U) return 0U;
 	const uint32_t brr = (clock + baud / 2U) / baud;
-	constexpr uint32_t max_brr = 0xFFFFU;
-	return brr >= 16U && brr <= max_brr ? brr : 0;
+	return brr >= 16U && brr <= 0xFFFFU ? brr : 0U;
 }
 
 uint32_t USART::KernelClock(const Instance& info) const
 {
-#if defined(STM32F7) || defined(STM32G0)
+#if !defined(STM32F4)
 	if (!info.clock_select && _clock_source != ClockSource::PCLK) return 0;
 	switch (_clock_source) {
 	case ClockSource::PCLK: return *info.bus_clk;
@@ -33,16 +41,25 @@ uint32_t USART::KernelClock(const Instance& info) const
 	}
 	case ClockSource::HSI: {
 		const uint32_t cr = RCC->CR;
-#if defined(STM32G0)
-		const uint32_t enabled = RCC_CR_HSION | RCC_CR_HSIKERON;
+#if defined(RCC_CR_HSIKERON)
+		constexpr uint32_t enabled = RCC_CR_HSION | RCC_CR_HSIKERON;
 #else
-		const uint32_t enabled = RCC_CR_HSION;
+		constexpr uint32_t enabled = RCC_CR_HSION;
 #endif
-		return (cr & enabled) && (cr & RCC_CR_HSIRDY) ? HSI_Clock : 0;
+		if (!(cr & enabled) || !(cr & RCC_CR_HSIRDY)) return 0U;
+#if defined(STM32L0)
+		if (cr & RCC_CR_HSIDIVF) return HSI_Clock / 4U;
+#endif
+		return HSI_Clock;
 	}
 	case ClockSource::LSE:
+#if defined(STM32L0)
+		return (RCC->CSR & (RCC_CSR_LSEON | RCC_CSR_LSERDY))
+			== (RCC_CSR_LSEON | RCC_CSR_LSERDY) ? RCCDefs::LSE_HZ : 0U;
+#else
 		return (RCC->BDCR & (RCC_BDCR_LSEON | RCC_BDCR_LSERDY))
-			== (RCC_BDCR_LSEON | RCC_BDCR_LSERDY) ? RCCDefs::LSE_HZ : 0;
+			== (RCC_BDCR_LSEON | RCC_BDCR_LSERDY) ? RCCDefs::LSE_HZ : 0U;
+#endif
 	default: return 0;
 	}
 #else
@@ -58,9 +75,9 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx, Fr
 	if (format != FrameFormat::N8_1 && format != FrameFormat::E8_1
 		&& format != FrameFormat::O8_1 && format != FrameFormat::N8_2)
 		return SysInitStatus::InitError;
-	const uint32_t brr = BaudRegister(KernelClock(_instance), BaudRate);
+	const uint32_t brr = BaudRegister(BaudRate);
 	if (!brr) return SysInitStatus::InitError;
-#if defined(STM32G0)
+#if defined(USART_CR1_FIFOEN)
 	if ((fifo != FIFO::NO && fifo != FIFO::EN)
 		|| static_cast<uint32_t>(fifo_th_tx) > static_cast<uint32_t>(FIFO_TH::all)
 		|| static_cast<uint32_t>(fifo_th_rx) > static_cast<uint32_t>(FIFO_TH::all)
@@ -73,10 +90,9 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx, Fr
 	UART_SET_BIT(*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg), _instance.clk_bit);
 	(void)*reinterpret_cast<volatile uint32_t*>(_instance.clk_reg);
 	USARTx->CR1 = 0; // BRR and FIFO configuration require UE=0.
-#if defined(STM32F7) || defined(STM32G0)
+#if !defined(STM32F4)
 	if (_instance.clock_select) {
-		// Locate this instance's two-bit USARTxSEL field; the mask is nonzero here.
-		const uint32_t selection = static_cast<uint32_t>(_clock_source) << __builtin_ctz(_instance.clock_select);
+		const uint32_t selection = static_cast<uint32_t>(_clock_source) << _instance.clock_select_pos;
 #if defined(STM32F7)
 		UART_MODIFY_REG(RCC->DCKCFGR2, _instance.clock_select, selection);
 #else
@@ -84,7 +100,7 @@ SysInitStatus USART::SetUp(FIFO fifo, FIFO_TH fifo_th_tx, FIFO_TH fifo_th_rx, Fr
 #endif
 	}
 #endif
-#if defined(STM32G0)
+#if defined(USART_PRESC_PRESCALER)
 	USARTx->PRESC = 0;
 #endif
 	USARTx->BRR = brr;
@@ -147,7 +163,7 @@ SysStatus USART::SetBaud(uint32_t baud)
 	// Caller ensures physical completion via TC; these are software transfer states.
 	if (tx_status == SysStatus::Busy || rx_status == SysStatus::Busy)
 		return SysStatus::Busy;
-	const uint32_t brr = BaudRegister(KernelClock(_instance), baud);
+	const uint32_t brr = BaudRegister(baud);
 	if (!brr) return SysStatus::Error;
 	const uint32_t ue = USARTx->CR1 & USART_CR1_UE;
 	UART_CLEAR_BIT(USARTx->CR1, USART_CR1_UE);
@@ -227,7 +243,7 @@ SysStatus USART::Send_IRQ(uint8_t* data, uint32_t len)
 #endif
 	tx_status = SysStatus::Busy;
 	__DMB(); // Publish the descriptor before enabling its interrupt source.
-#if defined(STM32G0)
+#if defined(USART_CR1_FIFOEN)
 	if (USARTx->CR1 & USART_CR1_FIFOEN) IRQ_en(IRQ::TXFIFO, ENABLE);
 	else
 #endif
@@ -245,7 +261,7 @@ SysStatus USART::Receive_IRQ(uint8_t* data, uint32_t len)
 	__DMB();
 	uint32_t cr1_rx = USART_CR1_PEIE | USART_CR1_IDLEIE;
 	uint32_t cr3_rx = USART_CR3_EIE;
-#if defined(STM32G0)
+#if defined(USART_CR1_FIFOEN)
 	if (USARTx->CR1 & USART_CR1_FIFOEN) cr3_rx |= USART_CR3_RXFTIE;
 	else
 #endif
@@ -353,7 +369,7 @@ void USART::HandleIRQ()
 	const uint32_t sr = Status_reg();
 	const uint32_t cr1 = USARTx->CR1;
 	const uint32_t cr3 = USARTx->CR3;
-	if (rx_status == SysStatus::Busy) {
+	if ((sr & UART_ERRORS) && rx_status == SysStatus::Busy) {
 		const uint32_t enabled_errors = ((cr1 & USART_CR1_PEIE) ? static_cast<uint32_t>(Error::Parity) : 0U)
 			| ((cr3 & USART_CR3_EIE) ? (UART_ERRORS & ~static_cast<uint32_t>(Error::Parity)) : 0U);
 		const uint32_t errors = sr & enabled_errors;
@@ -365,7 +381,7 @@ void USART::HandleIRQ()
 					_rx_dma_idle = true;
 					_dma_rx.RequestStop();
 				}
-#if defined(STM32G0)
+#if !defined(STM32F4) && !defined(STM32F7)
 				if (_dma_rx.GetIRQFlags() & DMA_Sx::FLAG_ERRORS)
 					_rx_errors = _rx_errors | static_cast<uint32_t>(Error::DmaRx);
 				FinishRxDMA(); // Error packets are discarded; never notify IDLE.
@@ -383,18 +399,21 @@ void USART::HandleIRQ()
 		}
 	}
 
-	bool rx_irq = (cr1 & CR1_RXNEIE) && (sr & ISR_RXNE);
-	bool tx_irq = (cr1 & CR1_TXEIE) && (sr & ISR_TXE);
-	const bool idle_irq = (sr & ISR_IDLE) && (cr1 & USART_CR1_IDLEIE);
-#if defined(STM32G0)
+	static_assert(CR1_RXNEIE == ISR_RXNE && CR1_TXEIE == ISR_TXE && USART_CR1_IDLEIE == ISR_IDLE);
+	const uint32_t events = sr & cr1;
+	bool rx_irq = (events & ISR_RXNE) != 0U;
+	bool tx_irq = (events & ISR_TXE) != 0U;
+	const bool idle_irq = (events & ISR_IDLE) != 0U;
+#if defined(USART_CR1_FIFOEN)
 	rx_irq = rx_irq || ((cr3 & USART_CR3_RXFTIE) && (sr & ISR_RXFT));
 	tx_irq = tx_irq || ((cr3 & USART_CR3_TXFTIE) && (sr & ISR_TXFT));
 #endif
 	// IDLE has its own bounded tail read. CPU must not consume DMA-owned RDR.
 	if (rx_irq && !idle_irq && rx_status == SysStatus::Busy && !(cr3 & USART_CR3_DMAR)) {
-#if defined(STM32G0)
+#if defined(USART_CR1_FIFOEN)
 		uint32_t rx_sr = sr;
-		for (uint32_t n = FifoDepth(); n && rx_data.size && (rx_sr & ISR_RXNE); --n) {
+		const uint32_t depth = (cr1 & USART_CR1_FIFOEN) ? FIFO_CAPACITY : 1U;
+		for (uint32_t n = depth; n && rx_data.size && (rx_sr & ISR_RXNE); --n) {
 			OnRxByte(static_cast<uint8_t>(RXD()));
 			if (n > 1U && rx_data.size) rx_sr = Status_reg();
 		}
@@ -412,8 +431,8 @@ void USART::HandleIRQ()
 			if (cr3 & USART_CR3_DMAR) {
 				_rx_dma_idle = true;
 				_dma_rx.RequestStop();
-#if defined(STM32G0)
-				// Last request must already be serviced; G0 has no software-stop TC.
+#if !defined(STM32F4) && !defined(STM32F7)
+				// Last request must already be serviced; Channel DMA has no software-stop TC.
 				if (_dma_rx.GetIRQFlags() & DMA_Sx::FLAG_ERRORS)
 					_rx_errors = static_cast<uint32_t>(Error::DmaRx);
 				if (FinishRxDMA()) OnIdle();
@@ -461,8 +480,8 @@ void USART::HandleDmaTxIRQ()
 	}
 	if (!(flags & DMA_Sx::FLAG_TC)) return;
 	DMA_en(DISABLE, DMA::TX);
-#if defined(STM32G0)
-	_dma_tx.RequestStop(); // G0 needs EN cleared after normal completion.
+#if !defined(STM32F4) && !defined(STM32F7)
+	_dma_tx.RequestStop(); // Clear channel EN after normal completion.
 #endif
 	_dma_tx.ClearFlags();
 	__DMB();
@@ -492,7 +511,7 @@ void USART::HandleDmaRxIRQ()
 	const bool idle = _rx_dma_idle;
 	if (!idle) {
 		StopRx(); // Capacity completion has not gone through USART IDLE.
-#if defined(STM32G0)
+#if !defined(STM32F4) && !defined(STM32F7)
 		_dma_rx.RequestStop();
 #endif
 	}
@@ -504,19 +523,23 @@ void USART::HandleDmaRxIRQ()
 
 void USART::OnTxEmpty()
 {
-#if defined(STM32G0)
-	for (uint32_t n = FifoDepth(); n && tx_data.size && (Status_reg() & ISR_TXE); --n) {
-		TXD() = *tx_data.data_ptr++;
-		--tx_data.size;
+#if defined(USART_CR1_FIFOEN)
+	if (tx_data.size) {
+		uint32_t remaining = FifoDepth();
+		// HandleIRQ already found room for the first byte (TXFNF or TXFT).
+		do {
+			TXD() = *tx_data.data_ptr++;
+			--tx_data.size;
+		} while (--remaining && tx_data.size && (Status_reg() & ISR_TXE));
 	}
 #else
-	// HandleIRQ already confirmed TXE; F4/F7 have one transmit data register.
+	// HandleIRQ already confirmed TXE.
 	TXD() = *tx_data.data_ptr++;
 	--tx_data.size;
 #endif
 	if (!tx_data.size) {
 		UART_CLEAR_BIT(USARTx->CR1, CR1_TXEIE);
-#if defined(STM32G0)
+#if defined(USART_CR1_FIFOEN)
 		UART_CLEAR_BIT(USARTx->CR3, CR3_TX_IRQ);
 #endif
 		tx_status = SysStatus::OK;
@@ -569,13 +592,13 @@ bool USART::FinishRxIRQ()
 	return FinishRx(errors);
 }
 
-// Only called after DMA completion/confirmed F4/F7 stop, or the agreed G0 stop.
+// Only called after DMA completion/confirmed F4/F7 stop, or a nonblocking stop of channel DMA.
 // No mode detection or repeat UART/DMA shutdown belongs to this handover.
 bool USART::FinishRxDMA()
 {
 	__DMB();
 	uint32_t errors = _rx_errors;
-#if defined(STM32G0)
+#if !defined(STM32F4) && !defined(STM32F7)
 	uint32_t sr = Status_reg();
 	errors |= sr & UART_ERRORS; // An error packet must not use an abort count.
 #endif
@@ -588,7 +611,7 @@ bool USART::FinishRxDMA()
 #endif
 	}
 	_dma_rx.ClearFlags();
-#if !defined(STM32G0)
+#if defined(STM32F4) || defined(STM32F7)
 	uint32_t sr = Status_reg(); // Fresh status after DMA/cache ownership handover.
 	errors |= sr & UART_ERRORS;
 #endif
@@ -600,10 +623,13 @@ bool USART::FinishRxDMA()
 	}
 #else
 	ClearFlags(ISR_FLAGS::IDLE);
-	for (uint32_t n = FifoDepth(); n && count < rx_data.size && !errors && (sr & ISR_RXNE); --n) {
-		rx_data.data_ptr[count++] = static_cast<uint8_t>(RXD());
-		sr = Status_reg();
-		errors |= sr & UART_ERRORS;
+	if (count < rx_data.size && !errors && (sr & ISR_RXNE)) {
+		uint32_t remaining = FifoDepth();
+		do {
+			rx_data.data_ptr[count++] = static_cast<uint8_t>(RXD());
+			sr = Status_reg();
+			errors |= sr & UART_ERRORS;
+		} while (--remaining && count < rx_data.size && !errors && (sr & ISR_RXNE));
 	}
 	if (errors) USARTx->ICR = errors;
 #endif

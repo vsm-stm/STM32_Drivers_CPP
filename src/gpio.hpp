@@ -133,7 +133,7 @@ public:
 	 * @brief Bind a direct CMSIS GPIO pointer; retained for ordinary GPIOx syntax.
 	 * @param port Existing GPIO port pointer on the selected device.
 	 * @param p Pin number 0..15, provided correctly by the caller.
-	 * @param a Stored AF: 0..7 on G0/L0, 0..15 on F4/F7/G4; default 0.
+	 * @param a Stored AF: 0..7 on L0, 0..15 on F4/F7/G0/G4; default 0.
 	 * No run-time validation; this overload is not a compile-time pointer checker.
 	 */
 	PIN(GPIO_TypeDef* port, uint8_t p, uint8_t a = 0) noexcept
@@ -174,7 +174,7 @@ public:
 
 	/**
 	 * @brief Full configuration with an explicit hardware AF override.
-	 * @param af_override AF 0..7 on G0/L0, 0..15 on F4/F7/G4.
+	 * @param af_override AF 0..7 on L0, 0..15 on F4/F7/G0/G4.
 	 *        Does not change the stored constructor AF.
 	 * Caller supplies a valid route/value; the GPIO layer does not validate
 	 * whether that AF connects to a particular peripheral on the selected pin.

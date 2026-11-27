@@ -11,7 +11,7 @@
 1. [Why This Is Needed](#1-why-this-is-needed)
 2. [Constant Initialization and Constructor Diagnostics](#2-constant-initialization-and-constructor-diagnostics)
 3. [Initialization and ownership](#3-initialization-and-ownership)
-4. [Kernel clock (F7/G0)](#4-kernel-clock-f7g0)
+4. [Kernel clock and baud rate](#4-kernel-clock-and-baud-rate)
 5. [Transfer contract](#5-transfer-contract)
 6. [One packet at a time](#6-one-packet-at-a-time)
 7. [DMA and cache](#7-dma-and-cache)
@@ -29,14 +29,14 @@
 - **TX and RX are independent** — each can run its own operation at the same time.
 - Three ways to transfer: **blocking**, **interrupt** and **DMA**.
 - Asynchronous reception ends a **packet** on line idle (IDLE) or when the buffer is full.
-- The constructor fixes the pins, the DMA channels and (F7/G0) the clock source.
+- The constructor fixes the pins, the DMA channels and (F7/G0/L0/G4) the clock source.
 - The UART and each DMA direction have their own interrupt handlers.
 
 ---
 
 ## 2. Constant Initialization and Constructor Diagnostics
 
-Declare the object at file scope with `constinit` (or as `static constinit` inside a function). Arguments: `USART::_N::instance`, baud rate, named pins, optional DMA (named `_N::DMA::...` routes on F4/F7, physical `DMAx_Channely_BASE` on G0 — the USART supplies the request ID).
+Declare the object at file scope with `constinit` (or as `static constinit` inside a function). Arguments: `USART::_N::instance`, baud rate, named pins, optional DMA (named `_N::DMA::...` routes on F4/F7/L0, physical `DMAx_Channely_BASE` on G0/G4 — the USART supplies the request ID).
 
 What happens with a wrong argument (e.g. a pin of another USART):
 
@@ -53,6 +53,8 @@ Every check calls `STM32_CONFIG_ERROR("reason")`: at compile time a GCC error co
 
 ## 3. Initialization and ownership
 
+Use one driver object per hardware instance.
+
 **One object controls one UART.** Initialize System/RCC first.
 
 **`SetUp()`** applies:
@@ -60,7 +62,7 @@ Every check calls `STM32_CONFIG_ERROR("reason")`: at compile time a GCC error co
 - the clock source chosen in the constructor (default PCLK);
 - oversampling ×16;
 - frame format 8N1 (default), 8E1, 8O1 or 8N2;
-- on G0, prescaler PRESC = /1.
+- PRESC = /1 where the peripheral has this register.
 
 **Baud rate** is rounded to the nearest divider:
 
@@ -75,9 +77,11 @@ Zero or unrepresentable baud → `InitError`. There is no artificial 9600 minimu
 | Family | Instances in the tables |
 | --- | --- |
 | F4/F7 | UART/USART 1…8, where present |
-| G0 | USART1…6, where present |
+| G0 | USART1…6 and LPUART1/2, where present |
+| G4 | USART1…3, UART4/5 and LPUART1, where present |
+| L0 | USART1/2/4/5 and LPUART1, where present |
 
-LPUART and F4 UART9/10 are not covered. A GPIO port existing in CMSIS does not mean the pin is bonded in your package.
+LPUART instances are named `USART::_LP1` and `USART::_LP2` where present. A GPIO port existing in CMSIS does not mean the pin is bonded in your package.
 
 **Interrupt ownership:**
 
@@ -92,7 +96,7 @@ LPUART and F4 UART9/10 are not covered. A GPIO port existing in CMSIS does not m
 | Value | Update method |
 | --- | --- |
 | `0` | plain `SET_BIT`/`CLEAR_BIT`/`MODIFY_REG` |
-| `1` | ST `ATOMIC_*`: LDREX/STREX with retry on F4/F7; short PRIMASK mask/restore per update on G0 |
+| `1` | ST `ATOMIC_*`: LDREX/STREX with retry on F4/F7/G4. Short PRIMASK mask/restore per update on G0/L0 |
 
 - Change it in `uart.hpp` and rebuild drivers **and** application. Defining it only in `main.cpp` does not affect `uart.cpp`.
 - Chosen by the preprocessor — no run-time branch.
@@ -101,30 +105,32 @@ LPUART and F4 UART9/10 are not covered. A GPIO port existing in CMSIS does not m
 
 ---
 
-## 4. Kernel clock (F7/G0)
+## 4. Kernel clock and baud rate
 
-On F7/G0, `USART::ClockSource` follows both DMA arguments; the new shared cache policy follows the clock source:
+On F7/G0/L0/G4, `USART::ClockSource` follows both DMA arguments; the new shared cache policy follows the clock source:
 
 | Source | Frequency used for BRR |
 | --- | --- |
 | `PCLK` (default) | this instance's APB clock |
 | `SYSCLK` | system clock before the AHB divider (derived from HCLK and HPRE) |
-| `HSI` | 16 MHz (before HSIDIV on G0) |
+| `HSI` | 16 MHz. G0 takes HSI before HSIDIV. L0 uses 4 MHz when HSIDIVF is set |
 | `LSE` | 32768 Hz |
 
 ```cpp
-// F7/G0; the caller enables HSI and waits for HSIRDY before SetUp().
+// F7/G0/L0/G4; the caller enables HSI and waits for HSIRDY before SetUp().
 constinit USART link(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
                      {}, {}, USART::ClockSource::HSI);
 SysInitStatus status = link.SetUp();
 ```
 
 - `SetUp()` only **checks** that HSI/LSE is on and ready; it never starts or waits for an oscillator. Not ready → `InitError` before any UART configuration.
-- G0 instances without an RCC `USARTxSEL` field accept only `PCLK`; anything else → `InitError`.
+- Instances without an RCC clock selector accept only `PCLK`; anything else → `InitError`.
 - F4 has no such argument — always PCLK.
 - The source is fixed for the object's life, including across `DeInit()`/`SetUp()`. Keep the oscillator running and RCC dividers unchanged while the UART is in use.
 - `SetBaud()` uses the same source and returns `Error` if it is no longer ready.
-- With ×16 oversampling, LSE limits the baud rate to 2048.
+- With ×16 oversampling, LSE limits ordinary USART to 2048 baud. LPUART can use LSE at 9600 baud.
+
+For LPUART, the driver computes `BRR = round(256 * kernel_clock / baud)` and requires BRR in `0x300…0xFFFFF` with `baud <= kernel_clock / 3`. The existing blocking, IRQ and DMA methods apply to asynchronous data exchange. Wake-up from Stop requires separate peripheral and power configuration. [ST AN4991](https://www.st.com/resource/en/application_note/an4991-how-to-wake-up-an-stm32xx-series-microcontroller-from-lowpower-mode-with-the-usart-or-the-lpuart-stmicroelectronics.pdf)
 
 ---
 
@@ -186,9 +192,9 @@ Notes:
 - With DMA RX on F4/F7, `OnIdle()` runs in the **DMA RX** interrupt (after the stop); with IRQ reception it runs in the USART interrupt.
 - The USART handler and its DMA handlers must not preempt each other for the same object.
 
-**End of packet on IDLE — G0:** IDLE disables DMAR, requests the DMA stop without waiting and completes the packet in the USART interrupt; a full buffer completes in the DMA RX interrupt. G0's FIFO tail below the RX threshold is drained.
+**End of packet on IDLE on G0/G4/L0.** IDLE disables DMAR, requests the DMA stop without waiting and completes the packet in the USART interrupt; a full buffer completes in the DMA RX interrupt. The driver drains a pending byte or the FIFO tail where available.
 
-> **G0 condition:** the last DMA request must already be serviced when IDLE stops the transfer. Aborting an active DMA transfer can leave CNDTR inaccurate; such a packet is discarded without reading its DMA length. Arbitrary abort with recovery of partial data is not supported. No `Process()` call or completion timer is used.
+> **Condition for G0/G4/L0.** the last DMA request must already be serviced when IDLE stops the transfer. Aborting an active DMA transfer can leave CNDTR inaccurate; such a packet is discarded without reading its DMA length. Arbitrary abort with recovery of partial data is not supported. No `Process()` call or completion timer is used.
 
 **Reading the result:**
 
@@ -212,7 +218,7 @@ if (uart.GetDataReceivedFlag()) {
 
 ## 7. DMA and cache
 
-**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
+**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0/G4/L0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
 
 F7 example (supply only non-cacheable buffers to this object):
 
@@ -230,7 +236,8 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 ```
 
 - F4/F7: named requests (`_N::DMA::TX_DMA2_Stream7`…) already contain stream, channel and direction.
-- G0: `DMAx_Channely_BASE`; the USART selects the TX/RX request.
+- L0 uses named routes carrying the channel and CSELR selector, for example `_LP1::DMA::RX_DMA1_Channel6` on L072.
+- G0/G4 use `DMAx_Channely_BASE`. The USART selects the TX/RX request.
 - The USART **embeds** both `DMA_Sx` objects — there is no external DMA object, manual DMA `SetUp()` or `AttachDMA()`.
 - With `constinit` the constructor checks request validity, owner, direction and that TX/RX use different resources, at compile time.
 - The deprecated CMSIS-pointer constructor additionally looks up the instance at run time.
@@ -241,7 +248,7 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 **Interrupt slots:**
 
 - USART, DMA TX and DMA RX have separate handlers. When TX and RX DMA share one vector, that vector needs **two** registry slots for this UART.
-- Shared UART vectors also consume registry capacity. Using all four G0B0/B1 USART3…6 needs at least **four** slots in `irq_registry_settings.hpp` (not configurable through CMake). A full row → `InitError`.
+- Shared UART vectors also consume registry capacity. Using all four G0B0/B1 USART3…6 needs at least **four** slots in `irq_registry_settings.hpp` (not configurable through CMake). LPUART1 adds a fifth handler when using the same vector on G0B1/C1. USART4/5 share a vector on L0. A full row returns `InitError`.
 
 **Routes and request tables:**
 
@@ -258,7 +265,7 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 | CPU → RX DMA | `CacheCleanInvalidate(buffer, capacity)` |
 | RX DMA → CPU | stop first, then `CacheInvalidate(buffer, actual DMA count)` |
 
-- On F4/G0 cache operations and their argument evaluation are compiled out.
+- On F4/G0/G4/L0 cache operations and their argument evaluation are compiled out.
 - On F7 only `Cacheable` invokes System/CMSIS. `NonCacheable` skips the calls; no address, MPU/linker-region or D-cache enable check is performed.
 - There is one UART implementation — no buffer-specific `#ifdef`.
 
@@ -308,11 +315,11 @@ NDTR/CNDTR; an IDLE stop reads the final remaining count.
 
 No `Register`/`Unregister`, `SetUp()` or `DeInit()` from callbacks.
 
-**Inside the USART interrupt:** source and DMA-gate checks use one initial snapshot of status/CR1/CR3. F4/F7 read the single RX byte without re-checking RXNE. TCIE and TC are re-read after TX handling, because callbacks may enable TCIE and writing DR/TDR clears TC.
+**Inside the USART interrupt.** The initial status, CR1 and CR3 snapshot selects active sources and DMA gates. The parity/error enable bits are decoded only when a receive error flag is set. On G0/G4 the RX FIFO budget comes from the same CR1 snapshot, and TX uses the initial status for the first byte. Further FIFO accesses check the current status. TCIE and TC are re-read after TX handling because callbacks may enable TCIE and writing DR/TDR clears TC.
 
-**Work per interrupt entry is bounded:** at most the hardware FIFO depth per direction — 8 words on G0 with FIFO enabled, otherwise one byte. On IDLE the normal RX draining is skipped; the IRQ/DMA completion path handles the tail with the same bound before notifying `OnIdle`. The handler never waits for future bytes; remaining data is serviced by later interrupts. Hardware oversampling does not multiply CPU interrupts.
+**Work per interrupt entry is bounded:** at most the hardware FIFO depth per direction — 8 words on G0/G4 with FIFO enabled, otherwise one byte. On IDLE the normal RX draining is skipped; the IRQ/DMA completion path handles the tail with the same bound before notifying `OnIdle`. The handler never waits for future bytes; remaining data is serviced by later interrupts. Hardware oversampling does not multiply CPU interrupts.
 
-**FIFO (G0 only):** allowed only for instances listed in `IS_UART_FIFO_INSTANCE`. Threshold codes 0…5; `FIFO_TH::all` = 5 (RX full / TX empty). F4/F7 accept only `FIFO::NO`. Oversampling stays ×16 (no ×8 option).
+**FIFO on G0/G4.** allowed only for instances listed in `IS_UART_FIFO_INSTANCE`. Threshold codes 0…5; `FIFO_TH::all` = 5 (RX full / TX empty). On F4/F7/L0 select `FIFO::NO`. Ordinary USART uses ×16 oversampling.
 
 **Frame format** is chosen once in `SetUp(fifo, tx_threshold, rx_threshold, FrameFormat::E8_1 / O8_1 / N8_2 / N8_1)`. All formats carry 8 data bits; parity uses the ninth hardware bit. The legacy `SetParity()` still ignores its argument — use `FrameFormat`.
 
@@ -365,6 +372,27 @@ On F4/F7 pass `USART::_1::DMA::TX_DMA2_Stream7` and `USART::_1::DMA::RX_DMA2_Str
 Check every returned status.
 
 ---
+
+### LPUART with DMA on G0, G4 and L0
+
+These examples use LSE at 9600 baud. Start LSE before calling `SetUp()`.
+
+```cpp
+#if defined(STM32G0B1xx)
+using U = USART::_LP2;
+constinit USART link(U::instance, 9600, U::TX::PB6, U::RX::PB7,
+                     DMA2_Channel3_BASE, DMA2_Channel4_BASE, USART::ClockSource::LSE);
+#elif defined(STM32G474xx)
+using U = USART::_LP1;
+constinit USART link(U::instance, 9600, U::TX::PA2, U::RX::PA3,
+                     DMA2_Channel1_BASE, DMA2_Channel2_BASE, USART::ClockSource::LSE);
+#elif defined(STM32L072xx)
+using U = USART::_LP1;
+constinit USART link(U::instance, 9600, U::TX::PC4, U::RX::PC5,
+                     U::DMA::TX_DMA1_Channel7, U::DMA::RX_DMA1_Channel6,
+                     USART::ClockSource::LSE);
+#endif
+```
 
 ### Adding application work through inheritance
 
@@ -458,7 +486,7 @@ SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
 | Situation | Behaviour |
 | --- | --- |
 | IDLE on the line | Ends the packet and stops RX DMA. This is **not** strict Modbus RTU t1.5/t3.5 framing. |
-| G0: IDLE before the last DMA request was serviced | Must not happen — the final request has to be serviced before the IDLE stop. |
+| G0/G4/L0: IDLE before the last DMA request was serviced | Must not happen — the final request has to be serviced before the IDLE stop. |
 | TX DMA complete | Not physical completion — wait for TC before releasing DE or changing baud. |
 | Bytes arrive between packets | May be lost or cause ORE until the next `Receive`. |
 | Buffer/cache ownership, IRQ serialization | Application responsibility. |
@@ -473,6 +501,8 @@ SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
 - [IRQ_Registry.md](IRQ_Registry.md)
 - [Modbus.md](Modbus.md)
 - [ST USART F7 — clock sources](https://www.st.com/resource/en/product_training/STM32F7_Peripheral_USART.pdf)
+- [ST RM0440 — G4 USART/LPUART and DMAMUX](https://www.st.com/resource/en/reference_manual/dm00355726-stm32g4-series-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf)
+- [ST RM0376 — L0x2 USART/LPUART and CSELR](https://www.st.com/resource/en/reference_manual/rm0376-ultralowpower-stm32l0x2-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [ST RM0444 — RCC/USART G0x1](https://www.st.com/resource/en/reference_manual/dm00371828.pdf)
 - [ST AN4031 — F4/F7 DMA tables](https://www.st.com/resource/en/application_note/dm00046011-using-the-stm32f2-stm32f4-and-stm32f7-series-dma-controller-stmicroelectronics.pdf)
 
@@ -485,7 +515,7 @@ SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
 1. [Зачем это нужно](#1-зачем-это-нужно)
 2. [Постоянная инициализация и диагностика конструктора](#2-постоянная-инициализация-и-диагностика-конструктора)
 3. [Настройка и владение](#3-настройка-и-владение)
-4. [Источник тактирования (F7/G0)](#4-источник-тактирования-f7g0)
+4. [Источник тактирования и скорость](#4-источник-тактирования-и-скорость)
 5. [Обмен и готовность пакета](#5-обмен-и-готовность-пакета)
 6. [DMA, кеш и ошибки](#6-dma-кеш-и-ошибки)
 7. [Совместимость](#7-совместимость)
@@ -503,14 +533,14 @@ SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
 - **TX и RX независимы** — каждое направление может одновременно выполнять свою операцию.
 - Три способа обмена: **блокирующий**, **через прерывания** и **через DMA**.
 - Асинхронный приём завершает **пакет** по паузе на линии (IDLE) или при заполнении буфера.
-- Конструктор закрепляет выводы, каналы DMA и (на F7/G0) источник тактирования.
+- Конструктор закрепляет выводы, каналы DMA и (на F7/G0/L0/G4) источник тактирования.
 - У UART и у каждого направления DMA свои обработчики прерываний.
 
 ---
 
 ## 2. Постоянная инициализация и диагностика конструктора
 
-Объявляйте объект глобально с `constinit` (или как `static constinit` внутри функции). Аргументы: `USART::_N::instance`, скорость, именованные выводы, необязательные DMA (именованные маршруты `_N::DMA::...` на F4/F7, физические `DMAx_Channely_BASE` на G0 — номер запроса подставляет USART).
+Объявляйте объект глобально с `constinit` (или как `static constinit` внутри функции). Аргументы: `USART::_N::instance`, скорость, именованные выводы, необязательные DMA (именованные маршруты `_N::DMA::...` на F4/F7/L0, физические `DMAx_Channely_BASE` на G0/G4 — номер запроса подставляет USART).
 
 Что происходит при неверном аргументе (например, выводе другого USART):
 
@@ -527,6 +557,8 @@ SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
 
 ## 3. Настройка и владение
 
+Для каждого экземпляра периферии используйте один объект драйвера.
+
 **Один объект управляет одним UART.** Сначала настройте System и RCC.
 
 **`SetUp()`** применяет:
@@ -534,7 +566,7 @@ SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
 - источник тактирования, выбранный в конструкторе (по умолчанию PCLK);
 - oversampling ×16;
 - формат кадра 8N1 (по умолчанию), 8E1, 8O1 или 8N2;
-- на G0 — предделитель PRESC = /1.
+- предделитель PRESC = /1 там, где есть этот регистр.
 
 **Скорость** округляется до ближайшего делителя:
 
@@ -549,9 +581,11 @@ BRR = (kernel_clock + baud/2) / baud,   16 ≤ BRR ≤ 65535,   baud ≤ kernel_
 | Семейство | Экземпляры в таблицах |
 | --- | --- |
 | F4/F7 | UART/USART 1…8, при наличии |
-| G0 | USART1…6, при наличии |
+| G0 | USART1…6 и LPUART1/2, при наличии |
+| G4 | USART1…3, UART4/5 и LPUART1, при наличии |
+| L0 | USART1/2/4/5 и LPUART1, при наличии |
 
-LPUART и UART9/10 на F4 не поддерживаются. Наличие порта GPIO в CMSIS не означает, что вывод есть в вашем корпусе.
+Для LPUART используются имена `USART::_LP1` и `USART::_LP2` при наличии. Наличие порта GPIO в CMSIS не означает, что вывод есть в вашем корпусе.
 
 **Владение прерываниями:**
 
@@ -566,7 +600,7 @@ LPUART и UART9/10 на F4 не поддерживаются. Наличие п�
 | Значение | Способ |
 | --- | --- |
 | `0` | обычные `SET_BIT`/`CLEAR_BIT`/`MODIFY_REG` |
-| `1` | `ATOMIC_*` от ST: LDREX/STREX с повтором на F4/F7; на G0 — краткое маскирование прерываний на одну операцию с восстановлением прежнего PRIMASK |
+| `1` | `ATOMIC_*` от ST: LDREX/STREX с повтором на F4/F7/G4. На G0/L0 кратко маскируются прерывания с восстановлением прежнего PRIMASK |
 
 - Меняйте значение в `uart.hpp` и пересобирайте драйверы **и** приложение. Определение только в `main.cpp` не влияет на `uart.cpp`.
 - Выбор делает препроцессор — ветвления во время работы нет.
@@ -575,30 +609,32 @@ LPUART и UART9/10 на F4 не поддерживаются. Наличие п�
 
 ---
 
-## 4. Источник тактирования (F7/G0)
+## 4. Источник тактирования и скорость
 
-На F7/G0 `USART::ClockSource` идёт после обоих аргументов DMA; за ним следует новая общая политика кеша:
+На F7/G0/L0/G4 `USART::ClockSource` идёт после обоих аргументов DMA; за ним следует новая общая политика кеша:
 
 | Источник | Частота для расчёта BRR |
 | --- | --- |
 | `PCLK` (по умолчанию) | частота APB данного USART |
 | `SYSCLK` | системная частота до делителя AHB (вычисляется по HCLK и HPRE) |
-| `HSI` | 16 МГц (до HSIDIV на G0) |
+| `HSI` | 16 МГц. На G0 берётся HSI до HSIDIV. На L0 при HSIDIVF = 1 берётся 4 МГц |
 | `LSE` | 32768 Гц |
 
 ```cpp
-// F7/G0: вызывающий код заранее включает HSI и ждёт HSIRDY.
+// F7/G0/L0/G4: вызывающий код заранее включает HSI и ждёт HSIRDY.
 constinit USART link(USART::_1::instance, 115200, USART::_1::TX::PB6, USART::_1::RX::PB7,
                      {}, {}, USART::ClockSource::HSI);
 SysInitStatus status = link.SetUp();
 ```
 
 - `SetUp()` только **проверяет**, что HSI/LSE включён и готов; запускать генератор и ждать его готовности должен вызывающий код. Не готов → `InitError` до настройки UART.
-- Экземпляры G0 без поля RCC `USARTxSEL` принимают только `PCLK`; иначе → `InitError`.
+- Экземпляры без селектора тактирования RCC принимают только `PCLK`; иначе → `InitError`.
 - На F4 этого аргумента нет — всегда PCLK.
 - Источник неизменен всё время жизни объекта, в том числе после `DeInit()`/`SetUp()`. Пока UART используется, генератор должен работать, а делители RCC — не меняться.
 - `SetBaud()` использует тот же источник и возвращает `Error`, если он перестал быть готов.
-- При oversampling ×16 частота LSE ограничивает скорость значением 2048.
+- При oversampling ×16 LSE ограничивает обычный USART скоростью 2048 бод. LPUART от LSE работает на 9600 бод.
+
+Для LPUART драйвер вычисляет `BRR = round(256 * kernel_clock / baud)` и проверяет диапазон `0x300…0xFFFFF` и условие `baud <= kernel_clock / 3`. Для асинхронного обмена подходят те же блокирующие, IRQ- и DMA-методы. Пробуждение из Stop требует отдельной настройки периферии и питания. [ST AN4991](https://www.st.com/resource/en/application_note/an4991-how-to-wake-up-an-stm32xx-series-microcontroller-from-lowpower-mode-with-the-usart-or-the-lpuart-stmicroelectronics.pdf)
 
 ---
 
@@ -652,9 +688,9 @@ DMA-запуск использует существующий `PrepareTransfer(
 - При DMA RX на F4/F7 `OnIdle()` вызывается из прерывания **DMA RX** (после остановки); при приёме через IRQ — из прерывания USART.
 - Обработчики USART и его DMA не должны вытеснять друг друга.
 
-**Конец пакета по IDLE — G0:** IDLE отключает DMAR, запрашивает остановку DMA без ожидания и завершает пакет в прерывании USART; заполнение буфера обрабатывается в прерывании DMA RX.
+**Конец пакета по IDLE на G0/G4/L0.** IDLE отключает DMAR, запрашивает остановку DMA без ожидания и завершает пакет в прерывании USART; заполнение буфера обрабатывается в прерывании DMA RX.
 
-> **Условие G0:** к моменту остановки по IDLE последний запрос DMA уже должен быть обслужен. Прерывание DMA посреди переноса может оставить CNDTR недостоверным; такой пакет отбрасывается без чтения длины из DMA. Восстановление частичных данных после произвольной остановки не поддерживается. `Process()` и дополнительный таймер завершения не используются.
+> **Условие для G0/G4/L0.** к моменту остановки по IDLE последний запрос DMA уже должен быть обслужен. Прерывание DMA посреди переноса может оставить CNDTR недостоверным; такой пакет отбрасывается без чтения длины из DMA. Восстановление частичных данных после произвольной остановки не поддерживается. `Process()` и дополнительный таймер завершения не используются.
 
 **Чтение результата:**
 
@@ -668,7 +704,7 @@ DMA-запуск использует существующий `PrepareTransfer(
 
 ## 6. DMA, кеш и ошибки
 
-**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
+**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0/G4/L0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
 
 Пример F7 (этому объекту передаются только некешируемые буферы):
 
@@ -688,10 +724,11 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 ```
 
 - F4/F7: именованный `DMAReq` уже содержит поток, канал и направление.
-- G0: только `DMAx_Channely_BASE`; запрос TX/RX выбирает USART.
+- L0 использует именованные маршруты с каналом и селектором CSELR, например `_LP1::DMA::RX_DMA1_Channel6` на L072.
+- G0/G4 используют `DMAx_Channely_BASE`. Запрос TX/RX выбирает USART.
 - USART **содержит** оба объекта `DMA_Sx` внутри — отдельные DMA-объекты в приложении не создаются, `AttachDMA()` удалён.
 - С `constinit` при компиляции проверяются принадлежность запроса, направление и разные ресурсы TX/RX — так же, как принадлежность выводов. Проверки во время работы с `DebugTrap` остались только у устаревшего конструктора с CMSIS-указателем. `Config` не нужен; дублирующая таблица маршрутов UART DMA удалена.
-- На F7/G0 `ClockSource` идёт после обоих DMA.
+- На F7/G0/L0/G4 `ClockSource` идёт после обоих DMA.
 - Привязки неизменны; блокирующие и IRQ-методы доступны и при наличии DMA.
 
 **`SetUp()` и DMA:** захватывает выбранные ресурсы (занятость проверяется при захвате) и проверяет результаты настройки/регистрации. Повторная настройка — ошибка до `DeInit()`. При отказе освобождается только захваченное этим вызовом. `DeInit()` освобождает DMA, но сохраняет привязки для следующего `SetUp()`.
@@ -699,7 +736,7 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 **Места в реестре прерываний:**
 
 - У USART, DMA TX и DMA RX отдельные обработчики. Если TX и RX DMA делят один вектор, этому UART нужно **два** места в реестре. Сам реестр и пул адаптеров функций не меняются.
-- Общие векторы UART тоже расходуют места. Для одновременной работы всех четырёх USART3…6 на G0B0/B1 нужно не менее **четырёх** мест в `irq_registry_settings.hpp` (через CMake не настраивается). Заполненная строка → `InitError`.
+- Общие векторы UART тоже расходуют места. Для одновременной работы всех четырёх USART3…6 на G0B0/B1 нужно не менее **четырёх** мест в `irq_registry_settings.hpp` (через CMake не настраивается). LPUART1 на том же векторе G0B1/C1 добавляет пятый обработчик. На L0 USART4/5 делят вектор. Заполненная строка возвращает `InitError`.
 
 **Обслуживание кеша** выполняет UART через функции System:
 
@@ -709,7 +746,7 @@ USART(instance, baud, tx_pin, rx_pin, dma_tx = {}, dma_rx = {} [, clock_source])
 | CPU → RX DMA | `CacheCleanInvalidate(buffer, capacity)` |
 | RX DMA → CPU | сначала остановка, затем `CacheInvalidate(buffer, фактическое число байт)` |
 
-- На F4/G0 cache-операции и вычисление их аргументов исключены при компиляции.
+- На F4/G0/G4/L0 cache-операции и вычисление их аргументов исключены при компиляции.
 - На F7 System/CMSIS вызывается только при `Cacheable`. `NonCacheable` пропускает вызовы; адрес, регионы MPU/линкера и состояние включения D-cache не проверяются.
 - Отдельной реализации UART для разных буферов нет.
 
@@ -755,11 +792,11 @@ UART RX/DMAR отключаются один раз (по одному изме�
 
 Из callback нельзя менять реестр и вызывать `SetUp()`/`DeInit()`.
 
-**Внутри прерывания USART:** источники и разрешения DMA проверяются по одному начальному снимку status/CR1/CR3. На F4/F7 один RX-байт читается без повторной проверки RXNE. TCIE и TC перечитываются после обработки TX: callback может включить TCIE, а запись DR/TDR сбрасывает TC.
+**Внутри прерывания USART.** По начальному снимку status/CR1/CR3 определяются активные источники и разрешения DMA. Биты разрешения ошибок проверяются при наличии флага ошибки приёма. На G0/G4 предел чтения RX FIFO берётся из того же снимка CR1, а готовность TX к записи первого байта — из начального статуса. При следующих обращениях к FIFO читается текущий статус. TCIE и TC перечитываются после обработки TX, поскольку callback может включить TCIE, а запись DR/TDR сбрасывает TC.
 
-**FIFO (только G0):** проверяется по возможностям конкретного USART. Код `FIFO_TH::all` исправлен на 5 (RX — полный FIFO, TX — пустой). Oversampling остаётся ×16, режим ×8 не добавлен.
+**FIFO на G0/G4.** проверяется по возможностям конкретного USART. Код `FIFO_TH::all` исправлен на 5 (RX — полный FIFO, TX — пустой). На F4/F7/L0 доступен `FIFO::NO`. Обычный USART работает с oversampling ×16.
 
-**Работа за один вход в прерывание ограничена** глубиной FIFO в каждом направлении: 8 слов на G0 с включённым FIFO, иначе один байт. При IDLE обычное чтение RX пропускается; хвост с тем же пределом обрабатывает путь завершения IRQ/DMA до уведомления `OnIdle`. Новые байты не ожидаются: остаток обслуживается следующими прерываниями; после IDLE поступления относятся к следующему пакету.
+**Работа за один вход в прерывание ограничена** глубиной FIFO в каждом направлении: 8 слов на G0/G4 с включённым FIFO, иначе один байт. При IDLE обычное чтение RX пропускается; хвост с тем же пределом обрабатывает путь завершения IRQ/DMA до уведомления `OnIdle`. Новые байты не ожидаются: остаток обслуживается следующими прерываниями; после IDLE поступления относятся к следующему пакету.
 
 **Формат кадра** выбирается один раз: `SetUp(fifo, tx_threshold, rx_threshold, FrameFormat::E8_1 / O8_1 / N8_2 / N8_1)`. Во всех вариантах 8 бит данных; чётность занимает девятый аппаратный бит слова. Старый `SetParity()` по-прежнему игнорирует аргумент — используйте `FrameFormat`.
 
@@ -778,6 +815,8 @@ UART RX/DMAR отключаются один раз (по одному изме�
 ## 8. Источники для таблиц
 
 - [ST USART F7 — источники тактирования](https://www.st.com/resource/en/product_training/STM32F7_Peripheral_USART.pdf)
+- [ST RM0440 — G4 USART/LPUART and DMAMUX](https://www.st.com/resource/en/reference_manual/dm00355726-stm32g4-series-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf)
+- [ST RM0376 — L0x2 USART/LPUART and CSELR](https://www.st.com/resource/en/reference_manual/rm0376-ultralowpower-stm32l0x2-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [ST RM0444 — RCC/USART G0x1](https://www.st.com/resource/en/reference_manual/dm00371828.pdf)
 - [ST G0 workshop — глубина FIFO USART](https://www.st.com/content/dam/AME/2019/STM32G0-q1-webinar-workshops/STM32G0_Workshop_Presentation.pdf)
 - [ST AN4031 — таблицы DMA F4/F7](https://www.st.com/resource/en/application_note/dm00046011-using-the-stm32f2-stm32f4-and-stm32f7-series-dma-controller-stmicroelectronics.pdf)
@@ -833,6 +872,27 @@ if (uart.GetDataReceivedFlag()) {
 Проверяйте каждый возвращаемый статус.
 
 ---
+
+### LPUART с DMA на G0, G4 и L0
+
+В этих примерах LPUART работает от LSE на 9600 бод. Запустите LSE до вызова `SetUp()`.
+
+```cpp
+#if defined(STM32G0B1xx)
+using U = USART::_LP2;
+constinit USART link(U::instance, 9600, U::TX::PB6, U::RX::PB7,
+                     DMA2_Channel3_BASE, DMA2_Channel4_BASE, USART::ClockSource::LSE);
+#elif defined(STM32G474xx)
+using U = USART::_LP1;
+constinit USART link(U::instance, 9600, U::TX::PA2, U::RX::PA3,
+                     DMA2_Channel1_BASE, DMA2_Channel2_BASE, USART::ClockSource::LSE);
+#elif defined(STM32L072xx)
+using U = USART::_LP1;
+constinit USART link(U::instance, 9600, U::TX::PC4, U::RX::PC5,
+                     U::DMA::TX_DMA1_Channel7, U::DMA::RX_DMA1_Channel6,
+                     USART::ClockSource::LSE);
+#endif
+```
 
 ### Дополнительные действия в IRQ через наследование
 
@@ -926,7 +986,7 @@ SysStatus BlockingRead(uint8_t* destination, uint32_t length) {
 | Ситуация | Поведение |
 | --- | --- |
 | IDLE на линии | Завершает пакет и останавливает RX DMA. Это **не** строгие интервалы Modbus RTU t1.5/t3.5. |
-| G0: IDLE до обслуживания последнего запроса DMA | Недопустимо — последний запрос должен быть обслужен до остановки по IDLE. |
+| G0/G4/L0: IDLE до обслуживания последнего запроса DMA | Недопустимо — последний запрос должен быть обслужен до остановки по IDLE. |
 | Завершение TX DMA | Это не физическое завершение — ждите TC перед снятием DE или сменой скорости. |
 | Байты между пакетами | Могут потеряться или вызвать ORE до следующего `Receive`. |
 | Владение буфером/кеш-линиями, согласование с IRQ | Ответственность приложения. |

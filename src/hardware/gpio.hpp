@@ -19,7 +19,7 @@ inline constexpr uint32_t af_count = 16;
 #elif defined(STM32G0)
 __STATIC_FORCEINLINE volatile uint32_t& ClockEnableRegister() noexcept { return RCC->IOPENR; }
 inline constexpr uint32_t port_a_clock = RCC_IOPENR_GPIOAEN;
-inline constexpr uint32_t af_count = 8;
+inline constexpr uint32_t af_count = 16;
 #elif defined(STM32L0)
 __STATIC_FORCEINLINE volatile uint32_t& ClockEnableRegister() noexcept { return RCC->IOPENR; }
 inline constexpr uint32_t port_a_clock = RCC_IOPENR_IOPAEN;

@@ -23,7 +23,7 @@ Every module document follows the same layout as [GPIO.md](GPIO.md): English/Р�
 
 A C++20 library on top of CMSIS for the **STM32G0**, **STM32F4** and **STM32F7** families.
 
-System, GPIO and RCC also support **STM32L0/G4** with hardware selection at compilation. Main Flash is available on L0 and G4 with a matching bank map. Direct DMA is also supported on both families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
+System, GPIO and RCC also support **STM32L0/G4** with hardware selection at compilation. Main Flash is available on L0 and G4 with a matching bank map. DMA and USART are also supported on both families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
 
 - **Core** (always built): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Optional modules:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -120,7 +120,7 @@ directory propagation were also checked; this is not a full firmware build.
 
 Behaviour and limitations of each module are in its own document (e.g. [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-The full library supports F4/F7/G0. The core modules and standalone DMA also build on L0 and G4 with a supported Flash map. Some optional drivers are still limited to F4/F7/G0. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
+The full library supports F4/F7/G0. The core modules, DMA and USART also build on L0 and G4 with a supported Flash map. Some optional drivers are still limited to F4/F7/G0. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
 
 ---
 
@@ -574,18 +574,18 @@ Several channels on one vector is fine — `IRQ_Registry` calls every registered
 
 ## 7. USART
 
-**Files:** `uart.hpp`, `uart.cpp`, `uart_defs.hpp` · **Details:** [UART.md](UART.md)
+**Files:** `uart.hpp`, `uart.cpp`, `src/hardware/uart/` · **Details:** [UART.md](UART.md)
 
 **Key facts:**
 
-- Oversampling ×16; BRR is rounded and validated; `SetBaud()` returns `SysStatus`. Before `SetBaud()`, wait for physical TX completion (TC / `OnTC()`).
-- **Constructor:** `USART(instance, baud, tx, rx, dma_tx = {}, dma_rx = {} [, clock_source])`. F7/G0 accept `USART::ClockSource` (PCLK default, SYSCLK, HSI, LSE where supported); the caller starts HSI/LSE, `SetUp()` only checks readiness. F4 always uses PCLK.
+- Ordinary USART uses ×16 oversampling. LPUART uses its own BRR calculation and supports 9600 baud from LSE. BRR is rounded and validated. `SetBaud()` returns `SysStatus`. Before `SetBaud()`, wait for physical TX completion (TC / `OnTC()`).
+- **Constructor:** `USART(instance, baud, tx, rx, dma_tx = {}, dma_rx = {} [, clock_source])`. F7/G0/L0/G4 accept `USART::ClockSource` (PCLK default, SYSCLK, HSI, LSE where supported); the caller starts HSI/LSE, `SetUp()` only checks readiness. F4 always uses PCLK.
 - **Lengths:** 0 → `Error`; IRQ/DMA transfers 1…65535 bytes.
 - **DMA** objects live inside the USART; with `constinit` their routes are checked at compile time; `SetUp()` acquires and configures them. USART and both DMA directions have separate handlers.
-- **Packet end on IDLE:** F4/F7 — IDLE requests a DMA stop, the DMA RX interrupt publishes count/cache/ready (no waiting, no `Process()`). G0 — IDLE disables DMAR/DMA without waiting and completes in the USART interrupt; the last DMA request must already be serviced. Failed packets are discarded.
+- **Packet end on IDLE:** F4/F7 — IDLE requests a DMA stop, the DMA RX interrupt publishes count/cache/ready (no waiting, no `Process()`). G0/G4/L0 — IDLE disables DMAR/DMA without waiting and completes in the USART interrupt; the last DMA request must already be serviced. Failed packets are discarded.
 - **Reading a packet:** `GetDataReceivedCount()` no longer clears anything — call `ClearDataReceivedFlag()` after consuming the packet.
 - **Errors** stop the affected operation and call `OnError(mask)`.
-- **Bounded IRQ work:** at most the FIFO depth per direction per entry (8 words on G0 with FIFO, otherwise 1 byte).
+- **Bounded IRQ work:** at most the FIFO depth per direction per entry (8 words on G0/G4 with FIFO, otherwise 1 byte).
 - F7 cache maintenance uses System with the default `Cacheable` policy. Constructor `NonCacheable` skips it for both TX/RX; the user guarantees non-cacheable buffers.
 
 ### Basic usage
@@ -995,7 +995,7 @@ system.hpp
 
 C++20-библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4** и **STM32F7**.
 
-System, GPIO и RCC также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. На L0 и G4 доступны основная Flash с согласованной картой банков и самостоятельный DMA. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
+System, GPIO и RCC также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. На L0 и G4 доступны основная Flash с согласованной картой банков, DMA и USART. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
 
 - **Ядро** (собирается всегда): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Опциональные модули:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -1084,7 +1084,7 @@ System, GPIO и RCC также поддерживают **STM32L0/G4** с выб
 
 Поведение и ограничения каждого модуля описаны в его документе (например, [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-Полная библиотека поддерживает F4/F7/G0. Базовые модули и самостоятельный DMA также собираются на L0 и G4 с поддерживаемой картой Flash. Часть дополнительных драйверов пока ограничена F4/F7/G0. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
+Полная библиотека поддерживает F4/F7/G0. Базовые модули, DMA и USART также собираются на L0 и G4 с поддерживаемой картой Flash. Часть дополнительных драйверов пока ограничена F4/F7/G0. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
 
 ---
 
@@ -1538,18 +1538,18 @@ void HandleIRQ() override {
 
 ## 7. USART
 
-**Файлы:** `uart.hpp`, `uart.cpp`, `uart_defs.hpp` · **Подробнее:** [UART.md](UART.md)
+**Файлы:** `uart.hpp`, `uart.cpp`, `src/hardware/uart/` · **Подробнее:** [UART.md](UART.md)
 
 **Главное:**
 
-- Oversampling ×16; BRR округляется и проверяется; `SetBaud()` возвращает `SysStatus`. Перед `SetBaud()` дождитесь физического завершения передачи (TC / `OnTC()`).
-- **Конструктор:** `USART(instance, baud, tx, rx, dma_tx = {}, dma_rx = {} [, clock_source])`. На F7/G0 можно выбрать `USART::ClockSource` (по умолчанию PCLK, также SYSCLK, HSI, LSE, если поддерживаются); HSI/LSE запускает вызывающий код, `SetUp()` только проверяет готовность. На F4 всегда PCLK.
+- Обычный USART использует oversampling ×16. У LPUART свой расчёт BRR и доступно 9600 бод от LSE. BRR округляется и проверяется. `SetBaud()` возвращает `SysStatus`. Перед `SetBaud()` дождитесь физического завершения передачи (TC / `OnTC()`).
+- **Конструктор:** `USART(instance, baud, tx, rx, dma_tx = {}, dma_rx = {} [, clock_source])`. На F7/G0/L0/G4 можно выбрать `USART::ClockSource` (по умолчанию PCLK, также SYSCLK, HSI, LSE, если поддерживаются); HSI/LSE запускает вызывающий код, `SetUp()` только проверяет готовность. На F4 всегда PCLK.
 - **Длины:** 0 → `Error`; IRQ/DMA — 1…65535 байт.
 - **DMA** хранятся внутри USART; при `constinit` маршруты проверяются при компиляции; `SetUp()` захватывает и настраивает их. У USART и обоих направлений DMA отдельные обработчики.
-- **Конец пакета по IDLE:** F4/F7 — IDLE запрашивает остановку DMA, прерывание DMA RX публикует длину/кеш/готовность (без ожиданий и без `Process()`). G0 — IDLE отключает DMAR/DMA без ожидания и завершает пакет в прерывании USART; последний запрос DMA должен быть уже обслужен. Ошибочные пакеты отбрасываются.
+- **Конец пакета по IDLE:** F4/F7 — IDLE запрашивает остановку DMA, прерывание DMA RX публикует длину/кеш/готовность (без ожиданий и без `Process()`). G0/G4/L0 — IDLE отключает DMAR/DMA без ожидания и завершает пакет в прерывании USART; последний запрос DMA должен быть уже обслужен. Ошибочные пакеты отбрасываются.
 - **Чтение пакета:** `GetDataReceivedCount()` больше ничего не сбрасывает — после обработки вызовите `ClearDataReceivedFlag()`. Modbus делает это явно ([Modbus.md](Modbus.md)).
 - **Ошибки** останавливают свою операцию и вызывают `OnError(mask)`.
-- **Ограниченная работа в IRQ:** не больше глубины FIFO в каждом направлении за вход (8 слов на G0 с FIFO, иначе 1 байт).
+- **Ограниченная работа в IRQ:** не больше глубины FIFO в каждом направлении за вход (8 слов на G0/G4 с FIFO, иначе 1 байт).
 - Кеш F7 обслуживается через System при политике `Cacheable` по умолчанию. `NonCacheable` в конструкторе пропускает вызовы для TX/RX; пользователь гарантирует некешируемые буферы.
 
 ### Базовое использование

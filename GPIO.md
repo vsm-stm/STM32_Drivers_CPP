@@ -35,7 +35,7 @@ PIN led(GPIOA, 5);                 // ordinary GPIO object
 led.SetUp(PIN::TYPE::OUTPUT_PushPull);
 led.SetLevel(true);
 
-// Compile-time table entry, as in uart_defs.hpp / tim_defs.hpp:
+// Compile-time table entry, as in the USART and TIM hardware definitions.
 static constexpr PIN PA9 = { GPIOA_BASE, 9, 7, USART1_BASE };  // AF7, belongs to USART1
 ```
 
@@ -163,7 +163,7 @@ The **`consteval`** constructor takes `GPIOx_BASE` and rejects at compile time:
 
 - a GPIO port that does not exist on the selected device;
 - a pin number outside 0…15;
-- an AF outside 0…7 on G0/L0 or 0…15 on F4/F7/G4.
+- an AF outside 0…7 on L0 or 0…15 on F4/F7/G0/G4.
 
 Arguments are checked **before** they are stored in 8-bit fields, so a typo like 256 cannot silently wrap into a valid value. The error appears as a compiler message with the reason (via `STM32_CONFIG_ERROR`). Nothing is checked at run time.
 
@@ -174,7 +174,7 @@ Arguments are checked **before** they are stored in 8-bit fields, so a typo like
 - Copy/move construction is allowed; assigning another `PIN` is deleted, so an existing object cannot be rebound.
 - Assigning a `bool` (`pin = true;`) still sets the output level.
 
-**AF:** `SetUp(type, speed)` uses the stored AF. An explicit `af_override` selects another AF at run time without changing the stored one (the caller provides 0…7 on G0/L0 or 0…15 on F4/F7/G4). Range checks do not verify that a given pin really supports a given function on your MCU.
+**AF:** `SetUp(type, speed)` uses the stored AF. An explicit `af_override` selects another AF at run time without changing the stored one (the caller provides 0…7 on L0 or 0…15 on F4/F7/G0/G4). Range checks do not verify that a given pin really supports a given function on your MCU.
 
 **Peripheral tables.** USART/SPI/I2C tables use the format `{GPIOx_BASE, pin, af, peripheral}`. ADC and TIM have their own checked descriptors (`ADC_PIN`, `TIM_PIN`) built on the same consteval `PIN` constructor. The check "this pin belongs to the selected peripheral" lives in each driver's constructor.
 
@@ -263,7 +263,7 @@ uint32_t state = seg_pins.GetLevelAll();   // read all 4 bits with one call
 seg_pins[2].SetLevel(true);                // access a single pin of the array
 ```
 
-### A Compile-Time Table for a Peripheral (How uart_defs.hpp/tim_defs.hpp Are Organized)
+### A Compile-Time Table for a Peripheral (USART and TIM)
 
 ```cpp
 struct MySpiPins {
@@ -321,13 +321,13 @@ bool IsHigh() { return static_cast<bool>(enable); }
 | Family | Port clock enable | AF range |
 | --- | --- | --- |
 | F4/F7 | `RCC->AHB1ENR` | 0…15 |
-| G0 | `RCC->IOPENR` | 0…7 |
+| G0 | `RCC->IOPENR` | 0…15 |
 | L0 | `RCC->IOPENR` | 0…7 |
 | G4 | `RCC->AHB2ENR` | 0…15 |
 
 Family differences are limited to compile-time clock selection and capability descriptions in `gpio_hw`. No hardware object, virtual dispatch or additional per-pin fields are needed. Short IDR/BSRR/ODR and F4 bit-band operations remain directly in the public header. `SetUp()` is implemented in `gpio.cpp`, without an intermediate `Configure()` function. The API, register programming order and caller's synchronization responsibility are retained.
 
-The numeric-address constructor checks pin, AF range and CMSIS port presence at compilation. Runtime AF overrides and the pointer constructor remain the caller's responsibility. G0 now rejects constructor AF8…AF15 as unsupported, just like L0. Port presence does not prove that every pin is bonded in the selected package.
+The numeric-address constructor checks pin, AF range and CMSIS port presence at compilation. Runtime AF overrides and the pointer constructor remain the caller's responsibility. G0 allows AF8…AF15 where the pin and peripheral support them, for example AF10 on G0B1 LPUART2. Port presence does not prove that every pin is bonded in the selected package.
 
 ```cpp
 // Works with the same API on L0 and G4, and on the existing families.
@@ -396,7 +396,7 @@ PIN led(GPIOA, 5);                 // обычный объект GPIO
 led.SetUp(PIN::TYPE::OUTPUT_PushPull);
 led.SetLevel(true);
 
-// Элемент таблицы времени компиляции, как в uart_defs.hpp / tim_defs.hpp:
+// Элемент таблицы времени компиляции, как в аппаратных определениях USART и TIM.
 static constexpr PIN PA9 = { GPIOA_BASE, 9, 7, USART1_BASE };  // AF7, принадлежит USART1
 ```
 
@@ -524,7 +524,7 @@ consteval PIN(uintptr_t port_base, uint32_t p, uint32_t a = 0,
 
 - порт GPIO, которого нет на выбранном МК;
 - номер вывода вне 0…15;
-- AF вне 0…7 на G0/L0 или 0…15 на F4/F7/G4.
+- AF вне 0…7 на L0 или 0…15 на F4/F7/G0/G4.
 
 Аргументы проверяются **до** записи в 8-битные поля, поэтому опечатка вроде 256 не может незаметно превратиться в допустимое значение. Ошибка выводится компилятором с текстом причины (через `STM32_CONFIG_ERROR`). Во время работы ничего не проверяется.
 
@@ -535,7 +535,7 @@ consteval PIN(uintptr_t port_base, uint32_t p, uint32_t a = 0,
 - Копирование и перемещение при создании разрешены; присваивание другого `PIN` запрещено — существующий объект нельзя перепривязать.
 - Присваивание `bool` (`pin = true;`) по-прежнему устанавливает уровень выхода.
 
-**AF:** `SetUp(type, speed)` использует сохранённый AF. Явный `af_override` выбирает другой AF во время работы, не меняя сохранённый (0…7 на G0/L0 или 0…15 на F4/F7/G4 обеспечивает вызывающий). Проверки диапазона не гарантируют, что данный вывод действительно поддерживает данную функцию на вашем МК.
+**AF:** `SetUp(type, speed)` использует сохранённый AF. Явный `af_override` выбирает другой AF во время работы, не меняя сохранённый (0…7 на L0 или 0…15 на F4/F7/G0/G4 обеспечивает вызывающий). Проверки диапазона не гарантируют, что данный вывод действительно поддерживает данную функцию на вашем МК.
 
 **Таблицы периферии.** Таблицы USART/SPI/I2C используют формат `{GPIOx_BASE, pin, af, peripheral}`. У ADC и TIM свои проверяемые описания (`ADC_PIN`, `TIM_PIN`), построенные на том же consteval-конструкторе `PIN`. Проверка «вывод принадлежит выбранной периферии» находится в конструкторе каждого драйвера.
 
@@ -624,7 +624,7 @@ uint32_t state = seg_pins.GetLevelAll();   // прочитать все 4 бит
 seg_pins[2].SetLevel(true);                // доступ к одному выводу массива
 ```
 
-### Compile-time таблица для периферии (как устроены uart_defs.hpp/tim_defs.hpp)
+### Compile-time таблица для периферии (USART и TIM)
 
 ```cpp
 struct MySpiPins {
@@ -682,13 +682,13 @@ bool IsHigh() { return static_cast<bool>(enable); }
 | Семейство | Включение тактирования порта | Диапазон AF |
 | --- | --- | --- |
 | F4/F7 | `RCC->AHB1ENR` | 0…15 |
-| G0 | `RCC->IOPENR` | 0…7 |
+| G0 | `RCC->IOPENR` | 0…15 |
 | L0 | `RCC->IOPENR` | 0…7 |
 | G4 | `RCC->AHB2ENR` | 0…15 |
 
 Различия семейств ограничены выбором тактирования и описанием возможностей при компиляции в `gpio_hw`. Объект аппаратной реализации, виртуальные вызовы и дополнительные поля пина не нужны. Короткие операции IDR/BSRR/ODR и bit-band для F4 находятся прямо в публичном заголовке. `SetUp()` реализован в `gpio.cpp`, без промежуточной функции `Configure()`. Сохраняются API, порядок записи регистров и ответственность вызывающего за синхронизацию.
 
-Конструктор с числовым адресом проверяет номер пина, диапазон AF и наличие порта CMSIS при компиляции. Runtime-переопределение AF и конструктор с указателем остаются ответственностью вызывающего. На G0 AF8…AF15 теперь отклоняются конструктором как неподдерживаемые, как и на L0. Наличие порта не гарантирует вывод каждого пина в выбранном корпусе.
+Конструктор с числовым адресом проверяет номер пина, диапазон AF и наличие порта CMSIS при компиляции. Runtime-переопределение AF и конструктор с указателем остаются ответственностью вызывающего. На G0 допустимы AF8…AF15, если их поддерживают вывод и периферия, например AF10 для LPUART2 на G0B1. Наличие порта не гарантирует вывод каждого пина в выбранном корпусе.
 
 ```cpp
 // Один API для L0/G4 и уже поддерживаемых семейств.
