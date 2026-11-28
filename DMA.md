@@ -123,9 +123,9 @@ The whole public API (`SetMemAddr`, `SetCount`, `ClearFlags`, `GetTC_Flag`, `Ena
 
 - `dma_hw::resources` is a read-only table in **Flash**.
 - `dma_used` — a separate zero-initialized "occupied" array in **RAM** with the same indices.
-- The object's `_info` points to its const descriptor. No extra per-object index is stored.
+- After successful setup, the object's `_info` points to its const descriptor.
 
-**Index lookup.** `GetStreamIndex()` computes the index from the controller's address range and the exact register stride taken from CMSIS base addresses. An address pointing *inside* a register block is rejected. G0 DMA2 uses descriptor/DMAMUX indices 7…11 and has its own ISR/IFCR.
+**Index lookup.** The constructor resolves the index from the CMSIS register addresses and stores it as one byte. Numeric addresses in a `constinit` object resolve at compile time. The pointer overload can resolve the index with a bounded address scan. `SetUp()` and `Release()` reuse the index. Only the exact base address of a stream or channel is accepted. G0 DMA2 uses descriptor/DMAMUX indices 7…11 and has its own ISR/IFCR.
 
 **Ownership:**
 
@@ -531,7 +531,7 @@ Afterwards another object may claim the hardware with a different request. **Bef
 
 Самостоятельное использование (память→память, своя периферия) тоже возможно — см. раздел 11.
 
-Индекс ресурса `GetStreamIndex()` (раздел 5) вычисляет по диапазону адресов контроллера и шагу регистров, отклоняя адреса между началами потоков/каналов.
+Индекс ресурса определяется в конструкторе по точному адресу регистров CMSIS. Для `constinit` с числовым адресом это происходит при компиляции.
 
 **Включение прерывания** (после успешного `SetUp()` и регистрации обработчика):
 
@@ -602,9 +602,9 @@ volatile uint32_t& _MAR();   // ->M0AR                              | ->CMAR
 
 - `dma_hw::resources` — таблица `static const` во **Flash**.
 - `dma_used` — отдельный обнуляемый массив занятости в **RAM** с теми же индексами.
-- `_info` объекта указывает на константный дескриптор. Дополнительный индекс в объекте не хранится.
+- После успешного `SetUp()` указатель `_info` объекта ссылается на константный дескриптор.
 
-**Поиск индекса.** `GetStreamIndex()` вычисляет индекс по диапазону адресов контроллера и точному шагу регистров из базовых адресов CMSIS. Адрес, указывающий *внутрь* блока регистров, отклоняется. DMA2 на G0 использует индексы дескрипторов/DMAMUX 7…11, но свои ISR/IFCR.
+**Поиск индекса.** Конструктор определяет индекс по адресам регистров CMSIS и сохраняет его в одном байте. Для `constinit` с числовым адресом поиск выполняется при компиляции. Для перегрузки с указателем поиск ограничен числом каналов. `SetUp()` и `Release()` используют готовый индекс. Принимается точный базовый адрес потока или канала. DMA2 на G0 использует индексы дескрипторов/DMAMUX 7…11 и собственные ISR/IFCR.
 
 **Владение:**
 

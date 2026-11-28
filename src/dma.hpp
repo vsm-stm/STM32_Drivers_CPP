@@ -175,7 +175,7 @@ public:
 	static constexpr uint32_t FLAG_ERRORS = dma_hw::FLAG_ERRORS;
 
 private:
-	uintptr_t _stream;
+	const uintptr_t _stream;
 	dma_hw::Registers* Stream() const { return reinterpret_cast<dma_hw::Registers*>(_stream); }
 	volatile uint32_t& _CR()   const { return Stream()->*dma_hw::CONTROL; }
 	volatile uint32_t& _NDTR() const { return Stream()->*dma_hw::COUNT; }
@@ -184,23 +184,21 @@ private:
 
 	const dma_sets_typedef* _info = nullptr;
 	static constexpr uint32_t MAX_COUNT = 0xFFFFU;
-	uint32_t _preset_ch = 0;
-	bool _has_preset = false;
+	const int16_t _preset_ch = -1; // Use StreamSettings::channel when no request was supplied.
+	const int8_t _index;
 
-	static constexpr int32_t GetStreamIndex(uintptr_t base)
+	static constexpr int8_t GetStreamIndex(uintptr_t base)
 	{
 		using namespace dma_hw;
-		uintptr_t first = DMA1_FIRST;
-		int32_t first_index = 0;
-		if (base < DMA1_FIRST || base >= DMA1_FIRST + DMA1_COUNT * STRIDE) {
-			if (DMA2_COUNT == 0 || base < DMA2_FIRST || base >= DMA2_FIRST + DMA2_COUNT * STRIDE)
-				return -1;
-			first = DMA2_FIRST;
-			first_index = DMA1_COUNT;
-		}
-		const uintptr_t offset = base - first;
-		const uintptr_t index = offset / STRIDE;
-		return index * STRIDE == offset ? first_index + static_cast<int32_t>(index) : -1;
+		static_assert(DMA1_COUNT + DMA2_COUNT <= INT8_MAX);
+		if (base == 0) return -1;
+		uintptr_t channel = DMA1_FIRST;
+		for (int32_t i = 0; i < DMA1_COUNT; ++i, channel += STRIDE)
+			if (base == channel) return static_cast<int8_t>(i);
+		channel = DMA2_FIRST;
+		for (int32_t i = 0; i < DMA2_COUNT; ++i, channel += STRIDE)
+			if (base == channel) return static_cast<int8_t>(DMA1_COUNT + i);
+		return -1;
 	}
 
 public:
@@ -278,10 +276,14 @@ public:
 	explicit DMA_Sx(dma_hw::Registers* resource)
 		: DMA_Sx(reinterpret_cast<uintptr_t>(resource)) {}
 
-	/// Numeric selection supports constinit; an empty selection is optional DMA.
-	constexpr explicit DMA_Sx(uintptr_t base) : _stream(base) {}
+	/// Numeric selection resolves the hardware index during constant initialization.
+	constexpr explicit DMA_Sx(uintptr_t base) : _stream(base), _index(GetStreamIndex(base)) {}
+	// Oversized explicit requests still fail validation in SetUp().
 	constexpr DMA_Sx(uintptr_t base, uint32_t request)
-		: _stream(base), _preset_ch(request), _has_preset(true) {}
+		: _stream(base), _preset_ch(request <= UINT8_MAX ? request : UINT8_MAX), _index(GetStreamIndex(base))
+	{
+		static_assert(!dma_hw::ValidRequest(UINT8_MAX));
+	}
 
 #if defined(STM32F4) || defined(STM32F7) || defined(STM32L0)
 	// A fixed route describes both the physical resource and the selector.
@@ -320,7 +322,7 @@ public:
 	 * the preset request and leave actual channel existence to SetUp().
 	 */
 	inline bool CanUseRequest(DMAReq req) const {
-		if (!req.IsValid() || (_has_preset && _preset_ch != req.ch)) return false;
+		if (!req.IsValid() || (_preset_ch >= 0 && static_cast<uint32_t>(_preset_ch) != req.ch)) return false;
 	#if defined(STM32F4) || defined(STM32F7) || defined(STM32L0)
 		return _stream == req.stream;
 	#else

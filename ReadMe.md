@@ -23,7 +23,7 @@ Every module document follows the same layout as [GPIO.md](GPIO.md): English/Р�
 
 A C++20 library on top of CMSIS for the **STM32G0**, **STM32F4** and **STM32F7** families.
 
-System, GPIO and RCC also support **STM32L0/G4** with hardware selection at compilation. Main Flash is available on L0 and G4 with a matching bank map. DMA and USART are also supported on both families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
+System, GPIO and RCC also support **STM32L0/G4** with hardware selection at compilation. Main Flash is available on L0 and G4 with a matching bank map. DMA, USART and SPI are also supported on both families. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support).
 
 - **Core** (always built): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Optional modules:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -120,7 +120,7 @@ directory propagation were also checked; this is not a full firmware build.
 
 Behaviour and limitations of each module are in its own document (e.g. [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-The full library supports F4/F7/G0. The core modules, DMA and USART also build on L0 and G4 with a supported Flash map. Some optional drivers are still limited to F4/F7/G0. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
+The full library supports F4/F7/G0. The core modules, DMA, USART and SPI also build on L0 and G4 with a supported Flash map. Some optional drivers are still limited to F4/F7/G0. See [GPIO.md](GPIO.md#10-hardware-implementation-and-family-support) and "Adding a new MCU".
 
 ---
 
@@ -660,9 +660,9 @@ uart.SetBaud(9600);   // after TC; check SysStatus
 
 ## 8. SPI
 
-**Files:** `spi.hpp`, `spi.cpp`, `spi_defs.hpp` · **Details:** [SPI.md](SPI.md)
+**Files:** `spi.hpp`, `spi.cpp`, `src/hardware/spi/` · **Details:** [SPI.md](SPI.md)
 
-- SPI1–SPI6 on F4/F7 and SPI1–SPI3 on G0, where present in CMSIS.
+- SPI1–SPI6 on F4/F7, SPI1–SPI3 on G0, SPI1–SPI4 on G4 and SPI1–SPI2 on L0, where present in CMSIS.
 - `Direction::TX`/`RX`/`TXRX` and optional DMA are fixed in the constructor; clock/mode/frame settings go to `SetUp()`.
 - Polling, IRQ and DMA have separate start paths. Starts check required buffers and status `OK`; DMA also checks the required DMA selection. Count (1..65535), buffer width/alignment and operation/pin compatibility are caller preconditions. Common preparation only assigns software state; DMA IRQ sources are configured once in `SetUpDMA()`.
 - After a transfer leaves status `Error`/`Timeout`, use `DeInit()` and `SetUp()` to recover. Missing-buffer/DMA rejections do not change object status. DMA preparation does not access NVIC.
@@ -703,8 +703,10 @@ SysStatus result = spi.Send_Receive(tx, rx, 2);   // len counts frames, not byte
 // F4/F7:
 constexpr SPI::DMAReq dma_tx = SPI::_1::DMA::TX_DMA2_Stream3;
 constexpr SPI::DMAReq dma_rx = SPI::_1::DMA::RX_DMA2_Stream0;
-// G0: constexpr SPI::DMAReq dma_tx = DMA1_Channel2_BASE;
-//     constexpr SPI::DMAReq dma_rx = DMA1_Channel3_BASE;
+// G0/G4: constexpr SPI::DMAReq dma_tx = DMA1_Channel2_BASE;
+//        constexpr SPI::DMAReq dma_rx = DMA1_Channel3_BASE;
+// L0: constexpr SPI::DMAReq dma_tx = SPI::_1::DMA::TX_DMA1_Channel3;
+//     constexpr SPI::DMAReq dma_rx = SPI::_1::DMA::RX_DMA1_Channel2;
 constinit SPI spi(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
                   SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, dma_tx, dma_rx);
 if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus::InitOK) {
@@ -718,7 +720,7 @@ SysStatus state = spi.Process();   // Busy until the last frame has left the wir
 - **DMA TC is not the end of the transfer** — `Process()` checks the SPI itself and then does cache, CS and callbacks.
 - F7 cache handover uses System with `Cacheable`; constructor `NonCacheable` skips it for both TX/RX without memory checks. Do not access an active RX buffer or modify TX.
 - `OnComplete()`/`OnError(mask)` run inside `Process()` after cleanup. `IRQ_en()` changes CR2 sources; `SetUp()` owns registration and NVIC.
-- **Slave:** `len` is capacity. The application configures a rising-edge EXTI on NSS and calls `NssReleased()` from it; `Process()` completes the packet in `main`. Extra frames → `IsTruncated()`; after the TX payload, dummy values are sent. On G0 the last RX DMA request must be serviced before the NSS stop. See [SPI.md](SPI.md) for priorities and re-arm rules.
+- **Slave:** `len` is capacity. The application configures a rising-edge EXTI on NSS and calls `NssReleased()` from it; `Process()` completes the packet in `main`. Extra frames → `IsTruncated()`; after the TX payload, dummy values are sent. On G0/G4/L0 the last RX DMA request must be serviced before the NSS stop. See [SPI.md](SPI.md) for priorities and re-arm rules.
 
 ### Frequency divider (BaudRate)
 
@@ -995,7 +997,7 @@ system.hpp
 
 C++20-библиотека поверх CMSIS для семейств **STM32G0**, **STM32F4** и **STM32F7**.
 
-System, GPIO и RCC также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. На L0 и G4 доступны основная Flash с согласованной картой банков, DMA и USART. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
+System, GPIO и RCC также поддерживают **STM32L0/G4** с выбором аппаратной реализации при компиляции. На L0 и G4 доступны основная Flash с согласованной картой банков, DMA, USART и SPI. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств).
 
 - **Ядро** (собирается всегда): System, RCC, GPIO, Flash, IRQ_Registry.
 - **Опциональные модули:** UART, SPI, DMA, TIM, RTC, EXTI, ADC, DAC, I2C, MODBUS, CONTAINERS, FILTERS, PID, DSP, CRC.
@@ -1084,7 +1086,7 @@ System, GPIO и RCC также поддерживают **STM32L0/G4** с выб
 
 Поведение и ограничения каждого модуля описаны в его документе (например, [RTC.md](RTC.md), [ADC.md](ADC.md), [DAC.md](DAC.md), [DMA.md](DMA.md)).
 
-Полная библиотека поддерживает F4/F7/G0. Базовые модули, DMA и USART также собираются на L0 и G4 с поддерживаемой картой Flash. Часть дополнительных драйверов пока ограничена F4/F7/G0. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
+Полная библиотека поддерживает F4/F7/G0. Базовые модули, DMA, USART и SPI также собираются на L0 и G4 с поддерживаемой картой Flash. Часть дополнительных драйверов пока ограничена F4/F7/G0. См. [GPIO.md](GPIO.md#10-аппаратная-реализация-и-поддержка-семейств) и «Добавление нового МК».
 
 ---
 
@@ -1624,9 +1626,9 @@ uart.SetBaud(9600);   // после TC; проверить SysStatus
 
 ## 8. SPI
 
-**Файлы:** `spi.hpp`, `spi.cpp`, `spi_defs.hpp` · **Подробнее:** [SPI.md](SPI.md)
+**Файлы:** `spi.hpp`, `spi.cpp`, `src/hardware/spi/` · **Подробнее:** [SPI.md](SPI.md)
 
-- SPI1–SPI6 на F4/F7 и SPI1–SPI3 на G0, если они есть в CMSIS.
+- SPI1–SPI6 на F4/F7, SPI1–SPI3 на G0, SPI1–SPI4 на G4 и SPI1–SPI2 на L0, если они есть в CMSIS.
 - `Direction::TX`/`RX`/`TXRX` и необязательные DMA фиксируются в конструкторе; частота, режим и формат кадра задаются в `SetUp()`.
 - Polling, IRQ и DMA запускаются раздельно. Проверяются обязательные буферы и статус `OK`; для DMA — ещё наличие нужного DMA. Длину (1..65535), ширину/выравнивание буфера и совместимость операции с выводами обеспечивает вызывающий код. Общая подготовка задаёт только программное состояние; источники DMA IRQ настраиваются один раз в `SetUpDMA()`.
 - После обмена со статусом `Error`/`Timeout` восстановление — через `DeInit()` и `SetUp()`. Отказ из-за отсутствующего буфера/DMA не меняет статус объекта. Подготовка DMA не обращается к NVIC.
@@ -1668,8 +1670,10 @@ SysStatus result = spi.Send_Receive(tx, rx, 2);   // len — число кадр
 // F4/F7:
 constexpr SPI::DMAReq dma_tx = SPI::_1::DMA::TX_DMA2_Stream3;
 constexpr SPI::DMAReq dma_rx = SPI::_1::DMA::RX_DMA2_Stream0;
-// G0: constexpr SPI::DMAReq dma_tx = DMA1_Channel2_BASE;
-//     constexpr SPI::DMAReq dma_rx = DMA1_Channel3_BASE;
+// G0/G4: constexpr SPI::DMAReq dma_tx = DMA1_Channel2_BASE;
+//        constexpr SPI::DMAReq dma_rx = DMA1_Channel3_BASE;
+// L0: constexpr SPI::DMAReq dma_tx = SPI::_1::DMA::TX_DMA1_Channel3;
+//     constexpr SPI::DMAReq dma_rx = SPI::_1::DMA::RX_DMA1_Channel2;
 constinit SPI spi(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
                   SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, dma_tx, dma_rx);
 if (spi.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus::InitOK) {
@@ -1683,7 +1687,7 @@ SysStatus state = spi.Process();   // Busy, пока последний кадр
 - **DMA TC — это ещё не конец обмена**: `Process()` проверяет сам SPI, затем обслуживает кеш, CS и callback.
 - Кеш F7 обслуживается через System при `Cacheable`; `NonCacheable` в конструкторе пропускает вызовы для TX/RX без проверки памяти. Не обращайтесь к активному RX-буферу и не меняйте TX.
 - `OnComplete()`/`OnError(mask)` вызываются внутри `Process()` после очистки. `IRQ_en()` меняет источники в CR2; регистрацией и NVIC управляет `SetUp()`.
-- **Slave:** `len` — вместимость. Приложение настраивает EXTI по нарастающему фронту NSS и вызывает из него `NssReleased()`; `Process()` завершает пакет в `main`. Лишние кадры → `IsTruncated()`; после TX-данных передаются пустые кадры. На G0 последний запрос RX DMA должен быть обслужен до остановки по NSS. Приоритеты и правила повторного запуска — в [SPI.md](SPI.md).
+- **Slave:** `len` — вместимость. Приложение настраивает EXTI по нарастающему фронту NSS и вызывает из него `NssReleased()`; `Process()` завершает пакет в `main`. Лишние кадры → `IsTruncated()`; после TX-данных передаются пустые кадры. На G0/G4/L0 последний запрос RX DMA должен быть обслужен до остановки по NSS. Приоритеты и правила повторного запуска — в [SPI.md](SPI.md).
 
 ### Делитель частоты (BaudRate)
 

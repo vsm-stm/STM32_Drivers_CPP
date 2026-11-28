@@ -19,28 +19,15 @@ using SpiHalfwordRegister = uint16_t __attribute__((__may_alias__));
 
 uint16_t SPI::ReadFrame() const
 {
-	if (_frame_format == Data_frame_format::Byte) return *reinterpret_cast<volatile uint8_t*>(&SPIx->DR);
+	if (!_half_word) return *reinterpret_cast<volatile uint8_t*>(&SPIx->DR);
 	return *reinterpret_cast<volatile SpiHalfwordRegister*>(&SPIx->DR);
 }
 
-void SPI::WriteFrame(uint16_t frame)
+SysInitStatus SPI::ApplySettings(uint32_t cr1, uint32_t cr2, bool half_word)
 {
-	if (_frame_format == Data_frame_format::Byte) *reinterpret_cast<volatile uint8_t*>(&SPIx->DR) = static_cast<uint8_t>(frame);
-	else *reinterpret_cast<volatile SpiHalfwordRegister*>(&SPIx->DR) = frame;
-}
-
-SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
-						Frame_Format ff, cPolPha cpolpha, BaudRate br)
-{
-	if (SPIx
-		|| (mstr != Master_sel::Master && mstr != Master_sel::Slave)
-		|| (nss != NSS_ctrl::Hard && nss != NSS_ctrl::Software)
-		|| (dff != Data_frame_format::Byte && dff != Data_frame_format::Half_Word)
-		|| (ff != Frame_Format::MSB && ff != Frame_Format::LSB)
-		|| (static_cast<uint32_t>(cpolpha) & ~(SPI_CR1_CPOL | SPI_CR1_CPHA))
-		|| static_cast<uint32_t>(br) > static_cast<uint32_t>(BaudRate::DIV256)
-		|| (nss == NSS_ctrl::Hard && !_ss.IsValid())
-		|| (mstr == Master_sel::Slave && nss != NSS_ctrl::Hard))
+	const bool software_nss = (cr1 & SPI_CR1_SSM) != 0;
+	const bool has_ss = _ss.IsValid();
+	if (SPIx || (!software_nss && !has_ss))
 		return SysInitStatus::InitError;
 	SPIx = reinterpret_cast<SPI_TypeDef*>(_instance.periph);
 
@@ -54,23 +41,12 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
 	_clk.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
 	if (_mosi.IsValid()) _mosi.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
 	if (_miso.IsValid()) _miso.SetUp(PIN::TYPE::AF_PushPull, PIN::OUTPUT_SPEED::High);
-	if (_ss.IsValid()) {
-		if (nss == NSS_ctrl::Hard) _ss.SetUp(PIN::TYPE::AF_PushPull);
-		else _ss.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
+	if (has_ss) {
+		if (software_nss) _ss.SetUp(PIN::TYPE::OUTPUT_PushPull, PIN::OUTPUT_SPEED::Low, PIN::LVL::HIGH);
+		else _ss.SetUp(PIN::TYPE::AF_PushPull);
 	}
 
-	uint32_t cr1 = static_cast<uint32_t>(mstr) | static_cast<uint32_t>(ff)
-		| static_cast<uint32_t>(cpolpha) | (static_cast<uint32_t>(br) << SPI_CR1_BR_Pos);
-	if (nss == NSS_ctrl::Software) cr1 |= SPI_CR1_SSM | SPI_CR1_SSI;
-	if (_direction == Direction::TX) cr1 |= SPI_CR1_BIDIMODE | SPI_CR1_BIDIOE;
-#if defined(STM32F4)
-	cr1 |= static_cast<uint32_t>(dff);
-	SPIx->CR2 = nss == NSS_ctrl::Hard && mstr == Master_sel::Master ? SPI_CR2_SSOE : 0U;
-#else
-	SPIx->CR2 = static_cast<uint32_t>(dff)
-		| (dff == Data_frame_format::Byte ? SPI_CR2_FRXTH : 0U)
-		| (nss == NSS_ctrl::Hard && mstr == Master_sel::Master ? SPI_CR2_SSOE : 0U);
-#endif
+	SPIx->CR2 = cr2;
 	SPIx->CR1 = cr1;
 
 	const bool enabled = NVIC_GetEnableIRQ(_instance.irq) != 0;
@@ -80,9 +56,9 @@ SysInitStatus SPI::SetUp(Master_sel mstr, NSS_ctrl nss, Data_frame_format dff,
 		if (enabled) NVIC_EnableIRQ(_instance.irq);
 		return SysInitStatus::InitError;
 	}
-	Master_slave = mstr;
-	nss_ctrl = nss;
-	_frame_format = dff;
+	Master_slave = static_cast<Master_sel>(cr1 & SPI_CR1_MSTR);
+	nss_ctrl = software_nss ? NSS_ctrl::Software : NSS_ctrl::Hard;
+	_half_word = half_word;
 	if (SetUpDMA() != SysInitStatus::InitOK) {
 		IRQ_Registry::Unregister(_instance.irq, this);
 		SPIx = nullptr;
@@ -127,7 +103,7 @@ SysStatus SPI::StartDMA(const void* tx, void* rx, uint32_t len, FunctionalState 
 
 #if defined(STM32F7)
 	if (_cache_policy == System::CachePolicy::Cacheable) {
-		const uint32_t frame_bytes = _frame_format == Data_frame_format::Byte ? 1U : 2U;
+		const uint32_t frame_bytes = _half_word ? 2U : 1U;
 		if (tx) System::CacheClean(tx, minc == ENABLE ? len * frame_bytes : frame_bytes);
 		if (rx) System::CacheCleanInvalidate(rx, len * frame_bytes);
 	}
@@ -176,15 +152,12 @@ SysStatus SPI::StartPolling(const void* tx, void* rx, uint32_t len, uint32_t tim
 	return _status;
 }
 
-void SPI::StoreFrame(uint16_t frame)
+template<typename Frame>
+void SPI::StoreFrame(Frame frame)
 {
 	uint16_t remaining = _rx_remaining;
 	if (remaining) {
-		if (_rx_data) {
-			const uint32_t offset = _capacity - remaining;
-			if (_frame_format == Data_frame_format::Byte) _rx_data[offset] = static_cast<uint8_t>(frame);
-			else reinterpret_cast<uint16_t*>(_rx_data)[offset] = frame;
-		}
+		if (_rx_data) reinterpret_cast<Frame*>(_rx_data)[_capacity - remaining] = frame;
 		_rx_remaining = --remaining;
 		if (!remaining && Master_slave == Master_sel::Master)
 			IRQ_en(IRQ::RXNE, DISABLE);
@@ -198,12 +171,12 @@ void SPI::OnRxWord(uint16_t frame) { StoreFrame(frame); }
 
 void SPI::DrainRx(uint32_t& sr, uint32_t& remaining)
 {
+	const bool half_word = _half_word;
 	for (; remaining && (sr & SPI_SR_RXNE);) {
 		--remaining;
-		const uint16_t frame = ReadFrame();
-		if (_frame_format == Data_frame_format::Byte) OnRxByte(static_cast<uint8_t>(frame));
-		else OnRxWord(frame);
-#if !defined(STM32F4)
+		if (half_word) OnRxWord(*reinterpret_cast<volatile SpiHalfwordRegister*>(&SPIx->DR));
+		else OnRxByte(*reinterpret_cast<volatile uint8_t*>(&SPIx->DR));
+#if defined(SPI_SR_FTLVL)
 		if (remaining) sr = SPIx->SR; // Check the next FIFO frame, not the first again.
 #endif
 	}
@@ -212,16 +185,18 @@ void SPI::DrainRx(uint32_t& sr, uint32_t& remaining)
 void SPI::OnTxEmpty()
 {
 	uint16_t remaining = _tx_remaining;
-	if (remaining) {
-		uint16_t frame = 0xFFFFU;
-		if (_tx_data) {
-			frame = _frame_format == Data_frame_format::Byte ? *_tx_data : *reinterpret_cast<const uint16_t*>(_tx_data);
-			_tx_data += _frame_format == Data_frame_format::Byte ? 1U : 2U;
+	if (remaining || Master_slave == Master_sel::Slave) {
+		const uint8_t* data = remaining ? _tx_data : nullptr;
+		if (!_half_word) {
+			*reinterpret_cast<volatile uint8_t*>(&SPIx->DR) = data ? *data : 0xFFU;
+			if (data) _tx_data = data + 1;
+		} else {
+			*reinterpret_cast<volatile SpiHalfwordRegister*>(&SPIx->DR) =
+				data ? *reinterpret_cast<const uint16_t*>(data) : 0xFFFFU;
+			if (data) _tx_data = data + 2;
 		}
-		WriteFrame(frame);
-		_tx_remaining = --remaining;
+		if (remaining) _tx_remaining = --remaining;
 	}
-	else if (Master_slave == Master_sel::Slave) WriteFrame(0xFFFFU);
 	if (!remaining && Master_slave == Master_sel::Master)
 		IRQ_en(IRQ::TXE, DISABLE);
 }
@@ -243,7 +218,7 @@ uint32_t SPI::ReadErrors(uint32_t& sr, uint32_t& remaining)
 }
 
 // No waits: F4/F7 stop completion is collected by the separate DMA IRQs.
-// G0 has no stop TC; its NSS contract requires the last request already serviced.
+// Channel DMA has no stop TC. NSS requires the last request already serviced.
 void SPI::StopTransfer()
 {
 	SPI_CLEAR_BIT(SPIx->CR2, (IRQ_MASK | DMA_MASK));
@@ -274,8 +249,8 @@ SysStatus SPI::Process()
 	const uint32_t errors = ReadErrors(sr, remaining);
 	if (errors) _errors = _errors | errors;
 	if (_errors && !_nss_ended) StopTransfer(); // NSS already stopped the transfer.
-#if defined(STM32G0)
-	// No stop TC on G0. At NSS the last request must already be serviced.
+#if !defined(STM32F4) && !defined(STM32F7)
+	// Channel DMA has no stop TC. At NSS the last request must already be serviced.
 	// Error aborts discard the packet and never use a potentially invalid CNDTR.
 	if (_errors || _nss_ended) {
 		if (_dma_pending & SPI_CR2_TXDMAEN) {
@@ -305,7 +280,7 @@ SysStatus SPI::Process()
 		if (_tx_remaining || _rx_remaining || _dma_pending) return SysStatus::Busy;
 		// DMA IRQ may have finished after the initial snapshot; sample the wire now.
 		sr = SPIx->SR;
-#if defined(STM32F4)
+#if defined(SPI_CR1_DFF)
 		if (!(sr & SPI_SR_TXE) || (sr & SPI_SR_BSY)) return SysStatus::Busy;
 #else
 		if (sr & (SPI_SR_FTLVL | SPI_SR_BSY)) return SysStatus::Busy;
@@ -326,7 +301,7 @@ void SPI::Finish(SysStatus result, uint32_t errors)
 	if (_cache_policy == System::CachePolicy::Cacheable
 		&& _mode == Mode::Dma && _dma_rx.HasSelection() && _rx_data)
 		System::CacheInvalidate(_rx_data, (result == SysStatus::OK && !errors ? _capacity - _rx_remaining : _capacity)
-				* (_frame_format == Data_frame_format::Byte ? 1U : 2U));
+				* (_half_word ? 2U : 1U));
 #endif
 	if (result == SysStatus::OK) {
 		uint32_t remaining = FifoFrames();
@@ -376,7 +351,7 @@ void SPI::HandleIRQ()
 	uint32_t sr = SPIx->SR;
 	uint32_t remaining = FifoFrames();
 	uint32_t errors = 0;
-	if (cr2 & SPI_CR2_ERRIE) errors = ReadErrors(sr, remaining);
+	if ((sr & SPI_ERRORS) && (cr2 & SPI_CR2_ERRIE)) errors = ReadErrors(sr, remaining);
 	if (errors) {
 		_errors = _errors | errors;
 #if SPI_USE_ATOMIC
@@ -386,7 +361,8 @@ void SPI::HandleIRQ()
 #endif
 		return;
 	}
-	if ((cr2 & SPI_CR2_RXNEIE) && !(cr2 & SPI_CR2_RXDMAEN)) DrainRx(sr, remaining);
+	if ((sr & SPI_SR_RXNE) && (cr2 & (SPI_CR2_RXNEIE | SPI_CR2_RXDMAEN)) == SPI_CR2_RXNEIE)
+		DrainRx(sr, remaining);
 	if ((cr2 & SPI_CR2_TXEIE) && (sr & SPI_SR_TXE)) OnTxEmpty();
 }
 
@@ -409,7 +385,9 @@ void SPI::HandleDmaTxIRQ()
 	const bool complete = !_errors && !_nss_ended;
 	if (complete) {
 		DMA_TX(DISABLE);
+#if !defined(STM32F4) && !defined(STM32F7)
 		_dma_tx.RequestStop();
+#endif
 		_tx_remaining = 0; // Normal TC: all requested frames were transferred.
 	} else if (!_errors) {
 		_tx_remaining = static_cast<uint16_t>(_dma_tx.GetCount()); // Early NSS stop.
@@ -439,7 +417,9 @@ void SPI::HandleDmaRxIRQ()
 	const bool complete = !_errors && !_nss_ended;
 	if (complete) {
 		DMA_RX(DISABLE);
+#if !defined(STM32F4) && !defined(STM32F7)
 		_dma_rx.RequestStop();
+#endif
 		_rx_remaining = 0; // Normal TC: all requested frames were transferred.
 	} else if (!_errors) {
 		_rx_remaining = static_cast<uint16_t>(_dma_rx.GetCount()); // Early NSS stop.
@@ -456,7 +436,7 @@ SysInitStatus SPI::SetUpDMA()
 	DMA_Sx* const rx = _dma_rx.HasSelection() ? &_dma_rx : nullptr;
 	if (!tx && !rx) return SysInitStatus::InitOK;
 	DMA_Sx::StreamSettings cfg;
-	cfg.data_size = _frame_format == Data_frame_format::Byte ? DMA_Sx::SIZE::Byte : DMA_Sx::SIZE::Half_Word;
+	cfg.data_size = _half_word ? DMA_Sx::SIZE::Half_Word : DMA_Sx::SIZE::Byte;
 	cfg.minc = true;
 	cfg.per_address = reinterpret_cast<uint32_t>(&SPIx->DR);
 	if (tx) {
@@ -518,7 +498,7 @@ void SPI::DeInit()
 		if (_cache_policy == System::CachePolicy::Cacheable
 			&& _mode == Mode::Dma && _dma_rx.HasSelection() && _rx_data)
 			System::CacheInvalidate(_rx_data, _capacity
-				* (_frame_format == Data_frame_format::Byte ? 1U : 2U));
+				* (_half_word ? 2U : 1U));
 #endif
 	} else {
 		SPI_CLEAR_BIT(SPIx->CR2, IRQ_MASK | DMA_MASK);

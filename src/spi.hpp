@@ -1,6 +1,6 @@
 /**
  * @file spi.hpp
- * @brief SPI master/slave driver for STM32F4/F7/G0.
+ * @brief SPI master/slave driver for STM32F4/F7/G0/G4/L0.
  *
  * One object owns one hardware SPI and its IRQ/DMA registrations. Initialize
  * System/RCC first. SetUp() fixes clock polarity/phase, divider and 8/16-bit frame
@@ -68,7 +68,7 @@
  *
  * DMA and F7 cache
  * ----------------
- * Pass DMAReq after SS: named requests on F4/F7, physical channels on G0.
+ * Pass DMAReq after SS: named routes on F4/F7/L0, physical channels on G0/G4.
  * SPI owns both DMA objects. SetUp() acquires/configures/registers them;
  * DeInit releases resources and preserves constructor selections. F4/F7 requests
  * are checked in the constructor for SPI ownership, direction and distinct streams.
@@ -82,7 +82,7 @@
  * operations. DMA-accessible RAM is required.
  * The SPI IRQ and DMA TX/RX IRQs have separate registered handler objects; a
  * shared DMA vector therefore needs two registry slots. No IRQ waits for hardware.
- * F4/F7 collect forced-stop completion and counts in the DMA IRQ. On G0 a slave
+ * F4/F7 collect forced-stop completion and counts in the DMA IRQ. On G0/G4/L0 a slave
  * NSS stop requires the last DMA request already serviced; Process() reads the
  * stopped count. Arbitrary aborts discard the packet, without using CNDTR.
  *
@@ -131,7 +131,6 @@
 #define SPI_HPP_
 
 #include "system.hpp"
-#include "rcc.hpp"
 #include "gpio.hpp"
 #include "dma.hpp"
 #include "irq_registry.hpp"
@@ -144,11 +143,9 @@
 #if SPI_USE_ATOMIC
 #define SPI_SET_BIT ATOMIC_SET_BIT
 #define SPI_CLEAR_BIT ATOMIC_CLEAR_BIT
-#define SPI_MODIFY_REG ATOMIC_MODIFY_REG
 #else
 #define SPI_SET_BIT SET_BIT
 #define SPI_CLEAR_BIT CLEAR_BIT
-#define SPI_MODIFY_REG MODIFY_REG
 #endif
 
 class SPI : public IIRQHandler
@@ -160,7 +157,7 @@ public:
 	enum class Master_sel { Slave = 0, Master = SPI_CR1_MSTR };
 	enum class NSS_ctrl { Hard = 0, Software };
 	enum class Data_frame_format {
-#if defined(STM32F4)
+#if defined(SPI_CR1_DFF)
 		Byte = 0, Half_Word = SPI_CR1_DFF
 #else
 		Byte = 7U << SPI_CR2_DS_Pos, Half_Word = 15U << SPI_CR2_DS_Pos
@@ -180,26 +177,34 @@ public:
 		DmaTx = 1U << 16, DmaRx = 1U << 17
 	};
 
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 	using DMAReq = uintptr_t; ///< Source is implied by SPI and direction.
 #else
 	using DMAReq = DMA_Sx::DMAReq;
 #endif
 
-	/** Fixed device metadata from spi_defs.hpp; no runtime lookup. */
+	/** Fixed device metadata from the selected hardware/spi header. */
 	struct Instance {
 		uintptr_t periph;
 		uintptr_t clk_reg;
 		uint32_t clk_bit;
 		uintptr_t rst_reg;
 		uint32_t rst_bit;
-		const uint32_t* bus_clk;
 		IRQn_Type irq;
-#if defined(STM32G0)
-		uint32_t dma_tx_request, dma_rx_request;
+#if defined(STM32G0) || defined(STM32G4)
+		uint8_t dma_tx_request, dma_rx_request;
 #endif
 	};
-#include "spi_defs.hpp"
+	// Only the selected family's instance, pin and DMA definitions are visible.
+#if defined(STM32F4) || defined(STM32F7)
+#include "hardware/spi/f4_f7.hpp"
+#elif defined(STM32G0)
+#include "hardware/spi/g0.hpp"
+#elif defined(STM32G4)
+#include "hardware/spi/g4.hpp"
+#elif defined(STM32L0)
+#include "hardware/spi/l0.hpp"
+#endif
 
 	/**
 	 * @brief Store pins and hardware; no register access until SetUp().
@@ -219,9 +224,12 @@ public:
 	constexpr explicit SPI(const Instance& instance, Direction direction, PIN sck, PIN mosi = PIN{},
 				 PIN miso = PIN{}, PIN ss = PIN{},
 				 DMAReq dma_tx = {}, DMAReq dma_rx = {},
-				 System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
-		: _direction(direction), _cache_policy(cache_policy),
-#if defined(STM32G0)
+				 [[maybe_unused]] System::CachePolicy cache_policy = System::CachePolicy::Cacheable)
+		: _direction(direction),
+#if defined(STM32F7)
+		  _cache_policy(cache_policy),
+#endif
+#if defined(STM32G0) || defined(STM32G4)
 		  _dma_tx(dma_tx, instance.dma_tx_request), _dma_rx(dma_rx, instance.dma_rx_request),
 #else
 		  _dma_tx(dma_tx), _dma_rx(dma_rx),
@@ -273,10 +281,10 @@ public:
 
 	/**
 	 * @brief Configure one SPI, pins, source-free IRQ registration and NVIC.
-	 * @return InitError for an unsupported peripheral, invalid enums/missing SCK,
-	 *         Hard without SS, software-NSS slave, repeated setup or IRQ failure.
+	 * @return InitError for invalid settings, Hard without SS, repeated setup or
+	 *         DMA/IRQ failure. Constant settings can be folded at the call site.
 	 * Slave requires hardware NSS; configure EXTI on the same pin in the application.
-	 * Byte uses 8-bit DR access and the 8-bit RX threshold on F7/G0; Half_Word
+	 * Byte uses 8-bit DR access and the 8-bit RX threshold on F7/G0/G4; Half_Word
 	 * uses 16-bit DR access, the half-word threshold and 16-bit DMA transfers.
 	 * TX sets BIDIMODE/BIDIOE; RX/TXRX leave RXONLY clear. Default NSS is Hard;
 	 * Owned DMA objects are configured here, after constructor DMAReq validation, with separate
@@ -295,7 +303,30 @@ public:
 	SysInitStatus SetUp(Master_sel mstr, NSS_ctrl nss = NSS_ctrl::Hard,
 					   Data_frame_format dff = Data_frame_format::Byte,
 					   Frame_Format ff = Frame_Format::MSB,
-					   cPolPha cpolpha = cPolPha::None, BaudRate br = BaudRate::DIV2);
+					   cPolPha cpolpha = cPolPha::None, BaudRate br = BaudRate::DIV2)
+	{
+		if ((mstr != Master_sel::Master && mstr != Master_sel::Slave)
+			|| (nss != NSS_ctrl::Hard && nss != NSS_ctrl::Software)
+			|| (dff != Data_frame_format::Byte && dff != Data_frame_format::Half_Word)
+			|| (ff != Frame_Format::MSB && ff != Frame_Format::LSB)
+			|| (static_cast<uint32_t>(cpolpha) & ~(SPI_CR1_CPOL | SPI_CR1_CPHA))
+			|| static_cast<uint32_t>(br) > static_cast<uint32_t>(BaudRate::DIV256)
+			|| (mstr == Master_sel::Slave && nss == NSS_ctrl::Software))
+			return SysInitStatus::InitError;
+
+		uint32_t cr1 = static_cast<uint32_t>(mstr) | static_cast<uint32_t>(ff)
+			| static_cast<uint32_t>(cpolpha) | (static_cast<uint32_t>(br) << SPI_CR1_BR_Pos);
+		if (nss == NSS_ctrl::Software) cr1 |= SPI_CR1_SSM | SPI_CR1_SSI;
+		if (_direction == Direction::TX) cr1 |= SPI_CR1_BIDIMODE | SPI_CR1_BIDIOE;
+		uint32_t cr2 = nss == NSS_ctrl::Hard && mstr == Master_sel::Master ? SPI_CR2_SSOE : 0U;
+		const bool half_word = dff == Data_frame_format::Half_Word;
+#if defined(SPI_CR1_DFF)
+		cr1 |= static_cast<uint32_t>(dff);
+#else
+		cr2 |= static_cast<uint32_t>(dff) | (half_word ? 0U : SPI_CR2_FRXTH);
+#endif
+		return ApplySettings(cr1, cr2, half_word);
+	}
 
 	/// Low-level SPE controls; do not use to interrupt an owned active operation.
 	void Enable() { if (SPIx) SPI_SET_BIT(SPIx->CR1, SPI_CR1_SPE); }
@@ -303,8 +334,7 @@ public:
 	/// Active-low software master CS: current operation's pin, or constructor SS.
 	/// Hard NSS, slave mode and absent CS are untouched.
 	void SlaveSelect(FunctionalState en) {
-		if (SPIx && Master_slave == Master_sel::Master
-			&& nss_ctrl == NSS_ctrl::Software && _active_ss->IsValid()) _active_ss->SetLevel(!en);
+		if (SPIx && nss_ctrl == NSS_ctrl::Software && _active_ss->IsValid()) _active_ss->SetLevel(!en);
 	}
 	/// Raw request gates; normal transfers manage them in start/stop order.
 	void DMA_TX(FunctionalState en) {
@@ -435,7 +465,7 @@ public:
 	 * No next packet may begin before Process() and rearm. Keep this EXTI and the
 	 * SPI/DMA handlers at priorities preventing mutual preemption.
 	 * This call contains no hardware wait. F4/F7 await stop TC in DMA IRQ before
-	 * Process() publishes data. G0 requires the last request serviced before this
+	 * Process() publishes data. G0/G4/L0 require the last request serviced before this
 	 * call; Process() reads CNDTR after stop. Error packets must be discarded.
 	 * @code
 	 *   // In the user's handler, after acknowledging the actual NSS EXTI flag:
@@ -486,14 +516,16 @@ private:
 	uint16_t _capacity = 0;
 	volatile uint16_t _tx_remaining = 0;
 	volatile uint16_t _rx_remaining = 0;
-	Data_frame_format _frame_format = Data_frame_format::Byte;
+	bool _half_word = false;
 	Mode _mode = Mode::Polling;
 	volatile SysStatus _status{SysStatus::NotInit};
 	volatile uint32_t _errors = 0;
 	volatile bool _truncated = false;
 	volatile bool _nss_ended = false;
 	const Direction _direction;
+#if defined(STM32F7)
 	const System::CachePolicy _cache_policy; ///< One fixed policy for TX and RX.
+#endif
 	DMA_Sx _dma_tx;
 	DMA_Sx _dma_rx;
 	// Active directions awaiting a DMA completion/stop event; SPI CR2 bit values.
@@ -519,19 +551,19 @@ private:
 	void HandleDmaRxIRQ();
 
 	uint16_t ReadFrame() const;
-	void WriteFrame(uint16_t frame);
-	void StoreFrame(uint16_t frame);
+	template<typename Frame> void StoreFrame(Frame frame);
 	// RX/error handling share the SR snapshot and budget, including OVR discard.
 	uint32_t FifoFrames() const {
-#if defined(STM32F4)
+#if defined(SPI_CR1_DFF)
 		return 1U;
 #else
-		return _frame_format == Data_frame_format::Byte ? 4U : 2U;
+		return _half_word ? 2U : 4U;
 #endif
 	}
 	void DrainRx(uint32_t& sr, uint32_t& remaining);
 	uint32_t ReadErrors(uint32_t& sr, uint32_t& remaining);
 	void StopTransfer();
+	SysInitStatus ApplySettings(uint32_t cr1, uint32_t cr2, bool half_word);
 	SysInitStatus SetUpDMA();
 	void Finish(SysStatus result, uint32_t errors = 0);
 	// Start requires OK: SPI/requests are stopped, errors and pending DMA are zero.

@@ -13,7 +13,7 @@ static bool dma_used[dma_hw::DMA1_COUNT + dma_hw::DMA2_COUNT] = {};
 
 SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 {
-	const int32_t index = GetStreamIndex(_stream);
+	const int32_t index = _index;
 	if (index < 0)
 		return SysInitStatus::InitError;
 	if (settings.count > MAX_COUNT
@@ -22,7 +22,7 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 		return SysInitStatus::InitError;
 
 	const bool memory_to_memory = settings.direction == DIR::Mem_To_Mem;
-	const uint32_t request = _has_preset ? _preset_ch : settings.channel;
+	const uint32_t request = _preset_ch < 0 ? settings.channel : static_cast<uint32_t>(_preset_ch);
 	if ((memory_to_memory && (!dma_hw::MEM_TO_MEM || settings.circ))
 	 || (!dma_hw::ValidRequest(request) && !(memory_to_memory && request == 0U)))
 		return SysInitStatus::InitError;
@@ -64,7 +64,7 @@ SysInitStatus DMA_Sx::SetUp(const StreamSettings& settings)
 SysStatus DMA_Sx::Release()
 {
 	if (!_info) return SysStatus::NotInit;
-	const int32_t index = static_cast<int32_t>(_info - dma_hw::resources);
+	const int32_t index = _index;
 	Stream_EN(DISABLE);
 	_CR() = 0U;
 	ClearFlags();

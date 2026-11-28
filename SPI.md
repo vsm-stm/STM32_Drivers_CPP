@@ -36,7 +36,7 @@
 
 ## 2. Constant Initialization and Constructor Diagnostics
 
-Declare the object at file scope with `constinit` (or as `static constinit` inside a function). Arguments: `SPI::_N::instance`, direction, named SCK/MOSI/MISO pins, optional CS/NSS pin, optional TX/RX DMA (named `_N::DMA::...` routes on F4/F7, physical `DMAx_Channely_BASE` on G0 — the SPI supplies the request IDs).
+Declare the object at file scope with `constinit` (or as `static constinit` inside a function). Arguments: `SPI::_N::instance`, direction, named SCK/MOSI/MISO pins, optional CS/NSS pin, optional TX/RX DMA (named `_N::DMA::...` routes on F4/F7/L0, physical `DMAx_Channely_BASE` on G0/G4 — the SPI supplies the request IDs).
 
 What happens with a wrong argument (e.g. a MOSI pin of SPI2 on SPI1):
 
@@ -90,11 +90,14 @@ SysInitStatus initialized = bus.SetUp(
     SPI::cPolPha::None, SPI::BaudRate::DIV8);
 ```
 
-Check for `InitOK` before starting. `InitError` on: invalid enum values, missing SCK, hardware NSS without its pin, slave with software NSS, unsupported instance, repeated setup, or IRQ registration failure.
+With constant arguments, the inline `SetUp()` can fold the settings checks and prepare the CR1/CR2 values at the call site. Hardware setup and DMA/IRQ registration run when `SetUp()` is called.
+
+Check for `InitOK` before starting. Invalid settings, hardware NSS without its pin, a second setup or a DMA/IRQ setup failure return `InitError`.
 
 **Device coverage:**
 
-- SPI1–SPI6 on F4/F7 and SPI1–SPI3 on G0, where CMSIS declares them.
+- SPI1–SPI6 on F4/F7, SPI1–SPI3 on G0, SPI1–SPI4 on G4 and SPI1–SPI2 on L0, where CMSIS declares them.
+- `spi.hpp` selects the instance, pin, RCC, IRQ and DMA definitions in `src/hardware/spi/` at compile time. Transfers share `spi.cpp`.
 - Named pins follow the device AF map — check that the pin is bonded in your package. SPI5 uses AF6 on F410/F411/F412/F413/F423 and AF5 on larger F4/F7.
 - On G0 with SPI3, SPI2 and SPI3 share `SPI2_3_IRQn`.
 
@@ -175,7 +178,7 @@ With IRQ/DMA transfers, release CS only after `Process()` reports physical compl
 
 - `uint8_t` buffer → `len` bytes, 8-bit DR/DMA accesses.
 - `uint16_t` buffer → `len` half-words (2·`len` bytes), 16-bit accesses, 2-byte alignment.
-- On F7/G0 the RX FIFO threshold matches the frame size; there is no implicit packing.
+- On F7/G0/G4 the RX FIFO threshold matches the frame size; there is no implicit packing.
 
 **What each operation transmits:** `Send` sends your frames and discards RX; `Receive` sends dummy frames (`0xFF` / `0xFFFF`) and stores RX; `SendReceive` uses both buffers. `Receive_DMA` uses two-line reception with dummy clocking (RXONLY is not used).
 
@@ -261,7 +264,7 @@ if (state == SysStatus::OK) {
 **What `Process()` checks (master):**
 
 1. all planned TX/RX frames have been handled;
-2. then the SPI itself — F4: TXE = 1 and BSY = 0; F7/G0: TX FIFO empty and BSY = 0.
+2. then the SPI itself — F4/L0: TXE = 1 and BSY = 0; F7/G0/G4: TX FIFO empty and BSY = 0.
 
 A single BSY = 0 reading during an unfinished transfer is not enough — hence the order.
 
@@ -306,7 +309,7 @@ if (slave.Process() == SysStatus::OK) {
 
 - `NssReleased()` disables SPI sources and requests a DMA stop — no waiting, no cache work, no callbacks.
 - F4/F7: each DMA interrupt collects its stop TC and final count; `Process()` stays `Busy` until both directions have stopped.
-- G0: the last DMA request must already be serviced before the NSS stop; `Process()` reads the stopped count. An arbitrary mid-transfer abort does not give a valid length. On errors the whole packet is discarded.
+- G0/G4/L0: the last DMA request must already be serviced before the NSS stop; `Process()` reads the stopped count. An arbitrary mid-transfer abort does not give a valid length. On errors the whole packet is discarded.
 - `Process()` invalidates the DMA-written prefix, drains the last RX FIFO tail and publishes the packet. It also resets the SPI to flush TX frames prefetched but never sent.
 - Slave BSY is **not** used as a packet boundary — affected devices have a documented slave-BSY erratum.
 
@@ -326,9 +329,12 @@ if (slave.Process() == SysStatus::OK) {
 // F4/F7: the chosen resource is visible in the name.
 constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA2_Stream3;
 constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
-// G0 alternatives:
+// G0/G4 alternatives:
 // constexpr SPI::DMAReq tx = DMA1_Channel2_BASE;
 // constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
+// L0:
+// constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA1_Channel3;
+// constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA1_Channel2;
 
 constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
                   SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, tx, rx);
@@ -371,7 +377,7 @@ if (bus.SetUp(SPI::Master_sel::Master, SPI::NSS_ctrl::Software) == SysInitStatus
 
 ## 9. F7 cache and buffer handover
 
-**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
+**DMA buffer policy.** The last constructor argument is `System::CachePolicy`, fixed for the object. `Cacheable` is the default and accepts any valid DMA buffer, including non-cacheable memory; the F7 driver performs its normal cache operations without detecting the memory region. `NonCacheable` skips every cache call for both TX and RX. The application must then place **every** buffer used by that object entirely in DTCM or non-cacheable MPU memory; a cacheable buffer in this mode is a caller error. The policy does not place buffers or configure MPU. F4/G0/G4/L0 perform no cache operations with either value. DMA completion and buffer ownership requirements remain unchanged.
 
 F7 example (supply only non-cacheable buffers to this object):
 
@@ -393,7 +399,7 @@ constinit SPI bus(S::instance, SPI::Direction::TXRX,
 Byte length = frame count × frame width.
 
 - Cacheable RX buffers on F7 must own complete 32-byte lines, including padding. Do not read or write them while `Busy`.
-- With `NonCacheable`, SPI skips all cache calls without checking DTCM, MPU, linker records or D-cache state. With default `Cacheable`, System calls CMSIS directly. F4/G0 compile these calls out.
+- With `NonCacheable`, SPI skips all cache calls without checking DTCM, MPU, linker records or D-cache state. With default `Cacheable`, System calls CMSIS directly. F4/G0/G4/L0 compile these calls out.
 - For `TXRX` DMA dummy feeding the all-ones source is a constant in Flash; the separate discard word is never touched by the CPU, so it needs no cache handover.
 - For simultaneous TX/RX use **different** buffers — receiving into a TX buffer DMA has not yet read corrupts the transmission.
 
@@ -416,15 +422,15 @@ bus.SendReceive_DMA(tx, rx, 64);      // 64 frames = 128 cache-maintained RX byt
 - `DeInit()` removes only this object's entries; other handlers and shared NVIC state stay.
 - Registry changes happen in `main`, never in callbacks.
 
-**Bounded work per interrupt:** one SPI/NSS interrupt entry reads or discards at most one RX FIFO — 1 frame on F4; 4 × 8-bit or 2 × 16-bit frames on F7/G0. Error handling and normal RX share that budget, so incoming clocks cannot extend the loop indefinitely. Remaining RX is handled by later interrupts; after NSS, `Process()` drains the stopped FIFO. The TX interrupt writes at most one frame.
+**Bounded work per interrupt:** one SPI/NSS interrupt entry reads or discards at most one RX FIFO — 1 frame on F4/L0; 4 × 8-bit or 2 × 16-bit frames on F7/G0/G4. Error handling and normal RX share that budget, so incoming clocks cannot extend the loop indefinitely. Remaining RX is handled by later interrupts; after NSS, `Process()` drains the stopped FIFO. The TX interrupt writes at most one frame.
 
-**Snapshots:** error/RX/TX checks share one CR2/SR snapshot per entry. F4 reads the first RX frame without re-reading SR; F7/G0 refresh SR for further FIFO frames. The DR/SR sequence clearing OVR and the final wire-status check in `Process()` remain. Each DMA handler uses one `GetIRQFlags()` snapshot for TC and errors.
+**Snapshots:** error/RX/TX checks share one CR2/SR snapshot per entry. Error handling runs when a relevant error is set. The RX handler runs when RXNE is set. F4/L0 read the RX frame without re-reading SR; F7/G0/G4 refresh SR for further FIFO frames. The DR/SR sequence clearing OVR and the final wire-status check in `Process()` remain. Each DMA handler uses one `GetIRQFlags()` snapshot for TC and errors.
 
 RX/TX frame processing reads its remaining counter once and writes the new
 value once. On normal DMA TC, the handler records zero remaining without reading
 NDTR/CNDTR or repeating the assignment in the base callback. A shortened slave
 packet still reads the stopped count after NSS (in the DMA IRQ on F4/F7, in
-`Process()` on G0). Error paths discard the data and do not use the count.
+`Process()` on G0/G4/L0). Error paths discard the data and do not use the count.
 Cache operations and their argument evaluation are compiled only for F7.
 
 **Errors** are reported once through `OnError(uint32_t mask)` with bits `Overrun`, `ModeFault`, `DmaTx`, `DmaRx`.
@@ -513,9 +519,13 @@ protected:
     void OnError(uint32_t mask) override { errors = mask; }
 };
 using S = SPI::_1;
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
     S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{}, DMA1_Channel2_BASE, DMA1_Channel3_BASE);
+#elif defined(STM32L0)
+constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
+    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{},
+    S::DMA::TX_DMA1_Channel3, S::DMA::RX_DMA1_Channel2);
 #else
 constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
     S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{},
@@ -551,7 +561,7 @@ void Poll() {
 | --- | --- |
 | DMA TC received | Buffer done, not wire done — call `Process()` in `main`. |
 | Slave packet length | Determined only by NSS; extra frames → `IsTruncated()`. |
-| G0 slave: NSS rises before the last DMA request is serviced | Not supported — the final request must be serviced before the stop. |
+| G0/G4/L0 slave: NSS rises before the last DMA request is serviced | Not supported — the final request must be serviced before the stop. |
 | Handler preemption, control serialization | Application responsibility. |
 | F7 cache-line ownership | Application responsibility. |
 
@@ -575,6 +585,9 @@ void Poll() {
 - [ST RM0401 — F410 DMA request mapping](https://www.st.com/resource/en/reference_manual/dm00180366-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [ST G0B1 datasheet — SPI3 pins](https://www.st.com/resource/en/datasheet/stm32g0b1kc.pdf)
 - [ST G0 LL DMAMUX — SPI3 RX=66, TX=67](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h)
+- [ST RM0440 — G4 SPI, FIFO and DMAMUX](https://www.st.com/resource/en/reference_manual/rm0440-stm32g4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST RM0376 — L0x2 SPI and CSELR](https://www.st.com/resource/en/reference_manual/rm0376-ultralowpower-stm32l0x2-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST RM0451 — L0x0 SPI and CSELR](https://www.st.com/resource/en/reference_manual/rm0451-ultralowpower-stm32l0x0-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [Initialization.md](Initialization.md)
 - [DMA.md](DMA.md)
 - [GPIO.md](GPIO.md)
@@ -614,7 +627,7 @@ void Poll() {
 
 ## 2. Постоянная инициализация и диагностика конструктора
 
-Объявляйте объект глобально с `constinit` (или как `static constinit` внутри функции). Аргументы: `SPI::_N::instance`, направление, именованные выводы SCK/MOSI/MISO, необязательный вывод CS/NSS, необязательные TX/RX DMA (именованные маршруты `_N::DMA::...` на F4/F7, физические `DMAx_Channely_BASE` на G0 — номера запросов подставляет SPI).
+Объявляйте объект глобально с `constinit` (или как `static constinit` внутри функции). Аргументы: `SPI::_N::instance`, направление, именованные выводы SCK/MOSI/MISO, необязательный вывод CS/NSS, необязательные TX/RX DMA (именованные маршруты `_N::DMA::...` на F4/F7/L0, физические `DMAx_Channely_BASE` на G0/G4 — номера запросов подставляет SPI).
 
 Что происходит при неверном аргументе (например, вывод MOSI от SPI2 у SPI1):
 
@@ -668,11 +681,14 @@ uint16_t tx[] = {0x1234, 0xABCD}, rx[2];
 SysStatus result = bus.Send_Receive(tx, rx, 2); // Два кадра, не два байта.
 ```
 
-`InitError` при: неверных значениях enum, отсутствии SCK, аппаратном NSS без вывода, slave с программным NSS, неподдерживаемом экземпляре, повторной настройке или ошибке регистрации IRQ.
+При константных аргументах компилятор может свернуть проверки настроек и подготовить значения CR1/CR2 в месте вызова `SetUp()`. Настройка аппаратуры и регистрация DMA/IRQ выполняются при вызове.
+
+`InitError` возвращается при неверных настройках, аппаратном NSS без вывода, повторной настройке или ошибке настройки DMA/IRQ.
 
 **Поддержка МК:**
 
-- SPI1–SPI6 на F4/F7 и SPI1–SPI3 на G0, если они объявлены в CMSIS.
+- SPI1–SPI6 на F4/F7, SPI1–SPI3 на G0, SPI1–SPI4 на G4 и SPI1–SPI2 на L0, если они объявлены в CMSIS.
+- `spi.hpp` при сборке выбирает определения экземпляров, выводов, RCC, IRQ и DMA из `src/hardware/spi/`. Обмен реализован в общем `spi.cpp`.
 - Именованные выводы следуют карте AF; наличие вывода в корпусе проверяет пользователь. SPI5 на F410/F411/F412/F413/F423 использует AF6, на старших F4/F7 — AF5.
 - На G0 с SPI3 блоки SPI2 и SPI3 делят `SPI2_3_IRQn`.
 
@@ -750,7 +766,7 @@ cs.SetLevel(1);
 
 - буфер `uint8_t` → `len` байт, 8-битные обращения к DR/DMA;
 - буфер `uint16_t` → `len` полуслов (2·`len` байт), 16-битные обращения, выравнивание на 2 байта;
-- на F7/G0 порог RX FIFO соответствует размеру кадра, неявной упаковки нет.
+- на F7/G0/G4 порог RX FIFO соответствует размеру кадра, неявной упаковки нет.
 
 **Что передаёт каждая операция:** `Send` передаёт ваши кадры и отбрасывает RX; `Receive` передаёт пустые кадры (`0xFF` / `0xFFFF`) и сохраняет RX; `SendReceive` использует оба буфера. `Receive_DMA` использует двухпроводной приём с пустыми кадрами (RXONLY не используется).
 
@@ -829,7 +845,7 @@ if (state == SysStatus::OK) {
 **Что проверяет `Process()` (master):**
 
 1. все запланированные TX/RX-кадры обработаны;
-2. затем сам SPI — F4: TXE = 1 и BSY = 0; F7/G0: TX FIFO пуст и BSY = 0.
+2. затем сам SPI — F4/L0: TXE = 1 и BSY = 0; F7/G0/G4: TX FIFO пуст и BSY = 0.
 
 Одного чтения BSY = 0 во время незавершённого обмена недостаточно — поэтому такой порядок.
 
@@ -874,7 +890,7 @@ if (slave.Process() == SysStatus::OK) {
 
 - `NssReleased()` отключает источники SPI и запрашивает остановку DMA — без ожиданий, работы с кешем и callback.
 - F4/F7: каждое прерывание DMA фиксирует TC остановки и итоговый счётчик; `Process()` остаётся `Busy`, пока не остановятся оба направления.
-- G0: последний запрос DMA должен быть обслужен до остановки по NSS; `Process()` читает остановленный счётчик. Произвольная остановка посреди переноса не даёт достоверной длины. При ошибках весь пакет отбрасывается.
+- G0/G4/L0: последний запрос DMA должен быть обслужен до остановки по NSS; `Process()` читает остановленный счётчик. Произвольная остановка посреди переноса не даёт достоверной длины. При ошибках весь пакет отбрасывается.
 - `Process()` инвалидирует записанный DMA префикс, дочитывает хвост RX FIFO и публикует пакет. Также сбрасывает SPI, чтобы удалить заранее загруженные, но не переданные TX-кадры.
 - BSY в режиме slave **не** используется как граница пакета — у ряда МК есть документированная ошибка (errata) slave-BSY.
 
@@ -896,9 +912,12 @@ if (slave.Process() == SysStatus::OK) {
 // F4/F7:
 constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA2_Stream3;
 constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA2_Stream0;
-// G0:
+// G0/G4:
 // constexpr SPI::DMAReq tx = DMA1_Channel2_BASE;
 // constexpr SPI::DMAReq rx = DMA1_Channel3_BASE;
+// L0:
+// constexpr SPI::DMAReq tx = SPI::_1::DMA::TX_DMA1_Channel3;
+// constexpr SPI::DMAReq rx = SPI::_1::DMA::RX_DMA1_Channel2;
 constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
                   SPI::_1::MOSI::PA7, SPI::_1::MISO::PA6, PIN{}, tx, rx);
 // Проверить bus.SetUp(Master, Software), затем запускать обмен.
@@ -934,9 +953,9 @@ constinit SPI bus(SPI::_1::instance, SPI::Direction::TXRX, SPI::_1::SCK::PA5,
 - `minc = DISABLE` повторяет первый TX-кадр.
 - Буферы должны быть доступны DMA.
 
-**Кеш** (через System; на F4/G0 функции пустые):
+**Кеш** (через System; на F4/G0/G4/L0 функции пустые):
 
-**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
+**Политика DMA-буферов.** Последний аргумент конструктора — `System::CachePolicy`, неизменный для объекта. По умолчанию `Cacheable`: можно передавать любой допустимый DMA-буфер, включая некешируемую память; на F7 драйвер выполняет обычное обслуживание кеша без определения области памяти. `NonCacheable` пропускает все вызовы обслуживания кеша одновременно для TX и RX. В этом режиме приложение обязано размещать **все** используемые объектом буферы целиком в DTCM или некешируемой памяти MPU; передача кешируемого буфера — ошибка вызывающего кода. Политика не размещает буферы и не настраивает MPU. На F4/G0/G4/L0 при обоих значениях операций с кешем нет. Требования к завершению DMA и владению буфером сохраняются.
 
 Пример F7 (этому объекту передаются только некешируемые буферы):
 
@@ -958,7 +977,7 @@ constinit SPI bus(S::instance, SPI::Direction::TXRX,
 Размер в байтах = число кадров × ширина кадра.
 
 - Процессор не обращается к активным RX-линиям кеша и не меняет TX-буфер во время обмена.
-- При `NonCacheable` SPI пропускает все вызовы кеша без проверки DTCM, MPU, таблицы линкера или состояния D-cache. При `Cacheable` System напрямую вызывает CMSIS. На F4/G0 эти вызовы исключены при компиляции.
+- При `NonCacheable` SPI пропускает все вызовы кеша без проверки DTCM, MPU, таблицы линкера или состояния D-cache. При `Cacheable` System напрямую вызывает CMSIS. На F4/G0/G4/L0 эти вызовы исключены при компиляции.
 - Для одновременного TX/RX используйте **разные** буферы: приём в ещё не прочитанные DMA исходные данные портит передачу.
 - Источник пустых кадров для `TXRX` — неизменяемая константа во Flash; слово для отбрасываемых данных процессор не читает и не меняет.
 
@@ -984,7 +1003,7 @@ bus.SendReceive_DMA(tx, rx, 64);   // 64 кадра = 128 байт RX с обс�
 разу. При обычном DMA TC обработчик записывает нулевой остаток без чтения
 NDTR/CNDTR и без повторного присваивания в базовом callback. Для короткого
 slave-пакета чтение остановленного счётчика после NSS сохраняется: в DMA IRQ
-на F4/F7, в `Process()` на G0. При ошибке данные отбрасываются, счётчик не
+на F4/F7, в `Process()` на G0/G4/L0. При ошибке данные отбрасываются, счётчик не
 используется. Cache-операции и вычисление их аргументов компилируются только для F7.
 
 **Ошибки** сообщаются одним вызовом `OnError(uint32_t mask)` с битами `Overrun`, `ModeFault`, `DmaTx`, `DmaRx`.
@@ -1017,9 +1036,9 @@ protected:
 };
 ```
 
-**Ограниченная работа за одно прерывание:** один вход в прерывание SPI/NSS читает или отбрасывает не больше одного RX FIFO — 1 кадр на F4; 4 × 8 бит или 2 × 16 бит на F7/G0. Обработка ошибки и обычный RX используют общий счётчик, поэтому новые такты не продлевают цикл бесконечно. Остаток RX обслуживают следующие прерывания; после NSS `Process()` дочитывает остановленный FIFO. TX-прерывание записывает не больше одного кадра.
+**Ограниченная работа за одно прерывание:** один вход в прерывание SPI/NSS читает или отбрасывает не больше одного RX FIFO — 1 кадр на F4/L0; 4 × 8 бит или 2 × 16 бит на F7/G0/G4. Обработка ошибки и обычный RX используют общий счётчик, поэтому новые такты не продлевают цикл бесконечно. Остаток RX обслуживают следующие прерывания; после NSS `Process()` дочитывает остановленный FIFO. TX-прерывание записывает не больше одного кадра.
 
-**Снимки регистров:** проверки ошибок/RX/TX используют один снимок CR2/SR на вход. На F4 первый RX-кадр читается без повторного чтения SR; на F7/G0 SR обновляется для следующих кадров FIFO. Последовательность DR/SR для сброса OVR и итоговая проверка линии в `Process()` сохранены. Каждый обработчик DMA берёт TC и ошибки из одного `GetIRQFlags()`.
+**Снимки регистров:** проверки ошибок/RX/TX используют один снимок CR2/SR на вход. Обработка ошибок выполняется при установленном флаге ошибки, чтение RX — при RXNE. На F4/L0 RX-кадр читается без повторного чтения SR; на F7/G0/G4 SR обновляется для следующих кадров FIFO. Последовательность DR/SR для сброса OVR и итоговая проверка линии в `Process()` сохранены. Каждый обработчик DMA берёт TC и ошибки из одного `GetIRQFlags()`.
 
 **`DeInit()`** отменяет обмен без callback завершения, останавливает DMA, возвращает активный RX-буфер процессору, удаляет свои записи IRQ и освобождает DMA. Перед этим отключите или согласуйте свой NSS EXTI. Счётчик и признак усечения сбрасываются при новом запуске или в `DeInit()`. Деструктор `DeInit()` не вызывает.
 
@@ -1077,9 +1096,13 @@ protected:
     void OnError(uint32_t mask) override { errors = mask; }
 };
 using S = SPI::_1;
-#if defined(STM32G0)
+#if defined(STM32G0) || defined(STM32G4)
 constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
     S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{}, DMA1_Channel2_BASE, DMA1_Channel3_BASE);
+#elif defined(STM32L0)
+constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
+    S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{},
+    S::DMA::TX_DMA1_Channel3, S::DMA::RX_DMA1_Channel2);
 #else
 constinit SensorSPI bus(S::instance, SPI::Direction::TXRX,
     S::SCK::PA5, S::MOSI::PA7, S::MISO::PA6, PIN{},
@@ -1115,7 +1138,7 @@ void Poll() {
 | --- | --- |
 | Получен DMA TC | Буфер завершён, но не обмен на линии — вызывайте `Process()` в `main`. |
 | Длина slave-пакета | Определяется только NSS; лишние кадры → `IsTruncated()`. |
-| G0 slave: NSS поднялся до обслуживания последнего запроса DMA | Не поддерживается — последний запрос должен быть обслужен до остановки. |
+| G0/G4/L0 slave: NSS поднялся до обслуживания последнего запроса DMA | Не поддерживается — последний запрос должен быть обслужен до остановки. |
 | Вытеснение обработчиков, согласование управления | Ответственность приложения. |
 | Владение кеш-линиями на F7 | Ответственность приложения. |
 
@@ -1139,6 +1162,9 @@ void Poll() {
 - [ST RM0401 — карта запросов DMA F410](https://www.st.com/resource/en/reference_manual/dm00180366-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [ST G0B1 datasheet — выводы SPI3](https://www.st.com/resource/en/datasheet/stm32g0b1kc.pdf)
 - [ST G0 LL DMAMUX — SPI3 RX=66, TX=67](https://raw.githubusercontent.com/STMicroelectronics/stm32g0xx-hal-driver/master/Inc/stm32g0xx_ll_dmamux.h)
+- [ST RM0440 — G4 SPI, FIFO and DMAMUX](https://www.st.com/resource/en/reference_manual/rm0440-stm32g4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST RM0376 — L0x2 SPI and CSELR](https://www.st.com/resource/en/reference_manual/rm0376-ultralowpower-stm32l0x2-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
+- [ST RM0451 — L0x0 SPI and CSELR](https://www.st.com/resource/en/reference_manual/rm0451-ultralowpower-stm32l0x0-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [Initialization.md](Initialization.md)
 - [DMA.md](DMA.md)
 - [GPIO.md](GPIO.md)
